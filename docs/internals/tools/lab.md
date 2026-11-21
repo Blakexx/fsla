@@ -100,8 +100,10 @@ first N: an experiment's first is its checked launch, the timed ones follow.
 A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump (a carried one or a live one)
 and REFUSES, exit 1, where a kernel's shared wavefronts in excess of the conflict-free count are over what the experiment declares -- zero undeclared. The refusal names the
 kernel, then each source line that issues the excess with its count a CTA-window (`--per`) and in the launch, the checker's fix and rola's note. Declare it as
-`b.expect(k, "BANK_CONFLICT", "<=", n)` with its `//:` reason above it (the [hazards](#hazards)): `n` is the excess wavefronts of the
-profiled launch, as the dump counts them, and a conflict a row measures on purpose (a probe of the conflict) states its count there. A row is not read as a result before this holds.
+`b.expect(k, "BANK_CONFLICT", "<=", n)` with its `//:` reason above it (the [hazards](#hazards)): `n` is the excess wavefronts of a CTA-WINDOW
+of the profiled launch (the dump's count over the launch's CTA-windows, `--per`), never of the launch -- a launch's total moves with the grid and the
+windows a row times, so a declaration of it is no bound. The refusal prints both, the excess and the declaration a CTA-window and in the launch; a profile whose
+CTA-windows are not stated (no `--per`) reads no declaration. A conflict a row measures on purpose (a probe of the conflict) states its count there. A row is not read as a result before this holds.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). The hazards are WARPLINE'S CHECKER'S RULES (`warpline.checker`, the module
 `MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. A refusal prints the finding, the checker's own fix and then rola's `note:` for the rule, the `guidance` of the rule's entry in the `checker` section of `docs/rules.json` (`guidance()` in `tools/lab.py`; [`lint.md`](lint.md#rules-table)). `check` translates the experiment's
@@ -121,7 +123,7 @@ runs the rules and shows each refusal under the hazard's name the experiment dec
 | `STEP_ROLLED` | `step_rolled` | tensor steps in the innermost natural loop that holds no wait on them (the rule counts the steps; the declaration is a count of them) |
 | `STEP_PORT`, `STEP_WORK` | `step_port`, `step_work` | a BOUND, declared `<=`: the bytes a step puts through the shared-memory port, the instructions a thread issues a step |
 | `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
-| `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps (`PROFILE_HAZARDS`), not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, a count of the profiled launch |
+| `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps (`PROFILE_HAZARDS`), not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, declared a CTA-window of the profiled launch (`--per`), never a launch's total |
 | `BSSY`, `STEP_XU`, `STEP_GLOBAL`, a `CALL` opcode | `step_branches`, `step_conversion`, `step_global`, `convergence_call` | always checked in every kernel; an expectation of one of these names is a PERMIT (any number in the kernels it matches), not a count |
 
 A declaration of `BSSY`, `STEP_XU`, `STEP_GLOBAL` or a `CALL` opcode is a presence permit and its number is never compared: `<= 40` permits them in the kernels it names and does not bound them (`STEP_XU` is no opcode).

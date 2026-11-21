@@ -9,12 +9,13 @@ rules are loaded once and one way.
     kernels_of(binary, demangled)   the checker's model of every kernel of a cubin or of a binary's images, each by its mangled name,
                                     or by the toolkit's `cu++filt` name where `demangled` (the lab's patterns are of that form)
     check(kernels, rules, ...)      the named rules over the kernels, under loaded declarations and rola's notes: the refusals
-    profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump: its refusal or None
+    profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump, its declaration a CTA-window's: its refusal or None
     demangle(names)                 `cu++filt` of mangled names, each mapped to its own (the graph's toolkit holds no demangler)
 
 The disassemblers are `tools/sass.py`'s (the pinned toolkit's, or the graph's). -- see docs/internals/tools/sass_gate.md#checker"""
 from __future__ import annotations
 
+import dataclasses
 import functools
 import os
 import subprocess
@@ -81,10 +82,16 @@ def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[s
     return checker().declare.check(kernels, {n: registry[n] for n in sorted(rules)}, declarations, notes)
 
 
-def profile_refusal(dump: str, kernel: str, declarations: list, notes: dict[str, str]):
+def profile_refusal(dump: str, kernel: str, declarations: list, notes: dict[str, str], windows: float | None):
     """The checker's profile rule `shared_wavefronts_excess` on `kernel`'s SourceCounters `dump` (the text of its header and
-    instruction rows), under the loaded `declarations` and rola's `notes`: its refusal, or None where within what is declared."""
+    instruction rows), under the loaded `declarations` and rola's `notes`: its refusal, or None where within what is declared.
+    A declaration counts the excess wavefronts of a CTA-WINDOW of the profiled launch, never the launch's total (a launch's
+    total moves with the grid and the windows a row times): `windows`, the launch's CTA-windows, scales it to the launch's
+    allowance, and the refusal's `count` and `allowed` are the launch's, to be shown beside a window's. Where `windows` is
+    None (the profile's CTA-windows are not stated) no declaration can be read, and none allows."""
     c = checker()
     profile, = c.ncu.profiles_of([dump])
     rule = c.rules.profile_registry()["shared_wavefronts_excess"]
-    return c.declare.judge(kernel, rule.name, rule.check(profile), rule.refusal, rule.fix, declarations, notes)
+    scaled = [dataclasses.replace(d, allow=int(d.allow * windows + 1e-6)) if d.rule == rule.name else d
+              for d in declarations if windows is not None or d.rule != rule.name]
+    return c.declare.judge(kernel, rule.name, rule.check(profile), rule.refusal, rule.fix, scaled, notes)

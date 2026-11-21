@@ -874,6 +874,11 @@ int main(int argc, char** argv) {
     b.expect(k, "WAIT_AFTER_ISSUE", "<=", 3);
     //: the roles' loops hold their steps beside their barriers' waits: the waits' branches are the steps'
     b.expect(k, "BSSY", ">=", 0);
+    //: THE FOLD'S PADS' STORES: a thread's pad lines are named by its packet's words, so a warp's 32 pad stores (6 `STS.128` of
+    //: the fold) land wherever the data puts them and meet on banks by chance -- 43.5 excess wavefronts a CTA-window in the timed
+    //: launch's dump (367,276 over its 8,448 CTA-windows, 132 CTAs of 64 windows), declared 44; the gather could place the lines
+    //: conflict-free (owed)
+    b.expect(k, "BANK_CONFLICT", "<=", 44);
   }
   if (b.expect_only) return 0;
   const Buffers held = buffers(b);

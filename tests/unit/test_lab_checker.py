@@ -148,22 +148,38 @@ DUMP = ('==PROF== Connected to process 1 (/x/k)\n'
 
 
 @needs_checker
-def test_a_profile_with_excess_wavefronts_is_refused_by_kernel_and_source_line_and_a_declared_count_allows_it(tmp_path):
+def test_a_profile_with_excess_wavefronts_is_refused_by_kernel_and_source_line_and_a_declared_count_a_cta_window_allows_it(tmp_path):
     dump = tmp_path / "ledger_0.csv"
     dump.write_text(DUMP)
     source = ["", "  tile[lane * 32] = v;  // the clear", ""]
     kernel = "void tile::window<(int)0>(float *)"
     lines_at = {0x00: 1, 0x10: 2, 0x20: 3}
     out = lab.profile_failures(dump, kernel, lab.load_declarations([], {}), lines_at, source, 12, "CTA-window")
-    assert out[0].startswith(f"{kernel}: 372 shared-memory wavefronts in excess of the conflict-free count, 0 declared (BANK_CONFLICT")
+    assert out[0].startswith(f"{kernel}: 31.0 shared-memory wavefronts in excess of the conflict-free count a CTA-window (372 in the launch), "
+                             "0.0 declared a CTA-window (0 in the launch) (BANK_CONFLICT")
     assert "31.0 a CTA-window (372 in the launch): line 2: tile[lane * 32] = v;  // the clear" in out[1]
     assert any(line.startswith("    fix: ") for line in out) and any(line.startswith("    note: ") for line in out)
-    declared = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 372)], {"BANK_CONFLICT": "the probe's own conflict"})
+    #: the 12 windows' 372 are 31 a window: a declaration of 31 allows it, of 30 does not, and the same figure of the launch (372) is no bound
+    declared = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 31)], {"BANK_CONFLICT": "the probe's own conflict"})
     assert lab.profile_failures(dump, kernel, declared, lines_at, source, 12, "CTA-window") == []
-    short = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 371)], {})
-    assert len(lab.profile_failures(dump, kernel, short, lines_at, source, 12, "CTA-window")) > 1
+    short = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 30)], {})
+    refused = lab.profile_failures(dump, kernel, short, lines_at, source, 12, "CTA-window")
+    assert refused[0].startswith(f"{kernel}: 31.0 shared-memory wavefronts in excess of the conflict-free count a CTA-window (372 in the launch), "
+                                 "30.0 declared a CTA-window (360 in the launch)")
+    #: the declaration follows the windows a launch holds: the same dump, 24 windows, is 15.5 a window and a declaration of 31 is far over it
+    assert lab.profile_failures(dump, kernel, declared, lines_at, source, 24, "CTA-window") == []
     other = lab.load_declarations([expect("elsewhere", "BANK_CONFLICT", "<=", 999)], {})
     assert lab.profile_failures(dump, kernel, other, lines_at, source, 12, "CTA-window")
+
+
+@needs_checker
+def test_a_profile_whose_cta_windows_are_not_stated_reads_no_declaration(tmp_path):
+    dump = tmp_path / "ledger_0.csv"
+    dump.write_text(DUMP)
+    kernel = "void tile::window<(int)0>(float *)"
+    declared = lab.load_declarations([expect(kernel, "BANK_CONFLICT", "<=", 372)], {"BANK_CONFLICT": "stated"})
+    out = lab.profile_failures(dump, kernel, declared, {}, [], 1, "launch")
+    assert "CTA-windows not stated: `--per`" in out[0] and "none readable" in out[0]
 
 
 @needs_checker

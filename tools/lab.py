@@ -114,7 +114,8 @@ HAZARD_RULES = {
     "BANK_CONFLICT": "shared_wavefronts_excess",
 }
 #: the hazards a PROFILE computes (`ledger` runs them on a kernel's dump, `profile_failures`): the checker's profile rules, which `check`
-#: has no profile to run and only translates the declarations of. The count is the excess shared wavefronts of the profiled launch.
+#: has no profile to run and only translates the declarations of. The count is the excess shared wavefronts of a CTA-window of the
+#: profiled launch (`--per`), never of the launch: a launch's total moves with the grid and the windows a row times.
 PROFILE_HAZARDS = ("BANK_CONFLICT",)
 #: the hazards an experiment may declare a count of, beside its opcodes
 HAZARDS = tuple(HAZARD_RULES)
@@ -162,23 +163,27 @@ def expectations(binary: Path) -> list[dict]:
 
 
 def profile_failures(csv_path: Path, kernel: str, declarations: list, lines_at: dict[int, int], source: list[str], div: float, unit: str) -> list[str]:
-    """The checker's profile rules on a kernel's SourceCounters dump (`ledger`), under the experiment's declarations (a count of the
-    profiled launch, zero where none names the kernel): a refusal names the kernel, then each source line that issues the excess
-    with its wavefronts a `unit` (`div` the launch's units), the checker's fix and rola's note. `lines_at` maps an instruction's
+    """The checker's profile rules on a kernel's SourceCounters dump (`ledger`), under the experiment's declarations (a count of a
+    CTA-window of the profiled launch, zero where none names the kernel; where the `unit` is no CTA-window none can be read): a
+    refusal names the kernel, then each source line that issues the excess with its wavefronts a `unit` (`div` the launch's units),
+    the checker's fix and rola's note. `lines_at` maps an instruction's
     offset from the kernel's first to its line in the experiment's source."""
     lines = csv_path.read_text().splitlines()
     start = next((i for i, line in enumerate(lines) if line.startswith('"Kernel Name"')), None)
     if start is None:
         return [f"{kernel}: {csv_path.name} is no SourceCounters dump: no `Kernel Name` line"]
     text = "\n".join(line for i, line in enumerate(lines[start:]) if i < 2 or line.startswith('"0x'))
-    refusal = checked.profile_refusal(text, kernel, declarations, guidance())
+    windows = div if unit == "CTA-window" else None
+    refusal = checked.profile_refusal(text, kernel, declarations, guidance(), windows)
     if refusal is None:
         return []
     by_line: dict[int, int] = {}
     for f in refusal.findings:
         line = lines_at.get(int(f.where, 16), 0)
         by_line[line] = by_line.get(line, 0) + f.count
-    out = [f"{kernel}: " + REFUSAL_TEXT[refusal.rule].format(n=refusal.count, declared=refusal.allowed)
+    shown = {"per": f"{refusal.count / div:,.1f}", "declared_per": f"{refusal.allowed / div:,.1f}"} if windows else \
+        {"per": "(CTA-windows not stated: `--per`)", "declared_per": "none readable"}
+    out = [f"{kernel}: " + REFUSAL_TEXT[refusal.rule].format(n=refusal.count, declared=refusal.allowed, **shown)
            + f" [checker rule {refusal.rule}; {csv_path.name}]"]
     for line, n in sorted(by_line.items(), key=lambda x: -x[1]):
         text = source[line - 1].strip()[:90] if 0 < line <= len(source) else "(outside the source)"
@@ -265,8 +270,9 @@ REFUSAL_TEXT = {
                        "FMA pipe; a form that keeps them declares STEP_XU)",
     "step_global": "{n} global accesses inside an MMA step nobody declared (KERNEL_STANDARDS 29: stage by cp.async; a form that "
                    "keeps them declares STEP_GLOBAL)",
-    "shared_wavefronts_excess": "{n:,} shared-memory wavefronts in excess of the conflict-free count, {declared:,} declared "
-                                "(BANK_CONFLICT; KERNEL_STANDARDS 30: conflict-free by construction)",
+    "shared_wavefronts_excess": "{per} shared-memory wavefronts in excess of the conflict-free count a CTA-window ({n:,} in the "
+                                "launch), {declared_per} declared a CTA-window ({declared:,} in the launch) (BANK_CONFLICT, which counts "
+                                "a CTA-window; KERNEL_STANDARDS 30: conflict-free by construction)",
     "convergence_call": "{n} convergence calls nobody declared (a collective under role-dependent control flow becomes a call "
                         "into a convergence subroutine)",
 }
