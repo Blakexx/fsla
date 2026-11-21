@@ -3,9 +3,9 @@
 `csrc/rola/src/common/arm_switch.cuh` dispatches over the arm set the generated
 selection header carries; this file never depends on which arms are actually shipped
 (the shipped set lives in `tools/manifests/shipped_set.json`).
-This file compiles a probe against the SHIPPED HEADER with
+This file runs a probe the graph compiled against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
-the graph's header action and `tools/ratify.py` use, so what is tested is what a build would emit --
+the graph's header action uses, so what is tested is what a build would emit --
 and checks every layer of the contract:
 
 * the two counts are the generated ones, and the set names its members;
@@ -17,81 +17,41 @@ and checks every layer of the contract:
   names none;
 * the EMPTY set refuses everything, exercised here as a synthetic case (the shipped
   binary's own set carries one arm, not zero).
-
-The compile runs under the host budget (`rola_devtools.locks.host`): a compile is a compile.
 """
 
 from __future__ import annotations
 
 import pathlib
-import shutil
 import subprocess
-import sys
 
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SRC = REPO / "csrc" / "rola" / "src"
-PROBE = pathlib.Path(__file__).resolve().parent / "fixtures" / "arm_switch_probe.cpp"
-BUILD_LOCK = [sys.executable, "-m", "rola_devtools.locks.host", "--"]
-
-#: THE SYNTHETIC TABLE, and the only mirror in this file: three rows on the real key,
-#: of which a build carries the first and the last. The middle row is what makes
-#: "declared but not built" a distinct case from "not declared".
-TABLE = ((32, 1, 32, 1, 32, 0), (32, 1, 32, 1, 32, 1), (128, 2, 128, 2, 64, 1))
-BUILT = [0, 2]
+#: the probe, compiled by the graph against a synthetic selection header (tests/BUILD.bazel's `arm_switch_probe_<variant>`,
+#: the header `arm_switch_selection.py` renders: three rows, a build carrying the first and the last, or none)
+PROBES = REPO / "tests"
 
 
-def _selection_header(arms):
-    sys.path.insert(0, str(REPO / "tools"))
-    import gen_shards
-
-    saved = gen_shards.CARRY_ARMS
-    gen_shards.CARRY_ARMS = TABLE
-    try:
-        return gen_shards.carry_selection_header(arms)
-    finally:
-        gen_shards.CARRY_ARMS = saved
-
-
-def _build(tmp_path, arms):
+def _run(variant):
     import torch
-    from torch.utils import cpp_extension
 
-    cxx = shutil.which("c++") or shutil.which("g++")
-    if cxx is None:
-        pytest.skip("no host C++ compiler; the probe cannot be built")
-    generated = tmp_path / "generated"
-    generated.mkdir(parents=True, exist_ok=True)
-    (generated / "carry_selection.inc").write_text(_selection_header(arms))
-    out = tmp_path / "probe"
-    torch_lib = pathlib.Path(torch.__file__).parent / "lib"
-    #: THE ABI THE INSTALLED TORCH WAS BUILT WITH. `TORCH_CHECK` resolves into
-    #: `libc10`, whose `torchCheckFail` takes a `std::string`, so a probe compiled
-    #: under the other `std::string` ABI links against a symbol that is not there.
-    abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
-    cmd = [*BUILD_LOCK, cxx, "-std=c++17", "-O0",
-           f"-D_GLIBCXX_USE_CXX11_ABI={abi}",
-           f"-I{generated}", f"-I{SRC}"]
-    cmd += [f"-I{p}" for p in cpp_extension.include_paths()]
-    cmd += [str(PROBE), "-o", str(out), f"-L{torch_lib}", "-lc10",
-            f"-Wl,-rpath,{torch_lib}"]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    assert done.returncode == 0, f"the probe did not compile:\n{done.stderr}"
-    run = subprocess.run([str(out)], capture_output=True, text=True, timeout=120)
+    out = PROBES / f"arm_switch_probe_{variant}"
+    #: c10's library, which the probe's `TORCH_CHECK` resolves into
+    env = {"LD_LIBRARY_PATH": str(pathlib.Path(torch.__file__).parent / "lib")}
+    run = subprocess.run([str(out)], capture_output=True, text=True, timeout=120, env=env)
     assert run.returncode == 0, run.stdout + run.stderr
     return {line.split("\t")[0]: line.split("\t")[1:]
             for line in run.stdout.splitlines() if line}
 
 
 @pytest.fixture(scope="module")
-def built(tmp_path_factory):
-    return _build(tmp_path_factory.mktemp("arm_switch_built"), BUILT)
+def built():
+    return _run("built")
 
 
 @pytest.fixture(scope="module")
-def empty(tmp_path_factory):
-    return _build(tmp_path_factory.mktemp("arm_switch_empty"), [])
+def empty():
+    return _run("empty")
 
 
 def test_the_counts_and_the_members_are_the_generated_ones(built):

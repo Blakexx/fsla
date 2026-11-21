@@ -16,7 +16,6 @@ import hashlib
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
-INC = "csrc_stamp.inc"
 #: 60 bits of the digest: the stamp entries return `int64_t`, and a constant folded with other facts leaves room to be
 #: folded
 BITS = 60

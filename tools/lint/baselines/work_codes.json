@@ -1652,18 +1652,6 @@
    "count": 1
   },
   {
-   "path": "tools/lint/primitives_census.py",
-   "message": "names the work code 'K42'",
-   "line_sha256": "5cd9238eacdf9775",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/primitives_census.py",
-   "message": "names the work code 'K42'",
-   "line_sha256": "e9b173ff10198378",
-   "count": 1
-  },
-  {
    "path": "tools/lint/r9_enforcement.py",
    "message": "names the work code 'G2'",
    "line_sha256": "cd08726ae05ebcc2",

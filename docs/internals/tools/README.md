@@ -16,7 +16,7 @@ target ([`measurement.md`](../../measurement.md)).
 |---|---|---|---|
 | [`dev.py`](dev.md) | the one command that sets up, checks and describes a machine (a host, or the devbox container), and checks the devbox image | a person, through its run targets; the commit gate's §23 check | the `environment` record (its container check), `tools/devbox_image.json` |
 | [`dev_config.py`](dev_config.md) | every machine-dependent value, read from one directory of JSON files | every tool here, the tests | — |
-| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | the graph (`bazel/flags.py`), `ratify.py`'s compile path | — |
+| [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | the graph (`bazel/flags.py`), `ratify.py` (its recorded flags) | — |
 | `build_record.py` | the build record `_build_config.py`, rule 3 (which assembles the ratification it names) and rule 5 (the vendored tree's pin) | the graph (`bazel/record.py`), `ratify.py` | the record |
 | `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py`, the graph's stamp action | the stamp header |
 | [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout; run, the machine's one step outside the graph (the pinned bazelisk) | `dev_config.py`, the graph's front door, a person setting up a machine | the `bazel` link |
@@ -51,7 +51,7 @@ target ([`measurement.md`](../../measurement.md)).
 | `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them (a stack frame and the convergence calls the checker's, the step signatures its own); guarded convergence fallbacks counted; an unchanged cubin's verdict replayed (`sass_gate.md`) | every iteration build; the graph's SASS gate action (`--cuobjdump`/`--nvdisasm`, its toolkit); the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count), `--no-cache` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
-| `header_selfcheck.py` | every header compiles alone | a person, after moving a declaration | — |
+| `header_selfcheck.py` | every header has its compiled unit: the test over the graph's compile of each header alone (`bazel test //csrc/rola:header_selfcheck`) | the gate's lints | — |
 
 ## The instruments (each a target of `declare.py`)
 

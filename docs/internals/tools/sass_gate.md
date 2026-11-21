@@ -73,7 +73,7 @@ bytes, the gate's own source closure (every module of `tools/` it has loaded, an
 their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`, and `--instrument`'s declarations, by
 content) -- in the dev config's scratch
 (`sass_gate_verdicts/`). A cubin whose key matches is replayed: its verdict is the reading of identical bytes under an
-identical gate, the argument `tools/ratify.py`'s per-unit cache makes. Any change to the cubin or the gate misses and
+identical gate, the argument the graph's action cache makes for every unit. Any change to the cubin or the gate misses and
 re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that kernel's cubin and the stamp's.
 `--no-cache` reads every cubin and records nothing.
 

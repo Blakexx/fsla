@@ -22,9 +22,9 @@ git_override(
     remote = "https://github.com/Blakexx/rola-devtools.git",
 )
 
-#: WARPLINE'S MODULE: the header `warpline/stamp.cuh` the lab's `lab.cuh` includes (`@warpline//:headers`, which the `lab` run
-#: target hands `tools/lab.py`; compile time only), and the checker (`warpline.checker`, `@warpline//:warpline`) the lab's `check`
-#: calls for every hazard a rule computes -- at the public commit this tree is tested with, the one pin of warpline
+#: WARPLINE'S MODULE: the header `warpline/stamp.cuh` the lab's `lab.cuh` includes (`@warpline//:stamp`, a dependency of each
+#: experiment's compile in bazel/lab.bzl), and the checker (`warpline.checker`, `@warpline//:warpline`) the experiments'
+#: validation action runs for every hazard a rule computes -- at the public commit this tree is tested with, the one pin
 bazel_dep(name = "warpline", version = "0.1.0")
 git_override(
     module_name = "warpline",

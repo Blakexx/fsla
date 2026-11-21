@@ -166,12 +166,11 @@ instantiation ratifies zero-spill.
 
 ## What it compiles, and why that is the shipped source
 
-Ratify's compile path (`python tools/ratify.py`, an architecture's first manifest) compiles **the translation units
-the build compiles**, taken
+Ratify reads the compiles of **the translation units
+the build compiles** (the graph's CUDA rule's, `bazel run //:ratify`), taken
 from the one list both read (`tools/kernels.py`): every hand-written `.cu` under
 `csrc/rola/src`, plus the generated per-arm carry units under `instantiations/` that the arm
-selection names -- under the flag list the graph compiles with, `tools/build_flags.py`'s, rather
-than restated. A kernel is shipped codegen the moment its file is under `src/`, so it
+selection names -- under the flag list the graph compiles with, `tools/build_flags.py`'s; ratify compiles nothing. A kernel is shipped codegen the moment its file is under `src/`, so it
 is measured like every other; `bazel run //tools:kernels -- --check-manifest` names any kernel the
 source defines and no manifest records. Two properties follow:
 
@@ -191,9 +190,9 @@ it.
 On the graph's build it compiles nothing (`--graph`, [`build-graph.md`](build-graph.md#ratify)): the census is the
 build's own compile of the same units under the same flags, read from each unit's ptxas report and object.
 
-`--shard NAME` scopes the compile to one shard's slice for triage. It is a
-measurement scope only: `--write` refuses it, because a manifest written from a
-subset would silently drop every instantiation it did not compile.
+The scope is the build's parameters; there is no `--shard` or `--arm` of the gate's own, and an iteration build (a
+subset of the arms or architectures) is a measurement that `--write` refuses, because a manifest written from a subset
+would silently drop every instantiation it did not compile.
 
 ## What the gate refuses
 
@@ -224,8 +223,8 @@ the per-entry answer to what the digest can only ask globally, and it reads two 
   independent statement and the one the spill numbers depend on.
 * **the digest moved** → the numbers must be re-measured, but the entries whose
   bodies are unchanged are provably still described by their ratified numbers, and
-  the gate names only the moved ones. That is what makes a scoped `--shard`
-  re-measurement a checkable claim rather than an assertion.
+  the gate names only the moved ones. That is what makes a scoped re-measurement
+  (an iteration build's `--census`) a checkable claim rather than an assertion.
 
 **Maps compare across build paths.** Every kernel lives in a named namespace, so its
 mangled name is a function of source content and toolchain only and a worktree build

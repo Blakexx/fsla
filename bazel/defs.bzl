@@ -135,7 +135,7 @@ _CUDA_LINKED = ("libcudart.so.13", "libcuda.so")
 _INSTALL = """\
 #!/bin/bash
 # writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
-# tree's units read them (build/generated: tools/life_ranges.py, tools/header_selfcheck.py): copies, never links into
+# tree's units read them (build/generated: tools/life_ranges.py): copies, never links into
 # Bazel's output tree, each through a temporary file renamed into place, so a reader never sees half a header
 set -euo pipefail
 dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"

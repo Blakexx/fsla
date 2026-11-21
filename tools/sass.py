@@ -21,6 +21,7 @@ the encoding lines too (a body hash covers them) matches `ENCODING`.
 """
 from __future__ import annotations
 
+import atexit
 import functools
 import hashlib
 import os
@@ -41,9 +42,10 @@ _GRAPH: dict[str, Path] = {}
 
 
 def use_graph(*, cuobjdump: str, nvdisasm: str) -> None:
-    """Read the graph's disassemblers, and keep scratch in a directory of this process's own."""
-    _GRAPH.update(cuobjdump=Path(cuobjdump).absolute(), nvdisasm=Path(nvdisasm).absolute(),
-                  scratch=Path(tempfile.mkdtemp(prefix="rola_sass_")))
+    """Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits."""
+    scratch_dir = tempfile.mkdtemp(prefix="rola_sass_")
+    atexit.register(shutil.rmtree, scratch_dir, True)
+    _GRAPH.update(cuobjdump=Path(cuobjdump).absolute(), nvdisasm=Path(nvdisasm).absolute(), scratch=Path(scratch_dir))
 
 
 def tool(name: str) -> str:

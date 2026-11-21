@@ -39,9 +39,9 @@ resolved value and the file it came from ([dev.md](dev.md)).
 
 **The API.**
 - `get("section.key")` returns a value.
-- `cuda_home()` and `cuda_bin(tool)` resolve the toolkit: the pinned one (`tools/cuda_toolkit_pin.json`) -- in a
-  test tier the graph's copy, which the tier hands in (`ROLA_CUDA_HOME`), else init's under `host.tools_dir`, refused
-  until init installed it. Every compile, disassembly and assembler check outside the graph's own rules uses them, so
+- `cuda_home()` and `cuda_bin(tool)` resolve the toolkit: the graph's (`@cuda_tools`, pinned by
+  `tools/cuda_toolkit_pin.json`) -- in a test tier the copy the tier hands in (`ROLA_CUDA_HOME`), else the graph's repository
+  (`bazel query --output=location @cuda_tools//:bin/nvcc`); there is no second install. Every compile, disassembly and assembler check outside the graph's own rules uses them, so
   the ptxas a gate reads is the one the build ran.
 - `scratch(name)` returns a tool's scratch directory, this checkout's own: `<host.scratch>/<digest>/<name>`, where
   `<digest>` is the first 12 hex digits of the SHA-256 of the checkout's absolute root path (`/tmp/rola/<digest>/lab`

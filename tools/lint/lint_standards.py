@@ -1173,15 +1173,9 @@ def check_vendored_pin() -> list[str]:
             findings.append("NOTICE does not name BSD-3-Clause")
 
     units_build = (ROOT / "csrc" / "rola" / "BUILD.bazel").read_text()
-    ratify_text = (ROOT / "tools" / "ratify.py").read_text()
-    needle = '"csrc" / "third_party" / "cutlass"'
     if '"//csrc/third_party:cutlass"' not in units_build:
         findings.append("csrc/rola/BUILD.bazel's units no longer compile against the vendored tree "
                         "(//csrc/third_party:cutlass)")
-    if needle not in ratify_text:
-        findings.append("tools/ratify.py no longer passes the vendored include path; "
-                        "the manifest would then be ratified against a compile the "
-                        "extension does not perform")
     if "vendored_pin(" not in (ROOT / "bazel" / "record.py").read_text():
         findings.append("closed-world rule 5 gate (build_record.vendored_pin) is gone from the graph's record action")
 

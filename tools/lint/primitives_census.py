@@ -15,81 +15,28 @@ instruction ledger, not by an audit. This file is the audit, made permanent:
 an emulation FAILS THE DAY IT IS WRITTEN rather than the day someone happens to
 ledger that kernel again.
 
-**HOW.** For each `(primitive, arch)` cell below, compile a MINIMAL translation
-unit that `#include`s `ops.cuh` and calls the primitive from one `__global__`
-kernel, disassemble the resulting `cubin` with `cuobjdump -sass`, and count
-opcodes by FAMILY (the mnemonic up to its first `.` modifier -- `HFMA2.BF16_V2`
-and `HFMA2.MMA` are both family `HFMA2`). Each cell asserts an exact count for
-one or more families; the K42 audit table in
-`prototypes/k35_final_build/FINDINGS.md`'s `## K42` entry is this file's
-derivation record -- read it for WHY each cell's expected shape is what it is,
-this file only asserts the shape.
+**HOW.** One probe translation unit (`primitives_census_probe.cu`) `#include`s `ops.cuh` and calls each primitive from
+its own `__global__` kernel; the graph's CUDA rule compiles it for the build's architectures (tools/lint/BUILD.bazel's
+`primitives_census_probe`), and this test reads the object's SASS with the graph's `cuobjdump -sass` and counts opcodes by
+FAMILY (the mnemonic up to its first `.` modifier -- `HFMA2.BF16_V2` and `HFMA2.MMA` are both family `HFMA2`). Each cell
+asserts an exact count for one or more families; the audit table in `prototypes/k35_final_build/FINDINGS.md` is this
+file's derivation record -- read it for WHY each cell's expected shape is what it is, this file only asserts the shape.
 
-**BUILT ARCHES ONLY.** `denseref::arch::caps_of`'s tabulated rows include
-sm_90, but sm_90 is TABULATED AND NOT BUILT (no `mma`/`load_frag` for a
-128-thread warpgroup unit) -- compiling a probe for it would exercise ops.cuh
-in a configuration this tree never ships, so it is a documented SKIP, not a
-fabricated compile. The built set is read from `tools/build_flags.py`'s own
-arch list so this gate and the real build can never disagree about which
-arches "built" means.
+**BUILT ARCHES ONLY.** The probe is compiled for the build's architectures (`RATIFIED_ARCHS`), so this gate and the real
+build can never disagree about which arches "built" means; each is read from the SASS's own `arch = sm_XX` line.
 
-**WIRING.** Run this after `tools/ratify.py`'s own census (`--census`), same
-convention: a compile-only gate, no GPU, no `flock`. `docs/build.md`'s
-"Standards lint" section is where the commit gate's checks are listed;
-add this file there, and to the graph's lints, when it graduates from stage
-gate to a wired check.
+**WIRING.** A graph test, a compile-only gate: no GPU, no `flock`. `bazel test //tools/lint:primitives_census`.
 
-Usage (no GPU required -- compile + disassemble only):
+Usage (no GPU required):
 
-    bazel run //tools/lint:primitives_census
-    bazel run //tools/lint:primitives_census -- -v      # print every cell, not just failures
+    bazel test //tools/lint:primitives_census --test_output=all     # every cell is printed
 """
 from __future__ import annotations
 
 import argparse
 import re
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
-
-REPO_ROOT = Path(
-    subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-                    check=True).stdout.strip()
-)
-sys.path.insert(0, str(REPO_ROOT / "tools"))
-from ratify import cuda_bin  # noqa: E402
-
-OPS_INCLUDE_DIR = REPO_ROOT / "csrc" / "rola" / "src"
-
-#: BUILT ARCHES -- the one row `hardware.cuh`'s `caps_of()` tabulates (generated from `hardware.json`): the hopper's.
-#: This is a COMPILE-only gate (no GPU, no ratified manifest needed): `nvcc`/`ptxas` accept it as a `-arch=sm_XX`
-#: target on this toolchain -- the census's job is auditing the CAPABILITY TABLE's claims.
-BUILT_ARCHES: list[str] = ["90a"]
-
-#: One probe kernel per audited primitive. Each calls the REAL `ops.cuh`
-#: entry point -- never a hand-rolled restatement of what it should compile
-#: to -- so a regression in the shipped primitive is exactly what this trips.
-PROBE_SOURCE = """
-#include <cuda_bf16.h>
-#include "common/ops.cuh"
-
-extern "C" __global__ void census_mul_bf16x2(uint32_t* out, uint32_t a, uint32_t b) {
-  out[0] = denseref::ops::mul_bf16x2(a, b);
-}
-
-extern "C" __global__ void census_pack_bf16x2(uint32_t* out, float a, float b) {
-  out[0] = denseref::ops::pack_bf16x2(a, b);
-}
-
-extern "C" __global__ void census_hi_bf16x2(uint32_t* out, float a, float b) {
-  out[0] = denseref::ops::hi_bf16x2(a, b);
-}
-
-extern "C" __global__ void census_transpose_frag_b16(uint32_t* out, uint32_t x) {
-  out[0] = denseref::ops::transpose_frag_b16(x);
-}
-"""
 
 #: THE CENSUS TABLE.  Each row: (primitive, function symbol, family -> exact
 #: count).  A family absent from a row's dict is NOT asserted (e.g. `mul_bf16x2`
@@ -120,14 +67,6 @@ CENSUS: dict[str, dict] = {
         #: traffic where one PRMT suffices.
         "families": {"PRMT": 1, "FMUL": 0, "F2FP": 0},
     },
-    "transpose_frag_b16": {
-        "symbol": "census_transpose_frag_b16",
-        #: `movmatrix.sync.aligned.m8n8.trans.b16`, native since sm_75 -- every
-        #: tabulated arch here is sm_80+. The wider-type-emulation shape this
-        #: would take instead is a shared-memory round trip (STS + barrier +
-        #: LDS.TRANS or `ldmatrix.trans`), so STS/LDS presence is the tell.
-        "families": {"MOVM": 1, "STS": 0, "LDS": 0},
-    },
 }
 
 _OPCODE_RE = re.compile(r"/\*[0-9a-f]{4}\*/\s+(?:@!?P\d\s+)?([A-Z][A-Z0-9_]*)")
@@ -150,76 +89,67 @@ def opcode_families(sass_text: str) -> dict[str, int]:
     return counts
 
 
-def compile_and_disassemble(arch: str, tmpdir: Path) -> dict[str, int]:
-    src = tmpdir / f"probe_sm{arch}.cu"
-    cubin = tmpdir / f"probe_sm{arch}.cubin"
-    src.write_text(PROBE_SOURCE)
-    nvcc = cuda_bin("nvcc")
-    cmd = [nvcc, f"-arch=sm_{arch}", "-cubin", "-I", str(OPS_INCLUDE_DIR), "-o", str(cubin),
-           str(src)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise SystemExit(f"primitives_census: probe FAILED to compile for sm_{arch}\n"
-                          f"  command: {' '.join(cmd)}\n{proc.stderr}")
-    cuobjdump = cuda_bin("cuobjdump")
-    sass = subprocess.run([cuobjdump, "-sass", str(cubin)], capture_output=True, text=True,
-                          check=True).stdout
-    #: split by function so a count never leaks across probe kernels sharing one cubin.
-    per_function: dict[str, str] = {}
-    current = None
-    buf: list[str] = []
+def disassemble(obj: Path, cuobjdump: Path) -> dict[str, dict[str, dict[str, int]]]:
+    """The object's SASS by architecture and function, each as its opcode families: a count never leaks across probe
+    kernels sharing one object."""
+    sass = subprocess.run([str(cuobjdump), "-sass", str(obj)], capture_output=True, text=True, check=True).stdout
+    per_function: dict[str, dict[str, list[str]]] = {}
+    arch = function = None
     for line in sass.splitlines():
+        m = re.match(r"\s*arch = (sm_\w+)", line)
+        if m:
+            arch, function = m.group(1), None
+            continue
         m = re.match(r"\s*Function : (\S+)", line)
         if m:
-            if current is not None:
-                per_function[current] = "\n".join(buf)
-            current = m.group(1)
-            buf = []
-        elif current is not None:
-            buf.append(line)
-    if current is not None:
-        per_function[current] = "\n".join(buf)
-    return {name: opcode_families(text) for name, text in per_function.items()}
+            function = m.group(1)
+            per_function.setdefault(arch, {})[function] = []
+        elif function is not None:
+            per_function[arch][function].append(line)
+    return {arch: {name: opcode_families("\n".join(lines)) for name, lines in functions.items()}
+            for arch, functions in per_function.items()}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--object", type=Path, required=True, help="the probe's object, the graph's compile of it")
+    ap.add_argument("--cuobjdump", type=Path, required=True, help="the graph's cuobjdump")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="print every cell's measured opcode families, not just failures")
     args = ap.parse_args()
 
     ok = True
-    with tempfile.TemporaryDirectory(prefix="rola_primitives_census_") as td:
-        tmpdir = Path(td)
-        for arch in BUILT_ARCHES:
-            print(f"=== sm_{arch} ===")
-            by_function = compile_and_disassemble(arch, tmpdir)
-            for prim, row in CENSUS.items():
-                symbol = row["symbol"]
-                measured = by_function.get(symbol)
-                if measured is None:
-                    ok = False
-                    print(f"  FAIL  {prim}: symbol {symbol} not found in disassembly "
-                          f"(compiled but produced no code? check the probe TU)")
-                    continue
-                mismatches = []
-                for family, expected in row["families"].items():
-                    got = measured.get(family, 0)
-                    if got != expected:
-                        mismatches.append((family, expected, got))
-                if mismatches:
-                    ok = False
-                    print(f"  FAIL  {prim} (sm_{arch}): SASS shape moved")
-                    for family, expected, got in mismatches:
-                        print(f"          {family}: expected {expected}, measured {got}")
-                    print(f"          full measured opcode counts: {measured}")
-                elif args.verbose:
-                    wanted = {k: measured.get(k, 0) for k in row["families"]}
-                    print(f"  pass  {prim} (sm_{arch}): {wanted}")
+    by_arch = disassemble(args.object, args.cuobjdump)
+    if not by_arch:
+        raise SystemExit(f"primitives_census: {args.object} holds no SASS")
+    for arch, by_function in sorted(by_arch.items()):
+        print(f"=== {arch} ===")
+        for prim, row in CENSUS.items():
+            symbol = row["symbol"]
+            measured = by_function.get(symbol)
+            if measured is None:
+                ok = False
+                print(f"  FAIL  {prim}: symbol {symbol} not found in disassembly "
+                      f"(compiled but produced no code? check the probe TU)")
+                continue
+            mismatches = []
+            for family, expected in row["families"].items():
+                got = measured.get(family, 0)
+                if got != expected:
+                    mismatches.append((family, expected, got))
+            if mismatches:
+                ok = False
+                print(f"  FAIL  {prim} ({arch}): SASS shape moved")
+                for family, expected, got in mismatches:
+                    print(f"          {family}: expected {expected}, measured {got}")
+                print(f"          full measured opcode counts: {measured}")
+            elif args.verbose:
+                wanted = {k: measured.get(k, 0) for k in row["families"]}
+                print(f"  pass  {prim} ({arch}): {wanted}")
 
     print(f"\n{'PASS' if ok else 'FAIL'}  primitives census "
-          f"({len(CENSUS)} primitive(s) x {len(BUILT_ARCHES)} built arch(es))")
+          f"({len(CENSUS)} primitive(s) x {len(by_arch)} built arch(es))")
     return 0 if ok else 1
 
 

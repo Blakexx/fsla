@@ -47,7 +47,7 @@ SIX OUTCOMES, and the difference between them is deliberate:
   moves when the kernel changes; what must not move is the spilling.
 
 THE CENSUS (`--census [--json PATH]`) is the measurement mode the register rung is
-derived from: a compile of every built arm at the SHIPPED derived bound, reported
+derived from: every arm the graph compiled at the SHIPPED derived bound, read and reported
 per structural key and per SHARD. It never touches a manifest. Measuring a
 CANDIDATE bound is a scratch-tree edit of the bound itself
 (`docs/measurement.md`), not a flag here -- a forced bound must never be
@@ -55,7 +55,7 @@ ratifiable, and the cheapest way to guarantee that is for the tool not to have
 one.
 
 **RE-RATIFICATION IS A MEASUREMENT, NOT AN EDIT.** The manifest is regenerated only by
-`--write`, which re-runs this same compile and records what it reports. Hand-editing an
+`--write`, which reads the graph's compiles again and records what they report. Hand-editing an
 entry to make the gate pass would be asserting a spill nobody measured, which is
 exactly the failure this file replaces. When a kernel change legitimately moves the
 numbers: re-run `--write`, and put the new numbers in the findings document with the
@@ -67,10 +67,9 @@ Usage (no GPU required -- this is a COMPILE-time gate, so it does not take the l
     bazel run //:ratify -- --write             # the manifests, re-recorded from the build (a milestone's)
     bazel run //:ratify -- --census            # every instantiation's registers and spills, for a scope a flag sets
 
-`--shard` is a MEASUREMENT scope and never a ratification scope: a ratchet refusal is
-investigated one shard's slice at a time instead of by re-deriving every entry, but
-`--write` refuses it, because a manifest written from a subset of the translation
-units would silently drop every instantiation it did not compile.
+The gate compiles nothing: it reads the units the graph's CUDA rule compiled (`--graph`,
+`--runfiles`: the targets pass both), and the scope is the build's parameters, never a flag
+of its own. An iteration build is a measurement and is never ratified.
 
 `--self-test` requires the gate to FAIL on the things it must reject: a deliberately
 tightened manifest, a perturbed `ptxas` version, an arch with no committed manifest, a
@@ -96,7 +95,7 @@ split MATRIX.
 **WHY PER ARCH.** *"Does arch X have a ratified manifest?"* becomes a file-existence
 question, which is what the build's rule-3 gate (the graph's record action) asks before
 anything is linked; a new architecture's bring-up is then one reviewable file in a PR instead of a
-1024-line diff; and an `--arch 89` run cannot restate measurements it did not take. The
+1024-line diff; and a ratification cannot restate measurements of an arch it did not build. The
 SPLIT IS FILING ONLY, and that is checked rather than asserted: the digest
 `_build_config.py` records is taken over the merged canonical record, so N files hash to
 exactly what one file hashed to (`--self-test`, last arm).
@@ -108,10 +107,8 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
-import sysconfig
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -126,12 +123,8 @@ import mold_toolchain  # noqa: E402
 import sass  # noqa: E402
 import toolchains  # noqa: E402
 from build_record import manifest_digest  # noqa: E402
-from csrc_stamp import INC as CSRC_STAMP_INC  # noqa: E402
 from csrc_stamp import digest as _csrc_digest  # noqa: E402
-from csrc_stamp import header as _csrc_header  # noqa: E402
 from rola_devtools.locks import host  # noqa: E402
-
-os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 
 #: ONE toolchain location for nvcc and ptxas, the build's own (`dev_config.cuda_bin`): the version this gate reads is
 #: from the assembler that produced the numbers it parses.
@@ -180,44 +173,6 @@ MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 
 
-def _compile_dir() -> Path:
-    """The compile path's working directory, in the dev config's scratch, its per-unit records beside it."""
-    return sass.scratch("ratify")
-
-
-#: THE TRANSLATION UNITS THIS GATE COMPILES ARE THE BUILD'S: `tools/kernels.py`'s one list, so every kernel the
-#: binary ships is measured and no second enumeration can drift from the build's (it did: three kernels went
-#: unratified behind a hand-listed tuple). The kernels live in NAMED namespaces, so their mangled names do not depend
-#: on which translation unit expands them. -- see docs/internals/tools/ratify.md
-def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
-    """The translation units to compile. `shards` scopes to a subset by stem.
-
-    Scoping is a MEASUREMENT scope, never a ratification scope: `--write` still
-    refuses to file a manifest that does not carry the whole matrix, because a
-    partial manifest would silently drop every arm it did not compile.
-    """
-    paths = kernels.units(arms)
-    if shards is not None:
-        by_stem = {p.stem: p for p in paths}
-        unknown = sorted(set(shards) - set(by_stem))
-        if unknown:
-            raise SystemExit(f"no such shard: {', '.join(unknown)}\n"
-                             f"    known: {', '.join(sorted(by_stem))}")
-        return [by_stem[s] for s in sorted(shards)]
-    return paths
-
-
-#: The vendored CuTe/CUTLASS headers, in the SAME order the graph passes them
-#: (repository headers first). This gate's whole premise is that it compiles the
-#: shipped translation units under the shipped kernel's flags; an include path the
-#: extension has and this gate does not is that premise failing silently.
-CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cutlass" / "include"
-
-#: The compile path's `-gencode` targets by default, overridable per run with `--arch`: the one architecture the
-#: library is built for (the hopper's).
-DEFAULT_ARCHES = ("90a",)
-
-
 def toolchain(name: str | None = None) -> toolchains.Toolchain:
     """The named toolchain, or the one whose assembler the configured toolkit's is."""
     return toolchains.named(name) if name else toolchains.for_ptxas(ptxas_version())
@@ -251,7 +206,7 @@ def load_manifest(arches, name: str | None = None) -> dict:
         if not path.exists():
             raise SystemExit(
                 f"no ratified manifest for sm_{arch} at {path}; run\n"
-                f"    python tools/ratify.py --arch {arch} --write\n"
+                f"    bazel run //:ratify -- --write\n"
                 f"and put the numbers in the findings document")
         blob = json.loads(path.read_text())
         sources[arch] = blob.get("source")
@@ -542,50 +497,23 @@ _DERIVATION_MEASURED: dict[str, dict[str, str]] = {}
 
 
 def measure_derivation(cases: dict) -> dict[str, str]:
-    """Compile and run the harness. Returns its goldens.
+    """Run the graph's harness. Returns its goldens.
 
-    No GPU and no extension: `nvcc` is used because the header carries
+    No GPU and no extension: the graph compiles it with `nvcc` because the header carries
     `__host__ __device__` on the functions the device also calls, and defining those
     away for a host compiler would measure a source the tree does not have.
     """
-    import tempfile
-
     text = derivation.harness(cases)
     memo = _DERIVATION_MEASURED.get(text)
     if memo is not None:
         return memo
-    if _GRAPH:
-        #: the graph compiled and linked the harness (tools/BUILD.bazel's derivation_harness) from this same rendering
-        if _GRAPH["harness"].read_text() != text:
-            raise SystemExit(f"the graph's derivation harness {_GRAPH['harness']} is not this tree's rendering of "
-                             f"{DERIVATION_CASES_JSON.name}: rebuild")
-        run = subprocess.run([str(_GRAPH["harness_binary"])], capture_output=True, text=True)
-        if run.returncode != 0:
-            raise SystemExit(f"the derivation harness exited {run.returncode}:\n{run.stderr}")
-        return _derivation_golden(cases, run.stdout, text)
-    with tempfile.TemporaryDirectory(prefix="rola_derivation_") as tmp:
-        src = Path(tmp) / "derivation_harness.cu"
-        exe = Path(tmp) / "derivation_harness"
-        src.write_text(text)
-        #: THE HARNESS NAMES AN ARCHITECTURE. The addressing block's state capacity is a
-        #: capability-row quantity, so `common/geom.cuh` reaches `common/arch_caps.cuh`,
-        #: whose tabulation refuses `nvcc`'s DEFAULT device architecture by name. The
-        #: derivation is invariant across the tabulated set -- every row carries the same
-        #: register file -- so naming the one built architecture measures the shipped
-        #: derivation.
-        cmd = [cuda_bin("nvcc"), "-std=c++20", "-O0", "-arch=sm_90a", f"-I{SRC}",
-               str(src), "-o", str(exe)]
-        with host.acquire(1, label="ratify's derivation harness"):
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise SystemExit(
-                f"the derivation harness does not compile against the tree's "
-                f"{', '.join(cases['sources'])}:\n{proc.stderr}\n"
-                f"    {shlex.join(cmd)}")
-        run = subprocess.run([str(exe)], capture_output=True, text=True)
-        if run.returncode != 0:
-            raise SystemExit(f"the derivation harness exited "
-                             f"{run.returncode}:\n{run.stderr}")
+    #: the graph compiled and linked the harness (tools/BUILD.bazel's derivation_harness) from this same rendering
+    if _GRAPH["harness"].read_text() != text:
+        raise SystemExit(f"the graph's derivation harness {_GRAPH['harness']} is not this tree's rendering of "
+                         f"{DERIVATION_CASES_JSON.name}: rebuild")
+    run = subprocess.run([str(_GRAPH["harness_binary"])], capture_output=True, text=True)
+    if run.returncode != 0:
+        raise SystemExit(f"the derivation harness exited {run.returncode}:\n{run.stderr}")
     return _derivation_golden(cases, run.stdout, text)
 
 
@@ -688,47 +616,6 @@ def check_derivation(record: dict | None = None) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# THE DEVICE STAMP'S CSRC KEY: `tools/csrc_stamp.py`, which the build's stamp action runs too.
-def csrc_stamp_header(digest: str | None = None) -> str:
-    """The generated header the stamp sites include."""
-    return _csrc_header(digest if digest is not None else csrc_digest())
-
-
-def write_csrc_stamp(digest: str | None = None) -> Path:
-    """Write `build/generated/csrc_stamp.inc` for this tree on every call."""
-    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    path = gen_shards.GENERATED_DIR / CSRC_STAMP_INC
-    with host.file_lock("csrc_stamp_header"):
-        path.write_text(csrc_stamp_header(digest))
-    return path
-
-
-def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
-    """The compile path's nvcc command for `source`: the graph's compile of it (docs/build-graph.md#compile) -- the
-    codegen flags `tools/build_flags.py` holds for both, torch's extension defines, the include roots in the graph's
-    order (the repository's, CUTLASS's, the generated headers, then torch's and Python's) -- with a dependency file for
-    the per-unit record. The `-gencode` targets are THIS RUN's (`--arch`, the toolchain's ratified architectures by
-    default), never a build's: a flag naming what was compiled, inherited, would narrow the ratification to a single-arch
-    build's subset (docs/build.md#arm-subset). `ratified_flags()` records the codegen flags in the manifest and
-    `check_flags()` compares them."""
-    #: torch.utils.cpp_extension resolves its toolkit when first imported: a ratification compiles against the pinned one
-    os.environ["CUDA_HOME"] = dev_config.cuda_home()
-    import torch.utils.cpp_extension as ext
-
-    cmd = [cuda_bin("nvcc"), "--generate-dependencies-with-compile", "--dependency-output", f"{obj_path}.d",
-           "-c", str(source), f"-I{SRC}", f"-I{CUTLASS_INC}", f"-I{gen_shards.GENERATED_DIR}"]
-    for inc in ext.include_paths(device_type="cuda"):
-        cmd += ["-I", inc]
-    cmd += ["-I", sysconfig.get_paths()["include"]]
-    cmd += build_flags.torch_defines()
-    cmd += build_flags.nvcc_flags(arches, nvcc_threads=dev_config.get("host.nvcc_threads"))
-    #: the graph's units are position-independent objects compiled with torch's extension defines: host-side, inert
-    #: in the codegen this gate reads, passed so the compile is the graph's
-    cmd += ["-Xcompiler", "-fPIC", *build_flags.extension_defines()]
-    return cmd + ["-o", obj_path]
-
-
 def ptxas_version() -> str:
     """`ptxas --version`, whitespace-normalized to one line.
 
@@ -819,160 +706,9 @@ def _parse_report(stderr: str) -> tuple[dict, list[str]]:
     return entries, unhonored
 
 
-#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED: beside the compile path's working directory, in the scratch.
-def _cache_dir() -> Path:
-    return _compile_dir() / "units"
-
-
-_FILE_SHA: dict[str, str] = {}
-
-
-def _file_sha(path: str) -> str:
-    """Content hash of one dependency, memoised: the arm TUs share nearly every
-    header, so the closure is hashed once per FILE and not once per unit."""
-    if path not in _FILE_SHA:
-        try:
-            _FILE_SHA[path] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        except OSError:
-            _FILE_SHA[path] = "ABSENT"
-    return _FILE_SHA[path]
-
-
-def _depfile_inputs(depfile: Path) -> list[str]:
-    """Every file `nvcc` reported this translation unit reading, from the depfile the
-    compile already writes (`--generate-dependencies-with-compile`)."""
-    text = depfile.read_text().replace("\\\n", " ")
-    _, _, rhs = text.partition(":")
-    return sorted({tok for tok in rhs.split() if tok and not tok.endswith(":")})
-
-
-def _tu_fingerprint(cmd: list[str], deps: list[str]) -> str:
-    """WHAT MAKES A MEASUREMENT REUSABLE: the exact argv (less the object and depfile
-    paths, which are a scratch directory's business) and the CONTENT of every input
-    the compiler reported reading.  A header edit moves it; a new `#include` moves it
-    too, because adding one edits a file already in the closure."""
-    h = hashlib.sha256()
-    h.update(f"v1|{SASS_HASH_VERSION}|".encode())
-    skip = False
-    for tok in cmd:
-        if skip:
-            skip = False
-            continue
-        if tok in ("-o", "--dependency-output"):
-            skip = True
-            continue
-        h.update(tok.encode())
-        h.update(b"\0")
-    for dep in deps:
-        h.update(dep.encode())
-        h.update(_file_sha(dep).encode())
-    return h.hexdigest()
-
-
-def _cache_read(source: Path, cmd: list[str]) -> dict | None:
-    """The stored measurement for this unit, or `None` if it does not describe it.
-
-    The stored DEPENDENCY LIST is what the fingerprint is recomputed over -- the
-    record has to say what it depended on, or "unchanged" is a claim about nothing.
-    """
-    rec_path = _cache_dir() / f"{source.stem}.json"
-    if not rec_path.exists():
-        return None
-    try:
-        rec = json.loads(rec_path.read_text())
-    except (OSError, ValueError):
-        return None
-    if rec.get("fingerprint") != _tu_fingerprint(cmd, rec.get("deps", [])):
-        return None
-    return rec
-
-
-def _cache_write(source: Path, cmd: list[str], deps: list[str], entries: dict,
-                 unhonored: list[str], scan: dict) -> None:
-    _cache_dir().mkdir(parents=True, exist_ok=True)
-    (_cache_dir() / f"{source.stem}.json").write_text(json.dumps(
-        {"fingerprint": _tu_fingerprint(cmd, deps), "deps": deps, "entries": entries,
-         "unhonored": unhonored, "scan": scan}, indent=1, sort_keys=True) + "\n")
-
-
 def _scan_object(obj: str, wanted: set) -> dict:
     with sass.sass_lines(obj) as lines:
         return sass_scan(lines, wanted)
-
-
-def measure_units(arches, objdir: str, sources: list[Path], arms=None) -> tuple[dict, list[str], dict]:
-    """COMPILE AND DISASSEMBLE EACH TRANSLATION UNIT, OR REUSE ITS RECORD.
-
-    The gate used to recompile the whole matrix on every run, which is what made it a
-    40-minute act and therefore a milestone act (KERNEL_STANDARDS section 16). With one
-    arm per translation unit the matrix is 30-odd independent units, and a unit whose
-    input closure has not moved has nothing left to measure: its registers, its spills
-    and its SASS body are the same numbers by the same argument the source digest makes
-    globally. So the unit is the cache grain, keyed on the argv and the CONTENT of every
-    input the compiler itself reported reading -- never on a timestamp.
-
-    The reuse is not a weakening of the gate: what is replayed is a MEASUREMENT of an
-    identical compile, and the thing that decides identity is the same content hash the
-    freshness trigger uses, applied per unit instead of per tree.
-    """
-    #: WRITE THIS RUN'S SELECTION HEADER, ON EVERY RUN, BEFORE COMPILING ANYTHING, and it is not optional: docs/build.md records the exact trap
-    #: this prevents -- "an arm-subset build wrote its -D into those very flags, and
-    #: a later --write ... inherited the SUBSET and certified a manifest for arms
-    #: nobody built." The old fix was argv-substitution; the header gets the same
-    #: unconditional-overwrite treatment for the same reason: `arms=None` here means
-    #: the shipped set (`kernels.arm_units`'s own default), never "whatever the last
-    #: build left behind".
-    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    want_arms = sorted(set(range(len(gen_shards.CARRY_ARMS)) if arms is None else arms))
-    #: ONE SHARED OUTPUT FILE: two concurrent ratify/build
-    #: invocations racing this write must not interleave -- one must finish
-    #: writing the header before the other starts compiling against it.
-    with host.file_lock("carry_selection_header"):
-        (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
-            gen_shards.carry_selection_header(want_arms))
-        (gen_shards.GENERATED_DIR / gen_shards.DECODE.header).write_text(
-            gen_shards.decode_selection_header(range(len(gen_shards.DECODE_ARMS))))
-        gen_shards.write_builds(arches)
-    #: AND THE CSRC STAMP, for the same reason and from the same function the graph's
-    #: stamp header runs: the stamp sites include it, so a gate that did not write it would
-    #: measure a tree nobody builds.
-    write_csrc_stamp()
-
-    t0 = time.perf_counter()
-    compile_dir = _compile_dir()
-
-    def one(source: Path):
-        obj = str(Path(objdir) / f"{source.stem}.o")
-        cmd = _nvcc_command(arches, source, obj)
-        rec = _cache_read(source, cmd)
-        if rec is not None:
-            return source, rec, True
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(compile_dir))
-        if proc.returncode != 0:
-            sys.stderr.write(proc.stderr)
-            raise SystemExit(f"{source.name} FAILED to compile (rc={proc.returncode})")
-        got, bad = _parse_report(proc.stderr)
-        got_scan = _scan_object(obj, set(got))
-        dep = Path(f"{obj}.d")
-        deps = _depfile_inputs(dep) if dep.exists() else []
-        rec = {"entries": got, "unhonored": bad, "scan": got_scan, "deps": deps}
-        if deps:
-            _cache_write(source, cmd, deps, got, bad, got_scan)
-        return source, rec, False
-
-    #: ONE MACHINE, ONE COMPILE BUDGET (KERNEL_STANDARDS §14 addendum 2): the compiles run under the host budget's
-    #: slots, one job a `host.nvcc_threads` of them, as every build does through the graph's front door
-    with host.acquire(host.budget_slots(), label="ratify's compile path") as held:
-        jobs = max(1, held // dev_config.get("host.nvcc_threads"))
-        with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
-            measured = list(pool.map(one, sources))
-    hits = [source.stem for source, _rec, hit in measured if hit]
-    wall = time.perf_counter() - t0
-    print(f"{len(sources)} translation unit(s) measured in {wall:.1f} s at "
-          f"{min(jobs, len(sources))} jobs over {len(arches)} targets "
-          f"({', '.join('sm_' + a for a in arches)}); {len(hits)} reused an unchanged "
-          f"unit's record, {len(sources) - len(hits)} recompiled")
-    return _merge_units([(source, rec) for source, rec, _hit in measured])
 
 
 def measure_built() -> tuple[dict, list[str], dict]:
@@ -1409,11 +1145,6 @@ def main() -> int:
     ap.add_argument("--self-test", action="store_true",
                     help="prove the gate can fail, by re-checking against a "
                          "deliberately tightened manifest")
-    ap.add_argument("--arch", action="append", metavar="XX",
-                    help="a compute capability to measure and ratify, repeatable "
-                         f"(default: {' '.join(DEFAULT_ARCHES)}). One manifest file "
-                         "per arch, so bringing up a new one touches no other arch's "
-                         "measurements.")
     ap.add_argument("--write-derivation", action="store_true",
                     help="RE-RATIFY THE DERIVATION ONLY: re-measure the addressing "
                          "block's golden outputs and file "
@@ -1422,88 +1153,55 @@ def main() -> int:
                          "arch-independent, so it is neither measured per arch nor "
                          "worth a whole codegen ratification to refresh.")
     ap.add_argument("--census", action="store_true",
-                    help="FORCING CENSUS: compile the whole matrix, print the "
+                    help="CENSUS: print the build's "
                          "per-key register/spill table, touch no manifest")
     ap.add_argument("--json", metavar="PATH",
                     help="census only: dump the raw per-instantiation record for "
                          "arm-vs-arm diffing")
-    ap.add_argument("--shard", action="append", metavar="NAME",
-                    help="MEASUREMENT SCOPE: compile only these instantiation shards "
-                         "(repeatable). A ratchet refusal is investigated one shard "
-                         "at a time; --write still refuses a partial matrix.")
-    ap.add_argument("--arm", action="append", type=int, metavar="N",
-                    help="MEASUREMENT SCOPE: measure only these carry arms by index "
-                         "(repeatable). Same rule as --shard: --write refuses it, "
-                         "because a manifest written from a subset of the arms would "
-                         "silently drop every one it did not compile.")
-    ap.add_argument("--graph", type=Path, metavar="CENSUS",
-                    help="READ THE GRAPH'S BUILD instead of compiling: its census record (bazel/defs.bzl's ratify_census) names each "
-                         "unit's ptxas report and object, the graph's toolkit and derivation harness, and the build's "
-                         "parameters, which are the scope (no --arch, --shard or --arm)")
-    ap.add_argument("--runfiles", type=Path, metavar="DIR",
-                    help="--graph: the directory the census record's paths are relative to")
+    ap.add_argument("--graph", type=Path, metavar="CENSUS", required=True,
+                    help="THE GRAPH'S BUILD: its census record (bazel/defs.bzl's ratify_census) names each unit's ptxas report "
+                         "and object, the graph's toolkit and derivation harness, and the build's parameters, which are the scope")
+    ap.add_argument("--runfiles", type=Path, metavar="DIR", required=True,
+                    help="the directory the census record's paths are relative to")
     a = ap.parse_args()
 
-    if a.graph:
-        if a.arch or a.shard or a.arm:
-            raise SystemExit("--graph measures the build's own scope, its parameters (--//:archs, --//:carry_arms, "
-                             "...): --arch, --shard and --arm scope a compile of this gate's")
-        if a.runfiles is None:
-            raise SystemExit("--graph needs --runfiles, the directory its census record's paths are relative to")
-        use_graph(a.graph, a.runfiles)
-        graph_archs, iteration = graph_parameters()
-        #: an iteration build is never ratified (docs/build-graph.md#compile); its census is a measurement scope
-        if iteration and not a.census:
-            raise SystemExit("this is an iteration build (its parameters are not the shipped set): it is never "
-                             "ratified. Build //:library with its default parameters, or take --census")
+    use_graph(a.graph, a.runfiles)
+    arches, iteration = graph_parameters()
+    #: an iteration build is never ratified (docs/build-graph.md#compile); its census is a measurement scope
+    if iteration and not a.census:
+        raise SystemExit("this is an iteration build (its parameters are not the shipped set): it is never "
+                         "ratified. Build //:library with its default parameters, or take --census")
 
     if a.write_derivation:
         if a.write or a.census or a.self_test:
             raise SystemExit("--write-derivation is its own mode")
         return write_derivation()
 
-    arches = graph_archs if a.graph else tuple(a.arch) if a.arch else DEFAULT_ARCHES
-    if (a.shard or a.arm) and a.write:
-        raise SystemExit("--shard/--arm are MEASUREMENT scopes, not ratification "
-                         "scopes: a manifest written from a subset of the translation "
-                         "units would silently drop every instantiation it did not "
-                         "compile")
-    arms = sorted(set(a.arm)) if a.arm else None
-    if arms is not None:
-        unknown = [i for i in arms if not 0 <= i < len(gen_shards.CARRY_ARMS)]
-        if unknown:
-            raise SystemExit(f"no such carry arm: {unknown}; the list has "
-                             f"{len(gen_shards.CARRY_ARMS)} rows (0.."
-                             f"{len(gen_shards.CARRY_ARMS) - 1})")
-    sources = [] if a.graph else tu_paths(tuple(a.shard) if a.shard else None, arms)
-
-    #: the linker of the measured library, the graph's mold; the compile path links nothing
-    mold_info = ({"version": mold_toolchain.mold_version(_graph_bin("mold")),
-                  "sha256": mold_toolchain.binary_sha256(_graph_bin("mold"))} if a.graph else None)
+    #: the linker of the measured library, the graph's mold
+    mold_info = {"version": mold_toolchain.mold_version(_graph_bin("mold")),
+                 "sha256": mold_toolchain.binary_sha256(_graph_bin("mold"))}
     version = ptxas_version()
     #: every SASS body below is read with the record's disassemblers, or it is not the ratification's: checked before
     #: the first read, so `--write` and `--census` record nothing an unchecked reader produced
     toolchains.check_readers(toolchain(), {tool: toolchains.version_text(sass.tool(tool)) for tool in toolchains.READERS})
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
-        entries, unhonored, scan = measure_built() if a.graph else measure_units(arches, tmp, sources, arms)
-        hot = {name: len(s["hot_locals"]) for name, s in scan.items()}
-        bodies = {name: s["body_sha256"] for name, s in scan.items()}
-        local_ops = {name: s["local_ops"] for name, s in scan.items()}
-        for name, s in scan.items():
-            entries[name]["hot_locals"] = len(s["hot_locals"])
-            entries[name]["local_ops"] = s["local_ops"]
-            entries[name]["sass_sha256"] = s["body_sha256"]
-        if a.census:
-            census_report(entries, unhonored, hot)
-            if a.json:
-                Path(a.json).write_text(json.dumps(
-                    dict(ptxas=version,
-                         csrc_sha256=csrc_digest(), entries=entries,
-                         shards=shard_field(entries)),
-                    indent=1, sort_keys=True) + "\n")
-                print(f"census written to {a.json}")
-            return 0
+    entries, unhonored, scan = measure_built()
+    hot = {name: len(s["hot_locals"]) for name, s in scan.items()}
+    bodies = {name: s["body_sha256"] for name, s in scan.items()}
+    local_ops = {name: s["local_ops"] for name, s in scan.items()}
+    for name, s in scan.items():
+        entries[name]["hot_locals"] = len(s["hot_locals"])
+        entries[name]["local_ops"] = s["local_ops"]
+        entries[name]["sass_sha256"] = s["body_sha256"]
+    if a.census:
+        census_report(entries, unhonored, hot)
+        if a.json:
+            Path(a.json).write_text(json.dumps(
+                dict(ptxas=version,
+                     csrc_sha256=csrc_digest(), entries=entries,
+                     shards=shard_field(entries)),
+                indent=1, sort_keys=True) + "\n")
+            print(f"census written to {a.json}")
+        return 0
     if a.write:
         #: THE MANIFEST IS ONE SHARED ARTIFACT PER ARCH:
         #: two concurrent `--write` ratifications of the same arch would
@@ -1542,11 +1240,8 @@ def main() -> int:
                                     #: THE LINKER of the measured library, for
                                     #: PROVENANCE: a linker does not touch codegen,
                                     #: so its version is recorded, never compared
-                                    #: against a SASS body. `None` on the compile
-                                    #: path, which links nothing.
-                                    "mold": {"version": mold_info["version"],
-                                             "sha256": mold_info["sha256"]}
-                                            if mold_info else None},
+                                    #: against a SASS body.
+                                    "mold": mold_info},
                      "source": {"csrc_sha256": csrc_digest(),
                                 "date": time.strftime("%Y-%m-%d"),
                                 #: where it was measured: the devbox image's digest, empty on

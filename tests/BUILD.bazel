@@ -2,6 +2,9 @@
 `pytest_tier`). Each test is in one tier: the CPU tier is tests/unit's rows that launch nothing, run with no device
 visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
+load("@rola_env//:flags.bzl", "RATIFIED_ARCHS")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
 
 #: THE LAB'S UNIT TESTS: the lab's and the dev config's, which `:lab` runs and `:cpu` leaves out
@@ -10,6 +13,75 @@ LAB_TESTS = [
     "unit/test_lab_*.py",
 ]
 
+#: THE PROBES THE UNIT TESTS READ, compiled by the graph (docs/testing.md#probes): each test takes what it needs as data and
+#: runs no compiler. The device probes are built for the build's architectures (`RATIFIED_ARCHS`), the CUDA rule's flags
+#: being the probes' own (`-O3`, relaxed constexpr)
+_PROBE_ARCHS = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS]
+_PROBE_COPTS = ["-O3", "--expt-relaxed-constexpr"]
+_HOST_CC = "@host_cc//:identity.txt"
+
+#: the two SASS probes are read, never run: the shapes they hold (the shuffle's slow-path call, ptxas's convergence
+#: subroutine) are the shapes the gates read on an Ampere cubin, which the Hopper build never emits -- so they compile for sm_86
+[cuda_unit(
+    name = name + "_probe",
+    srcs = ["unit/fixtures/%s_probe.cu" % name],
+    archs = ["compute_86:sm_86"],
+    copts = _PROBE_COPTS,
+    host_cc = _HOST_CC,
+    deps = ["//csrc/rola:headers"],
+) for name in ["sass_gate", "life_ranges"]]
+
+cuda_unit(
+    name = "structure_switch_unit",
+    srcs = ["unit/fixtures/structure_switch_probe.cu"],
+    archs = _PROBE_ARCHS,
+    copts = _PROBE_COPTS + ["-std=c++17"],
+    host_cc = _HOST_CC,
+    deps = ["//csrc/rola:headers"],
+)
+
+cc_binary(
+    name = "structure_switch_probe",
+    deps = [
+        ":structure_switch_unit",
+        "@cuda//:cuda_runtime_static",
+    ],
+)
+
+#: the host arm switch's probe over a synthetic selection header: one binary each for a build carrying two of three arms
+#: and one carrying none (c10's `TORCH_CHECK` is the refusal; the test hands its library path)
+[genrule(
+    name = "arm_switch_%s_selection" % variant,
+    srcs = [
+        "unit/fixtures/arm_switch_selection.py",
+        "//bazel:generator_sources",
+    ],
+    outs = ["arm_switch_%s/carry_selection.inc" % variant],
+    cmd = "$(execpath @rola_env//:python) $(execpath unit/fixtures/arm_switch_selection.py) --arms '%s' --out $@" % arms,
+    tools = ["@rola_env//:python"],
+) for variant, arms in {"built": "0,2", "empty": ""}.items()]
+
+[cc_library(
+    name = "arm_switch_%s_header" % variant,
+    hdrs = [":arm_switch_%s_selection" % variant],
+    includes = ["arm_switch_%s" % variant],
+) for variant in ["built", "empty"]]
+
+[cc_binary(
+    name = "arm_switch_probe_%s" % variant,
+    srcs = [
+        "unit/fixtures/arm_switch_probe.cpp",
+        "@rola_env//:torch_libraries",
+    ],
+    additional_compiler_inputs = [_HOST_CC],
+    copts = ["-std=c++17", "-O0"],
+    deps = [
+        ":arm_switch_%s_header" % variant,
+        "//csrc/rola:headers",
+        "@rola_env//:torch_headers",
+    ],
+) for variant in ["built", "empty"]]
+
 pytest_tier(
     name = "cpu",
     size = "large",
@@ -17,6 +89,10 @@ pytest_tier(
         "//:library",
         "//:tree",
         "@warpline//:warpline",
+        ":arm_switch_probe_built",
+        ":arm_switch_probe_empty",
+        ":life_ranges_probe",
+        ":sass_gate_probe",
     ],
     marks = "not cuda",
     shard_count = 4,
@@ -48,6 +124,7 @@ pytest_tier(
         "//:library",
         "//:tree",
         "@warpline//:warpline",
+        ":structure_switch_probe",
     ],
     device = True,
     marks = "cuda",

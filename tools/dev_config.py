@@ -111,11 +111,11 @@ WSL_LIB = "/usr/lib/wsl/lib"
 HANDOFFS = {
     POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
     "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set to `cuda_home()` before torch's extension module is imported "
-                 "(ratify's compile path, the header self-check)",
+                 "(the header self-check)",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
-    "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (bazel/defs.bzl)",
+    "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (rola-devtools' pytest_tier)",
     "ROLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
                             "which the `lab` run target hands the lab (bazel/defs.bzl's lab_run)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
@@ -141,16 +141,31 @@ def get(dotted: str) -> Any:
     return load()[section][name][0]
 
 
+@cache
+def _graph_toolkit() -> str:
+    """The graph's own copy of the pinned toolkit (`@cuda_tools`, tools/cuda_toolkit_pin.json): the graph fetches its
+    repository and says where its nvcc is (`bazel query --output=location`)."""
+    import shutil
+    import subprocess
+
+    bazel = shutil.which("bazel")
+    if bazel is None:
+        raise SystemExit("`bazel` is not on PATH: the toolkit is the graph's (@cuda_tools), which bazel fetches")
+    found = subprocess.run([bazel, "query", "--output=location", "@cuda_tools//:bin/nvcc"], cwd=ROOT, capture_output=True,
+                           text=True)
+    if found.returncode != 0 or not found.stdout.strip():
+        raise SystemExit(f"the graph's toolkit (@cuda_tools) is not there:\n{found.stderr}")
+    nvcc = Path(found.stdout.split(":", 1)[0])
+    return str(nvcc.parents[1])
+
+
 def cuda_home() -> str:
-    """The toolkit every compile, disassembly and assembler check outside the graph's own rules uses: the pinned one
-    (tools/cuda_toolkit_pin.json) -- the graph's copy in a test tier (`ROLA_CUDA_HOME`), else init's, refused until
-    init installed it."""
+    """The toolkit every compile, disassembly and assembler check outside the graph's own rules uses: the graph's
+    (`@cuda_tools`, pinned by tools/cuda_toolkit_pin.json) -- handed in as `ROLA_CUDA_HOME` by a test tier, else read
+    from the graph's repository."""
     if os.environ.get("ROLA_CUDA_HOME"):
         return os.environ["ROLA_CUDA_HOME"]
-    nvcc = pinned("cuda_toolkit")
-    if not nvcc.is_file():
-        raise SystemExit(f"the pinned CUDA toolkit is not installed at {nvcc.parents[1]}: bazel run //:init")
-    return str(nvcc.parents[1])
+    return _graph_toolkit()
 
 
 def warpline_python() -> str | None:

@@ -462,6 +462,7 @@ test_suite(
         ":ratchet_vulture",
         ":ratchet_work_codes",
         "//csrc/rola:lints",
+        "//tools/lint:primitives_census",
     ],
 )
 

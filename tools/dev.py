@@ -44,8 +44,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #: versioned folder under `host.tools_dir` (`dev_config.pinned`), linked into every checkout's venv (`dev-env`) and found by
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
 DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
-#: THE CUDA TOOLKIT the tree's tools outside the graph use (`dev_config.cuda_home`): NVIDIA's redistributable components at
-#: the graph's toolkit manifest, installed by init as a devbox tool is, on no PATH -- see docs/setup.md#the-devbox
+#: THE CUDA TOOLKIT is the graph's (`@cuda_tools`, read by `dev_config.cuda_home`); init fetches none. Its pin is the graph's
+#: (`tools/cuda_toolkit_pin.json`), which `check` holds the graph's nvcc to -- see docs/setup.md#the-devbox
 TOOLKIT = "cuda_toolkit"
 PINS = {"bazelisk": ROOT / "tools" / "bazelisk_pin.json",
         **{name: ROOT / "tools" / f"{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)}}
@@ -147,73 +147,29 @@ def _verify(what: str, path: Path, sha256: str) -> None:
         raise SystemExit(f"{what}: sha256 {got} is not the pin's {sha256}")
 
 
-def _without_top(component: str):
-    """The extraction filter of a component's archive: a member under the pin's folder instead of the archive's own (the
-    archive's folder dropped from its name, and from a hard link's target, which names an archive path), its LICENSE
-    at `licenses/<component>/LICENSE`, since every component carries one at the same path -- the graph's copy's layout
-    (rola-devtools' environment extension's `cuda_toolkit` tag, `@cuda_tools`)."""
-    def keep(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
-        _, _, name = member.name.removeprefix("./").partition("/")
-        if not name:
-            return None
-        name = f"licenses/{component}/LICENSE" if name == "LICENSE" else name
-        link = member.linkname.removeprefix("./").partition("/")[2] if member.islnk() else member.linkname
-        return tarfile.tar_filter(member.replace(name=name, linkname=link, deep=False), dest)
-    return keep
-
-
-def _install_components(name: str, pin: dict) -> None:
-    """A toolkit of NVIDIA's redistributable components: the manifest by the pin's digest, each component by the digest
-    the manifest lists, all unpacked into the pin's one folder, then the pin's links (`lib64` for nvcc.profile). Unpacked
-    beside the folder and moved into place, so a folder there is always a whole toolkit."""
-    tools = Path(dev_config.get("host.tools_dir"))
-    dest, staging = tools / pin["archive_root"], tools / f".{pin['archive_root']}.partial"
-    shutil.rmtree(staging, ignore_errors=True)
-    with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
-        index = Path(tmp) / "manifest.json"
-        _download([pin["manifest_url"]], index)
-        _verify(f"{name} manifest", index, pin["manifest_sha256"])
-        manifest, base = json.loads(index.read_text()), pin["manifest_url"].rsplit("/", 1)[0]
-        for component in pin["components"]:
-            entry = manifest[component]["linux-x86_64"]
-            archive = Path(tmp) / Path(entry["relative_path"]).name
-            _download([f"{base}/{entry['relative_path']}"], archive)
-            _verify(component, archive, entry["sha256"])
-            with tarfile.open(archive) as tf:
-                tf.extractall(staging, filter=_without_top(component))
-            archive.unlink()
-    for link, target in pin["links"].items():
-        (staging / link).symlink_to(target)
-    shutil.rmtree(dest, ignore_errors=True)
-    staging.rename(dest)
-
-
 def install_pinned(name: str) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
-    release under `dest` -- its layout is part of the tool (the toolkit's nvcc finds cicc and ptxas by its own place). A release is a tarball,
-    a bare binary (`asset_kind`) installed under its release's name, or a manifest's components (`components`)."""
+    release under `dest` -- its layout is part of the tool. A release is a tarball or a bare binary (`asset_kind`) installed under
+    its release's name."""
     pin = json.loads(PINS[name].read_text())
     root, rel = pin["archive_root"], pin["binary_path"]
     dest, binary = Path(dev_config.get("host.tools_dir")), dev_config.pinned(name)
     dest.mkdir(parents=True, exist_ok=True)
-    if "components" in pin:
-        _install_components(name, pin)
-    else:
-        with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
-            asset = Path(tmp) / pin["release_asset"]
-            _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
-            _verify(f"{name} release", asset, pin["asset_sha256"])
-            if pin.get("asset_kind") == "binary":
-                #: a bare binary: installed in its pin's folder, as an archive's tree is
-                binary.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(asset, binary)
-                binary.chmod(0o755)
-            else:
-                with tarfile.open(asset) as tf:
-                    #: an archive with no folder of its own unpacks into its pin's, so every version has one
-                    own = all(n == root or n.startswith(root + "/") for n in tf.getnames())
-                    tf.getmember(f"{root}/{rel}" if own else rel)
-                    tf.extractall(dest if own else dest / root, filter="tar")
+    with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
+        asset = Path(tmp) / pin["release_asset"]
+        _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
+        _verify(f"{name} release", asset, pin["asset_sha256"])
+        if pin.get("asset_kind") == "binary":
+            #: a bare binary: installed in its pin's folder, as an archive's tree is
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(asset, binary)
+            binary.chmod(0o755)
+        else:
+            with tarfile.open(asset) as tf:
+                #: an archive with no folder of its own unpacks into its pin's, so every version has one
+                own = all(n == root or n.startswith(root + "/") for n in tf.getnames())
+                tf.getmember(f"{root}/{rel}" if own else rel)
+                tf.extractall(dest if own else dest / root, filter="tar")
     if "binary_sha256" in pin and hashlib.sha256(binary.read_bytes()).hexdigest() != pin["binary_sha256"]:
         raise SystemExit(f"{name}: {binary} sha256 is not the pin's {pin['binary_sha256']}")
     print(f"installed {pin['version_string']} -> {binary}")
@@ -371,7 +327,7 @@ def cmd_init(a) -> int:
     for section, values in dev_config.detect().items():
         _write_section(section, values, a.force)
 
-    for name in (TOOLKIT, *DEV_TOOLS):
+    for name in DEV_TOOLS:
         ensure_pinned(name)
     for site in link_packages():
         print(f"rola_results, rola_devtools: linked into {site}")
@@ -408,6 +364,14 @@ def _version(tool: str) -> str:
         return ""
 
 
+def _graph_nvcc() -> str:
+    """The graph's nvcc, or why there is none."""
+    try:
+        return dev_config.cuda_bin("nvcc")
+    except SystemExit as ex:
+        return f"({ex})"
+
+
 def cmd_check(a) -> int:
     rows: list[tuple[bool, str, str]] = []
 
@@ -421,8 +385,9 @@ def cmd_check(a) -> int:
         row(False, f"config: {ex}", "fix the named file")
         return _report(rows)
     want = json.loads(PINS[TOOLKIT].read_text())["version_string"]
-    row(_pinned_version(TOOLKIT, str(dev_config.pinned(TOOLKIT))) == want,
-        f"toolchain cuda: {dev_config.pinned(TOOLKIT).parents[1]} is {want}", "bazel run //:init")
+    nvcc = _graph_nvcc()
+    row(_pinned_version(TOOLKIT, nvcc) == want, f"toolchain cuda: the graph's toolkit (@cuda_tools), {nvcc}, is {want}",
+        "bazel build @cuda_tools//:toolkit")
     for name in DEV_TOOLS:
         want = json.loads(PINS[name].read_text())["version_string"]
         row(_pinned_version(name, str(dev_config.pinned(name))) == want, f"devbox {name}: {dev_config.pinned(name)} is {want}",
@@ -717,8 +682,9 @@ if [ -s /mnt/git/{CONTAINER_CHECKOUT.name}.staged ]; then
   git -C {CONTAINER_CHECKOUT} apply --index /mnt/git/{CONTAINER_CHECKOUT.name}.staged
 fi""",
     "bootstrap": "python3 tools/bootstrap.py",
-    "init": """bazel run //:init > /tmp/init.log 2>&1; rc=$?; cat /tmp/init.log
-[ $rc -eq 0 ] || { [ "$(grep -c '^RED' /tmp/init.log)" = 1 ] && grep -q '^RED  .* has no venv of its own' /tmp/init.log; }""",
+    "init": """log=$(mktemp); trap 'rm -f "$log"' EXIT
+bazel run //:init > "$log" 2>&1; rc=$?; cat "$log"
+[ $rc -eq 0 ] || { [ "$(grep -c '^RED' "$log")" = 1 ] && grep -q '^RED  .* has no venv of its own' "$log"; }""",
     "dev_env": "bazel run //:dev_env",
     "check": "bazel run //:check",
     "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //:dev_container')",

@@ -224,9 +224,15 @@ device whose arch was never measured, as a pair of clauses — `static_assert(ta
 statement of every launching entry. The test states the clause over every declared entry surface, so the next entry
 inherits it.
 
-**`bazel run //tools:header_selfcheck`** compiles every header under `csrc/rola/` ALONE, twice in one translation unit
-under the extension's own flags, so a header that leans on another's include, or whose include guard is broken, fails
-here rather than at a later caller. It needs `nvcc` but no device.
+**`bazel test //csrc/rola:header_selfcheck`** is the graph's compile of every header under `csrc/rola/src` ALONE, twice in
+one translation unit, with the extension's own flags and include roots (the CUDA rule's units, cached by the headers each
+read), so a header that leans on another's include, or whose include guard is broken, fails the build here rather than at
+a later caller; the test checks that every header has its unit. It needs no device.
+
+**The probes the unit tests read are the graph's** (`tests/BUILD.bazel`): the SASS gate's and the life-range report's
+probes (`sass_gate_probe`, `life_ranges_probe`), the structure switch's toy (`structure_switch_probe`, run on the device
+the build names) and the host arm switch's probe over a synthetic selection header (`arm_switch_probe_built`,
+`arm_switch_probe_empty`) are compiled by the graph and handed to the tiers as data; a unit test runs no compiler.
 
 ## The documentation gates
 

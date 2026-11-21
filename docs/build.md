@@ -73,7 +73,7 @@ its verdict on a build is a target of its own, `bazel test //:ratified`, which a
 
 <a id="generated-headers"></a>The build's GENERATED HEADERS (the arm selections, the carry parts, the builds, the
 csrc stamp) are actions over their generators, and `bazel run //:library` copies them into `build/generated/`, where
-a compile outside the graph reads them, and ratify's compile path writes the same files there for its own run. Only `common/build_stamp.cu` reads the csrc stamp, whose text
+a compile outside the graph reads them,. Only `common/build_stamp.cu` reads the csrc stamp, whose text
 changes with every `csrc/` edit.
 
 ## <a id="iteration"></a><a id="arm-subset"></a>An iteration build compiles a subset

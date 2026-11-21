@@ -216,12 +216,6 @@
    "message": "manifest_path(..., name=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "5103285bb6317ddc",
    "count": 1
-  },
-  {
-   "path": "tools/ratify.py",
-   "message": "write_csrc_stamp(..., digest=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "ec52e248e0accd8b",
-   "count": 1
   }
  ]
 }

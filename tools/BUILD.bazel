@@ -105,7 +105,6 @@ filegroup(
     "bank_model",
     "carry_floor",
     "gen_shards",
-    "header_selfcheck",
     "kernel_targets",
     "kernels",
     "life_ranges",

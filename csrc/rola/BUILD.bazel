@@ -1,10 +1,10 @@
 """THE EXTENSION'S UNITS: every hand-written unit under src/, each generated carry arm unit, the registration unit, the
 generated headers and the device stamp (docs/build-graph.md#compile)."""
 
-load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS")
+load("@rola_env//:flags.bzl", "HOST_CXX_FLAGS", "NVCC_FLAGS", "RATIFIED_ARCHS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tree_part", "tree_test", "unit_lint_test")
+load("//bazel:defs.bzl", "carry_arm_set", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test")
 load(":units.bzl", "CARRY_ARM_COUNT", "CARRY_ARM_UNITS", "HAND_UNITS", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
@@ -114,6 +114,57 @@ cc_library(
     deps = _DEPS + ["//bazel:cuda_headers"],
 )
 
+#: EVERY HEADER COMPILES ALONE (tools/header_selfcheck.py, docs/testing.md#headers): one unit per header, containing the header
+#: twice and nothing else, compiled by the graph's CUDA rule with the library's own flags and include roots, so a unit is cached
+#: by the headers it read and an edit recompiles only the units that read it. The units are named by the header they hold.
+_SELFCHECK_HEADERS = glob(["src/**/*.cuh"])
+
+_SELFCHECK_UNITS = {
+    header: "selfcheck/%s_selfcheck.cu" % header.removeprefix("src/").removesuffix(".cuh").replace("/", "__")
+    for header in _SELFCHECK_HEADERS
+}
+
+genrule(
+    name = "header_selfcheck_sources",
+    outs = _SELFCHECK_UNITS.values(),
+    cmd = " && ".join([
+        "printf '#include \"%s\"\\n#include \"%s\"\\n' > $(RULEDIR)/%s" % (header.removeprefix("src/"), header.removeprefix("src/"), unit)
+        for header, unit in _SELFCHECK_UNITS.items()
+    ]),
+)
+
+cuda_unit(
+    name = "header_selfcheck_units",
+    srcs = [":header_selfcheck_sources"],
+    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS],
+    copts = NVCC_FLAGS,
+    host_cc = _HOST_CC,
+    #: the headers that reach torch (`common/torch_seam.cuh`) need the toolkit's libraries' headers the registration unit gets
+    deps = _DEPS + ["//bazel:cuda_headers"],
+)
+
+#: the check: every header has its unit, and the units compiled (a failed unit fails the build this test depends on)
+tool_test(
+    name = "header_selfcheck",
+    size = "small",
+    args_ = [
+        "--headers",
+        "$(rootpaths :header_files)",
+        "--objects",
+        "$(rootpaths :header_selfcheck_units)",
+    ],
+    data = [
+        ":header_files",
+        ":header_selfcheck_units",
+    ],
+    tool = "//tools:header_selfcheck.py",
+)
+
+filegroup(
+    name = "header_files",
+    srcs = _SELFCHECK_HEADERS,
+)
+
 #: this package's part of the tree the checks read
 tree_part()
 
@@ -186,6 +237,7 @@ test_suite(
         ":clang_format",
         ":clang_tidy_device",
         ":clang_tidy_host",
+        ":header_selfcheck",
         ":host_warnings",
         ":unused_instantiations",
     ],

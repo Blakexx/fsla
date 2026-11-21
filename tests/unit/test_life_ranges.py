@@ -5,7 +5,6 @@ shapes nvdisasm's own counts drop -- proven on a compiled probe and on a listing
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,35 +13,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import dev_config  # noqa: E402
 import life_ranges  # noqa: E402
+import sass  # noqa: E402
 
-#: 32 values held across a loop whose trip count differs by lane, so its shuffle's slow path is a subroutine call
-PROBE = r"""
-__global__ void shuffle_probe(float* y, const int* n) {
-  float keep[32];
-#pragma unroll
-  for (int k = 0; k < 32; ++k) keep[k] = y[k * 256 + threadIdx.x];
-  y[threadIdx.x] = 0.0f;
-  float v = keep[0];
-  for (int i = 0; i < n[threadIdx.x]; ++i) v += __shfl_xor_sync(0xffffffffu, v, 1);
-#pragma unroll
-  for (int k = 0; k < 32; ++k) v += keep[k] * (k + 1);
-  y[threadIdx.x + 256] = v;
-}
-"""
+#: the probe, compiled by the graph's CUDA rule (tests/BUILD.bazel's `life_ranges_probe`): its one cubin
+PROBE = ROOT / "tests" / "_objs" / "life_ranges_probe" / "life_ranges_probe.pic.o"
 
 
 @pytest.fixture(scope="module")
-def cubin(tmp_path_factory):
-    nvcc = dev_config.cuda_bin("nvcc")
-    if nvcc is None or not Path(nvcc).exists():
-        pytest.skip("no nvcc in this environment's toolkit")
-    root = tmp_path_factory.mktemp("life_ranges")
-    (root / "probe.cu").write_text(PROBE)
-    subprocess.run([nvcc, "-cubin", "-arch=sm_86", "-O3", "-o", str(root / "probe.cubin"), str(root / "probe.cu")],
-                   check=True, capture_output=True)
-    return root / "probe.cubin"
+def cubin():
+    found = sass.cubins(PROBE)
+    assert len(found) == 1, found
+    return found[0]
 
 
 def test_values_held_across_a_slow_path_call_count_before_the_call(cubin):

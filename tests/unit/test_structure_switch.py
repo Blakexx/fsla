@@ -13,8 +13,7 @@ consumes it), so nothing in the extension can prove it works. This file compiles
   a device fault, and this is why the toy is a SEPARATE PROCESS: a trap kills the CUDA
   context it runs in, so it cannot be provoked inside the pytest process.
 
-The compile runs under the host budget (`rola_devtools.locks.host`) -- a census compile is a compile
-(`docs/build-graph.md`), and this one is two.
+The toy is compiled by the graph (`tests/BUILD.bazel`); this file runs it and compiles nothing.
 """
 
 from __future__ import annotations
@@ -27,37 +26,28 @@ import pytest
 import torch
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SRC = REPO / "csrc" / "rola" / "src"
-PROBE = pathlib.Path(__file__).resolve().parent / "fixtures" / "structure_switch_probe.cu"
-BUILD_LOCK = [sys.executable, "-m", "rola_devtools.locks.host", "--"]
+sys.path.insert(0, str(REPO / "tools"))
+#: the toy, compiled by the graph's CUDA rule for the build's architecture (tests/BUILD.bazel's `structure_switch_probe`)
+PROBE = REPO / "tests" / "structure_switch_probe"
 
 #: the toy's own set size and value law, mirrored from the fixture: a mirror of FIVE
 #: LINES is the price of asserting the bodies ran under the right member at all.
 NA = 5
 
 
-def _nvcc() -> str:
-    import dev_config
-
-    return dev_config.cuda_bin("nvcc")
-
-
 @pytest.fixture(scope="module")
-def probe_binary(tmp_path_factory):
+def probe_binary():
     if not torch.cuda.is_available():
         pytest.skip("the switch's trap is a DEVICE fault; this test needs the device")
-    nvcc = _nvcc()
-    if not pathlib.Path(nvcc).exists():
-        pytest.skip(f"no nvcc at {nvcc}: the toy kernel cannot be compiled")
+    import toolchains
+
     from measure import hardware
 
     arch = hardware.device_arch(*torch.cuda.get_device_capability())
-    out = tmp_path_factory.mktemp("structure_switch") / "probe"
-    cmd = [*BUILD_LOCK, nvcc, "-std=c++17", f"-arch={arch}",
-           "--expt-relaxed-constexpr", f"-I{SRC}", str(PROBE), "-o", str(out)]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    assert done.returncode == 0, f"the toy kernel did not compile:\n{done.stderr}"
-    return out
+    built = sorted({f"sm_{a}" for record in toolchains.records().values() for a in record.archs()})
+    if arch not in built:
+        pytest.skip(f"the probe is built for {built}, the build's architectures; this device is {arch}")
+    return PROBE
 
 
 def test_every_member_of_the_generated_set_runs_its_own_body(probe_binary):

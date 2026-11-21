@@ -2,9 +2,10 @@
 targets run over their sources, the modes a person runs by hand, and each linter's self-test on its fixtures. The lints
 themselves live beside what they check: csrc/rola's own, and the repo-wide checks in the root package."""
 
+load("@rola_env//:flags.bzl", "RATIFIED_ARCHS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "tool_run", "tree_part", "tree_test", "unit_lint_test")
+load("//bazel:defs.bzl", "tool_run", "tool_test", "tree_part", "tree_test", "unit_lint_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -137,8 +138,36 @@ test_suite(
     ],
 )
 
+#: THE PRIMITIVES CENSUS (docs/internals/tools/lint.md#primitives-census): the probe kernels are compiled by the graph's CUDA
+#: rule for the build's architectures, and the census is a test over the object's SASS, read with the graph's cuobjdump
+cuda_unit(
+    name = "primitives_census_probe",
+    srcs = ["primitives_census_probe.cu"],
+    archs = ["compute_%s:sm_%s" % (arch, arch) for arch in RATIFIED_ARCHS],
+    copts = ["-std=c++20"],
+    host_cc = "@host_cc//:identity.txt",
+    deps = ["//csrc/rola:headers"],
+)
+
+tool_test(
+    name = "primitives_census",
+    size = "small",
+    args_ = [
+        "--object",
+        "$(rootpath :primitives_census_probe)",
+        "--cuobjdump",
+        "$(rootpath @cuda_tools//:bin/cuobjdump)",
+        "-v",
+    ],
+    data = [
+        ":primitives_census_probe",
+        "@cuda_tools//:bin/cuobjdump",
+    ],
+    tool = "primitives_census.py",
+)
+
 #: each lint as a person runs it: its inventory, and the modes the graph's checks do not run (a ratchet's `--shrink`,
-#: one drift guard's rule, the primitives census's report)
+#: one drift guard's rule)
 [tool_run(
     name = name,
     tool = "tools/lint/%s.py" % name,
@@ -150,7 +179,6 @@ test_suite(
     "drift_guards",
     "lint_standards",
     "portable_claude",
-    "primitives_census",
     "r9_enforcement",
     "ratchet",
     "readability_spacing",

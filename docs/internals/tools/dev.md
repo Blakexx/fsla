@@ -20,9 +20,9 @@ Each target is this file's command of the same name (`bazel/defs.bzl`'s `dev_run
 graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
-- The pinned CUDA toolkit (`TOOLKIT`, `tools/cuda_toolkit_pin.json`), where it is missing or its nvcc does not report
-  its pin's version, which every compile, disassembly and assembler check outside the graph's own rules uses
-  (`dev_config.cuda_home()`), on no PATH.
+- No CUDA toolkit: it is the graph's (`@cuda_tools`, `tools/cuda_toolkit_pin.json`), which every compile, disassembly and
+  assembler check outside the graph's own rules reads through `dev_config.cuda_home()`; init fetches none and `check` holds
+  the graph's nvcc to the pin.
 - The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
   does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
   (`dev_config.ncu()`).
@@ -35,18 +35,15 @@ version, is downloaded from the pin's release URL (the devbox tools' pins by ini
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is
 verified, and so is its binary
-sha256 where the pin has one. A toolkit pin names NVIDIA's redistributable manifest by its digest instead, and the
-components it takes: init lays them out as the graph's own copy does (`@cuda_tools`), file for file, so a tool outside
-the graph and a test tier run the same toolkit. The whole release -- a tarball, a bare binary under its release's name, or the
-toolkit -- lands under `host.tools_dir`, because the layout
-is part of the tool: the toolkit's nvcc finds cicc and ptxas by its own place. A pinned tool is found by its pin
+sha256 where the pin has one. The whole release -- a tarball or a bare binary under its release's name -- lands under `host.tools_dir`, because the layout
+is part of the tool. A pinned tool is found by its pin
 (`dev_config.pinned`: under `host.tools_dir`, in its pin's folder, by its release's name), never recorded in the
 machine's files -- every checkout loads them, and an older loader refuses a key it does not declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), and runs `check`. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:
 - The config parses.
-- The pinned toolkit's nvcc reports its pin's version.
+- The graph's toolkit's nvcc (`@cuda_tools`) reports the toolkit pin's version.
 - Each devbox tool reports its pin's version (Nsight Compute among them).
 - The commit gate is wired.
 - The action-hook dispatcher is installed and current, wired into the user's settings and a listed root holds this checkout (green where there is no `~/.claude`).

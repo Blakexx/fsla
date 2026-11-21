@@ -7,7 +7,7 @@ actions run) and `bazel/bazel` (the front door); each `BUILD.bazel` sits beside 
 extension (`//:library`, [below](#compile)), gates it ([below](#gates)) and runs the checks ([below](#checks)).
 The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the commit as git will write it), and the
 test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are the two wheels (`bazel run //:wheels`,
-[`build.md`](build.md#wheels)); ratify keeps its compile path for a new architecture's first manifest
+[`build.md`](build.md#wheels)); ratify reads the graph's compiles and compiles nothing
 ([below](#ratify)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
 (`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
 `rola_devtools.build`'s
@@ -26,7 +26,7 @@ semaphores, which Bazel cannot do for an action.
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (rola-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools from its module's source, by rola-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@rola_env`; `rola_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, rola-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
-| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree as init installs it outside the graph (`@cuda_tools`, file for file init's copy): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
+| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree (`@cuda_tools`, the toolkit every tool outside the graph's rules reads too, through `dev_config.cuda_home()`): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
@@ -149,18 +149,20 @@ target of its own ([below](#ratify)).
 [`ratification.md`](ratification.md#what-the-gate-refuses): `tools/ratify.py --graph` in a copy of the tree, cached on
 the census, the tree and the manifests. It is tagged `manual`, so neither the gate nor the lane runs it: it runs at a
 milestone and before a wheel. `bazel run //:ratify -- --write` re-ratifies in the checkout, and `-- --census --json
-PATH` measures. Neither compiles: the census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is the units' own
+PATH` measures. Ratify has no compile of its own (no nvcc, no per-unit cache, no `--arch`, `--shard` or `--arm`); the census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is the units' own
 compiles, each unit's ptxas report and object (the `cuda_unit` rule's), with the derivation harness the graph builds
 (tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)). On
-2026-11-08 the census equalled the compile path's (`python tools/ratify.py --census`: 750 entries, every register,
-spill, local-access count and body hash) and the verdict was the same line for line. The census's disassemblers run
+2026-11-08 the census equalled the former compile path's (750 entries, every register, spill, local-access count and
+body hash) and the verdict was the same line for line; on 2026-11-21 the compile path was deleted, the census of
+341 entries (register sum 16086) and the verdict unchanged. The census's disassemblers run
 a unit a host-budget slot: the machine's budget under `bazel run //:ratify`, a pool of the sandbox's own (the default
 slot count) under the sandboxed `//:ratified`.
 
 THE GAP: the graph ratifies the shipped set, the architectures the toolchain's manifests already name
 (`RATIFIED_ARCHS`), so an architecture's FIRST manifest has no graph form -- `--//:archs` naming a new one makes an
-iteration build, which is never ratified. Until it has one, a first manifest is the compile path's (`python
-tools/ratify.py --arch XX --write`, [`bringup.md`](bringup.md)), and rule 3's refusal names it.
+iteration build, which is never ratified. The compile path that wrote a first manifest is deleted
+([`internals/DELETIONS.md`](internals/DELETIONS.md)); until the graph has a form for it, a first manifest is owed
+([`bringup.md`](bringup.md)), and rule 3's refusal names it.
 
 ## <a id="checks"></a>The checks
 
@@ -202,7 +204,7 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config
   (its locks), and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a
-  new toolkit reruns it) as `ROLA_CUDA_HOME`, which `dev_config.cuda_home()` takes over init's copy. The sanitizer lane (`//tests:sanitizer`,
+  new toolkit reruns it) as `ROLA_CUDA_HOME`, which `dev_config.cuda_home()` returns; outside a tier it asks the graph for the same repository (`bazel query --output=location @cuda_tools//:bin/nvcc`). The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
@@ -301,5 +303,5 @@ names one).
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into
-`build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`,
-`tools/header_selfcheck.py`; a header only when its text changed), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
+`build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`;
+a header only when its text changed), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).

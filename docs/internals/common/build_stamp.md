@@ -29,7 +29,7 @@ imports the package to learn it can be answered by another worktree's build.
 ## Why a generated header and not a define
 
 `build/generated/csrc_stamp.inc` is written by the graph's stamp action into its own
-output and by `tools/ratify.py`'s compile path before it measures, from one function
+output, from one function
 (`tools/csrc_stamp.py`'s). A `-D` on the extension's flag list reaches every translation
 unit's argv, so every `csrc/` edit would rebuild the whole extension; a header included
 only here rebuilds one unit, the one action that depends on it. A flag a build does not

@@ -30,12 +30,14 @@ time, so a wrong number is caught — but it is caught by a user unless you chec
 ## 2. Probe and ratify
 
 ```bash
-python tools/ratify.py --arch 89 --write
+bazel run //:ratify -- --write
 ```
 
-This compiles the whole dispatch closure for `sm_89`, reads `ptxas -v`, and writes
-`tools/manifests/<toolchain>/sm_89.json` — **and touches no other architecture's file.** No GPU
-is required: ratification is a compile-time measurement.
+This reads the graph's compile of the whole dispatch closure (`ptxas -v` of every unit) and writes
+`tools/manifests/<toolchain>/sm_XX.json` — **and touches no other architecture's file.** No GPU
+is required: ratification is a compile-time measurement. The graph ratifies the architectures the
+manifests already name; an architecture's FIRST manifest has no graph form yet, because the compile
+path that wrote it is deleted ([`build-graph.md`](build-graph.md#ratify), THE GAP).
 
 Read the output before committing it. Two things are not automatic:
 
@@ -90,7 +92,8 @@ change.
 
 1. **Pin the toolkit**: `tools/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
    components and the folder, and MODULE.bazel's `cuda.redist_json` names the same manifest
-   (`tests/unit/test_cuda_toolkit_pin.py` holds them together); `bazel run //:init` installs it. The archives place
+   (`tests/unit/test_cuda_toolkit_pin.py` holds them together); the graph fetches it (`@cuda_tools`), and
+   `bazel run //:check` holds its nvcc to the pin. The archives place
    libraries in `lib/`, where `nvcc` and torch look in `lib64/`, so the pin's `links` add `lib64 -> lib`.
 2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the whole
    `--version` output of the readers (`cuobjdump`, `nvdisasm`: the disassemblers the gates read with), the whole
