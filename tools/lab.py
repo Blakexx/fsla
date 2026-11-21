@@ -10,8 +10,8 @@ own warning); then it checks the GPU is quiet, runs the repetitions, flags a res
 spread, and writes a record keyed by the architecture.
 
     bazel run //tools:lab -- list
-    bazel run //tools:lab -- sass tensor_tax [KERNEL_REGEX] [--full]
-    bazel run //tools:lab -- run tensor_tax [--reps 7] [--record] [--force]
+    bazel run //tools:lab -- sass smem_rates [KERNEL_REGEX] [--full]
+    bazel run //tools:lab -- run smem_rates [--reps 7] [--record] [--force]
     bazel run //tools:lab -- ncu smem_rates --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
     bazel run //tools:lab -- page carry_window --instance LABEL
 
@@ -393,15 +393,14 @@ def count(ops: dict[str, int], prefixes: str) -> int:
 
 #: KERNEL_STANDARDS section 29's debts: the experiments recorded before a lab had to budget its MMA kernels and check
 #: its outputs; each is held to both when it is next changed, and the list only shrinks
-_PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "tensor_tax", "vote_stash"}
+_PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "vote_stash"}
 
 
 #: THE LEARNINGS' DEBTS (docs/internals/LEARNINGS.md): the experiments written before an experiment's header had to
 #: state its TIMELINE and every kernel's loops were held to the checker's hazards (`HAZARD_RULES`); each is held to them when it is next
 #: changed, and the list only shrinks
 _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch", "facts_block", "facts_two",
-                 "issue_latency", "reg_trade", "row_ring", "row_span", "state_move", "tensor_tax",
-                 "vote_stash", "wgmma_rate", "wgmma_regs"}
+                 "reg_trade", "row_ring", "row_span", "state_move", "vote_stash", "wgmma_rate", "wgmma_regs"}
 #: KERNEL_STANDARDS 29.16's DEBTS: the experiments, past the learnings' debts, whose kernels wait on a commit group
 #: straight after its steps; each is held to `WAIT_AFTER_ISSUE` when it is next changed, and the list only shrinks
 _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_fill", "readout_role", "stamp_cost",
@@ -704,8 +703,7 @@ def _num(v: float) -> str:
     return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:.2f}"
 
 
-def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, float],
-                 mmas: dict[str, tuple[str, int]]) -> None:
+def pipes_report(raw: dict[str, dict], units: dict[str, float], mmas: dict[str, tuple[str, int]]) -> None:
     """Every kernel's standard counters, printed (KERNEL_STANDARDS §29.14): per card the pipes' cycles a unit, the
     binding one named; on this card each pipe's busy share of the elapsed cycles, L2 sectors a unit and the three
     largest stall reasons."""
@@ -715,7 +713,6 @@ def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, 
     local = hardware.product_of(smi("name")[0])
     arch = sass.device_arch()
     here = hardware.resolve(product=local) if local else hardware.resolve(arch=arch)
-    kinds = {_plain(k): pipes.mma_kind(v["ops"]) for k, v in table.items()}
     for k, c in raw.items():
         n = per_unit(c, k, units)
         unit = "MMA" if c["hmma"] + c["imma"] else "unit" if k in units else "launch"
@@ -723,20 +720,29 @@ def pipes_report(raw: dict[str, dict], table: dict[str, dict], units: dict[str, 
         if c.get("uncollected"):
             print(f"    NOT COLLECTED on this card, read as 0 below: {', '.join(c['uncollected'])}")
         for label, card, product in CARDS:
-            p = pipes.pipe_cycles(c, n, hardware.resolve(arch=card, product=product), arch, mmas.get(k), kinds.get(k))
+            rates = hardware.resolve(arch=card, product=product)
+            #: A REFUSAL BY NAME, not a KeyError mid-report: pricing reads these rates, and the card's row lacks them
+            lack = pipes.lacking(rates, mmas.get(k))
+            if lack:
+                print(f"    {label:<20} REFUSED: not priced, {card}'s row of `common/hardware.json` declares no rate "
+                      f"for {', '.join(lack)} (a lab record measures each: docs/internals/common/hardware.md)")
+                continue
+            p = pipes.pipe_cycles(c, n, rates, mmas.get(k))
             bound = max(p, key=p.get)
             print(f"    {label:<20} " + "  ".join(f"{name} {_num(v)}" for name, v in p.items())
                   + f"  -> {bound} binds")
         stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
-        if "schedulers" not in here:
-            #: a card whose architecture declares no rates (`hardware.json`): its measured counters alone, none priced
-            print(f"    busy here, % of elapsed ({arch} declares no rates: tensor, shared and global are not priced): "
+        lack = pipes.lacking(here, mmas.get(k))
+        if lack:
+            #: a card whose row lacks rates (`hardware.json`): its measured counters alone, none priced
+            print(f"    busy here, % of elapsed ({arch} declares no rate for {', '.join(lack)}: tensor, shared and global "
+                  f"are not priced): "
                   f"issue {c['busy_issue']:.0f}  alu {c['busy_alu']:.0f}  fma {c['busy_fma']:.0f} "
                   f"(heavy {c['busy_fmaheavy']:.0f})"
                   f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
                   f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
             continue
-        b = pipes.busy_here(c, here, arch, mmas.get(k), kinds.get(k))
+        b = pipes.busy_here(c, here, mmas.get(k))
         print(f"    busy here, % of elapsed: issue {b['issue']:.0f}  tensor {b['tensor']:.0f} (priced)  "
               f"alu {b['alu']:.0f}  fma {b['fma']:.0f} (heavy {b['fmaheavy']:.0f})  shared {b['shared']:.0f} (priced)"
               f"  global {b['global']:.0f} (priced)"
@@ -1003,7 +1009,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
     else:
         raw = counters_of(binary, extra)
         units, mmas = declared(binary, table)
-        pipes_report(raw, table, units, mmas)
+        pipes_report(raw, units, mmas)
         over = over_budget(binary, table, raw, units)
         if over and not opts.force:
             print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,
@@ -1452,7 +1458,7 @@ def main() -> int:
     s.add_argument("experiment")
     s.add_argument("kernel", nargs="?")
     s.add_argument("--full", action="store_true")
-    s.add_argument("--arch", help="compile for this architecture (sm_80, ...) in place of the device's: SASS only")
+    s.add_argument("--arch", help="compile for this architecture (sm_90a, ...) in place of the device's: SASS only")
     r = sub.add_parser("run")
     r.add_argument("experiment")
     r.add_argument("--record", action="store_true", help="write the record into measure/lab/results")

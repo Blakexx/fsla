@@ -99,7 +99,9 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     facts = {"binary": binary, "environment": environment}
     out = {"binary": binary, "environment": environment, "instruments": {}, "entries": {}, "clock": None,
            "sides": _sides(g, env, facts), "diffs": {}}
-    out["diffs"]["carry-vs-oracle"] = _kernel_vs_oracle(g, env, out["sides"])
+    verdict = _kernel_vs_oracle(g, env, out["sides"])
+    if verdict is not None:
+        out["diffs"]["carry-vs-oracle"] = verdict
     #: THE ORACLE TIER AS ONE TARGET: pytest over `tests/oracle`, keyed on the tier's code and the binary, cached while
     #: both stand; its output is the outcome and the margins, stored beside the instruments (`rola/oracle-tier`)
     out["instruments"]["oracle-tier"] = g.node(
@@ -194,11 +196,16 @@ def _sides(g, env: Env, facts: dict) -> dict:
 
 
 def _kernel_vs_oracle(g, env: Env, sides: dict):
-    """The carry against the fp64 inter term, in this checkout: the clause rule per output kind."""
+    """The carry against the fp64 inter term, in this checkout: the clause rule per output kind; ``None`` while the
+    kind's clauses are owed."""
     from rola_devtools.diff import diff, side
 
     kernel_surface, reference_executor, kinds = KERNEL_VS_ORACLE
     outputs = load(Path(env.cwd) / "tests" / "oracle" / "tolerances.py")
+    #: NO VERDICT WITHOUT A BUILT KERNEL: a kind whose clauses its kernel's measurement still owes (`tolerances.Owed`)
+    #: declares no diff, so none is stored until the kernel lands with its measured clauses
+    if any(hasattr(outputs[k], "kernel") for k in kinds.values()):
+        return None
     nodes = cell_nodes(g, surface_cells(kernel_surface))
     reference = side(g, "side/carry-reference", env=env, executor=reference_executor, cells=nodes,
                      code=_code(*SIDE_CODE), binds="rola", holds={"gpu": "all"})
@@ -224,7 +231,7 @@ def root(g, python: str = sys.executable, label: str = "rola", rounds: str = "8"
     memory = measure_memory(g, "memory", server=server, entries=list(mine["entries"].values()))
     stores += [store(g, "store/session", source=session, location="timing/session", root=root_dir),
                store(g, "store/memory", source=memory, location="timing/memory", root=root_dir),
-               store(g, "store/carry-vs-oracle", source=mine["diffs"]["carry-vs-oracle"],
-                     location="rola/carry-vs-oracle", root=root_dir)]
+               *(store(g, f"store/{name}", source=node, location=f"rola/{name}", root=root_dir)
+                 for name, node in mine["diffs"].items())]
     stop = stop_timing_server(g, server=server, after=[session, memory, *stores])
     return {"all": g.group("all", [*stores, stop])}

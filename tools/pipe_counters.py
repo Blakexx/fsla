@@ -7,7 +7,7 @@ family on a cell (the facts pass by default), as launch totals, raw.
     bazel run //tools:pipe_counters -- flagship-dense --json counters.json
     bazel run //tools:pipe_counters -- nl64k-alt-k4 --kernel facts --json counters.json
 
-One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs and instructions
+One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs, wgmmas and instructions
 executed, scheduler cycles elapsed and active, issue activity, warps active and eligible, shared loads and stores, ldsm
 and global reductions and loads, shared-memory wavefronts and bank conflicts, LSU writeback, global reduction requests
 and sectors, DRAM bytes, and the standard set `tools/pipes.py` prices per card (docs/internals/tools/pipes.md). The
@@ -35,7 +35,7 @@ from measure.provider import arm_name, oneshot_argv  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 _OWN = (
     "gpu__time_duration.sum",
-    "sm__inst_executed_pipe_tensor_op_hmma.sum", "smsp__inst_executed.sum",
+    "sm__inst_executed_pipe_tensor_op_hmma.sum", "sm__inst_executed_pipe_tensor_op_gmma.sum", "smsp__inst_executed.sum",
     "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
     "smsp__issue_active.avg.pct_of_peak_sustained_active",
     "smsp__warps_active.avg.per_cycle_active", "smsp__warps_eligible.avg.per_cycle_active",

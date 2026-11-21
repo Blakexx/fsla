@@ -196,7 +196,7 @@ def test_the_debts_decide_which_rules_an_experiment_is_held_to():
     assert {"load_in_trip", "store_reload", "store_unfenced", "clock_uniform", "step_rolled", "wait_after_issue",
             "loop_convergence"} <= new
     always = {"step_port", "step_work", "step_branches", "step_conversion", "step_global", "convergence_call", "loop_convergence"}
-    assert lab.held_rules("tensor_tax") == always
+    assert lab.held_rules("collective_branch") == always
     assert lab.held_rules("clock_time") == new - {"wait_after_issue"}
 
 

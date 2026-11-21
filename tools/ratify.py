@@ -1712,7 +1712,7 @@ def main() -> int:
         #: inside a backward-branch interval MUST be flagged, and the same LDL
         #: outside every loop MUST NOT be.
         hot_sass = [
-            "arch = sm_86",
+            "arch = sm_90a",
             "                Function : k_hot",
             "        /*0000*/ MOV R1, c[0x0][0x28] ;",
             ".L_x_0:",
@@ -1724,10 +1724,10 @@ def main() -> int:
             "        /*0010*/ IADD3 R3, R3, 1, RZ ;",
             "        /*0020*/ @P0 BRA `(.L_x_1) ;",
         ]
-        rep = sass_scan(iter(hot_sass), {"sm_86:k_hot", "sm_86:k_cold"})
+        rep = sass_scan(iter(hot_sass), {"sm_90a:k_hot", "sm_90a:k_cold"})
         print("\n--- SELF-TEST: the hot-loop parser on synthetic SASS ---")
         counts = {k: len(v["hot_locals"]) for k, v in rep.items()}
-        if counts != {"sm_86:k_hot": 1, "sm_86:k_cold": 0}:
+        if counts != {"sm_90a:k_hot": 1, "sm_90a:k_cold": 0}:
             print(f"\nSELF-TEST FAILED: hot-loop parser reported {counts}; it "
                   f"must count exactly the in-loop LDL (k_hot=1, k_cold=0)")
             return 1
@@ -1736,7 +1736,7 @@ def main() -> int:
         #: ... and the RATCHET must fail on growth past a ratified count.
         print("\n--- SELF-TEST: hot-loop growth against a ratified count of 0\n"
               "    (this run MUST fail) ---")
-        if check_hot_loop({"sm_86:k_hot": 1}, {"sm_86:k_hot": {"hot_locals": 0}}):
+        if check_hot_loop({"sm_90a:k_hot": 1}, {"sm_90a:k_hot": {"hot_locals": 0}}):
             print("\nSELF-TEST FAILED: the ratchet PASSED an in-loop count it was "
                   "not ratified for")
             return 1
@@ -1748,9 +1748,9 @@ def main() -> int:
         #: kept beside the expensive one.
         print("\n--- SELF-TEST: local-presence growth on an out-of-loop LDL\n"
               "    (this run MUST fail) ---")
-        assert rep["sm_86:k_cold"]["local_ops"] == 1
-        if check_local_presence({"sm_86:k_cold": 1},
-                                {"sm_86:k_cold": {"local_ops": 0}}):
+        assert rep["sm_90a:k_cold"]["local_ops"] == 1
+        if check_local_presence({"sm_90a:k_cold": 1},
+                                {"sm_90a:k_cold": {"local_ops": 0}}):
             print("\nSELF-TEST FAILED: the presence ratchet PASSED local traffic "
                   "it was not ratified for")
             return 1
@@ -1764,7 +1764,7 @@ def main() -> int:
         #: turned off.
         print("\n--- SELF-TEST: the SASS body hash on synthetic SASS ---")
         moved_sass = [
-            "arch = sm_86",
+            "arch = sm_90a",
             "                Function : k_a",
             "        /*0000*/ IADD3 R3, R3, 1, RZ ;",
             "                                     /* 0x000fe200078e0203 */",
@@ -1776,8 +1776,8 @@ def main() -> int:
             "     /* 0x000fe200078e0203 */",
         ]
         got = sass_scan(iter(moved_sass))
-        a, b = got["sm_86:k_a"]["body_sha256"], got["sm_86:k_b"]["body_sha256"]
-        repad = got["sm_86:k_a_repadded"]["body_sha256"]
+        a, b = got["sm_90a:k_a"]["body_sha256"], got["sm_90a:k_b"]["body_sha256"]
+        repad = got["sm_90a:k_a_repadded"]["body_sha256"]
         if a == b:
             print("\nSELF-TEST FAILED: two different instruction texts hashed the "
                   "same; the body hash cannot detect a codegen change")
@@ -1792,8 +1792,8 @@ def main() -> int:
         #: ... and the GATE built on it must fail on a perturbed ratified hash.
         print("\n--- SELF-TEST: a ratified body hash that no longer matches\n"
               "    (this run MUST fail) ---")
-        if check_sass_bodies({"sm_86:k_a": a},
-                             {"sm_86:k_a": {"sass_sha256": "0" * 64}}, True,
+        if check_sass_bodies({"sm_90a:k_a": a},
+                             {"sm_90a:k_a": {"sass_sha256": "0" * 64}}, True,
                              SASS_HASH_VERSION):
             print("\nSELF-TEST FAILED: the gate ACCEPTED an instantiation whose "
                   "assembled body is not the one that was ratified")
@@ -1804,7 +1804,7 @@ def main() -> int:
         #: recorded value is the vacuous gate this discipline exists to catch.
         print("\n--- SELF-TEST: a manifest entry with no ratified body hash\n"
               "    (this run MUST fail) ---")
-        if check_sass_bodies({"sm_86:k_a": a}, {"sm_86:k_a": {}}, True,
+        if check_sass_bodies({"sm_90a:k_a": a}, {"sm_90a:k_a": {}}, True,
                              SASS_HASH_VERSION):
             print("\nSELF-TEST FAILED: an unratified body hash passed as though it "
                   "had been checked")
@@ -1819,8 +1819,8 @@ def main() -> int:
         print("\n--- SELF-TEST: ratified bodies hashed by another scanner version\n"
               "    (both of these MUST fail) ---")
         for stamped in (SASS_HASH_VERSION - 1, None):
-            if check_sass_bodies({"sm_86:k_a": a},
-                                 {"sm_86:k_a": {"sass_sha256": a}}, True, stamped):
+            if check_sass_bodies({"sm_90a:k_a": a},
+                                 {"sm_90a:k_a": {"sass_sha256": a}}, True, stamped):
                 print(f"\nSELF-TEST FAILED: bodies stamped {stamped!r} were compared "
                       f"against version {SASS_HASH_VERSION} digests")
                 return 1

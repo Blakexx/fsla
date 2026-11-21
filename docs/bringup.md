@@ -20,7 +20,7 @@ Take the FACT fields (`smem_per_sm` from `cudaDevAttrMaxSharedMemoryPerMultiproc
 `max_threads_per_sm` from `cudaDeviceProp::maxThreadsPerMultiProcessor`, `regs_per_sm` from
 `cudaDeviceProp::regsPerMultiprocessor`, and the rest) from the CUDA C Programming Guide's
 *Compute Capabilities* table, add an `arch` block to `hardware.json` (its rates too: the documented
-ones with their document, the undocumented ones measured by `tensor_tax` and `smem_rates` on the
+ones with their document, the undocumented ones measured by `smem_rates` and the other labs on the
 card), and regenerate the header. **Do not guess**: an overstated resource makes `ptxas`
 silently discard the launch bound, which is a silent occupancy loss on the architecture
 nobody checked. `check_arch_table()` (`csrc/rola/src/common/arch_runtime.cu`, called from

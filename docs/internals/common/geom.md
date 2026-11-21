@@ -34,7 +34,7 @@ arm. One binary per shape serves every topology and every declaration of its dep
 ## The arch's primary constants, in derivation order
 
 1. `leaves_per_sm(dv)` — what the SM's STATE CAPACITY admits at this value width (the
-   register file on sm_80/sm_90, TMEM on sm_100). See [the state fraction](#state-fraction)
+   register file on sm_90, TMEM on sm_100). See [the state fraction](#state-fraction)
    for where the capacity number comes from.
 2. `warps_per_sm` — the sub-box owners are WARPS on every architecture.
 3. The SM box is `leaves_per_sm` balanced over `D`; the carve divides it, in the side's
@@ -42,7 +42,7 @@ arm. One binary per shape serves every topology and every declaration of its dep
 4. `leaves_per_warp = leaves_per_sm / warps_per_sm` is the warp's SEGMENT, derived.
 5. The COMPILED SHAPE is the MMA ACCUMULATOR TILE's leaf layout — the slot → digit map
    that fixes which leaf row of the tile each expanded coefficient (the panel row) lands
-   on. On sm_80/sm_90 that tile is the warp's register fragment (32 leaves at `DV = 64`);
+   on. On sm_90 that tile is the warp's register fragment (32 leaves at `DV = 64`);
    on sm_100 it is the TMEM tile the MMA addresses in place (`tcgen05.mma` accumulates
    into TMEM and reads A from TMEM, so the state never passes through registers to
    compute). The map is the same object either way.

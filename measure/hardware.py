@@ -237,7 +237,7 @@ def _rate(entry: dict, on: str) -> Rate:
 
 def resolve(arch: str | None = None, product: str | None = None, cfg: dict | None = None) -> dict[str, Rate]:
     """A product's rates (its architecture's defaults under its own overrides), or an architecture's defaults alone:
-    `{field: Rate}` with fields `issue`, `mma.hmma_f16_f32`, `tax.hmma_f16_f32.fp32`, ..."""
+    `{field: Rate}` with fields `issue`, `mma.hmma_f16_f32`, `shared.store`, ..."""
     cfg = cfg or load()
     if product is not None:
         arch = cfg["product"][product]["arch"]
@@ -286,9 +286,8 @@ def check(cfg: dict | None = None, header_text: str | None = None) -> list[str]:
         findings.append(f"{HEADER.relative_to(ROOT)} is not what {CONFIG.name} generates "
                         "(`python -m measure.hardware --write`)")
     names = [f["name"] for f in cfg["schema"]["caps"] if f["name"] != "cc"]
-    kinds, taxed = cfg["schema"]["mma"], cfg["schema"]["taxed"]
-    known = {*PIPE_RATES, *(f"mma.{k}" for k in kinds), *(f"tax.{k}.{c}" for k in kinds for c in taxed),
-             *(f"latency.{k}" for k in cfg["schema"]["latency"]),
+    kinds = cfg["schema"]["mma"]
+    known = {*PIPE_RATES, *(f"mma.{k}" for k in kinds),
              *(f"shared.{k}" for k in cfg["schema"]["shared"]), *(f"pipe.{k}" for k in cfg["schema"]["pipe"]),
              *(f"global.{k}" for k in cfg["schema"]["global"])}
     for arch, row in cfg["arch"].items():

@@ -85,11 +85,11 @@ measures it. Pipe cycles are an SM's, from `common/hardware.json` ([pipes.md](pi
 | a reduction across warps into a slot an item | one shared atomic (max, add) a lane at the item's slot, then one wide load of a lane's slots | 2 pipe cycles an atomic instruction; one `LDS.128` for four slots | `handoff`, `smem_rates` |
 | an address at every access of a level | a base held for the level plus compile-time offsets (§29.3); a lane's constants held (`lab::held`) | 0-1 instructions an access | `read_image`, `handoff` |
 | a lane's several words into shared memory | the widest store the layout allows | a 4-byte store 2 pipe cycles a wavefront, 8 or 16 bytes ~1.0-1.14 | `smem_rates` |
-| contiguous global rows into shared memory, sm_80/86 | `cp.async.cg` | 0.5 pipe cycles a 128 B (`.ca` 5.4; a load into registers 1.6-1.7 and its registers in flight) | `smem_rates` |
+| contiguous global rows into shared memory (measured sm_86, sm_90a re-check owed) | `cp.async.cg` | 0.5 pipe cycles a 128 B (`.ca` 5.4; a load into registers 1.6-1.7 and its registers in flight) | `smem_rates` |
 | a stream's per-step scalars (coefficients, tokens, entries) | in the record riding the stage copy, read lane-ready | one 8-byte load a lane a step | `row_stream`, `read_stream` |
 | a pad in a stream | not copied: its zero coefficient cancels the stale row | nothing | `row_stream` |
 | fp32 to integer | one FFMA adding 1.5 x 2^23, a pair packed by one PRMT (§29.6) | 1.5 instructions a value, the FMA pipe | `read_image` |
-| an accumulation into shared memory from many lanes, sm_80/86 | the 32-bit integer `red.shared.add` (their only native shared atomic add) | 2 pipe cycles an instruction | `read_image`, `smem_rates` |
+| an accumulation into shared memory from many lanes (measured sm_86, sm_90a re-check owed) | the 32-bit integer `red.shared.add` (their only native shared atomic add) | 2 pipe cycles an instruction | `read_image`, `smem_rates` |
 | a branch on loaded data around collectives | a vote (`__any_sync`), a loop bottom-tested on it (§29.9) | no convergence barrier | `read_image` |
 | a value every lane needs from a warp reduction | `__reduce_*_sync` | 2 instructions (its uniform-register move) | `color_union` |
 

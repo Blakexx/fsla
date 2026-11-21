@@ -45,7 +45,7 @@ reported, not gated.
 **The gradient rides the same plane.** `d_logits` is `LogitT` too — autograd requires a
 cotangent in the input's dtype, and a fp32 gradient plane feeding a bf16 GEMM backward
 would be a widening with nothing on the other end of it. The tied backward's accumulating
-store is `add_value`, which is a bf16 device atomic on the closed-world arch set (sm_80+).
+store is `add_value`, which is a bf16 device atomic on the closed-world arch set (sm_90a).
 
 ## <a id="provenance"></a>1. Why these are CUDA, and how they are judged
 

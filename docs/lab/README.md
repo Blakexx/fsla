@@ -7,14 +7,12 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 
 | experiment | kind |
 |---|---|
-| [`tensor_tax`](tensor_tax.md) | experiment |
 | [`collective_branch`](collective_branch.md) | experiment |
 | [`smem_rates`](smem_rates.md) | experiment |
 | [`row_span`](row_span.md) | experiment |
 | [`vote_stash`](vote_stash.md) | experiment |
 | [`facts_block`](facts_block.md) | experiment |
 | [`facts_two`](facts_two.md) | experiment |
-| [`issue_latency`](issue_latency.md) | experiment |
 | [`wgmma_regs`](wgmma_regs.md) | experiment |
 | [`bulk_drain`](bulk_drain.md) | experiment |
 | [`reg_trade`](reg_trade.md) | experiment |

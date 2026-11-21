@@ -27,7 +27,7 @@ The bf16 pair helpers, `hi_bf16` through `or_run`, have no shipped caller.
   never be address-taken (one `&run[i]` puts the whole run in local memory).
 
 - <a id="mul-bf16x2"></a>`mul_bf16x2`: the elementwise product of two packed bf16 pairs, rounded to nearest even. The
-  PTX ISA gates `mul.rn.bf16x2` at sm_90 and `fma.rn.bf16x2` at sm_80, so on Ampere the product is one HFMA2 with a
+  PTX ISA gates `mul.rn.bf16x2` at sm_90 and `fma.rn.bf16x2` at sm_80, so where only the `fma` form exists the product is one HFMA2 with a
   <a id="knegzeropair"></a>`kNegZeroPair` addend: `a*b + (-0.0)` rounds the exact product once and keeps a signed
   zero, where a `+0.0` addend would turn every `-0` into `+0`. There is no fp32 route: every tabulated row carries
   `bf16_simd_fma`, and an untabulated architecture fails the build.

@@ -503,4 +503,4 @@ is only ~30%. The first pass therefore carries NOTHING into the next but two sca
 to zero.
 
 <a id="near-line-86"></a>The tied backward's second contribution lands through the ACCUMULATING store; bf16 device
-atomics are sm_80+, which the closed-world architecture set already is.
+atomics are sm_80+, which the closed-world architecture set (sm_90a) already is.

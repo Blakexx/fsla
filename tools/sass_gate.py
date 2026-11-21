@@ -18,7 +18,7 @@ What it reads, per function of every cubin (every kernel and every outlined devi
   predicated HMMA -- the checker's `step_predicated`: if-converted tensor work
   instructions per HMMA -- `step_density`, a ceiling the arm states (`--max-per-hmma`; issue-bound above it)
   branches in a step -- `step_branches` (KERNEL_STANDARDS section 27)
-  the conversion unit in a step -- `step_conversion`: F2I/I2F/F2F/MUFU inside a loop of steps: 16 lanes a cycle an SM where
+  the conversion unit in a step -- `step_conversion`: F2I/I2F/F2F/MUFU inside a loop of steps: 16 lanes a cycle an SM on sm_86 (its sm_90a re-check is owed) where
                   the FMA pipe's forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
   global memory in a step -- `step_global`: LDG/STG/RED/ATOMG or a bulk copy or reduction out inside a loop of steps: a
                   step's operands are staged ahead (`cp.async`'s LDGSTS, hopper's bulk copy in: allowed), and a
@@ -28,7 +28,7 @@ On a whole binary it also reds a PTX image (closed-world rule 2: cubins only), a
 the source defines (`tools/kernels.py`) that no cubin carries: a gate that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
 carries its own kernels and owes none of the source's. Its kernels are PROBES, and a probe that keeps a step
 signature on purpose (a global reduction between its HMMAs, the cost it measures) declares it in the instrument's
-DECLARATIONS, by function (`sm_80 <pattern>` where one architecture's SASS keeps it alone), with that cost; an
+DECLARATIONS, by function (`sm_90a <pattern>` where one architecture's SASS keeps it alone), with that cost; an
 undeclared signature is red, and so is a declaration an architecture the binary carries does not show. It prints the
 counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
@@ -184,7 +184,7 @@ ARCH = ""
 
 
 def _declared(key: str) -> tuple[str | None, str]:
-    """A declaration's architecture and pattern: `sm_80 <pattern>` keeps its signature on that architecture's SASS
+    """A declaration's architecture and pattern: `sm_90a <pattern>` keeps its signature on that architecture's SASS
     alone (ptxas's output is an architecture's), a bare pattern on every one."""
     arch, _, pattern = key.partition(" ")
     return (arch, pattern) if pattern and re.fullmatch(r"sm_\d+a?", arch) else (None, key)

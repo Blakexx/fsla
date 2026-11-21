@@ -86,6 +86,39 @@ class Output:
     rtol: float | None = None
 
 
+@dataclass(frozen=True)
+class Owed:
+    """AN OUTPUT KIND WHOSE KERNEL IS NOT BUILT: its clauses are owed by the kernel's own measurement (`pytest
+    --oracle-margins=FILE`, read with `fixtures.frontier_rtols`), taken when a hopper schedule of it lands, and none is
+    stated before. Grading against it refuses by name (`rola.ops._ext.KernelNotBuilt`); a launch of the kernel refuses
+    first, so a test of it collects and fails by that one named refusal until the kernel exists.
+    """
+
+    name: str
+    kernel: str
+
+    def _refuse(self):
+        from rola.ops._ext import KernelNotBuilt
+
+        raise KernelNotBuilt(f"the {self.name} tolerance is owed by the {self.kernel} kernel's own measurement: that "
+                             "kernel is not built on this line, so no clause is stated")
+
+    @property
+    def clauses(self):
+        self._refuse()
+
+    @property
+    def rtol(self):
+        self._refuse()
+
+
+#: THE OUTPUT KINDS OF THE KERNELS THIS LINE HAS NOT BUILT, each OWED by its kernel's measurement on the hardware it
+#: lands on (the ampere line's clauses were measured on another machine against another kernel and are the branch's).
+CARRY_NUM = Owed("carry num", kernel="carry")
+CARRY_DEN = Owed("carry den", kernel="carry")
+PREFILL_READOUT = Owed("prefill readout", kernel="prefill")
+PREFILL_STATE = Owed("prefill state", kernel="prefill")
+
 #: THE CLAUSES ARE MEASURED, and these are the measurements (`pytest --oracle-margins=FILE`, read with
 #: `fixtures.frontier_rtols`): for each relative error, the largest ABSOLUTE error any slot past it took on the whole
 #: battery, from the comparisons that passed. A clause declares that relative error with twice that absolute error, so

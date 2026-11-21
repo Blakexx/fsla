@@ -374,9 +374,10 @@ deleted, and the ratio readout is simply what the readout is.
 
 Every structural mechanism states its hopper and blackwell form; a mechanism that exists on only one is a workaround,
 not a design (CONSTITUTION §R8). A primitive may select different NATIVE instructions per architecture; it may never
-select a wider-type emulation. The ampere family (sm_80 to sm_89) is the branch `ampere`: its cards are tabulated and
-not built ([`internals/common/hardware.md`](internals/common/hardware.md)), and a kernel with no family schedule (the
-facts pass, decode, paging, entmax) compiles for sm_86 as it is written for every card.
+select a wider-type emulation. Master is hopper only
+(CONSTITUTION §R8): the build is sm_90a, blackwell is tabulated and not built
+([`internals/common/hardware.md`](internals/common/hardware.md)), and the ampere family is the branch `ampere`, nothing
+of it on master.
 
 Each row is the form a kernel's design starts from, ESTIMATED from the PTX specification until its lab runs on the
 card; a kernel's schedule is designed, and written into its own page, before it is built.

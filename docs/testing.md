@@ -126,8 +126,11 @@ recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell suppl
 continuation (`tests/integration/test_chunk_paging_equivalence.py`, red by plan). Its readouts' bit-identity is an
 assertion a carry cannot meet -- its num differs run to run (its fp32 sums across CTAs reassociate) -- so the test's
 port re-points it to that sum's bound; the state's bit-identity stands. Every one of them is red on this line by the
-ops' named error (`rola.ops._ext.KernelNotBuilt`): no carry, intra or producer kernel is built. `declare.py`'s `carry-vs-oracle` diff stores the
-carry's verdict per cell beside the instruments.
+ops' named error (`rola.ops._ext.KernelNotBuilt`): no carry, intra or producer kernel is built. THE TOLERANCES OF THOSE
+KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each
+kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by the same
+name. `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared
+once its clauses are measured and not before.
 
 Decode is its own family (`tests/oracle/test_decode_family.py`): the prefill-to-decode hand-off, a 32-step horizon with
 checkpoints ALONG it (a per-step check cannot see cross-call compounding), and frozen density declarations proven

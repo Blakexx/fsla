@@ -268,6 +268,15 @@ full grid's record; any other's count is the warps that arrive at it), and the v
   instruction at all; a row that asks states the asks its binary must hold.
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
+* WHAT THE LAB TAKES FROM PRODUCTION: `lab.cuh` includes `common/atoms/warp.cuh` and `common/structure_switch.cuh` (no copy;
+  `csrc/rola/src` is on the lab's include path) and offers `opaque`, `uniform_warp<Warps>()` and `uniform_switch<N>(v, body)`
+  to the experiments under their production names: a branch on a per-thread value serializes, so a switch over a CTA-uniform
+  value goes through `uniform_switch`. Two lab helpers stay beside them because they differ in meaning: `lab::warp_id` is a
+  per-thread value (`uniform_warp` is warp-uniform to ptxas) and `lab::held` emits no instruction and takes u32 or u64
+  (`opaque` is a `mov.b32` of an `int`). The two narrowings of an fp32 pair to bf16, `bf16x2_trunc` and `bf16x2_round`, are the instructions of
+  `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2` and stay beside them for the same reason: they are `asm volatile`, the
+  atoms plain code nvcc may merge or schedule, and calling the atoms changes the packs of three experiments (`byte_expand`,
+  `carry_window`, `fold_forms`; the other 36 are equal).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * `lab::Trace<ON>` — a warp's timeline (`lab trace`; which stamps a row keeps is its experiment's: the carry lab's
   coarse rows their phases, its fine rows every stamp, and a DETAIL row -- the kernel `window_detail` -- a coarse row's
@@ -291,8 +300,6 @@ full grid's record; any other's count is the warps that arrive at it), and the v
   registers' limit). The edges are the two moments that both a kernel's stamps and a profiler's time-sampled counters
   see -- the samples go live at the entry and quiet at the exit -- so they are what the two are laid together by: a
   row without them cannot be laid under samples.
-* The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
-  `mma_u8s8`.
 * <a id="wgmma"></a>Hopper's atoms, each one PTX instruction of sm_90a (an experiment calling one compiles for sm_90a
   only): `wg_desc` (wgmma's unswizzled K-major shared operand: lines in bricks of 8, 16 bytes a line, the K halves and
   the bricks at stated offsets), `wg_fence`, `wg_commit`, `wg_wait<N>`, `wg_hold` (a register an asynchronous MMA
@@ -300,9 +307,7 @@ full grid's record; any other's count is the warps that arrive at it), and the v
   cleared), `wg_bf16_n16_ss_mn`, `wg_bf16_n64_ss_mn`, `stsm_t` (`stmatrix.x4.trans`: four 8 x 8 matrices of 16-bit pairs
   stored transposed, a lane naming a stored row),
   `wg_bf16_n256_ss_mn` (both operands M|N-major: a line is one K's 8 rows or columns; `wg_desc` describes either
-  major's tile); the two
-  narrowings of an fp32 pair to bf16, `bf16x2_trunc` (one `PRMT`) and `bf16x2_round` (one conversion) -- the common
-  atoms' `hi_bf16x2` and `pack_bf16x2`, spelled here until the common atoms admit a hopper build; and the bulk reduction
+  major's tile); and the bulk reduction
   out of shared memory, `bulk_add_f32` (`cp.reduce.async.bulk`, fp32 added into global) with the writers' proxy fence
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread), `red_add_u32` and `red_add_u64` (an integer) and
@@ -379,14 +384,12 @@ cost is read in the composed ledger (KERNEL_STANDARDS section 19).
 Each experiment's question, method, record and verdict is its own page under [`docs/lab/`](../../lab/README.md), one
 a source in `measure/lab/experiments/`. The anchors below are where the sources' citations land:
 
-- <a id="tensor-tax"></a>[`tensor_tax`](../../lab/tensor_tax.md)
 - <a id="collective-branch"></a>[`collective_branch`](../../lab/collective_branch.md)
 - <a id="smem-rates"></a>[`smem_rates`](../../lab/smem_rates.md)
 - <a id="row-span"></a>[`row_span`](../../lab/row_span.md)
 - <a id="vote-stash"></a>[`vote_stash`](../../lab/vote_stash.md)
 - <a id="facts-block"></a>[`facts_block`](../../lab/facts_block.md)
 - <a id="facts-two"></a>[`facts_two`](../../lab/facts_two.md)
-- <a id="issue-latency"></a>[`issue_latency`](../../lab/issue_latency.md)
 - <a id="drain"></a>[`drain`](../../lab/drain.md)
 - <a id="wgmma-regs"></a>[`wgmma_regs`](../../lab/wgmma_regs.md)
 - <a id="bulk-drain"></a>[`bulk_drain`](../../lab/bulk_drain.md)

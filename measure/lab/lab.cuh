@@ -18,7 +18,9 @@
 #include <utility>
 #include <vector>
 
+#include "common/atoms/warp.cuh"
 #include "common/hardware.cuh"
+#include "common/structure_switch.cuh"
 #include "warpline/host.hpp"
 #include "warpline/stamp.cuh"
 
@@ -30,6 +32,17 @@ constexpr denseref::arch::Build kLabBuild{ROLA_LAB_CC, 0};
 
 // ------------------------------------------------------------------------------------------------- device
 
+//: THE PRODUCTION CONTROL ATOMS, included not copied (`tools/lab.py` puts `csrc/rola/src` on the include path): a branch
+//: on a per-thread value is serialized, so a switch over a CTA-uniform value is `uniform_switch<N>(v, body)`
+//: (`common/structure_switch.cuh`), a warp's index as a value ptxas knows uniform is `uniform_warp<Warps>()`, and a
+//: value made opaque at its use is `opaque(v)` (`common/atoms/warp.cuh`, docs/internals/common/atoms/warp.md)
+using denseref::ops::opaque;
+using denseref::ops::uniform_warp;
+using rola::uniform_switch;
+
+//: THE WARP'S INDEX as the thread index shifted: PER-THREAD to ptxas's analysis, which `uniform_warp` is not -- a loop
+//: or switch bounded by this one is divergent. Kept beside `uniform_warp` because it differs in meaning; a kernel that
+//: branches on the warp calls `uniform_warp`
 __device__ __forceinline__ int warp_id() { return static_cast<int>(threadIdx.x) >> 5; }
 
 __device__ __forceinline__ int lane_id() { return static_cast<int>(threadIdx.x) & 31; }
@@ -140,60 +153,6 @@ __device__ __forceinline__ uint32_t bits(uint32_t x) { return x; }
 
 __device__ __forceinline__ uint32_t bits(int x) { return static_cast<uint32_t>(x); }
 
-//: THE ATOMS, one PTX instruction each, so a variant names exactly what it issues.
-__device__ __forceinline__ void mma_f16_f32(float (&d)[4], const uint32_t (&a)[4], uint32_t b0,
-                                            uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
-      "{%0,%1,%2,%3};"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
-__device__ __forceinline__ void mma_f16_f32_fresh(float (&d)[4], const uint32_t (&a)[4],
-                                                  uint32_t b0, uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
-      "{%10,%10,%10,%10};"
-      : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "f"(0.0f));
-}
-
-__device__ __forceinline__ void mma_f16_f16(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0,
-                                            uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};"
-      : "+r"(d[0]), "+r"(d[1])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
-__device__ __forceinline__ void mma_bf16_f32(float (&d)[4], const uint32_t (&a)[4], uint32_t b0,
-                                             uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
-      "{%0,%1,%2,%3};"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
-__device__ __forceinline__ void mma_u8u8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0,
-                                         uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
-      "{%0,%1,%2,%3};"
-      : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
-__device__ __forceinline__ void mma_u8s8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0,
-                                         uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k32.row.col.s32.u8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
-      "{%0,%1,%2,%3};"
-      : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
 //: THE OPERAND PIECES the kernels use: `ldmatrix.x4` and its `.trans`, a packed f16 product, two fp32 to an f16 pair.
 __device__ __forceinline__ void ldsm(uint32_t (&r)[4], uint32_t a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
@@ -234,7 +193,9 @@ __device__ __forceinline__ uint32_t smem(const void* p) {
 }
 
 //: `v` HELD in a register across the loops that use it: an empty asm hides its derivation, so ptxas cannot
-//: rematerialize it (a lane's constants otherwise come back from `S2R` and their arithmetic at every use)
+//: rematerialize it (a lane's constants otherwise come back from `S2R` and their arithmetic at every use). Kept beside
+//: the production `opaque`, which differs in meaning: `held` emits no instruction (an empty `asm volatile`, value in and
+//: out) and takes 32 or 64 bits unsigned, `opaque` is a `mov.b32` of an `int` formed at its use
 __device__ __forceinline__ uint32_t held(uint32_t v) {
   asm volatile("" : "+r"(v));
   return v;
@@ -478,8 +439,12 @@ __device__ __forceinline__ void wg_bf16_n72_rs_mn(float (&d)[36], const uint32_t
 }
 
 //: two fp32 narrowed to a bf16 pair by TRUNCATION, each value's high 16 bits in one byte permute, and ROUNDED to
-//: nearest in one conversion: `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, spelled here because the common
-//: atoms refuse a hopper build until that family's are written (`common/arch_caps.cuh`)
+//: nearest in one conversion: the instructions of `common/atoms/math.cuh`'s `hi_bf16x2` and `pack_bf16x2`, kept beside
+//: them because they differ in meaning -- the atoms are plain code (`asm` and `__floats2bfloat162_rn`) that nvcc may
+//: merge, hoist or schedule among their neighbours, and these are `asm volatile`, so a probe's narrowing stays where its
+//: row wrote it. MEASURED 2026-11-20 on sm_90a (`lab pack`, every experiment's kernel table, regs and ops, before and
+//: after calling the atoms): `byte_expand`, `carry_window` and `fold_forms` differ (`fold_forms` 228 -> 226 registers,
+//: `byte_expand` an extra `S2R` and fewer `NOP`), the other 36 packed experiments are equal
 __device__ __forceinline__ uint32_t bf16x2_trunc(float lo, float hi) {
   uint32_t r;
   asm volatile("prmt.b32 %0, %1, %2, 0x7632;" : "=r"(r) : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));

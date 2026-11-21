@@ -1,11 +1,9 @@
 {
   "schema": {
     "mma": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"],
-    "latency": ["ffma", "lds", "ldsm", "hmma"],
     "shared": ["store", "store_wavefront", "copy_bypass", "copy_access", "global_read", "global_fill"],
     "pipe": ["alu", "fma", "fmaheavy", "xu"],
     "global": ["l2_line", "red_request"],
-    "taxed": ["fp32", "add_xor", "imad", "lop3", "prmt", "fmnmx", "lds", "cvt_u32_f32"],
     "caps": [
       {"name": "cc", "type": "int", "kind": "IDENTITY", "doc": "compute capability x10, e.g. 900"},
       {"name": "bf16_cvt_packed", "type": "bool", "kind": "INSTRUCTION", "doc": "two fp32 -> one b32 of two bf16, one instruction"},
@@ -21,7 +19,7 @@
   "arch": {
     "sm_90a": {
       "build": {"family": "hopper", "window": 1024},
-      "note": "the hopper build; its window the A100's, provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147",
+      "note": "the hopper build; its window 1024 is provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147",
       "caps": {"bf16_cvt_packed": true, "reg_transpose_b16": true, "bf16_simd_arith": true, "bf16_simd_fma": true, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "regs_per_sm": 65536, "max_threads_per_sm": 2048},
       "rates": {
         "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 9.0: four warp schedulers an SM"},

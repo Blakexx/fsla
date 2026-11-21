@@ -24,7 +24,7 @@ constexpr bool tabulated(int cc) {
 }
 
 constexpr Caps caps_of(int cc) {
-  // sm_90a: the hopper build; its window the A100's, provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147
+  // sm_90a: the hopper build; its window 1024 is provisional until the sm_90 carry's design picks it; see docs/internals/common/arch_caps.md#caps-of-note-l147
   if (cc == 900)
     return Caps{.cc = 900, .bf16_cvt_packed = true, .reg_transpose_b16 = true, .bf16_simd_arith = true,
                 .bf16_simd_fma = true, .smem_per_sm = 233472, .smem_per_cta_max = 232448, .regs_per_sm = 65536,

@@ -95,14 +95,11 @@ A rate is `{"cycles": ..., <source>}` with exactly one source:
 
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
-wavefronts an SM), `mma.<kind>` (an MMA a scheduler), `tax.<kind>.<class>` (what an instruction of the
-class adds to the kind's MMA chain, read by the issue-hiding gate, not by a choice), `latency.<class>` (issue to a
-dependent's issue: an FFMA, a 32-bit shared load, an `ldmatrix` of four, an HMMA on its accumulator; the schema's
-`latency` list), and `shared.<kind>`, `global.<kind>` and `pipe.<name>` (below; the schema's lists). NVIDIA documents
+wavefronts an SM), `mma.<kind>` (an MMA a scheduler), and `shared.<kind>`, `global.<kind>` and `pipe.<name>` (below; the schema's lists). NVIDIA documents
 issue, the shared-memory bank rate, peak tensor rates and the arithmetic pipes' throughputs; a shared atomic's cost,
-the shared pipe's and the global path's other prices, the taxes and the latencies are measured
-([`smem_rates`](../../lab/smem_rates.md), [`drain`](../../lab/drain.md),
-[`tensor_tax`](../../lab/tensor_tax.md), [`issue_latency`](../../lab/issue_latency.md)).
+the shared pipe's and the global path's other prices are measured
+([`smem_rates`](../../lab/smem_rates.md), [`drain`](../../lab/drain.md)); the instruction taxes and latencies the
+ampere line's MMA-chain labs measured are the branch `ampere`'s, and a hopper schedule's are owed to its own labs.
 
 <a id="shared"></a>
 

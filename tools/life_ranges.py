@@ -9,7 +9,7 @@ marks; the liveness is this tool's own, over the function's real control flow
 
     bazel run //tools:life_ranges -- --cubin <cubin> --source csrc/rola/src/facts/facts.cu
     bazel run //tools:life_ranges -- --so <extension .so> --member facts --kernel facts_pass \
-        --source csrc/rola/src/facts/facts.cu [--arch sm_86] [--top N]
+        --source csrc/rola/src/facts/facts.cu [--arch sm_90a] [--top N]
     bazel run //tools:life_ranges -- --so <extension .so> --member <member> --kernel <regex> --source <kernel file> \
         --source <component files>... --budget tools/budgets/<kernel>.json   # the register budget
 

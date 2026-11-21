@@ -14,8 +14,6 @@ from __future__ import annotations
 METRICS = {
     "hmma": "sm__inst_executed_pipe_tensor_op_hmma.sum",
     "imma": "sm__inst_executed_pipe_tensor_op_imma.sum",
-    "tensor_counted": "smsp__pipe_tensor_op_hmma_cycles_active.sum",
-    "tensor_counted_imma": "smsp__pipe_tensor_op_imma_cycles_active.sum",
     "inst": "smsp__inst_executed.sum",
     "alu": "sm__inst_executed_pipe_alu.sum",
     "fma": "sm__inst_executed_pipe_fma.sum",
@@ -46,14 +44,16 @@ STALLS = ("long_scoreboard", "short_scoreboard", "mio_throttle", "math_pipe_thro
           "not_selected", "lg_throttle", "dispatch_stall", "branch_resolving", "no_instruction", "membar", "drain",
           "sleeping", "tex_throttle", "imc_miss", "misc")
 
-#: ncu's tensor-pipe active cycles a scheduler for one m16n8k16 (an m16n8k8 half), by the architecture it ran on,
-#: whatever the accumulate: a count of the work, not its time (sm_86's fp32 accumulate takes 32; an
-#: `HMMA.16816.F32.BF16` counts 16.0) -- so tensor time is priced from it, never read as the profiler's ratio (§22)
-TENSOR_COUNTED = {"sm_86": 16.0}
+#: THE RATES PRICING READS, by their `hardware.json` names (`pipe_cycles`, `shared_cycles`, `global_cycles`)
+PRICED = ("schedulers", "issue", "wavefront", "shared.store", "shared.store_wavefront", "atomic", "atomic_wavefront",
+          "shared.copy_bypass", "shared.copy_access", "shared.global_read", "shared.global_fill", "pipe.alu",
+          "pipe.fma", "pipe.fmaheavy", "pipe.xu", "global.l2_line", "global.red_request")
 
-#: an MMA mnemonic's prefix and suffix and the `hardware.json` kind it runs at, the first match winning
-MMA_KINDS = (("HMMA", ".F32.BF16", "hmma_bf16_f32"), ("HMMA", ".F32", "hmma_f16_f32"),
-             ("IMMA", "", "imma_u8_s8_k32"))
+
+def lacking(rates: dict, mma: tuple[str, int] | None) -> list[str]:
+    """The rates a pricing of this launch reads that the card's row (`rates`) does not declare, in the order priced
+    (a declared MMA's own kind included): empty, the card can price it; else the lab refuses by these names."""
+    return [name for name in (*PRICED, *((f"mma.{mma[0]}",) if mma else ())) if name not in rates]
 
 
 def stall_metric(reason: str) -> str:
@@ -71,13 +71,6 @@ def short(values: dict[str, float]) -> dict:
     c: dict = {name: values.get(metric, 0.0) for name, metric in METRICS.items()}
     c["stalls"] = {r: values.get(stall_metric(r), 0.0) for r in STALLS}
     return c
-
-
-def mma_kind(mnemonics: dict[str, int]) -> str | None:
-    """The one MMA kind a kernel's SASS issues (`MMA_KINDS`), None for none or several."""
-    kinds = {next(kind for op, suffix, kind in MMA_KINDS if m.startswith(op) and suffix in m)
-             for m in mnemonics if m.startswith(("HMMA", "IMMA"))}
-    return kinds.pop() if len(kinds) == 1 else None
 
 
 def sms(c: dict) -> float:
@@ -98,20 +91,16 @@ def shared_cycles(c: dict, rates: dict) -> float:
             + c["global_fill_bytes"] / 128 * r["shared.global_fill"])
 
 
-def pipe_cycles(c: dict, n: float, rates: dict, arch_ran: str, mma: tuple[str, int] | None,
-                kind: str | None) -> dict[str, float]:
+def pipe_cycles(c: dict, n: float, rates: dict, mma: tuple[str, int] | None) -> dict[str, float]:
     """KERNEL_STANDARDS §29.14, one card: the cycles an SM's pipes spend a unit `n` of the launch (its counts summed
-    over its SMs) -- the tensor pipe (a declared MMA's kind and K, else the m16n8k16s counted on `arch_ran`, at the
-    card's rate for the SASS's one kind), issue, the integer, FMA and transcendental pipes (each instruction at its
+    over its SMs) -- the tensor pipe (a declared `mma.sync` MMA's kind and K at the card's rate; none declared, none
+    priced), issue, the integer, FMA and transcendental pipes (each instruction at its
     pipe's cycles a scheduler), all over the schedulers, and the shared-memory pipe (one an SM); the largest binds."""
     r = {k: v.cycles for k, v in rates.items()}
     s = r["schedulers"]
     out = {}
     if mma:
         out["tensor"] = (c["hmma"] + c["imma"]) / n * r[f"mma.{mma[0]}"] * mma[1] / 16 / s
-    elif kind and c["hmma"] + c["imma"] and arch_ran in TENSOR_COUNTED:
-        k16 = (c["tensor_counted"] + c["tensor_counted_imma"]) / TENSOR_COUNTED[arch_ran]
-        out["tensor"] = k16 / n * r[f"mma.{kind}"] / s
     out["shared"] = shared_cycles(c, rates) / n
     out["issue"] = c["inst"] / n * r["issue"] / s
     out["alu"] = c["alu"] / n * r["pipe.alu"] / s
@@ -129,10 +118,10 @@ def global_cycles(c: dict, rates: dict) -> float:
     return (c["l2_read"] + c["l2_write"]) / 4 * r["global.l2_line"] + c["red_requests"] * r["global.red_request"]
 
 
-def busy_here(c: dict, rates: dict, arch_ran: str, mma: tuple[str, int] | None, kind: str | None) -> dict[str, float]:
+def busy_here(c: dict, rates: dict, mma: tuple[str, int] | None) -> dict[str, float]:
     """On the card the launch ran on (`rates` its own): each pipe's busy percent of the elapsed cycles -- tensor and
     the shared-memory pipe priced (`pipe_cycles`), issue and the integer and FMA pipes measured."""
-    priced = pipe_cycles(c, sms(c), rates, arch_ran, mma, kind)
+    priced = pipe_cycles(c, sms(c), rates, mma)
     whole = max(c["elapsed"], 1.0) / 100
     return {"issue": c["busy_issue"], "tensor": priced.get("tensor", 0.0) / whole, "alu": c["busy_alu"],
             "fma": c["busy_fma"], "fmaheavy": c["busy_fmaheavy"], "shared": priced["shared"] / whole,

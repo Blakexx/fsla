@@ -11,7 +11,7 @@ lists', and `tests/integration/test_facts_pass.py` holds the kernel to both.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth; `B_l` = level `l`'s PADDED width; `b_l` =
 its LOGICAL width, the rows' own; `L` = tokens in the call; `BH` = batch × heads; `rows = Σ_l B_l`; **word** = 32
-consecutive tokens of one row; **window** = the card's W tokens (512 on sm_86: 16 words); **group** = 32 consecutive digits of a
+consecutive tokens of one row; **window** = the card's W tokens (1,024 on sm_90a: 32 words); **group** = 32 consecutive digits of a
 level; **unit** = one (side, level, group) of a window, the work of one CTA; **list group** = the `G` consecutive
 digits (16 or 32, the side's) one union and its prefix rows span ([below](#list-groups)).
 
@@ -33,8 +33,8 @@ allocated. Every sparse level's rows are read once, whole, whatever their suppor
 ## The grid: a CTA a unit
 
 `kFactsWarps` = 8 warps a CTA, one CTA a UNIT; at W = 1,024 two CTAs an SM by `kFactsCtasMin` (a list lane holds
-twice the words and boundary pairs, which spill under four CTAs' 64 registers); at W = 512 four CTAs an SM on sm_86 (its 18.7 KB of shared memory a CTA; its
-registers a thread held to four CTAs by `kFactsCtasMin`, 46 used, which allow five) and five on sm_80 (registers): a
+twice the words and boundary pairs, which spill under four CTAs' 64 registers); (at W = 512, measured on sm_86, the branch `ampere`'s: four CTAs an SM, its 18.7 KB of shared memory a CTA and its
+registers a thread held to four CTAs by `kFactsCtasMin`, 46 used, which allow five): a
 unit is a plan-fixed load
 and its work, independent of every other unit, so the hardware's block scheduler balances the units' unequal costs and
 several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `(per_window, windows, BH)`, `BH`
@@ -80,7 +80,7 @@ another box's tokens as its own.
 THE TWO PASSES: the kernel is compiled, at each build, for a unit of one list group (`facts_pass<BuildTag<B>, 1>`, every side at 32: the halves'
 work compiled out, the code before them) and of two (`facts_pass<BuildTag<B>, 2>`), and the host launches the one the call's groups
 need, each at its own tenants (`FactsSmemAt<W, G>`). A split call pays two warp reductions a block, a second gap
-tail and a second union's bytes, the same at every density (unmeasured on the indexer); sm_80, sm_90 and sm_100 run the
+tail and a second union's bytes, the same at every density (unmeasured on the indexer); sm_90 and sm_100 run the
 same passes (the window's words double at W = 1,024, the halves' scan with them).
 
 <a id="shared-memory"></a>
@@ -257,6 +257,6 @@ LINE, RED, and what holds it there is not attributed (owed: the row's stall cens
 3.6 µs floor, RED -- a call with no sparse level runs the columns unit alone, and what holds that unit over its floor
 is not measured either (owed: the row at a second length).
 
-Per architecture: sm_80 runs the same form at five CTAs an SM (registers); on sm_90 the window fills by TMA (a
+Per architecture: on sm_90 the window fills by TMA (a
 `[512 tokens × 32 bytes]` box of the head's plane in one instruction) under an mbarrier, the rest unchanged. Scaling:
 O(L × rows) bytes read, O(L k) entries, O(L B / 32) unions; nothing O(L N).

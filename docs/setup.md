@@ -46,7 +46,8 @@ tracked action hooks from any session, rooted by `workspace.hook_roots` in the d
 
 * **An NVIDIA driver for the toolchain's CUDA major.** The declared toolchain is `cu13` (CUDA 13.0,
   `tools/toolchains/cu13.json`), so any driver >= 580 works. This repo's own dev box runs driver `595.95` against an
-  RTX 3080 Ti (`sm_86`).
+  RTX 3080 Ti, which builds, lints and checks SASS but runs no GPU test: master is hopper only, and every GPU test
+  runs on a rented H100.
 * **Docker**, with the NVIDIA container runtime wired in:
   * **Linux (native):** install `nvidia-container-toolkit`
     (https://github.com/NVIDIA/nvidia-container-toolkit), then

@@ -14,8 +14,7 @@ none until a family's model exists.
 
 Every ptxas signature is warpline's checker's rule (`tools/checked.py` imports it and builds its model of a cubin's kernels;
 `tools/lab.py` reads the checker through the same module). Its model reads `mma.sync` (`HMMA`, `IMMA`, `DMMA`) and the
-warpgroup's `HGMMA` family alike as tensor steps, so the rules over steps read a production (sm_80, sm_86) cubin as they read
-Hopper's:
+warpgroup's `HGMMA` family alike as tensor steps, so the rules over steps read a production sm_90a cubin's `mma.sync` and `wgmma` steps alike:
 
 | signature | the checker's rule |
 |---|---|

@@ -163,7 +163,7 @@ appears on a measured path.
 ## <a id="granule"></a>The Savings-Claim Rule: State The Pool Size
 
 **A paging-savings statement that does not state its pool size is not a result.** The
-driver commits in ALLOCATION GRANULES (2 MiB on sm_86), so a pool smaller than one
+driver commits in ALLOCATION GRANULES (2 MiB, measured on sm_86; the H100's is owed), so a pool smaller than one
 granule commits its whole dense limit in a single mapping and saves NOTHING, however
 sparse its residency. Measured, at `BH = 8`, `widths = (16, 16)`, `cols = 65`: a 0.51 MiB
 dense limit reports `committed 2.00 MiB` — 394% of dense — while the same routing at
