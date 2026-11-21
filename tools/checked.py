@@ -8,6 +8,8 @@ rules are loaded once and one way.
                                     graph's gate action, which has no dev config, the one it hands in (`ROLA_WARPLINE_PYTHON`)
     kernels_of(binary, demangled)   the checker's model of every kernel of a cubin or of a binary's images, each by its mangled name,
                                     or by the toolkit's `cu++filt` name where `demangled` (the lab's patterns are of that form)
+    declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the gate's and the
+                                    lab's translate what they allow to these)
     check(kernels, rules, ...)      the named rules over the kernels, under loaded declarations and rola's notes: the refusals
     profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump, its declaration a CTA-window's: its refusal or None
     demangle(names)                 `cu++filt` of mangled names, each mapped to its own (the graph's toolkit holds no demangler)
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import json
 import os
 import subprocess
 import sys
@@ -73,6 +76,11 @@ def kernels_of(binary: Path, demangled: bool = False) -> list:
     mangled = list(c.readers.sass_functions(listing))
     pretty = demangle(mangled)
     return list(c.model.kernels_from_text(listing, graphs, usage, "".join(f"{pretty[m]}\n" for m in mangled)).values())
+
+
+def declarations(entries: list[dict]) -> list:
+    """The checker's loaded declarations of `entries` (`kernel`: a regex over the demangled name, `rule`, `allow`, `reason`)."""
+    return checker().declare.load_declarations(json.dumps({"declarations": entries}), checker().rules.registry())
 
 
 def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str]) -> list:

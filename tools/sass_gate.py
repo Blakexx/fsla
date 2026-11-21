@@ -13,15 +13,17 @@ What it reads, per function of every cubin (every kernel and every outlined devi
                   warp executes. ptxas guards the ones it emits: a `BRA.DIV` into a fallback block, or a `BRA.CONV` past the
                   call, so a converged warp runs the inline collective; a guarded call is cold code, counted (`guarded`) and
                   not red. A call to an arithmetic slow path is not one, nor a long region ptxas reconverges once on entry
-  The step signatures below are the gate's own reading of `mma.sync` loops, until the checker's model admits an `HMMA`/`IMMA`
-  as a tensor step (it holds the warpgroup's `HGMMA` family alone; docs/internals/tools/sass_gate.md#checker)
-  predicated HMMA -- `@P HMMA`: if-converted tensor work
-  instructions per HMMA -- the static ratio, a ceiling the arm states (issue-bound above it)
-  the conversion unit in a step -- F2I/I2F/F2F/MUFU inside an MMA loop: 16 lanes a cycle an SM where the FMA pipe's
-                  forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
-  global memory in a step -- LDG/STG/RED/ATOMG or a bulk copy or reduction out inside an MMA loop: a step's operands
-                  are staged ahead (`cp.async`'s LDGSTS, hopper's bulk copy in: allowed), and a reduction to
-                  global memory belongs to a drain outside the steps
+  The step signatures are the checker's too (its model reads `mma.sync`'s `HMMA`/`IMMA`/`DMMA` and the warpgroup's `HGMMA`
+  family alike as steps; docs/internals/tools/sass_gate.md#checker):
+  predicated HMMA -- the checker's `step_predicated`: if-converted tensor work
+  instructions per HMMA -- `step_density`, a ceiling the arm states (`--max-per-hmma`; issue-bound above it)
+  branches in a step -- `step_branches` (KERNEL_STANDARDS section 27)
+  the conversion unit in a step -- `step_conversion`: F2I/I2F/F2F/MUFU inside a loop of steps: 16 lanes a cycle an SM where
+                  the FMA pipe's forms (a magic-constant FFMA, a PRMT) run at 64 (KERNEL_STANDARDS section 29)
+  global memory in a step -- `step_global`: LDG/STG/RED/ATOMG or a bulk copy or reduction out inside a loop of steps: a
+                  step's operands are staged ahead (`cp.async`'s LDGSTS, hopper's bulk copy in: allowed), and a
+                  reduction to global memory belongs to a drain outside the steps
+  The gate's own: each function's instruction count (`instr`, padding included) and the gap's two figures (`step_gap` holds the larger)
 On a whole binary it also reds a PTX image (closed-world rule 2: cubins only), and on a whole extension every kernel
 the source defines (`tools/kernels.py`) that no cubin carries: a gate that cannot see a kernel has not gated it. An instrument's library (`--instrument`, bazel/defs.bzl's `rola_instrument`)
 carries its own kernels and owes none of the source's. Its kernels are PROBES, and a probe that keeps a step
@@ -49,13 +51,23 @@ import sass  # noqa: E402
 
 #: an instruction line's opcode, off the shared grammar (`tools/sass.py`)
 INSTR = sass.INSTRUCTION
-#: the same line whole: address, predicate, opcode, operands
-WHOLE = re.compile(r"^\s*/\*([0-9a-f]+)\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.$]+)\s*([^;]*);")
-
-#: the always-false predicate: ptxas keeps a branch under it that it never takes
+#: the always-false predicate: ptxas keeps an instruction under it that never runs
 _NEVER = "@!PT"
-#: an unconditional transfer: nothing falls through it
-_TERMINATOR = re.compile(r"^(BRA|EXIT|RET|JMP|BRX|JMX)$|^(EXIT|RET)\.")
+
+#: the checker's rules the gate holds every function to, and what a red of each says
+RED_RULES = {
+    "stack_memory": "stack frame ({n} B; {ldl} LDL/STL)",
+    "convergence_call": "convergence subroutines a converged warp executes ({n})",
+    "step_predicated": "predicated HMMA ({n})",
+    "step_branches": "branches inside an MMA step ({n})",
+    "step_conversion": "the conversion unit inside an MMA step ({n})",
+    "step_global": "global memory inside an MMA step ({n})",
+    "step_density": "static instructions per HMMA {per:.1f} > {n}",
+}
+#: the step signatures an instrument's declarations name (`step_xu`, ...), and the checker's rule each is
+KEPT_RULES = {"step_branches": "step_branches", "step_xu": "step_conversion", "step_global": "step_global"}
+#: what a declaration of the instrument's permits: the probe keeps the signature whatever its count, so the allowance is no bound
+_PERMIT = 10**9
 
 
 def cubins_of(path: Path, member: str | None) -> list[Path]:
@@ -74,205 +86,95 @@ def convergence_calls(kernel) -> tuple[int, int]:
     return sum(c.hot for c in calls), sum(not c.hot for c in calls)
 
 
-_MMA = re.compile("^(" + "|".join(sass.OPCODE_CLASSES["mma"]) + ")")
-#: a step's operands staged ahead, the one global access a step may hold: `cp.async`, and hopper's bulk copy in
-_STAGED = ("LDGSTS", "UBLKCP.S.G")
-
-
-def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
-    at = {addr: k for k, (addr, _, _, _) in enumerate(lines)}
-
-    def resolve(operands: str) -> int | None:
-        address = re.match(r"(0x[0-9a-f]+)", operands)
-        label = re.search(r"\(([^)]+)\)", operands)
-        return at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None
-
-    return resolve
-
-
-#: `mma_loops` once a function: four lints ask for it; the entry holds its `lines` so the id is never reused while
-#: cached. -- see docs/internals/tools/sass_gate.md#cost
-_LOOPS: dict[int, tuple[list, list[tuple[int, int]]]] = {}
-
-
-def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
-    """The innermost loops that issue MMAs, as (first line, backward branch): a loop a backward branch, its body the
-    lines from its target to it, innermost when no other loop that issues MMAs lies inside. A loop inside it that
-    issues none -- a compare-and-swap spin (sm_80/86's shared fp32 add), a one-trip guard -- is part of its body, read
-    once. A divergence fallback's return (the cold stub a `BRA.DIV` enters, read to its unconditional branch back into
-    the code it left, however long: ptxas copies a step's remaining work into it) is no loop. """
-    hit = _LOOPS.get(id(lines))
-    if hit is not None and hit[0] is lines:
-        return hit[1]
-    loops = _mma_loops(lines, labels)
-    _LOOPS[id(lines)] = (lines, loops)
-    return loops
-
-
-def _mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
-    resolve = _resolver(lines, labels)
-    cold = set()
-    for _, opcode, operands, predicate in lines:
-        stub = resolve(operands.split(",")[-1].strip()) if opcode.startswith("BRA.DIV") else None
-        for j in range(stub, len(lines)) if stub is not None else ():
-            cold.add(j)
-            if lines[j][3] == "" and _TERMINATOR.match(lines[j][1]):
-                break
-    back = []
-    for k, (_, opcode, operands, predicate) in enumerate(lines):
-        target = resolve(operands) if opcode == "BRA" and predicate != _NEVER and k not in cold else None
-        if target is not None and target <= k:
-            back.append((target, k))
-    mma = [(t, k) for t, k in back if any(_MMA.match(x[1]) for x in lines[t:k + 1])]
-    return [(target, k) for target, k in mma
-            if not any(target <= t and kk < k for t, kk in mma if (t, kk) != (target, k))]
-
-
-def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
-    """KERNEL_STANDARDS 27's interleave as ptxas emitted it: the longest run of instructions without an MMA in an
-    innermost MMA loop's body, and the run around the loop (its tail into its head -- a rolled step loop's own gap, an
-    unrolled one's fill and drain). In-order issue makes a run the time a warp leaves the tensor pipe to the
-    scheduler's other warps."""
+def gap_split(kernel) -> tuple[int, int]:
+    """``(inside, around)``: the figure the checker's `step_gap` takes the larger of, per loop of steps -- the longest run without a
+    step between two steps of a trip, and the run around the back edge. The rule holds the one figure; the report keeps the two."""
     inside = around = 0
-    for target, k in mma_loops(lines, labels):
-        at = [j for j in range(target, k + 1) if _MMA.match(lines[j][1])]
+    for region in (r for r in kernel.regions if r.kind == "loop"):
+        steps = {t.instruction.address for t in region.tensor if not t.null}
+        at = [k for k, i in enumerate(region.instructions) if i.address in steps]
         inside = max(inside, *(b - a - 1 for a, b in zip(at, at[1:])), 0)
-        around = max(around, k - target - (at[-1] - at[0]))
+        around = max(around, len(region.instructions) - 1 - (at[-1] - at[0]) if at else 0)
     return inside, around
 
 
-def step_classes(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
-    """KERNEL_STANDARDS section 29: inside the innermost MMA loops (`mma_loops`), the instructions on the conversion
-    unit and the global memory accesses other than a staged copy in (`_STAGED`)."""
-    xu = memory = 0
-    for target, k in mma_loops(lines, labels):
-        for j in range(target, k + 1):
-            _, op, _, pred = lines[j]
-            if pred == _NEVER:
-                continue
-            kind = sass.opcode_class(op)
-            xu += kind == "conversion unit"
-            memory += kind == "global" and not op.startswith(_STAGED)
-    return xu, memory
-
-
-#: a register copy: what ptxas puts between a loop's exit test and its back-edge for a carried value it did not coalesce
-_COPY = re.compile(r"^(MOV|IMAD\.MOV(\.U32)?)$")
-
-
-def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
-    """KERNEL_STANDARDS 27: the branches inside a step -- a convergence barrier (BSSY) or a forward conditional BRA in an
-    innermost MMA loop (`mma_loops`; the BRA.DIV / BRA.CONV guards of a collective's cold fallback not counted). Each
-    one ends ptxas's scheduling block inside the step. The loop's own exit laid out as its LATCH -- out of the loop,
-    followed by nothing but register copies (the loop's carried values' moves on the back path) and an unconditional
-    back-edge -- ends the block at the step's end, not inside it: not counted.
-    -- see docs/internals/tools/sass_gate.md#step-branches"""
-    resolve = _resolver(lines, labels)
-    found = set()
-    for target, k in mma_loops(lines, labels):
-        latch = lines[k][3] == ""
-        for j in range(target, k):
-            _, op, ops, pred = lines[j]
-            if pred == _NEVER:
-                continue
-            forward = resolve(ops) if op == "BRA" and pred else None
-            copies = all(_COPY.match(lines[i][1]) and lines[i][3] == "" for i in range(j + 1, k))
-            if forward is not None and latch and forward > k and copies:
-                continue
-            if op == "BSSY" or (forward is not None and forward > j):
-                found.add(j)
-    return len(found)
-
-
-def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
-    global ARCH
-    _LOOPS.clear()
-    here = ARCH = sass.machine(cubin)
-    funcs: dict[str, list[str]] = {}
-    whole: dict[str, list[tuple[int, str, str]]] = {}
-    labels: dict[str, dict[str, int]] = {}
+def instructions(cubin: Path) -> dict[str, int]:
+    """Each function's instruction count off the listing, padding to the next 128-byte boundary included (the checker's model drops
+    it); the instructions under `@!PT`, which never run, are not counted."""
+    counts: dict[str, int] = {}
     cur = None
     for line in sass.disassemble(cubin).splitlines():
         m = re.match(r"\s*\.text\.(\S+):", line)
         if m:
             cur = m.group(1)
-            funcs[cur] = []
-            whole[cur] = []
-            labels[cur] = {}
-            continue
-        m = re.match(r"^(\$?[\w.$]+):\s*$", line)
-        if m and cur is not None:
-            labels[cur][m.group(1)] = len(whole[cur])
+            counts[cur] = 0
             continue
         m = INSTR.match(line)
-        if m and cur is not None:
-            predicate = (m.group(2) or "").strip()
-            if predicate != _NEVER:
-                funcs[cur].append(predicate + " " + m.group(3))
-            w = WHOLE.match(line)
-            whole[cur].append((int(w.group(1), 16), w.group(3), w.group(4).strip(), predicate) if w else
-                              (int(m.group(1), 16), m.group(3), "", predicate))
+        if m and cur is not None and (m.group(2) or "").strip() != _NEVER:
+            counts[cur] += 1
+    return counts
+
+
+def gate(cubin: Path, kernel: str | None, max_per_hmma: int | None) -> tuple[bool, str]:
+    global ARCH
+    here = ARCH = sass.machine(cubin)
+    c = checked.checker()
+    registry = c.rules.registry()
+    counts = instructions(cubin)
+    modelled = {k.name: k for k in checked.kernels_of(cubin)}
+    held = [modelled[name] for name in counts if not kernel or re.search(kernel, name)]
+    #: an instrument's declarations as the checker's: each function the key's pattern names, on the architectures the key
+    #: says, is permitted what the key declares; the arm's ceiling is the density rule's bound on every function
+    entries, declared = [], {}
+    for k in held:
+        for key, lints in INSTRUMENT.items():
+            if _declares(key, k.name, here):
+                for lint, cost in lints.items():
+                    entries.append({"kernel": "^" + re.escape(k.demangled) + "$", "rule": KEPT_RULES[lint], "allow": _PERMIT,
+                                    "reason": cost})
+                    declared.setdefault(k.name, []).append((key, lint))
+    if max_per_hmma is not None:
+        entries.append({"kernel": "", "rule": "step_density", "allow": max_per_hmma, "reason": "the arm's stated ceiling"})
+    refused: dict[str, dict[str, int]] = {}
+    for r in checked.check(held, RED_RULES, checked.declarations(entries), {}):
+        refused.setdefault(r.kernel, {})[r.rule] = r.count
 
     ok = True
     report = []
     STATS.clear()
-    #: the checker's model of each function, and its verdict of the two rules it computes here
-    modelled = {k.name: k for k in checked.kernels_of(cubin)}
-    registry = checked.checker().rules.registry()
-    for name, ins in funcs.items():
-        if kernel and not re.search(kernel, name):
-            continue
-        n = len(ins)
-        model = modelled[name]
-        registers, stack = model.registers, model.stack_bytes
-        ldl = sum(a.space == "local" for a in model.accesses)
-        calls, guarded = convergence_calls(model)
-        branches = mma_loop_branches(whole[name], labels[name])
-        gap, around = mma_gap(whole[name], labels[name])
-        xu, memory = step_classes(whole[name], labels[name])
-        #: the tensor instructions `_MMA` names: each line's opcode, past its predicate if it has one
-        opcodes = [next((w for w in i.split() if not w.startswith("@")), "") for i in ins]
-        phmma = sum(1 for i, op in zip(ins, opcodes) if i.lstrip().startswith("@") and _MMA.match(op))
-        hmma = sum(1 for op in opcodes if _MMA.match(op))
-        per = (n / hmma) if hmma else float("nan")
-        reds = []
-        if registry["stack_memory"].count(model):
-            reds.append(f"stack frame ({stack} B; {ldl} LDL/STL)")
-        if calls:
-            reds.append(f"convergence subroutines a converged warp executes ({calls})")
-        if phmma:
-            reds.append(f"predicated HMMA ({phmma})")
-        #: an instrument's probe keeps a step signature only where its declarations name it (the module docstring)
-        kept = {(key, lint) for key, lints in INSTRUMENT.items() if _declares(key, name, here) for lint in lints}
-        exhibited = {lint for lint, count in (("step_branches", branches), ("step_xu", xu), ("step_global", memory))
-                     if count}
-        held = {lint for _, lint in kept}
-        if branches and "step_branches" not in held:
-            reds.append(f"branches inside an MMA step ({branches})")
-        if xu and "step_xu" not in held:
-            reds.append(f"the conversion unit inside an MMA step ({xu})")
-        if memory and "step_global" not in held:
-            reds.append(f"global memory inside an MMA step ({memory})")
-        if max_per_hmma is not None and hmma and per > max_per_hmma:
-            reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
+    for k in held:
+        found = {name: registry[name].count(k) for name in ("step_predicated", "step_branches", "step_conversion",
+                                                           "step_global", "step_density")}
+        hmma = sum(not s.null and not s.instruction.dead for s in k.steps)
+        per = found["step_density"] if hmma else float("nan")
+        ldl = sum(a.space == "local" for a in k.accesses)
+        calls, guarded = convergence_calls(k)
+        gap, around = gap_split(k)
+        said = {"stack_memory": k.stack_bytes, "convergence_call": calls, "step_density": max_per_hmma}
+        reds = [RED_RULES[rule].format(n=said.get(rule, refused[k.demangled][rule]), ldl=ldl, per=per)
+                for rule in RED_RULES if rule in refused.get(k.demangled, {})]
         ok &= not reds
-        STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
-                       "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma,
-                       "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around,
-                       "step_xu": xu, "step_global": memory, "registers": registers,
-                       "reds": reds,
-                       "kept": sorted([key, lint] for key, lint in kept if lint in exhibited)}
-        short = name[:70]
-        report.append(f"{'RED ' if reds else 'ok  '} {short}: regs {registers} instr {n} hmma {hmma} per-hmma {per:.1f} "
-                      f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
-                      f"mma-loop-branches {branches} mma-gap {gap} around {around} step-xu {xu} step-global {memory}"
+        exhibited = {"step_branches": found["step_branches"], "step_xu": found["step_conversion"],
+                     "step_global": found["step_global"]}
+        n = counts[k.name]
+        STATS[k.name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
+                         "stack": k.stack_bytes, "calls": calls, "guarded": guarded, "pred_hmma": found["step_predicated"],
+                         "mma_loop_branches": found["step_branches"], "mma_gap": gap, "mma_gap_around": around,
+                         "step_xu": found["step_conversion"], "step_global": found["step_global"], "registers": k.registers,
+                         "reds": reds,
+                         "kept": sorted([key, lint] for key, lint in declared.get(k.name, []) if exhibited[lint])}
+        report.append(f"{'RED ' if reds else 'ok  '} {k.name[:70]}: regs {k.registers} instr {n} hmma {hmma} per-hmma {per:.1f} "
+                      f"ldl {ldl} stack {k.stack_bytes} calls {calls} guarded {guarded} predHMMA {found['step_predicated']} "
+                      f"mma-loop-branches {found['step_branches']} mma-gap {gap} around {around} "
+                      f"step-xu {found['step_conversion']} step-global {found['step_global']}"
                       + (" :: " + "; ".join(reds) if reds else ""))
         if LOOPS:
-            report.extend(loop_report(whole[name], labels[name]))
+            report.extend(f"       {rule}: {f.what}" for rule in ("step_branches", "step_conversion", "step_global")
+                          for f in registry[rule].check(k))
     return ok, "\n".join(report)
 
 
-#: `--loops`: each function's report is followed by each innermost MMA loop's reading and the lines its lints count
+#: `--loops`: each function's report is followed by the checker's findings of its step rules
 LOOPS = False
 #: `--instrument`: an instrument's declarations, `{name pattern: {step lint: the cost the probe measures}}` (the module
 #: docstring); empty for the extension, whose functions keep no step signature
@@ -291,24 +193,6 @@ def _declared(key: str) -> tuple[str | None, str]:
 def _declares(key: str, function: str, arch: str | None) -> bool:
     on, pattern = _declared(key)
     return (on is None or on == arch) and re.search(pattern, function) is not None
-
-
-def loop_report(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[str]:
-    """Each innermost MMA loop of a function: its span, its instructions and MMAs, then each line inside it that a step
-    lint counts -- a branch or convergence barrier, the conversion unit, global memory other than a staged copy in."""
-    resolve = _resolver(lines, labels)
-    out = []
-    for target, k in mma_loops(lines, labels):
-        out.append(f"     loop {lines[target][0]:#x}-{lines[k][0]:#x}: {k - target + 1} instr, "
-                   f"{sum(1 for x in lines[target:k + 1] if _MMA.match(x[1]))} MMA")
-        for j in range(target, k + 1):
-            addr, op, ops, pred = lines[j]
-            forward = resolve(ops) if op == "BRA" and pred and pred != _NEVER else None
-            kind = sass.opcode_class(op)
-            if op == "BSSY" or (forward is not None and forward > j) or kind == "conversion unit" or (
-                    kind == "global" and not op.startswith(_STAGED)):
-                out.append(f"       {addr:#06x} {pred + ' ' if pred else ''}{op} {ops}")
-    return out
 
 
 def missing_kernels(seen: set[str]) -> list[str]:
@@ -346,7 +230,7 @@ def _closure() -> str:
     return _CLOSURE
 
 
-def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: float | None, use: bool) -> tuple[bool, str]:
+def cached_gate(cubin: Path, kernel: str | None, max_per_hmma: int | None, use: bool) -> tuple[bool, str]:
     """`gate`, replayed from the cache when the key matches; a miss reads the cubin and records the verdict."""
     if not use:
         return gate(cubin, kernel, max_per_hmma)
@@ -375,10 +259,10 @@ def main() -> int:
     ap.add_argument("--instrument", type=Path, default=None, metavar="DECLARATIONS",
                     help="an instrument's library: no kernel of the source is owed, and its probes keep the step "
                          "signatures DECLARATIONS names (a JSON file, docs/internals/tools/sass_gate.md#instrument)")
-    ap.add_argument("--max-per-hmma", type=float, default=None)
+    ap.add_argument("--max-per-hmma", type=int, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
     ap.add_argument("--loops", action="store_true",
-                    help="after each function, each innermost MMA loop's reading and the lines its step lints count")
+                    help="after each function, what the checker's step rules (branches, conversion unit, global memory) found in it")
     ap.add_argument("--no-cache", action="store_true",
                     help="read every cubin, the verdict cache neither replayed nor written (docs/internals/tools/"
                          "sass_gate.md#cache)")

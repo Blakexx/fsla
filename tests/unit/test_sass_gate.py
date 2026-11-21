@@ -2,8 +2,9 @@
 go to local memory, one whose shuffle sits in a loop ptxas cannot prove warp-uniform (a convergence subroutine), and
 one whose division calls its slow path (a call that is not one), and two whose MMA loops convert on the conversion unit
 or read global memory (§29's step lints) beside one that converts on the FMA pipe and stages by `cp.async` -- the
-gate's reds are what it reads, proven on a cubin that has them. The convergence call's own cases (a hot call, a guarded
-one, a slow path, on the lines) are the checker's tests.
+gate's reds are what it reads, proven on a cubin that has them. The step lints are the checker's rules (`mma.sync` read as
+steps of kind `sync`), and their cases on the lines -- the loops that hold steps, the branches in a step, the exit laid out as
+its latch, the convergence call's hot and guarded forms -- are the checker's tests.
 
 See KERNEL_STANDARDS §20, §29.
 """
@@ -118,78 +119,9 @@ def test_a_guarded_convergence_fallback_and_a_slow_path_call_are_not_red(cubin):
     assert divide["calls"] == 0 and divide["guarded"] == 0 and not divide["reds"], report
 
 
-def test_a_loop_without_mmas_inside_an_mma_loop_is_its_body_and_hides_nothing():
-    """The step cover's loops: an MMA loop holding a compare-and-swap spin (sm_80/86's shared fp32 add) is still the
-    innermost MMA loop, the spin read as one trip of its body; a loop holding an inner MMA loop is not one. Until
-    2026-11-01 any backward branch inside hid the loop, and the den's and the intra's steps were never read."""
-    spin = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F32", "R8, R4, R6, R8", ""),
-            (0x20, "LDS", "R9, [R3]", ""), (0x30, "FADD", "R10, R9, R8", ""),
-            (0x40, "ATOMS.CAST.SPIN", "R10, [R3], R9, R10", ""), (0x50, "ISETP.EQ.U32.AND", "P3, PT, R10, 0x1, PT", ""),
-            (0x60, "BRA", "0x20", "@!P3"), (0x70, "BRA", "0x0", "@P1"), (0x80, "EXIT", "", "")]
-    assert sass_gate.mma_loops(spin, {}) == [(0, 7)]
-    nested = [(0x0, "MOV", "R1, R2", ""), (0x10, "HMMA.16816.F32", "R8, R4, R6, R8", ""),
-              (0x20, "BRA", "0x10", "@P1"), (0x30, "BRA", "0x0", "@P2"), (0x40, "EXIT", "", "")]
-    assert sass_gate.mma_loops(nested, {}) == [(1, 2)]
-    #: a shuffle's divergence fallback, a cold stub past the exit that branches back into the step it left
-    stub = [(0x0, "HMMA.16816.F32", "R8, R4, R6, R8", ""), (0x10, "BRA.DIV", "~URZ, 0x60", ""),
-            (0x20, "SHFL.BFLY", "PT, R1, R2, 0x1, 0x1f", ""), (0x30, "BRA", "0x0", "@P1"), (0x40, "STG.E", "[R2.64], R1", ""),
-            (0x50, "EXIT", "", ""), (0x60, "MOV", "R1, R2", ""), (0x70, "BRA", "0x20", "")]
-    assert sass_gate.mma_loops(stub, {}) == [(0, 3)]
-    #: a long one -- ptxas copies the rest of the step into the fallback -- is cold to its return branch, which lands
-    #: before the step's second MMA (until 2026-11-02 a stub past 32 lines read as a loop from there to its end)
-    step = [(0x0, "HMMA.16816.F32", "R8, R4, R6, R8", ""), (0x10, "BRA.DIV", "~URZ, 0x70", ""),
-            (0x20, "SHFL.BFLY", "PT, R1, R2, 0x1, 0x1f", ""), (0x30, "HMMA.16816.F32", "R8, R4, R1, R8", ""),
-            (0x40, "BRA", "0x0", "@P1"), (0x50, "STG.E", "[R2.64], R1", ""), (0x60, "EXIT", "", "")]
-    long_stub = step + [(0x70 + 0x10 * i, "MOV", "R1, R2", "") for i in range(64)] + [(0x470, "BRA", "0x20", "")]
-    assert sass_gate.mma_loops(long_stub, {}) == [(0, 4)]
-
-
-def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():
-    """KERNEL_STANDARDS 27 on the lines: a loop (a backward branch) holding an HMMA counts its convergence barriers and
-    forward conditional branches; an outer loop's branches around an inner MMA loop do not count, nor a loop with no
-    MMA."""
-    step = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
-            (0x20, "BSSY", "0x50", ""), (0x30, "BRA", "0x50", "@!P0"), (0x40, "ATOMS.ADD", "RZ, [R3], R8", ""),
-            (0x50, "BSYNC", "", ""), (0x60, "BRA", "0x0", "@P1"), (0x70, "EXIT", "", "")]
-    assert sass_gate.mma_loop_branches(step, {}) == 2
-    clean = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
-             (0x20, "ATOMS.ADD", "RZ, [R3], R8", ""), (0x30, "BRA", "0x0", "@P1"), (0x40, "EXIT", "", "")]
-    assert sass_gate.mma_loop_branches(clean, {}) == 0
-    nested = [(0x0, "BRA", "0x40", "@P2"), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
-              (0x20, "BRA", "0x10", "@P1"), (0x30, "BAR.SYNC", "0x0", ""), (0x40, "BRA", "0x0", "@P3"),
-              (0x50, "EXIT", "", "")]
-    assert sass_gate.mma_loop_branches(nested, {}) == 0
-    no_mma = [(0x0, "BSSY", "0x30", ""), (0x10, "BRA", "0x30", "@!P0"), (0x20, "LDS", "R4, [R2]", ""),
-              (0x30, "BRA", "0x0", "@P1"), (0x40, "EXIT", "", "")]
-    assert sass_gate.mma_loop_branches(no_mma, {}) == 0
-
-
-def test_a_loops_exit_laid_out_as_its_latch_is_the_steps_end():
-    """The loop's exit test out of the loop, followed only by register copies and an unconditional back-edge (ptxas's
-    layout where the exit is not the fall-through, the readout's dtype copies before their join) ends the step's block
-    at its end: not counted. An exit with other work between it and the back-edge, a branch back into the loop, or a
-    conditional back-edge still count."""
-    latch = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
-             (0x20, "STS", "[R3], R8", ""), (0x30, "BRA", "0x60", "@!P1"), (0x40, "BRA", "0x0", ""),
-             (0x50, "EXIT", "", ""), (0x60, "EXIT", "", "")]
-    assert sass_gate.mma_loops(latch, {}) == [(0, 4)]
-    assert sass_gate.mma_loop_branches(latch, {}) == 0
-    copied = latch[:4] + [(0x38, "IMAD.MOV.U32", "R4, RZ, RZ, R5", ""), (0x3c, "MOV", "R6, R7", "")] + latch[4:]
-    assert sass_gate.mma_loop_branches(copied, {}) == 0
-    worked = latch[:4] + [(0x38, "IADD3", "R4, R5, 0x1, RZ", "")] + latch[4:]
-    assert sass_gate.mma_loop_branches(worked, {}) == 1
-    guarded = latch[:4] + [(0x38, "IMAD.MOV.U32", "R4, RZ, RZ, R5", "@P2")] + latch[4:]
-    assert sass_gate.mma_loop_branches(guarded, {}) == 1
-    inside = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
-              (0x20, "BRA", "0x30", "@!P1"), (0x30, "BRA", "0x0", "")]
-    assert sass_gate.mma_loop_branches(inside, {}) == 1
-    conditional = latch[:4] + [(0x40, "BRA", "0x0", "@P2")] + latch[5:]
-    assert sass_gate.mma_loop_branches(conditional, {}) == 1
-
-
 def test_an_instruments_declaration_permits_the_step_signature_it_names(cubin, monkeypatch):
     """A probe keeps a step signature on purpose where its declarations name it (docs/internals/tools/sass_gate.md#instrument):
-    the gate matches the instrument's declarations to the function's name itself (`_declares`) and reads the step signatures itself,
+    the gate matches the instrument's declarations to the function's name (`_declares`) and hands the checker them as its declarations,
     so the conversion probe is clean and records what it keeps, and the global-memory probe, undeclared, stays red."""
     monkeypatch.setattr(sass_gate, "INSTRUMENT", {"step_xu_probe": {"step_xu": "the cost the probe measures"}})
     ok, report = sass_gate.gate(cubin, None, None)
@@ -199,9 +131,9 @@ def test_an_instruments_declaration_permits_the_step_signature_it_names(cubin, m
     assert memory["reds"] and not ok
 
 
-def test_the_instructions_per_step_ceiling_is_the_gates_own_bound(cubin):
-    """`--max-per-hmma` is the gate's own bound, on its own count of the static instructions per HMMA of a step loop: a kernel over it
-    is red, one under it is not."""
+def test_the_instructions_per_step_ceiling_is_the_checkers_density_bound(cubin):
+    """`--max-per-hmma` is the checker's `step_density` bound, declared for every function: a kernel over it is red, one under it is
+    not."""
     ok, report = sass_gate.gate(cubin, "step_clean_probe", 1)
     assert not ok and "static instructions per HMMA" in report
     ok, report = sass_gate.gate(cubin, "step_clean_probe", 10**6)
