@@ -7,13 +7,14 @@ of them. Runs on every build (`tools/sass_gate.py <cubin|.so> [--kernel regex] [
 
 What it reads, per function of every cubin (every kernel and every outlined device function; `--kernel` and
 `--member` narrow a MEASUREMENT, and a narrowing that matches nothing is red, never a silent pass):
-  local memory  -- LDL/STL instructions, or a nonzero stack frame (`cuobjdump -res-usage`)
-  outlined collectives -- a `CALL.REL.NOINC` into a convergence subroutine (a short block, `_SUBROUTINE`
-                  instructions at most, that syncs the warp, runs one collective and returns) that a CONVERGED
-                  warp executes. ptxas guards the ones it emits: a `BRA.DIV` into a fallback block, or a
-                  `BRA.CONV` past the call, so a converged warp runs the inline collective; a guarded call is cold
-                  code, counted (`guarded`) and not red. A call to an arithmetic slow path is not one, nor a long
-                  region ptxas reconverges once on entry
+  local memory  -- the CHECKER's `stack_memory` (warpline's, `tools/checked.py`): a nonzero stack frame (`cuobjdump -res-usage`),
+                  the LDL/STL instructions named beside it
+  outlined collectives -- the checker's `convergence_call`: a `CALL.REL.NOINC` into a convergence subroutine that a CONVERGED
+                  warp executes. ptxas guards the ones it emits: a `BRA.DIV` into a fallback block, or a `BRA.CONV` past the
+                  call, so a converged warp runs the inline collective; a guarded call is cold code, counted (`guarded`) and
+                  not red. A call to an arithmetic slow path is not one, nor a long region ptxas reconverges once on entry
+  The step signatures below are the gate's own reading of `mma.sync` loops, until the checker's model admits an `HMMA`/`IMMA`
+  as a tensor step (it holds the warpgroup's `HGMMA` family alone; docs/internals/tools/sass_gate.md#checker)
   predicated HMMA -- `@P HMMA`: if-converted tensor work
   instructions per HMMA -- the static ratio, a ceiling the arm states (issue-bound above it)
   the conversion unit in a step -- F2I/I2F/F2F/MUFU inside an MMA loop: 16 lanes a cycle an SM where the FMA pipe's
@@ -42,86 +43,35 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-import kernels  # noqa: E402 -- path insert must precede these imports
+import checked  # noqa: E402 -- path insert must precede these imports
+import kernels  # noqa: E402
 import sass  # noqa: E402
 
 #: an instruction line's opcode, off the shared grammar (`tools/sass.py`)
 INSTR = sass.INSTRUCTION
 #: the same line whole: address, predicate, opcode, operands
 WHOLE = re.compile(r"^\s*/\*([0-9a-f]+)\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.$]+)\s*([^;]*);")
-_COLLECTIVE = re.compile(r"^(SHFL|VOTE|MATCH|REDUX|BAR)")
 
 #: the always-false predicate: ptxas keeps a branch under it that it never takes
 _NEVER = "@!PT"
 #: an unconditional transfer: nothing falls through it
 _TERMINATOR = re.compile(r"^(BRA|EXIT|RET|JMP|BRX|JMX)$|^(EXIT|RET)\.")
-#: a convergence subroutine's length at most: its operand moves, `WARPSYNC`, the collective (`RET` not counted)
-_SUBROUTINE = 8
 
 
 def cubins_of(path: Path, member: str | None) -> list[Path]:
     return [image for image in sass.cubins(path) if member is None or member in image.name]
 
 
-_RES = re.compile(r"Function (\S+):\s*\n\s*REG:(\d+) STACK:(\d+)")
-
-
-def resources(cubin: Path) -> dict[str, tuple[int, int]]:
-    """`{function: (registers, stack frame bytes)}` off `cuobjdump -res-usage`."""
-    text = subprocess.run([sass.tool("cuobjdump"), "-res-usage", str(cubin)], capture_output=True,
-                          text=True, check=True).stdout
-    return {m.group(1): (int(m.group(2)), int(m.group(3))) for m in _RES.finditer(text)}
-
-
 #: the last `gate` call's signature per function, for `--json`
 STATS: dict[str, dict] = {}
 
 
-def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
-    """``(hot, guarded)``: the calls into a convergence subroutine a converged warp executes, and those it never does
-    (in a block a `BRA.DIV` enters, past a `BRA.CONV` in the call's block, or in a dead block: one only a branch under
-    the always-false predicate `@!PT` enters, right after an unconditional transfer). ``lines`` are ``(address,
-    opcode, operands, predicate)``, the function's own; ``labels`` ``{name: line index}``. A target is an address
-    (`cuobjdump`) or a label (`nvdisasm`: `` `($__internal_1_$__cuda_sm70_shflsync_bfly_p) ``)."""
-    at = {addr: k for k, (addr, _, _, _) in enumerate(lines)}
-
-    def resolve(operands: str) -> int | None:
-        address = re.match(r"(?:~URZ,\s*)?(0x[0-9a-f]+)", operands)
-        label = re.search(r"\(([^)]+)\)", operands)
-        return at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None
-
-    def subroutine(start: int) -> bool:
-        block = []
-        for _, op, _, _ in lines[start:start + _SUBROUTINE + 1]:
-            if op.startswith("RET"):
-                return "WARPSYNC" in block and any(_COLLECTIVE.match(o) for o in block)
-            block.append(op)
-        return False
-
-    def targets(prefix: str, live: bool) -> set[int]:
-        found = (resolve(o) for _, op, o, p in lines if op.startswith(prefix) and (p != _NEVER) == live)
-        return {k for k in found if k is not None}
-
-    taken = targets("BRA", True)
-    starts = {0, *labels.values()} | taken | targets("BRA", False)
-    fallback = targets("BRA.DIV", True)
-    dead = {k for k in starts - taken
-            if k > 0 and lines[k - 1][3] == "" and _TERMINATOR.match(lines[k - 1][1])}
-    hot = guarded = 0
-    block, conv = 0, False
-    for k, (_, opcode, operands, predicate) in enumerate(lines):
-        if k in starts:
-            block, conv = k, False
-        if predicate == _NEVER:
-            continue
-        conv = conv or opcode.startswith("BRA.CONV")
-        target = resolve(operands) if opcode.startswith("CALL.REL") else None
-        if target is not None and subroutine(target):
-            if block in fallback or block in dead or conv:
-                guarded += 1
-            else:
-                hot += 1
-    return hot, guarded
+def convergence_calls(kernel) -> tuple[int, int]:
+    """``(hot, guarded)``: the calls into a convergence subroutine a converged warp executes (the checker's rule
+    `convergence_call`), and those it never does (in a block the model finds cold: a `BRA.DIV` fallback, past a
+    `BRA.CONV`, dead code). ``kernel`` is the checker's model of the function."""
+    calls = [c for c in kernel.calls if c.subroutine]
+    return sum(c.hot for c in calls), sum(not c.hot for c in calls)
 
 
 _MMA = re.compile("^(" + "|".join(sass.OPCODE_CLASSES["mma"]) + ")")
@@ -150,7 +100,7 @@ def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) ->
     lines from its target to it, innermost when no other loop that issues MMAs lies inside. A loop inside it that
     issues none -- a compare-and-swap spin (sm_80/86's shared fp32 add), a one-trip guard -- is part of its body, read
     once. A divergence fallback's return (the cold stub a `BRA.DIV` enters, read to its unconditional branch back into
-    the code it left, however long: ptxas copies a step's remaining work into it) is no loop. Targets resolve as `convergence_calls`' do."""
+    the code it left, however long: ptxas copies a step's remaining work into it) is no loop. """
     hit = _LOOPS.get(id(lines))
     if hit is not None and hit[0] is lines:
         return hit[1]
@@ -266,14 +216,17 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
     ok = True
     report = []
     STATS.clear()
-    frame = resources(cubin)
+    #: the checker's model of each function, and its verdict of the two rules it computes here
+    modelled = {k.name: k for k in checked.kernels_of(cubin)}
+    registry = checked.checker().rules.registry()
     for name, ins in funcs.items():
         if kernel and not re.search(kernel, name):
             continue
         n = len(ins)
-        registers, stack = frame.get(name, (0, 0))
-        ldl = sum(1 for i in ins if re.search(r"\b(LDL|STL)\b", i))
-        calls, guarded = convergence_calls(whole[name], labels[name])
+        model = modelled[name]
+        registers, stack = model.registers, model.stack_bytes
+        ldl = sum(a.space == "local" for a in model.accesses)
+        calls, guarded = convergence_calls(model)
         branches = mma_loop_branches(whole[name], labels[name])
         gap, around = mma_gap(whole[name], labels[name])
         xu, memory = step_classes(whole[name], labels[name])
@@ -283,10 +236,8 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         hmma = sum(1 for op in opcodes if _MMA.match(op))
         per = (n / hmma) if hmma else float("nan")
         reds = []
-        if ldl:
-            reds.append(f"local memory ({ldl} LDL/STL)")
-        if stack:
-            reds.append(f"stack frame ({stack} B)")
+        if registry["stack_memory"].count(model):
+            reds.append(f"stack frame ({stack} B; {ldl} LDL/STL)")
         if calls:
             reds.append(f"convergence subroutines a converged warp executes ({calls})")
         if phmma:
@@ -368,7 +319,7 @@ def missing_kernels(seen: set[str]) -> list[str]:
 
 
 #: THE VERDICT CACHE: a cubin's verdict, report and statistics under the key of everything that decides them -- the
-#: cubin's bytes, the gate's own source closure (every module of `tools/` it has loaded), the
+#: cubin's bytes, the gate's own source closure (every module of `tools/` it has loaded, and the checker's), the
 #: disassemblers' identity and the arguments -- so an unchanged cubin's verdict is the reading of identical bytes under
 #: an identical gate, replayed (ratify's per-unit cache makes the same argument). `--no-cache` reads every cubin.
 #: -- see docs/internals/tools/sass_gate.md#cache
@@ -376,8 +327,8 @@ _CLOSURE: str | None = None
 
 
 def _closure() -> str:
-    """The gate's source and toolchain identity, once a process: every loaded module under `tools/`, `nvdisasm` and
-    `cuobjdump` by their version lines."""
+    """The gate's source and toolchain identity, once a process: every loaded module under `tools/`, the checker's own
+    source, `nvdisasm` and `cuobjdump` by their version lines."""
     global _CLOSURE
     if _CLOSURE is None:
         tools = Path(__file__).resolve().parent
@@ -385,6 +336,9 @@ def _closure() -> str:
         for path in sorted({Path(m.__file__).resolve() for m in list(sys.modules.values())
                             if getattr(m, "__file__", None) and Path(m.__file__).resolve().is_relative_to(tools)}):
             h.update(str(path.relative_to(tools)).encode() + b"\0" + path.read_bytes())
+        package = checked.checker().root / "warpline"
+        for path in sorted(package.rglob("*.py")):
+            h.update(str(path.relative_to(package)).encode() + b"\0" + path.read_bytes())
         for tool in ("nvdisasm", "cuobjdump"):
             h.update(subprocess.run([sass.tool(tool), "--version"], capture_output=True, text=True,
                                     check=True).stdout.encode())

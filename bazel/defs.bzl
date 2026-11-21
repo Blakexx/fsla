@@ -179,8 +179,12 @@ def _link(ctx, so):
     )
 
 def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
-    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers, `flags`
-    and the files they name (`inputs`) its own; its verdict, `verdict_path`, the action's output."""
+    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers and the
+    checker it reads the code with (warpline's, `ROLA_WARPLINE_PYTHON`), `flags` and the files they name (`inputs`) its
+    own; its verdict, `verdict_path`, the action's output."""
+    package = [f for f in ctx.files._warpline if f.path.endswith("/warpline/__init__.py")]
+    if len(package) != 1:
+        fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr._warpline.label, len(package)))
     verdict = ctx.actions.declare_file(verdict_path)
     args = ctx.actions.args()
     args.add(ctx.file._sass_gate)
@@ -192,7 +196,8 @@ def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._gate_sources + inputs + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        inputs = ctx.files._gate_sources + ctx.files._warpline + inputs + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        env = {"ROLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
         outputs = [verdict],
         mnemonic = "RolaSassGate",
         progress_message = "The SASS gate on %{label}'s library",
@@ -203,6 +208,7 @@ def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
 _SASS_GATE_ATTRS = {
     "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
     "_gate_sources": attr.label(default = "//bazel:gate_sources"),
+    "_warpline": attr.label(default = "@warpline//:warpline"),
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
@@ -530,7 +536,7 @@ def tool_run(**kwargs):
 
 _LAB_RUN = """\
 #!/bin/bash
-# the lab as a run target (bazel/defs.bzl's lab_run): `tools/lab.py` in the checkout, on the checkout's own venv, handed
+# a tool that reads compiled code through warpline, as a run target (bazel/defs.bzl's lab_run): `{tool}` in the checkout, on the checkout's own venv, handed
 # the directory that holds `warpline/stamp.cuh` (the module's header, compile time only) and the one that holds the
 # `warpline` package (the library that reads the traced rows) by their resolved paths (the runfiles' links do not
 # outlive the run)
@@ -546,7 +552,7 @@ fi
 cd "$checkout"
 export ROLA_WARPLINE_INCLUDE="$(dirname "$(dirname "$stamp")")"
 export ROLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"
-exec "$venv/bin/python" tools/lab.py "$@"
+exec "$venv/bin/python" {tool} "$@"
 """
 
 def _lab_run_impl(ctx):
@@ -557,7 +563,7 @@ def _lab_run_impl(ctx):
     if len(package) != 1:
         fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr.library.label, len(package)))
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _LAB_RUN.format(stamp = shell.quote(stamp[0].short_path), package = shell.quote(package[0].short_path)), is_executable = True)
+    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), stamp = shell.quote(stamp[0].short_path), package = shell.quote(package[0].short_path)), is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = stamp + ctx.files.library))]
 
 lab_run = rule(
@@ -566,8 +572,9 @@ lab_run = rule(
     attrs = {
         "headers": attr.label(mandatory = True, doc = "warpline's headers (`@warpline//:headers`)"),
         "library": attr.label(mandatory = True, doc = "warpline's reader (`@warpline//:warpline`)"),
+        "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
     },
-    doc = "The lab (`tools/lab.py`) run by `bazel run` in the checkout, handed the include directory of warpline's " +
+    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the include directory of warpline's " +
           "`warpline/stamp.cuh` as `ROLA_WARPLINE_INCLUDE` and the directory of its `warpline` package as " +
           "`ROLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )

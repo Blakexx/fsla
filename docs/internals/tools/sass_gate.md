@@ -1,7 +1,7 @@
 # `tools/sass_gate.py` -- the ptxas signatures, on every build
 
 The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
-[§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (local memory, a stack frame, convergence calls a converged
+[§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (a stack frame, convergence calls a converged
 warp executes, predicated HMMAs, branches in an MMA step) and reports the gaps in an MMA step (`mma_gap`) without failing; guarded convergence
 fallbacks are counted, cold code, not red. A step loop leaves out a fallback's return: the stub a `BRA.DIV` enters is
 read to its unconditional branch back, however long (ptxas copies a step's remaining work into it). Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
@@ -9,6 +9,24 @@ read to its unconditional branch back, however long (ptxas copies a step's remai
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build that skips the ratify still shows a
 register change. The step cover (KERNEL_STANDARDS §32.4) is a family's machine model's reading, and the gate runs
 none until a family's model exists.
+
+## <a id="checker"></a>What the checker computes, and what stays the gate's
+
+Two signatures are warpline's checker's (`tools/checked.py` imports it and builds its model of a cubin's kernels; `tools/lab.py`
+still carries its own copies of the two functions): `stack_memory` (a nonzero stack frame, the `LDL`/`STL` instructions
+counted beside it) and `convergence_call` (a call into a convergence subroutine a converged warp executes; the guarded
+ones, which the model finds in cold blocks, are counted in `guarded` and not red). The gate holds no declaration for
+them: undeclared is zero. The graph's gate action and `bazel run //tools:sass_gate` hand the tool the checker's package
+(`ROLA_WARPLINE_PYTHON`, the pin `MODULE.bazel` names); the verdict cache's key includes the checker's source.
+
+Four things stay the gate's own. (1) The step signatures -- branches in an MMA step, the conversion unit, global memory,
+predicated HMMA, instructions per HMMA, the step gap -- are read off the disassembly by the gate's own parsing of `mma.sync`
+loops, with an instrument's declarations (below). The checker has rules of those names, but its model holds as a tensor
+step the warpgroup's `HGMMA` family alone and every production architecture issues `HMMA`/`IMMA`: handed an Ampere
+cubin its step rules read no step and are quiet (the compiled probes of `tests/unit/test_sass_gate.py` show it). They
+move to the checker when its model admits `mma.sync` as a step. (2) A PTX image in a binary (closed-world rule 2). (3) A
+source kernel no cubin carries (`tools/kernels.py`). (4) The narrowing that matches nothing is red. The gate reads no
+build notices (its action has no ptxas log), so the project's notice ledger is the lab's alone.
 
 ## <a id="step-branches"></a>A branch inside a step
 
@@ -35,7 +53,7 @@ verdict cache leaves to the cubins that changed.
 ## <a id="cache"></a>The verdict cache
 
 A cubin's verdict, report and statistics are recorded under the key of everything that decides them -- the cubin's
-bytes, the gate's own source closure (every module of `tools/` it has loaded), the disassemblers' identity (`nvdisasm` and `cuobjdump` by
+bytes, the gate's own source closure (every module of `tools/` it has loaded, and the checker's), the disassemblers' identity (`nvdisasm` and `cuobjdump` by
 their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`, and `--instrument`'s declarations, by
 content) -- in the dev config's scratch
 (`sass_gate_verdicts/`). A cubin whose key matches is replayed: its verdict is the reading of identical bytes under an

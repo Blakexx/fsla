@@ -78,6 +78,14 @@ lab_run(
     library = "@warpline//:warpline",
 )
 
+#: THE SASS GATE by hand, handed the checker as the lab is (the graph's gate action reads the same way)
+lab_run(
+    name = "sass_gate",
+    headers = "@warpline//:headers",
+    library = "@warpline//:warpline",
+    tool = "tools/sass_gate.py",
+)
+
 #: THE TREE'S TOOLS, each a run target (bazel/defs.bzl's `tool_run`): `bazel run //tools:<name> -- <its arguments>`, in
 #: the checkout on its own venv (docs/build-graph.md#use)
 [tool_run(
@@ -99,7 +107,6 @@ lab_run(
     "region_ledger",
     "review_gate",
     "sass_bodies",
-    "sass_gate",
     "stall_census",
     "supported",
     "wheels",
