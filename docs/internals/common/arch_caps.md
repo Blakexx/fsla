@@ -38,3 +38,11 @@ is never approximated by a neighbouring row.
 <a id="capsdigest"></a>**`caps_digest`** is a digest of the active row's instruction flags (`kCapsDigest` at the
 compiling target), written by the carry's stamp kernel and read on the host. A binary compiled against a different
 table cannot masquerade as this one -- no path or file hash can establish that, only a device-side fact.
+
+<a id="written-for"></a>**THE FAMILIES A HEADER IS WRITTEN FOR** (`written_for<Family...>()`): every header that includes this one
+names, in a `static_assert` beside the include, the families its bodies are written for, and a build of any other family
+is refused by name with that header's path. A header whose instructions are the same on two families names both: the
+warp atoms (`common/atoms/warp.cuh`: votes, shuffles, the lane mask, moves) are written for ampere and hopper. The
+others name ampere until their hopper bodies are written (docs/architecture/families.md: an atom's body per family
+where it is defined).
+

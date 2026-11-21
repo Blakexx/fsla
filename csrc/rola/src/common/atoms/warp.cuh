@@ -10,6 +10,11 @@
 
 #include "common/arch_caps.cuh"
 
+//: written for ampere and hopper: vote, shuffle, lane mask and move are the same instruction on both families
+static_assert(
+    denseref::arch::written_for<denseref::arch::Family::kAmpere, denseref::arch::Family::kHopper>(),
+    "common/atoms/warp.cuh: written for the ampere and hopper families only");
+
 namespace denseref {
 namespace ops {
 

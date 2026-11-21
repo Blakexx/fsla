@@ -559,6 +559,7 @@
   {"doc": "docs/internals/common/atoms/warp.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "2a9df106d71fa93b", "target": "csrc/rola/src/common/atoms/warp.cuh::last_set"},
   {"doc": "docs/internals/common/atoms/warp.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "0dd3d902abb7cc2a", "target": "csrc/rola/src/common/atoms/warp.cuh::nth_set_bit"},
   {"doc": "docs/internals/common/atoms/warp.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "525eb997b08da01b", "target": "csrc/rola/src/common/atoms/warp.cuh::uniform_warp"},
+  {"doc": "docs/internals/common/atoms/warp.md", "pinned_at": "10bf51e237d7", "reviewed": true, "sha256": "56bff97379999329", "target": "docs/internals/common/arch_caps.md#written-for"},
   {"doc": "docs/internals/common/atoms/warp.md", "pinned_at": "71c340a0fb65", "reviewed": true, "sha256": "", "target": "docs/internals/common/ops.md"},
   {"doc": "docs/internals/common/build_stamp.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "csrc"},
   {"doc": "docs/internals/common/build_stamp.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "185af72db682ba97", "target": "csrc/rola/src/common/build_stamp.cu::csrc_build_stamp"},
