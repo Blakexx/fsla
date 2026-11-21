@@ -107,7 +107,7 @@ a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.clau
 session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
 Four exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
-`no_verify.py` (`#no-verify`), `graph_only.py` (the 2026-11-21 ruling that what runs outside the graph moves into it: it refuses `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and `pip install` typed as a command word, by name or path, and names the target that runs it -- `//:library`, `//tools:lab`, `//tools:sass_gate`, `//:measure`, `//tests:sanitizer`, `//:dev_env`; a `bazel` command passes, and `GRAPH_OVERRIDE="<why>"` lifts it; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
+`no_verify.py` (`#no-verify`), `graph_only.py` (`KERNEL_STANDARDS#s14-graph`: it refuses `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and `pip install` typed as a command word, by name or path, and names the target that runs it -- `//:library`, `//tools:lab`, `//tools:sass_gate`, `//:measure`, `//tests:sanitizer`, `//:dev_env`; a `bazel` command passes, and `GRAPH_OVERRIDE="<why>"` lifts it; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
 source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each entry of the `checker` section of `docs/rules.json` whose
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
@@ -121,8 +121,8 @@ on a step that runs `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `ncu`,
 install or `pytest`, or makes a temporary directory a build would stage in (`tempfile.mkdtemp`/`TemporaryDirectory` named for a build, or in a file
 that runs a tool; `mktemp -d`): a Python call of `subprocess`/`os`/`asyncio` or a tool's own runner (`run`, `_run`, `sh`) whose command is
 a list or shell string headed by the tool, a shell command word, a `genrule`'s `cmd`. A tool named in a comment, a docstring or a string no call runs
-is text and passes. There is no baseline: `ALLOWLIST` holds one entry a call site (file, function, tool), each naming the graph rule whose action runs
-it or the ruling that keeps it outside, with its words quoted; an entry that matches no site fails, so the list is the sites. A new step belongs in a
+is text and passes. There is no baseline: `ALLOWLIST` holds one entry a call site (file, function, tool), each citing the graph rule whose action runs
+it or the clause of KERNEL_STANDARDS#s14-graph that keeps it outside (the profiler on the host that grants its counters, measurement's own workers and locks, the sanitizer lane's pair, what runs on a rented box), with its words quoted; an entry that matches no site fails, so the list is the sites. A new step belongs in a
 graph rule; `GRAPH_OVERRIDE` is the hook's exception for a typed command, never the lint's.
 
 <a id="ratchets"></a>
@@ -136,6 +136,12 @@ move it. The gate fails on a finding the baseline does not hold, on a baseline e
 of the tree, which has no HEAD ([`build-graph.md`](../../build-graph.md#checks)). A HEAD git cannot read fails it. Editing
 a line that carries a finding changes its digest, so the commit that touches the line fixes the finding. A lint that
 cannot run fails; it never reads as zero. `--init` records a new lint's baseline once.
+
+A RE-KEY is the stated rename of a finding's key, for a finding whose message was reworded (the message is part of the key): `--rekey OLD NEW`
+rewrites the baseline's entries whose message is OLD to NEW, their counts unchanged, and records `{"from", "to", "count"}` in the baseline's `rekeys`.
+`--grown` reads HEAD's entries through the baseline's own re-keys, so a re-keyed entry is the same entry and a re-key that adds to a count is growth
+(`tests/unit/test_lint_ratchet.py`); `--shrink` drops a re-key whose `to` the baseline no longer holds. `drift_guards`' three arm-table entries are the
+first: their message named the generator the arms' declaration replaced, and now names the form that holds.
 
 A finding that is not a defect is exempted the lint's own way, with its reason: vulture's whitelist
 (`vulture_whitelist.py`), a `reserved:` marker for a constant parameter. "A ruling per hit" is that work: the lint cannot

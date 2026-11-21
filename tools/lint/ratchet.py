@@ -4,6 +4,7 @@
     bazel test //:ratchet_work_codes                        # the gate: a new finding fails, and so does a fixed one
     bazel run //tools/lint:ratchet -- work_codes --shrink   # drop the fixed entries (it never adds one)
     bazel run //tools/lint:ratchet -- work_codes --init     # record today's findings; refused when a baseline exists
+    bazel run //tools/lint:ratchet -- work_codes --rekey OLD NEW   # a finding's message was reworded: rename its entries
     bazel test //:ratchet_baselines                         # every baseline against HEAD's alone, in the checkout
 
 A lint's findings are its `path:line: message` lines. A finding is known by its path, its message's first sentence and
@@ -17,6 +18,12 @@ holds the findings the tree carried when the lint began gating, with their multi
 - a baseline that holds more of an entry than HEAD's: a backlog only shrinks. `--grown` checks it, every baseline
   at once, in the checkout -- the graph's check of the commit; a lint's run reads a copy of the tree, which has no
   HEAD.
+
+A finding's message is part of its key, so rewording it would read as a new finding and a fixed one. A RE-KEY is the stated
+rename: `--rekey OLD NEW` rewrites the baseline's entries whose message is OLD to NEW, their counts unchanged, and records
+`{"from", "to", "count"}` in the baseline's `rekeys`. `--grown` reads HEAD's entries through the baseline's own re-keys, so a
+re-keyed entry is the same entry and a re-key that adds to a count is growth; `--shrink` drops a re-key whose `to` the
+baseline no longer holds.
 
 A lint that cannot run (a missing tool, a crash) fails the gate; it never reads as zero findings.
 Docs: docs/internals/tools/lint.md#ratchets.
@@ -67,14 +74,41 @@ def _decode(blob: str) -> Counter:
     return Counter({(e["path"], e["message"], e["line_sha256"]): e["count"] for e in json.loads(blob)["findings"]})
 
 
-def _encode(lint: str, entries: Counter) -> str:
+def _rekeys(blob: str) -> list[dict]:
+    """A baseline's recorded re-keys: `{"from": the old message, "to": the new one, "count": the entries renamed}`."""
+    return json.loads(blob).get("rekeys", [])
+
+
+def _encode(lint: str, entries: Counter, rekeys: list[dict] | None = None) -> str:
     rows = [{"path": p, "message": m, "line_sha256": d, "count": n} for (p, m, d), n in sorted(entries.items()) if n > 0]
-    return json.dumps({"lint": lint, "findings": rows}, indent=1) + "\n"
+    record = {"lint": lint, "findings": rows}
+    if rekeys:
+        record["rekeys"] = rekeys
+    return json.dumps(record, indent=1) + "\n"
 
 
-def _head(path: Path) -> Counter | None:
+def rekeyed(entries: Counter, rekeys: list[dict]) -> Counter:
+    """`entries` with each re-key applied: the entries whose message is a re-key's `from` carry its `to`, their counts
+    unchanged and added where an entry of the new key exists."""
+    renamed = {r["from"]: r["to"] for r in rekeys}
+    out: Counter = Counter()
+    for (path, message, digest), n in entries.items():
+        out[(path, renamed.get(message, message), digest)] += n
+    return out
+
+
+def rekey(entries: Counter, old: str, new: str) -> tuple[Counter, dict]:
+    """The entries after the re-key of message `old` to `new`, and its record; refused when no entry has the message `old`."""
+    count = sum(n for (_, message, _), n in entries.items() if message == old)
+    if not count:
+        raise SystemExit(f"ratchet: no baseline entry has the message {old!r}; a re-key renames entries it holds")
+    return rekeyed(entries, [{"from": old, "to": new}]), {"from": old, "to": new, "count": count}
+
+
+def _head(path: Path, rekeys: list[dict] | None = None) -> Counter | None:
+    """HEAD's baseline at `path`, read through `rekeys` (the working baseline's own)."""
     shown = subprocess.run(["git", "show", f"HEAD:{path.relative_to(ROOT)}"], cwd=ROOT, capture_output=True, text=True)
-    return _decode(shown.stdout) if shown.returncode == 0 else None
+    return rekeyed(_decode(shown.stdout), rekeys or []) if shown.returncode == 0 else None
 
 
 def verdict(found: Counter, baseline: Counter, head: Counter | None) -> tuple[Counter, Counter, Counter]:
@@ -114,8 +148,10 @@ def baselines_grown(lints: list[str]) -> int:
     for lint in lints:
         path = BASELINES / f"{lint}.json"
         #: a baseline HEAD lacks is new, and one the tree lacks is deleted: neither has grown
-        head = _head(path)
-        if head is None or not path.exists():
+        if not path.exists():
+            continue
+        head = _head(path, _rekeys(path.read_text()))
+        if head is None:
             continue
         compared += 1
         grown = verdict(Counter(), _decode(path.read_text()), head)[2]
@@ -135,6 +171,9 @@ def main() -> int:
                       help="every baseline against HEAD's, none grown (the commit's half; no lint runs)")
     mode.add_argument("--shrink", action="store_true", help="remove the entries the lint no longer finds")
     mode.add_argument("--init", action="store_true", help="record the current findings as a new lint's baseline")
+    mode.add_argument("--rekey", nargs=2, metavar=("OLD", "NEW"),
+                      help="a finding's message was reworded: rename the baseline's entries OLD to NEW, counts unchanged, "
+                           "and record the rename in the baseline")
     a = ap.parse_args()
     if a.grown:
         return baselines_grown(sorted(LINTS) if a.lint is None else [a.lint])
@@ -155,9 +194,15 @@ def main() -> int:
                          f"bazel run //tools/lint:ratchet -- {a.lint} --init records one)")
     baseline = _decode(path.read_text())
 
+    rekeys = _rekeys(path.read_text())
+    if a.rekey:
+        renamed, record = rekey(baseline, *a.rekey)
+        path.write_text(_encode(a.lint, renamed, [*rekeys, record]))
+        print(f"ratchet {a.lint}: {record['count']} entr(ies) re-keyed, the baseline's count {sum(baseline.values())} unchanged")
+        return 0
     if a.shrink:
         kept = baseline & found
-        path.write_text(_encode(a.lint, kept))
+        path.write_text(_encode(a.lint, kept, [r for r in rekeys if any(m == r["to"] for (_, m, _) in kept)]))
         print(f"ratchet {a.lint}: baseline {sum(baseline.values())} -> {sum(kept.values())}")
         return 0
 

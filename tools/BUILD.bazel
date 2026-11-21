@@ -62,6 +62,24 @@ cc_binary(
     ],
 )
 
+#: THE DERIVATION'S RECORD: the harness run over the sources the cases name; `tools/manifests/derivation.json` is its output
+#: (`//:derivation` holds it, `bazel run //:derivation_update` writes it)
+genrule(
+    name = "derivation_record",
+    srcs = [
+        "manifests/derivation_cases.json",
+        ":derivation_harness",
+        "//csrc/rola:sources",
+    ],
+    outs = ["derivation/derivation.json"],
+    cmd = "$(execpath @rola_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) " +
+          "--src csrc/rola/src --binary $(execpath :derivation_harness) --record $@",
+    tools = [
+        "derivation.py",
+        "@rola_env//:python",
+    ],
+)
+
 #: THE LAB, a run target of its own: it hands the tool the directory of warpline's Python package, which
 #: `tools/lab_trace.py` reads the traced rows with and the lab's checks read the code with (`ROLA_WARPLINE_PYTHON`). The experiments are
 #: targets of the graph (`//measure/lab`, bazel/lab.bzl): the lab builds the one it reads, and compiles nothing itself

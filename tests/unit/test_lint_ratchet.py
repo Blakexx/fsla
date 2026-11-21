@@ -49,3 +49,29 @@ def test_a_renamed_path_moves_a_finding_and_does_not_grow_the_backlog():
 def test_the_baseline_round_trips():
     entries = Counter({A: 2, B: 1})
     assert ratchet._decode(ratchet._encode("x", entries)) == entries
+
+
+OLD, NEW = "'_ARMS' is a literal arm table outside tools/gen_shards.py", "'_ARMS' is a literal arm table outside an `arms.bzl`"
+OLD_ENTRY, NEW_ENTRY = ("t.py", OLD, "2" * 16), ("t.py", NEW, "2" * 16)
+
+
+def test_a_rekey_renames_the_entries_counts_unchanged_and_records_itself():
+    renamed, record = ratchet.rekey(Counter({OLD_ENTRY: 2, A: 1}), OLD, NEW)
+    assert renamed == Counter({NEW_ENTRY: 2, A: 1}) and record == {"from": OLD, "to": NEW, "count": 2}
+    assert ratchet._rekeys(ratchet._encode("x", renamed, [record])) == [record]
+    assert ratchet._rekeys(ratchet._encode("x", renamed)) == []
+
+
+def test_a_rekey_of_a_message_no_entry_has_is_refused():
+    import pytest
+
+    with pytest.raises(SystemExit, match="no baseline entry has the message"):
+        ratchet.rekey(Counter({A: 1}), OLD, NEW)
+
+
+def test_head_is_read_through_the_rekeys_so_a_rename_is_not_growth_and_an_added_count_is():
+    rekeys = [{"from": OLD, "to": NEW, "count": 1}]
+    head = ratchet.rekeyed(Counter({OLD_ENTRY: 1}), rekeys)
+    assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 1}), head)[2] == Counter()
+    assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 2}), head)[2] == Counter({NEW_ENTRY: 1})
+    assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 1}), Counter({OLD_ENTRY: 1}))[2] == Counter({NEW_ENTRY: 1})

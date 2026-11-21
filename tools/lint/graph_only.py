@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""THE GRAPH RUNS THE TOOLCHAIN, at the commit gate (KERNEL_STANDARDS#s14-graph; Blake, 2026-11-21, "what runs outside the graph
-moves into it ... a commit-gate lint refuses them in tracked code, its allowlist naming the rule or ruling for each").
+"""THE GRAPH RUNS THE TOOLCHAIN, at the commit gate (KERNEL_STANDARDS#s14-graph; Blake, 2026-11-08: "every operation starts as a
+bazel command, no old path survives"): a commit-gate lint refuses these steps in tracked code, its allowlist naming the rule or
+the clause of KERNEL_STANDARDS#s14-graph for each.
 
 The scan reads every tracked `*.py`, `*.sh`, `*.bzl`, `BUILD*` and script with a shebang (the hooks), and fails on a subprocess
 or shell step that runs
@@ -13,8 +14,8 @@ or shell step that runs
   compile would stage its files;
 
 unless `ALLOWLIST` holds an entry for it. There is no baseline: an entry is one call site (the file, the function it is in and
-the tool), and names what runs it -- the graph's rule whose action it is (`rule`), or the ruling that keeps it outside the graph
-(`ruling`) -- with the words of that rule or ruling quoted. An entry that matches no site fails too, so the list is the sites.
+the tool), and names what runs it -- the graph's rule whose action it is (`rule`), or the clause of KERNEL_STANDARDS#s14-graph that keeps it outside the
+graph (`clause`) -- with the words of that rule or clause quoted. An entry that matches no site fails too, so the list is the sites.
 
 A step is read from the syntax, never from the words: a Python call of `subprocess` (or `os.system`, `os.exec*`, `asyncio`'s
 subprocesses, or a runner a tool names `run`, `_run`, `sh`, ...) whose command is a list or a shell string whose first word is
@@ -389,20 +390,19 @@ def rule(label: str, quote: str) -> tuple[str, str, str]:
     return ("rule", label, quote)
 
 
-def ruling(ident: str, quote: str) -> tuple[str, str, str]:
-    """An entry kept outside the graph by a ruling of the ledger: its id, and its words."""
-    return ("ruling", ident, quote)
+def clause(letter: str, quote: str) -> tuple[str, str, str]:
+    """An entry kept outside the graph by a clause of KERNEL_STANDARDS#s14-graph: its letter, and its words."""
+    return ("clause", f"docs/KERNEL_STANDARDS.md#s14-graph ({letter})", quote)
 
 
 _CUDA_UNIT = rule("bazel/cuda.bzl `cuda_unit`, whose action is this script", "THE GRAPH'S CUDA COMPILE ACTION (`bazel/cuda.bzl`'s `cuda_unit`)")
 _LAB = rule("bazel/lab.bzl `lab_experiment`, whose facts action is this script", "THE LAB'S FACTS, read in the graph (bazel/lab.bzl's `lab_experiment`")
 _READERS = rule("every graph action and run target that reads SASS hands its toolkit's disassemblers to `sass.use_graph`",
                 "Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits.")
-_SANITIZER = rule("//tests:sanitizer (`device_lane`), which passes the toolkit's own compute-sanitizer", "THE SANITIZER LANE (docs/testing.md#the-sanitizer-lane): compute-sanitizer, the toolkit's own")
+_SANITIZER = clause("c", "THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own")
 _RATIFY = rule("//:ratify (`ratify_run`) and the census tests (`census_test`), on the graph's ptxas (`ratify.cuda_bin`)", "ONE toolchain location for nvcc and ptxas, the build's own")
-_OUTSIDE = "2026-11-21-go-end-to-end-what-runs-outside-the-graph-moves"
-_MEASURE = ruling(_OUTSIDE, "measurement stay outside, as the survey found.")
-_PROFILER = ruling("2026-11-07-p87-the-hopper-dev-box-starts-on-vast-the-profiler-s", "a host that grants ncu counters, or a gate exception")
+_MEASURE = clause("b", "MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as")
+_PROFILER = clause("a", "THE PROFILER, on the host that grants its counters")
 
 #: ONE ENTRY A CALL SITE -- (file, the function it is in, the tool) -- NAMING WHAT RUNS IT, no baseline: an entry that matches no site fails
 ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
@@ -445,8 +445,8 @@ def judge(sites: list[Site], allowlist) -> list[str]:
     for site in sites:
         if site.key not in allowlist:
             problems.append(f"{site.path}:{site.line}: `{site.tool}` runs in `{site.where}` outside the graph: move it into a graph rule "
-                            f"(docs/KERNEL_STANDARDS.md#s14-graph) or, where a rule or ruling keeps it out, add an ALLOWLIST entry "
-                            f"quoting it (tools/lint/graph_only.py)")
+                            f"(docs/KERNEL_STANDARDS.md#s14-graph) or, where a rule or a clause keeps it out, add an ALLOWLIST entry "
+                            f"citing the rule or the clause of docs/KERNEL_STANDARDS.md#s14-graph that keeps it out (tools/lint/graph_only.py)")
     seen = {site.key for site in sites}
     for key in allowlist:
         if key not in seen:

@@ -74,7 +74,10 @@ rola-devtools checkout `tools/bootstrap.py` finds.
 
 `//:library` is `rola_cu13/_C.abi3.so` and its build record `rola_cu13/_build_config.py`; `bazel run //:library` copies
 both into the checkout's `rola_cu13/` (a copy: the library is imported from the checkout), and the build's generated
-headers into `build/generated`.
+headers into `build/generated`. `common/hardware.cuh` is one of the graph's generated headers and is checked in nowhere:
+the genrule `//csrc/rola:hardware_header` writes it from `common/hardware.json` (`python -m measure.hardware --header`) into
+the include path every unit reads (`//csrc/rola:headers`), whatever the build's parameters
+([`internals/common/hardware.md`](internals/common/hardware.md)).
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
   `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
@@ -158,11 +161,9 @@ among them: it is a report, on demand ([below](#census)).
 `bazel run //:ratify -- --census` reports every shipped instantiation's registers and spills, read from the graph's own
 compiles ([`ratification.md`](ratification.md)): `tools/ratify.py --graph` in the checkout, `--json PATH` for the raw
 record. The census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is each unit's ptxas report and object (the
-`cuda_unit` rule's) with the graph's assembler and disassemblers and the derivation harness the graph builds
-(tools/BUILD.bazel's `derivation_harness`, [`internals/tools/ratify.md`](internals/tools/ratify.md#graph)); the scope is
+`cuda_unit` rule's) with the graph's assembler and disassemblers; the scope is
 the build's parameters, and the census's disassemblers run a unit a host-budget slot (the machine's budget under
-`bazel run`, a pool of the sandbox's own under a sandboxed test). `bazel test //:derivation` checks the derivation's
-goldens against the harness (tagged `manual`) and `bazel test //csrc/rola:unused_instantiations` reads the census for
+`bazel run`, a pool of the sandbox's own under a sandboxed test). `bazel test //csrc/rola:unused_instantiations` reads the census for
 the template kernels no unit instantiates.
 
 THE CLOSED WORLD IS THE DECLARED TARGETS AND THE GATES EVERY BUILD RUNS: a kernel's arms (`arms.bzl`), the built
@@ -218,6 +219,24 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   resolving (`tools/docrefs.py`), the devbox image the one the tree names and checked (`tools/dev.py container
   gate`, which builds `//:image`). Each runs in the
   checkout, outside the sandbox and never cached, its input the repository's state.
+
+## <a id="committed-files"></a>Committed files the graph writes
+
+A file the repository commits that a tool writes (a generated block, a record of a measurement the graph's own build makes, a name) is ONE
+pattern, `bazel/defs.bzl`'s `committed_file(name, committed, generated)`: the file is the output of a graph action (`generated`), and the
+pattern makes two targets from it. `bazel run //:<name>_update` writes the committed file from that output; the test
+`//:<name>` (`tools/committed_file.py`, in `//:commit_checks`, so the gate) fails when the committed file differs from what the graph would
+write, showing the difference and the update command. No tool writes a committed file by a mode of its own, and the file carries no
+date or host, so the same tree writes the same bytes.
+
+| committed file | the graph writes it | the test | the update |
+|---|---|---|---|
+| `tools/manifests/derivation.json` | `//tools:derivation_record`: the derivation harness the graph built, run over the sources the declared cases name | `//:derivation` | `//:derivation_update` |
+| `README.md`'s generated blocks (the support table, the capability table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the hardware table, the toolchain record and the activation registry | `//:readme` | `//:readme_update` |
+| `tools/devbox_image.json` | `//:devbox_image_record`: `//:image`'s content digest (`tools/oci_layout.py --record`) | `//:devbox_image` | `//:devbox_image_update` |
+
+`common/hardware.cuh` is not a committed file: it is a graph output the units include, and nothing checks a copy in. A change to the
+image's name still carries a passing container check (`tools/dev.py container gate`, `//:dev_container`).
 
 ## <a id="packages"></a>The packages
 

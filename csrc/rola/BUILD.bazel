@@ -23,11 +23,34 @@ filegroup(
     srcs = glob(["src/**"]),
 )
 
+#: THE HARDWARE TABLE'S HEADER, `common/hardware.cuh`, generated from `common/hardware.json` and checked in nowhere
+#: (docs/internals/common/hardware.md); it does not depend on the build's parameters
+genrule(
+    name = "hardware_header",
+    srcs = [
+        "//:measure/__init__.py",
+        "src/common/hardware.json",
+    ],
+    outs = ["hardware/common/hardware.cuh"],
+    cmd = "$(execpath @rola_env//:python) $(execpath //:measure/hardware.py) --header $@",
+    tools = [
+        "//:measure/hardware.py",
+        "@rola_env//:python",
+    ],
+)
+
+cc_library(
+    name = "hardware",
+    hdrs = [":hardware_header"],
+    includes = ["hardware"],
+)
+
 #: the repository's headers come first, so a repository header wins any name collision
 include_root(
     name = "headers",
     hdrs = glob(["src/**/*.cuh"]),
     roots = ["src"],
+    deps = [":hardware"],
 )
 
 #: each arm family's selection header and Python table, and the carry's units: its arms from the declaration beside the

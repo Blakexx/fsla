@@ -46,7 +46,6 @@ def graph(tmp_path, monkeypatch):
                       for u in ("a", "b")],
             "tools": {"ptxas": "../cuda+/bin/ptxas", "cuobjdump": "../cuda_tools+/bin/cuobjdump",
                       "nvdisasm": "../cuda_tools+/bin/nvdisasm"},
-            "derivation": {"harness": "tools/derivation/derivation_harness.cu", "binary": "tools/derivation_harness"},
             "parameters": PARAMETERS}))
         ratify.use_graph(census, runfiles)
         return runfiles
@@ -59,7 +58,6 @@ def test_the_census_paths_resolve_against_the_runfiles_and_its_tools_are_this_pr
     assert ratify.cuda_bin("ptxas") == str(runfiles.parent / "cuda+" / "bin" / "ptxas")
     assert sass.tool("cuobjdump") == str(runfiles.parent / "cuda_tools+" / "bin" / "cuobjdump")
     assert ratify._GRAPH["units"][0]["report"] == runfiles / "objs" / "a.ptxas.txt"
-    assert ratify._GRAPH["harness_binary"] == runfiles / "tools" / "derivation_harness"
 
 
 def test_the_compiled_entries_are_every_unit_s_mangled_names(graph):

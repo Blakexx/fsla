@@ -83,7 +83,8 @@ base's, none at another version). The base merges /usr (its top-level links into
 links, so the packages' files go under /usr as dpkg writes them through the links (`tools/usrmerge_layer.py`), and the
 check refuses a layer with anything left there. 1.4 GB.
 
-Its identity is its content digest, which the tree names in `tools/devbox_image.json`. The commit gate builds the
+Its identity is its content digest, which the tree names in `tools/devbox_image.json` (a committed file the graph writes:
+`bazel run //:devbox_image_update`, [`build-graph.md#committed-files`](build-graph.md#committed-files)). The commit gate builds the
 image and refuses a tree whose image is another, and a change to the name without a passing container check for the
 new digest (KERNEL_STANDARDS §23 (3)). A commit that leaves the image alone needs no Docker, which a rented box (itself
 a container) does not have.
@@ -107,7 +108,7 @@ one is the verdict) and the commit gate; then the GPU and a call through torch's
 seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum), and an iteration build of
 the library for the device's architecture, imported. The result, each step's time and the cold start (the clone, the
 bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `rola_results` at
-`environment` under the image's digest, and a green check writes the digest to `tools/devbox_image.json`. A green
+`environment` under the image's digest. A green
 run's volumes go with it; a red run's stay for a look until the next run.
 
 **What a container shares with the host:** the host's lock directory (`host.lock_dir`, the GPU lock inside it), at

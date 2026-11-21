@@ -71,14 +71,21 @@ Under JIT those claims degrade into claims about a *family* of instruction
 streams that were never all measured, and the degradation is silent: the numbers
 still print.
 
-The failure mode is concrete rather than imagined, and this engine contains the
-instance. One instantiation carries a **4-byte spill accepted as the measured
-optimum**, because every alternative spills worse. A judgement of that kind
+The failure mode is concrete rather than imagined, and this engine has held the
+instance: an instantiation once carried a **4-byte spill accepted as the measured
+optimum**, because every alternative spilled worse. A judgement of that kind
 recorded only in a document is enforced by nothing: a codegen change can grow the
-spill with no gate failing. Under AOT it is a number every instantiation's census reads
-([`ratification.md`](../ratification.md)), from a binary that is the same bytes for
-the same inputs. Under JIT it could not be read at all, because the entries would not exist
-until run time, on a machine the project does not control.
+spill with no gate failing. Under AOT the binary is the same bytes for the same
+inputs, so the spill is a number that can be read from it, and it is: the SASS gate
+([`KERNEL_STANDARDS.md`](../KERNEL_STANDARDS.md#s20)) runs on every build and refuses a nonzero
+stack frame (its `stack_memory` rule, the `LDL`/`STL` instructions named beside it) on every function of the
+extension, whatever its size. Its one declared exception is an instrument's probe naming a
+step signature it keeps on purpose with its cost (`rola_instrument`'s `kept`), and that is a step
+signature (branches, the conversion unit, global memory inside an MMA step), never a stack frame: a spill
+the design accepts has no declaration to be accepted by, so it is red until the gate is amended to take
+one. The census (`bazel run //:ratify -- --census`, [`ratification.md`](../ratification.md)) reports each
+instantiation's spill beside it, never gating it. Under JIT none of this could be read at all, because
+the entries would not exist until run time, on a machine the project does not control.
 
 The cost of the decision is honest and it is paid: the instantiation matrix is a
 budget item that every design must price (a design that doubles compile time

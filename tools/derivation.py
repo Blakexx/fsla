@@ -1,16 +1,22 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases (`tools/manifests/derivation_cases.json`):
-`tools/ratify.py`'s derivation check runs it, and the graph builds it (tools/BUILD.bazel's `derivation_harness`). The
-standard library only, so a build action renders it with the environment's base interpreter.
+"""THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases (`tools/manifests/derivation_cases.json`), and the
+record of its goldens. The graph builds the harness (tools/BUILD.bazel's `derivation_harness`) and runs it into
+`tools/manifests/derivation.json` (`derivation_record`): the committed file is what that action writes, which
+`//:derivation` holds and `bazel run //:derivation_update` writes (docs/build-graph.md#committed-files). The standard
+library only, so a build action runs it with the environment's base interpreter.
 Docs: docs/internals/tools/ratify.md#graph.
 
     derivation.py --cases tools/manifests/derivation_cases.json --out derivation_harness.cu
+    derivation.py --cases tools/manifests/derivation_cases.json --src csrc/rola/src --binary derivation_harness \
+        --record derivation.json
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -60,12 +66,96 @@ def harness(cases: dict) -> str:
     return "".join(out)
 
 
+def declared(cases: dict, src: Path) -> dict:
+    """The declared cases, refused field by field: each source exists under `src`, the names are unique, and there is
+    at least one case (a record that measures nothing would pass by existence alone)."""
+    if cases.get("schema") != 1:
+        raise SystemExit(f"derivation_cases.json declares schema {cases.get('schema')!r}; this reads schema 1")
+    if not cases.get("sources"):
+        raise SystemExit("derivation_cases.json names no `sources`; a golden output with no code hash beside it cannot "
+                         "say what it is the output OF")
+    for rel in cases["sources"]:
+        if not (src / rel).exists():
+            raise SystemExit(f"derivation_cases.json names the derivation source {rel}, which does not exist under {src}")
+    names = [c["name"] for c in cases["geometry"]] + [c["name"] for c in cases["sub_boxes"]]
+    if len(names) != len(set(names)):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise SystemExit(f"derivation_cases.json: duplicate case name(s) {dupes}; a golden output is keyed by name, so "
+                         "two cases sharing one would file one measurement over the other")
+    if not names:
+        raise SystemExit("derivation_cases.json declares no case; a record that measures nothing would pass by existence "
+                         "alone")
+    return cases
+
+
+def sources(cases: dict, src: Path) -> dict[str, str]:
+    """`{declared source -> sha256}`, the derivation's code hash, per file.
+
+    PER FILE rather than one digest over the set, so a drift report can name which header moved. It must not be
+    widened to all of `csrc/`: a change to a kernel body is not a change to the derivation, and a record that expires
+    on every unrelated edit is a record people re-write without reading.
+    """
+    return {rel: hashlib.sha256((src / rel).read_bytes()).hexdigest() for rel in sorted(cases["sources"])}
+
+
+def cases_digest(cases: dict) -> str:
+    """A digest of the DECLARED CASES themselves: goldens can also stop failing because somebody deleted the case that
+    failed."""
+    payload = {"geometry": cases["geometry"], "sub_boxes": cases["sub_boxes"], "sources": cases["sources"]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def goldens(cases: dict, stdout: str) -> dict[str, str]:
+    """The harness's stdout as `{case name -> golden}`, every declared case among them.
+
+    An `ok` line's byte dump is hashed HERE so one hash function serves the whole record; a `refused` line keeps its
+    words, because the words are the filed thing.
+    """
+    golden: dict[str, str] = {}
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if parts[1] == "refused":
+            golden[parts[0]] = f"refused: {parts[2]}"
+        elif parts[1] == "ok":
+            golden[parts[0]] = f"ok: {parts[2]} bytes, sha256 {hashlib.sha256(parts[3].encode()).hexdigest()}"
+        else:
+            raise SystemExit(f"the derivation harness printed an unreadable line: {line!r}")
+    missing = [c["name"] for c in cases["geometry"] + cases["sub_boxes"] if c["name"] not in golden]
+    if missing:
+        raise SystemExit(f"the derivation harness printed no line for {missing}; a record that silently drops a case "
+                         "proves nothing about it")
+    return golden
+
+
+def record(cases: dict, src: Path, stdout: str) -> str:
+    """The record's text: the code hash, the cases' digest and every golden. No date and no host: the same tree writes
+    the same bytes."""
+    return json.dumps({"schema": 1, "sources": sources(cases, src), "cases_sha256": cases_digest(cases),
+                       "golden": goldens(cases, stdout)}, indent=1, sort_keys=True) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cases", type=Path, required=True, help="the declared cases")
-    ap.add_argument("--out", type=Path, required=True, help="the harness to write")
+    ap.add_argument("--out", type=Path, help="the harness to write")
+    ap.add_argument("--record", type=Path, help="the record to write: the harness's goldens (`--binary`) over `--src`")
+    ap.add_argument("--src", type=Path, help="the kernel sources the cases' `sources` name, relative to it")
+    ap.add_argument("--binary", type=Path, help="the harness, built")
     a = ap.parse_args()
-    a.out.write_text(harness(json.loads(a.cases.read_text())))
+    cases = json.loads(a.cases.read_text())
+    if bool(a.out) == bool(a.record):
+        raise SystemExit("one of --out (the harness) and --record (its goldens)")
+    if a.out:
+        a.out.write_text(harness(cases))
+        return 0
+    if not (a.src and a.binary):
+        raise SystemExit("--record needs --src and --binary")
+    run = subprocess.run([str(a.binary)], capture_output=True, text=True)
+    if run.returncode:
+        raise SystemExit(f"the derivation harness exited {run.returncode}:\n{run.stderr}")
+    a.record.write_text(record(declared(cases, a.src), a.src, run.stdout))
     return 0
 
 

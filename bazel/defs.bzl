@@ -76,13 +76,17 @@ rola_headers = rule(
 
 def _include_root_impl(ctx):
     roots = ["%s/%s" % (ctx.label.package, root) for root in ctx.attr.roots]
-    return [CcInfo(compilation_context = cc_common.create_compilation_context(headers = depset(ctx.files.hdrs), includes = depset(roots)))]
+    own = cc_common.create_compilation_context(headers = depset(ctx.files.hdrs), includes = depset(roots))
+    return [CcInfo(compilation_context = cc_common.merge_compilation_contexts(
+        compilation_contexts = [own] + [dep[CcInfo].compilation_context for dep in ctx.attr.deps],
+    ))]
 
 include_root = rule(
     implementation = _include_root_impl,
     attrs = {
         "hdrs": attr.label_list(allow_files = True),
         "roots": attr.string_list(doc = "the include roots, relative to the package"),
+        "deps": attr.label_list(providers = [CcInfo], doc = "the generated headers beside them (`common/hardware.cuh`)"),
     },
     doc = "Source headers under `-I` roots, searched before any dependency's (docs/build-graph.md#compile).",
 )
@@ -338,34 +342,30 @@ def _census_impl(ctx):
         "cuobjdump": ctx.file._cuobjdump,
         "nvdisasm": ctx.file._nvdisasm,
     }
-    harness = ctx.executable.harness_binary
     record = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(record, json.encode_indent({
         "units": [{"source": u.source, "report": u.report.short_path, "object": u.object.short_path} for u in units],
         "tools": {name: f.short_path for name, f in tools.items()},
-        "derivation": {"harness": ctx.file.harness.short_path, "binary": harness.short_path},
         "parameters": {
             "archs": ",".join(_value(ctx, "_archs")),
             "carry_arms": ",".join(_value(ctx, "_carry_arms")),
             "decode_arms": ",".join(_value(ctx, "_decode_arms")),
         },
     }) + "\n")
-    files = [record, ctx.file.harness, harness] + tools.values() + [u.report for u in units] + [u.object for u in units]
+    files = [record] + tools.values() + [u.report for u in units] + [u.object for u in units]
     return [DefaultInfo(files = depset([record]), runfiles = ctx.runfiles(files = files))]
 
 ratify_census = rule(
     implementation = _census_impl,
     attrs = _setting_attrs() | {
         "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library whose units are counted"),
-        "harness": attr.label(mandatory = True, allow_single_file = [".cu"], doc = "the derivation harness's source"),
-        "harness_binary": attr.label(mandatory = True, executable = True, cfg = "target", doc = "the harness, built"),
         "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True),
     },
     doc = "The census record (tools/ratify.py's `--graph`): each unit the library links (its source, ptxas's report, " +
-          "its object), the graph's assembler and disassemblers, the derivation harness the graph built, and the " +
-          "build's parameters; every path relative to the runfiles' root, which holds them all.",
+          "its object), the graph's assembler and disassemblers, and the build's " +
+          "parameters; every path relative to the runfiles' root, which holds them all.",
 )
 
 _CENSUS_TEST = """\
@@ -455,6 +455,58 @@ rola_wheels = rule(
     doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
           "clean commit, the record a shippable build's.",
 )
+
+_COMMITTED_UPDATE = """\
+#!/bin/bash
+# writes a committed file from what the graph wrote (bazel/defs.bzl's committed_file): a copy into the checkout, through a
+# temporary file renamed into place
+set -euo pipefail
+to="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"/{path}
+install -m 0644 {generated} "$to.graph" && mv -f "$to.graph" "$to"
+echo "wrote "{path}" from the graph"
+"""
+
+def _committed_update_impl(ctx):
+    files = ctx.attr.generated[DefaultInfo].files.to_list()
+    if len(files) != 1:
+        fail("%s: %s names %d files, not one" % (ctx.label, ctx.attr.generated.label, len(files)))
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _COMMITTED_UPDATE.format(path = shell.quote(ctx.attr.path), generated = shell.quote(files[0].short_path)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files))]
+
+_committed_update = rule(
+    implementation = _committed_update_impl,
+    executable = True,
+    attrs = {
+        "generated": attr.label(mandatory = True, doc = "the target whose one file is what the committed file holds"),
+        "path": attr.string(mandatory = True, doc = "the committed file's path in the checkout"),
+    },
+)
+
+def committed_file(name, committed, generated):
+    """A COMMITTED FILE THE GRAPH WRITES (docs/build-graph.md#committed-files): `bazel run :<name>_update` writes the
+    committed file `committed` (a label of a file in the checkout) from `generated` (the target of the graph's action whose
+    one output is what the file holds), and the test `:<name>` fails when the committed file differs from that output."""
+    label = native.package_relative_label(committed)
+    _committed_update(
+        name = name + "_update",
+        generated = generated,
+        path = (label.package + "/" if label.package else "") + label.name,
+    )
+    tool_test(
+        name = name,
+        size = "small",
+        args_ = [
+            "--committed",
+            "$(rootpath %s)" % committed,
+            "--graph",
+            "$(rootpath %s)" % generated,
+            "--update",
+            "//%s:%s_update" % (native.package_name(), name),
+        ],
+        data = [committed, generated],
+        tool = Label("//tools:committed_file.py"),
+    )
 
 #: THE GENERIC RULES are rola-devtools' (`@rola_devtools//bazel:rules.bzl`), each handed this workspace's environment:
 #: its store venv (VENV), its interpreter, the tracked tree (TRACKED), the pinned toolkit and the devices' identity

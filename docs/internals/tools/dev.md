@@ -88,12 +88,13 @@ Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
   container on fresh volumes of its own, which clones the checkouts from their git directories mounted read-only
   (`CLONED`, this checkout with its staged change), each step timed; `COLD_START` names the steps a fresh machine pays
   before it can work. It stores the result through `rola_results` at `environment`, one record per image digest, and
-  a green check writes the digest to `tools/devbox_image.json` and removes its volumes.
+  a green check removes its volumes; the digest the tree names is the graph's (`bazel run //:devbox_image_update` writes
+  `tools/devbox_image.json`, `//:devbox_image` holds it).
 - `compose` (`bazel run //:container_compose`) writes `.devcontainer/compose.local.yaml`: the image's tag, the
   devbox's own volumes and the host's mounts (`_mounts`: the lock directory at the one lock path, the WSL
   driver's libraries).
-- `gate` is the commit gate's check: the image the graph builds is the one `tools/devbox_image.json` names, and a
-  commit changing the name has a passing record for the new digest. A commit that leaves the image alone needs no
+- `gate` is the commit gate's check: a commit changing the name `tools/devbox_image.json` holds has a passing record for the new
+  digest (that the name is the image the graph builds is `//:devbox_image`'s). A commit that leaves the image alone needs no
   Docker.
 
 **The measurements store** (`store.root`, a rola-results checkout) is importable from every interpreter that runs

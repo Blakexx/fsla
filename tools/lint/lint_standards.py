@@ -919,7 +919,7 @@ def check_supported_table() -> list[str]:
             return f"README.md has no generated block for {marker}"
         if committed != supported.table():
             return (f"README.md's {marker} block drifted from tools/supported.py's "
-                    f"generator (regenerate with `bazel run //tools:supported -- --write`)")
+                    f"generator (regenerate with `bazel run //:readme_update`)")
         return None
 
     readme_text = supported.README.read_text()
@@ -963,7 +963,7 @@ def _repo_build_config() -> dict | None:
 
 
 def check_hardware() -> list[str]:
-    """`measure/hardware.py --check`: `common/hardware.cuh` is what `common/hardware.json` generates, every built
+    """`measure/hardware.py --check`: every built
     architecture has a row carrying its pipes' and MMAs' rates, and every rate a source that holds -- a measured one matches the lab
     record it names, on the product it names. Files only (the module imports no `rola`)."""
     if str(ROOT) not in sys.path:

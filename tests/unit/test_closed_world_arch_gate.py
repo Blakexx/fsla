@@ -39,12 +39,12 @@ import re
 import pytest
 import torch
 
+from measure import hardware
 from tests.oracle.fixtures import with_gain
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
 ARCH_CAPS = SRC / "common" / "arch_caps.cuh"
-HARDWARE = SRC / "common" / "hardware.cuh"
 
 #: THE ENTRY LIST IS THE REGISTRATION TRANSLATION UNIT'S OWN. Every operator the extension
 #: offers is an ``m.impl`` here and nowhere else, so a family cannot join the library
@@ -106,7 +106,7 @@ def test_the_entry_surfaces_are_declared_where_this_gate_looks():
 def test_the_compile_time_half_is_a_table_and_a_static_assert():
     """``tabulated()`` gates the compiling target, and nothing softens it."""
     text = ARCH_CAPS.read_text()
-    assert "constexpr bool tabulated(int cc)" in HARDWARE.read_text()
+    assert "constexpr bool tabulated(int cc)" in hardware.header()
     assert '#include "common/hardware.cuh"' in text
     assert re.search(r"static_assert\(\s*tabulated\(kArch\)", text), (
         "arch_caps.cuh no longer fails the BUILD on an untabulated compile target; "

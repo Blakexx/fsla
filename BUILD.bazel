@@ -3,13 +3,14 @@
     bazel build //:library                      # rola_cu13/_C.abi3.so and its build record, the shipped build
     bazel run //:library                        # the same, copied into this checkout's rola_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3    # an iteration build
-    bazel test //:derivation                    # the derivation's goldens against the harness the graph built
+    bazel test //:derivation                    # tools/manifests/derivation.json is what the graph's harness writes
+    bazel run //:derivation_update              # write it (and //:readme_update, //:devbox_image_update: docs/build-graph.md#committed-files)
     bazel run //:ratify -- --census             # every shipped instantiation's registers and spills (docs/ratification.md)
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
-load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "compile_database", "dev_run", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -21,6 +22,7 @@ exports_files([
     "pyproject.toml",
     "requirements.lock",
     "sgconfig.yml",
+    "README.md",
     "rola/__init__.py",
     "measure/__init__.py",
     "measure/hardware.py",
@@ -93,26 +95,63 @@ dev_run(
     },
 )
 
-#: THE CENSUS: the units' own compiles (docs/ratification.md), reported by `bazel run //:ratify -- --census`; and the
-#: derivation's goldens, checked against the harness the graph built (run when the derivation's sources move, never by
-#: the gate or the lane: the record's source hashes expire with each edit to them)
+#: THE CENSUS: the units' own compiles (docs/ratification.md), reported by `bazel run //:ratify -- --census`
 ratify_census(
     name = "census",
-    harness = "//tools:derivation_harness_source",
-    harness_binary = "//tools:derivation_harness",
     library = ":library",
     #: the template lint reads the units the library compiled
     visibility = ["//csrc/rola:__pkg__"],
 )
 
-census_test(
+#: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
+#: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The derivation's goldens, from the harness
+#: the graph built (docs/ratification.md); the README's generated blocks (`tools/supported.py`); the devbox image's digest
+#: (docs/setup.md#the-devbox-image)
+committed_file(
     name = "derivation",
-    size = "medium",
-    args_ = ["--derivation"],
-    census = ":census",
-    data = [":tree"],
-    script = "ratify.py",
-    tags = ["manual"],
+    committed = "//tools:manifests/derivation.json",
+    generated = "//tools:derivation_record",
+)
+
+#: the capability table is the activation registry's, which imports torch: the environment's interpreter by its store path
+#: (which carries the environment's key), which the sandbox does not hold
+genrule(
+    name = "readme_generated",
+    srcs = [
+        "README.md",
+        "measure/__init__.py",
+        "measure/hardware.py",
+        "//csrc/rola:src/common/hardware.json",
+        "//tools:toolchain_records",
+        "//tools:toolchains.py",
+    ] + glob(["rola/**/*.py"]),
+    outs = ["readme/README.md"],
+    cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath README.md) --out $@",
+    tags = ["no-sandbox"],
+    tools = ["//tools:supported.py"],
+)
+
+committed_file(
+    name = "readme",
+    committed = "README.md",
+    generated = ":readme_generated",
+)
+
+genrule(
+    name = "devbox_image_record",
+    srcs = [":image"],
+    outs = ["devbox_image/devbox_image.json"],
+    cmd = "$(execpath @rola_env//:python) $(execpath //tools:oci_layout.py) --record $(execpath :image) > $@",
+    tools = [
+        "//tools:oci_layout.py",
+        "@rola_env//:python",
+    ],
+)
+
+committed_file(
+    name = "devbox_image",
+    committed = "//tools:devbox_image.json",
+    generated = ":devbox_image_record",
 )
 
 #: THE WHEELS (docs/build.md#wheels): `rola` and its plugin `rola-cu13` from this library, on a clean commit;
@@ -448,12 +487,11 @@ checkout_test(
     cmd = ["python3", "tools/lint/learnings.py"],
 )
 
-#: the devbox image the graph builds is the one the tree names, and a change to it carries a passing container check
+#: a change to the devbox image the tree names carries a passing container check (`//:devbox_image` holds the name to the image)
 checkout_test(
     name = "dev_container",
     size = "small",
     cmd = ["python3", "tools/dev.py", "container", "gate"],
-    tools = {":image": "--layout"},
 )
 
 test_suite(
@@ -487,6 +525,9 @@ test_suite(
         ":docrefs",
         ":learnings",
         ":ratchet_baselines",
+        ":derivation",
+        ":devbox_image",
+        ":readme",
     ],
 )
 

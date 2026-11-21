@@ -21,13 +21,13 @@
   },
   {
    "path": "tests/integration/test_decode_paging.py",
-   "message": "'_ARMS' is a literal arm table outside tools/gen_shards.py",
+   "message": "'_ARMS' is a literal arm table outside an `arms.bzl`",
    "line_sha256": "9ba217ecf73f5742",
    "count": 1
   },
   {
    "path": "tests/oracle/test_atom_bitmap.py",
-   "message": "'_ARMS' is a literal arm table outside tools/gen_shards.py",
+   "message": "'_ARMS' is a literal arm table outside an `arms.bzl`",
    "line_sha256": "6625f832e1db4b36",
    "count": 1
   },
@@ -51,8 +51,20 @@
   },
   {
    "path": "tests/unit/test_carry_geometry.py",
-   "message": "'ARM_PARAMS' is a literal arm table outside tools/gen_shards.py",
+   "message": "'ARM_PARAMS' is a literal arm table outside an `arms.bzl`",
    "line_sha256": "2ba2d0f50111ab87",
+   "count": 1
+  }
+ ],
+ "rekeys": [
+  {
+   "from": "'_ARMS' is a literal arm table outside tools/gen_shards.py",
+   "to": "'_ARMS' is a literal arm table outside an `arms.bzl`",
+   "count": 2
+  },
+  {
+   "from": "'ARM_PARAMS' is a literal arm table outside tools/gen_shards.py",
+   "to": "'ARM_PARAMS' is a literal arm table outside an `arms.bzl`",
    "count": 1
   }
  ]

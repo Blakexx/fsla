@@ -93,14 +93,18 @@ states), and three properties make it safe to have:
 * **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
   construction, so its record says `iteration: True` and `bazel run //:wheels` refuses it.
 
-**AND THE CENSUS READS THE BUILD'S SCOPE, NOT A FLAG OF ITS OWN.** `bazel run //:ratify -- --census` reads the build's
-parameters from the census record, so an iteration build's census is the measurement of its subset. And no arm subset is a
-compile flag: each family's selection is a generated header (`carry_selection.inc`, `decode_selection.inc`;
-[`build-graph.md#arms`](build-graph.md#arms)) written for the build's own scope, so a flag naming WHAT WAS COMPILED,
-rather than HOW, never reaches a unit's command line, where a measurement reading the compile could inherit it. The one
-such flag is `-gencode`, the architectures, which the graph takes from the build. Measured when a decode subset was a
-`-D`: the next measurement inherited it and recorded 393 entries carrying ONE decode arm, while the library carried all
-sixteen -- and it PASSED. A gate that certifies numbers no shipped binary has is worse than no gate.
+**AND NOTHING THAT CERTIFIES NUMBERS MAY READ A SCOPE THE BUILD DID NOT HAVE.** The incident: the old ratification compiled
+its own units, and a decode subset that was a `-D` on the build's command line reached that compile, so the manifest it
+wrote held 393 entries carrying ONE decode arm while the library carried all sixteen -- and the ratification PASSED: nothing in it asked the
+library which arms it carried.
+A gate that certifies numbers no shipped binary has is worse than no gate. The lesson, now held by construction:
+there is no ratification compile and no manifest. `bazel run //:ratify -- --census` reads the units the graph compiled
+for the build's own parameters (its census record names them), so an iteration build's census is the measurement of its
+subset; the arm gate asks the BUILT binary which arms it carries and compares the answer with the declaration
+([`build-graph.md#gates`](build-graph.md#gates)); and no arm subset is a compile flag: each family's selection is a
+generated header (`carry_selection.inc`, `decode_selection.inc`; [`build-graph.md#arms`](build-graph.md#arms)) written for
+the build's own scope, so a flag naming WHAT WAS COMPILED, rather than HOW, never reaches a unit's command line. The one
+such flag is `-gencode`, the architectures, which the graph takes from the build.
 
 The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every built one.
 

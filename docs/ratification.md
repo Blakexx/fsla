@@ -83,9 +83,12 @@ goldens record that rather than hiding it.
 
 The harness compiles the shipped header and links no extension, so this check cannot
 be answered by a stale `.so`: there is no binary in the loop to be stale.
-`bazel test //:derivation` checks the record against the harness the graph built (it is tagged `manual`: the code
-hash expires with each edit to the derivation's sources), and `bazel run //:ratify -- --write-derivation` re-measures
-and files it.
+The record is the graph's output (`//tools:derivation_record`: the harness the graph built, run over the sources the
+cases name): `bazel test //:derivation` fails when the committed `tools/manifests/derivation.json` differs from it, and
+`bazel run //:derivation_update` writes it ([`build-graph.md#committed-files`](build-graph.md#committed-files)). The record
+is the code hash, the cases' digest and the goldens, and no date, so an edit to a derivation source or a case moves the
+record at once and the difference is shown golden by golden; goldens that move with the sources and the cases unchanged are a toolchain
+or platform difference, not an edit: investigate before writing the record.
 
 <a id="the-device-stamp"></a>
 ## The device stamp keys on the csrc content hash

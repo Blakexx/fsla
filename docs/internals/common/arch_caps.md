@@ -1,6 +1,6 @@
 # `csrc/rola/src/common/arch_caps.cuh` — the card's facts at the compiling target
 
-Its rows are data in [`hardware.json`](hardware.md), generated into `common/hardware.cuh` (`Caps`, `tabulated`,
+Its rows are data in [`hardware.json`](hardware.md), generated into `common/hardware.cuh` by the build graph, which checks no copy in (`Caps`, `tabulated`,
 `caps_of`): per architecture the INSTRUCTIONS an atom reads and the NUMBERS a plan reads. This file names the compiling
 target (`kArch`, `kCaps`) and the row's digest. STRUCTURE is not here: which warps do what, the pipeline, the tiling
 are a family's schedule, selected by the build's family (`Family`, [`hardware.md#families`](hardware.md#families);
@@ -32,8 +32,12 @@ at 80 and 82 SMs, GA100 at 108), so it is a run-time `cudaDeviceProp` query.
 family's schedules; a binary built without sm_90a refuses an sm_90 card by name
 ([`select.md#card-of`](select.md#card-of)).
 
-<a id="tabulated"></a>**`tabulated` is the RATIFIED SET.** A compute capability that is not a row fails the build; it
-is never approximated by a neighbouring row.
+<a id="tabulated"></a>**`tabulated` is the SET OF ROWS, which is not the set the graph builds.** `tabulated(cc)` is true for each
+compute capability with a row in `hardware.json` (today sm_90a and sm_100a): the architectures the kernel knows how to size itself
+for. A compute capability that is not a row fails the build, whose compiling target `arch_caps.cuh` asserts tabulated, and is refused at run time; it
+is never approximated by a neighbouring row. THE BUILT SET is `measure.hardware.built`, the rows whose build chooses a window (today sm_90a alone:
+`BUILT_ARCHS`, the default of `--//:archs`): a tabulated architecture that is not built (sm_100a) has a row and no binary, and the README's support
+table lists it as not built, refusing to load ([`hardware.md#traits`](hardware.md#traits)).
 
 <a id="capsdigest"></a>**`caps_digest`** is a digest of the active row's instruction flags (`kCapsDigest` at the
 compiling target), written by the carry's stamp kernel and read on the host. A binary compiled against a different

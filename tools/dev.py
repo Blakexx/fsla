@@ -53,9 +53,6 @@ PINS = {"bazelisk": ROOT / "tools" / "bazelisk_pin.json",
 #: names, which a commit changing it carries a passing container check for (KERNEL_STANDARDS §23 (3))
 DEVBOX_REPO = "rola-devbox"
 DEVBOX_DIGEST = ROOT / "tools" / "devbox_image.json"
-DEVBOX_DIGEST_ROLE = ("the devbox image the tree names (`//:image`'s content digest), which `bazel run //:container_check` "
-                      "writes when green; the commit gate refuses a tree whose image is another, or a change to this "
-                      "digest without a passing check for it (KERNEL_STANDARDS 23 (3))")
 #: the clean room's container and the prefix of its volumes
 CHECK_VOLUMES = "rola-devbox-check"
 #: the `rola_results` location of the container checks, one record per image digest
@@ -685,7 +682,7 @@ bazel run //:init > "$log" 2>&1; rc=$?; cat "$log"
 [ $rc -eq 0 ] || { [ "$(grep -c '^RED' "$log")" = 1 ] && grep -q '^RED  .* has no venv of its own' "$log"; }""",
     "dev_env": "bazel run //:dev_env",
     "check": "bazel run //:check",
-    "the commit gate": "bazel test $(bazel query 'tests(//:gate) except //:dev_container')",
+    "the commit gate": "bazel test $(bazel query 'tests(//:gate) except set(//:dev_container //:devbox_image)')",
     "GPU, torch and its flash backend": f"""{CONTAINER_PYTHON} - <<'PY'
 import torch
 import torch.nn.functional as F
@@ -775,7 +772,6 @@ def _container_check(digest: str, tag: str) -> int:
     store = Store(RESULTS_ENVIRONMENT)
     if ok:
         store.put({"image_digest": digest}, output=result, provenance=checkout(ROOT))
-        DEVBOX_DIGEST.write_text(json.dumps({"digest": digest, "role": DEVBOX_DIGEST_ROLE}, indent=4) + "\n")
         #: a green run's volumes are its own and go with it; a red run's stay for a look until the next run
         for volume in volumes:
             subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
@@ -783,14 +779,16 @@ def _container_check(digest: str, tag: str) -> int:
         store.put({"image_digest": digest}, error=f"RED: {[r['step'] for r in rows if not r['ok']]}",
                   provenance=checkout(ROOT), **result)
     print(f"container check: {'green' if ok else 'RED'} (cold start {cold} s); recorded under {store.dir}" +
-          (f"; wrote {DEVBOX_DIGEST.relative_to(ROOT)}" if ok else ""))
+          ("; name the image with `bazel run //:devbox_image_update`" if ok else ""))
     return 0 if ok else 1
 
 
 def cmd_container(a) -> int:
-    digest, tag = _image(a.layout)
     if a.action == "gate":
-        return _container_gate(digest)
+        return _container_gate()
+    if not a.layout:
+        raise SystemExit(f"container {a.action} needs --layout")
+    digest, tag = _image(a.layout)
     _load(a.tarball, tag)
     if a.action == "check":
         return _container_check(digest, tag)
@@ -802,10 +800,10 @@ def cmd_container(a) -> int:
     return 0
 
 
-def _container_gate(digest: str) -> int:
-    """KERNEL_STANDARDS §23 (3): the image the graph builds is the one the tree names (`tools/devbox_image.json`), and a
-    commit that changes the name carries a passing container check for the new digest. So a commit that leaves the
-    image alone needs no Docker (a rented box is itself a container)."""
+def _container_gate() -> int:
+    """KERNEL_STANDARDS §23 (3): a commit that changes the devbox image the tree names (`tools/devbox_image.json`, which
+    the graph writes: `//:devbox_image` holds it to the image the graph builds) carries a passing container check for the
+    new digest. So a commit that leaves the image alone needs no Docker (a rented box is itself a container)."""
     from rola_results import Store
     from rola_results import key as record_key
 
@@ -815,12 +813,8 @@ def _container_gate(digest: str) -> int:
         return json.loads(blob.stdout)["digest"] if blob.returncode == 0 else None
 
     staged = named("")
-    if staged != digest:
-        print(f"§23 (3): the graph builds the devbox image {digest[:19]}, and the commit names {str(staged)[:19]}: "
-              f"bazel run //:container_check (it writes {DEVBOX_DIGEST.relative_to(ROOT)} when green), then stage it")
-        return 1
-    if staged != named("HEAD") and not Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"image_digest": digest}))):
-        print(f"§23 (3): the commit changes the devbox image to {digest[:19]}, which has no passing container check: "
+    if staged != named("HEAD") and not Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"image_digest": staged}))):
+        print(f"§23 (3): the commit changes the devbox image to {str(staged)[:19]}, which has no passing container check: "
               f"bazel run //:container_check")
         return 1
     return 0
@@ -854,7 +848,7 @@ def main() -> int:
 
     p = sub.add_parser("container", help="the devbox image: its clean-room check, an editor's container, the commit gate")
     p.add_argument("action", choices=("check", "compose", "gate"))
-    p.add_argument("--layout", required=True, help="the image's OCI layout (`//:image`)")
+    p.add_argument("--layout", help="check, compose: the image's OCI layout (`//:image`)")
     p.add_argument("--tarball", help="check, compose: the image as Docker loads it (`//:image_tarball`)")
     p.set_defaults(fn=cmd_container)
     a = ap.parse_args()

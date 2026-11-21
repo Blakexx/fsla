@@ -289,10 +289,11 @@ def rule_second_arm_table(files=None) -> list[str]:
         for i, line in enumerate(path.read_text().splitlines()):
             m = decl.match(line)
             if m and not line.rstrip().endswith(("()", "[]", "{}")):
-                #: the first sentence is the ratchet's key for the baseline's entries and stays as they were recorded
-                findings.append(f"{rel}:{i + 1}: '{m.group(1)}' is a literal arm table outside tools/gen_shards.py. "
-                                f"That generator is gone: the arm list is declared once, in an `arms.bzl`, and the "
-                                f"graph generates every table a Python reader sees")
+                #: the first sentence is the ratchet's key for the baseline's entries: a change to it is a re-key
+                #: (docs/internals/tools/lint.md#ratchets), never an edit of the baseline's entries
+                findings.append(f"{rel}:{i + 1}: '{m.group(1)}' is a literal arm table outside an `arms.bzl`. "
+                                f"The arm list is declared once, in an `arms.bzl`, and the graph generates every "
+                                f"table a Python reader sees")
     return findings
 
 

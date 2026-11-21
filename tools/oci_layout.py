@@ -1,11 +1,13 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """AN OCI IMAGE LAYOUT, READ (the devbox image's, `//:image`, and its base's): the one image's manifest digest -- the
-image's identity, which `tools/devbox_image.json` names -- the tag the tree gives it, and its layers. Every reader of a
+image's identity, which `tools/devbox_image.json` names (the graph writes it: `record`) -- the tag the tree gives it, and
+its layers. Every reader of a
 layout reads it here: the container commands (`tools/dev.py`), the push's tag (`//:image_tag`), the package layer's
 rewrite and check (`tools/usrmerge_layer.py`, `tools/devbox_packages.py`). Docs: docs/setup.md#the-devbox-image.
 
     oci_layout.py --tag LAYOUT_DIR      # the tag: the digest's first 12 hex digits
+    oci_layout.py --record LAYOUT_DIR   # `tools/devbox_image.json`'s text, which `//:devbox_image_update` writes
 """
 from __future__ import annotations
 
@@ -30,6 +32,17 @@ def tag(image_digest: str) -> str:
     return image_digest.removeprefix("sha256:")[:12]
 
 
+#: what the committed record says of itself
+ROLE = ("the devbox image the tree names (`//:image`'s content digest), which `bazel run //:devbox_image_update` writes from "
+        "the graph's image: the commit gate refuses a tree whose image is another (`//:devbox_image`), or a change to this "
+        "digest without a passing `bazel run //:container_check` for it (KERNEL_STANDARDS 23 (3))")
+
+
+def record(image_digest: str) -> str:
+    """`tools/devbox_image.json`'s text: the image's digest and the record's role."""
+    return json.dumps({"digest": image_digest, "role": ROLE}, indent=4) + "\n"
+
+
 def layers(layout: Path) -> Iterator[Path]:
     """The layer archives of the layout's one image, base first."""
     blob = lambda name: layout / "blobs" / "sha256" / name.removeprefix("sha256:")  # noqa: E731
@@ -39,8 +52,11 @@ def layers(layout: Path) -> Iterator[Path]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--tag", type=Path, required=True, help="the layout whose tag to print")
-    print(tag(digest(ap.parse_args().tag)))
+    which = ap.add_mutually_exclusive_group(required=True)
+    which.add_argument("--tag", type=Path, help="the layout whose tag to print")
+    which.add_argument("--record", type=Path, help="the layout whose record, `tools/devbox_image.json`'s text, to print")
+    a = ap.parse_args()
+    print(tag(digest(a.tag)) if a.tag else record(digest(a.record)), end="" if a.record else "\n")
     return 0
 
 

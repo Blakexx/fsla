@@ -1,8 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE HARDWARE CONFIGURATION (`measure/hardware.py` over `csrc/rola/src/common/hardware.json`): the header is what the
-file generates and every source holds; a tampered rate or a stale header is caught; a product's override wins over its
-architecture's default; and each product's build variant follows its traits."""
+"""THE HARDWARE CONFIGURATION (`measure/hardware.py` over `csrc/rola/src/common/hardware.json`): every source holds and a tampered rate is
+caught; a product's override wins over its architecture's default; and each product's build variant follows its traits."""
 from __future__ import annotations
 
 import json
@@ -20,8 +19,9 @@ def test_a_measured_rate_off_its_record_is_a_finding():
     assert any("atomic" in f for f in hardware.check(cfg))
 
 
-def test_a_stale_header_is_a_finding():
-    assert any("hardware.cuh" in f for f in hardware.check(header_text=hardware.HEADER.read_text() + "\n"))
+def test_the_header_is_the_tables_text_and_no_file_of_the_tree_holds_it():
+    assert "constexpr bool tabulated(int cc)" in hardware.header()
+    assert not list(hardware.COMMON.glob("hardware.cuh"))
 
 
 def test_a_product_resolves_its_architectures_rates_and_a_device_name_its_product():

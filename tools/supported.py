@@ -1,11 +1,12 @@
-"""Generate the README's "Supported configurations" table. **A REPORT, NOT A CLAIM.**
+"""Generate the README's generated blocks: the "Supported configurations" table and the capability table. **A REPORT, NOT A CLAIM.**
 
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
-answer, and the commit gate fails on drift (the standards lint's `check_supported_table`; the capability table's
-test is the CPU tier's, `tests/unit/test_capability_table_docs.py`):
+answer, and the commit gate fails on drift (`//:readme`, which holds the committed README to what the graph writes,
+docs/build-graph.md#committed-files; the standards lint's `check_supported_table` and the capability table's CPU test,
+`tests/unit/test_capability_table_docs.py`, read the blocks too):
 
-* ``csrc/rola/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also writes
+* ``csrc/rola/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also gives
   ``common/hardware.cuh``'s ``tabulated``) -- the architectures the KERNEL knows how to size itself for: a
   ``static_assert`` at compile time and the card's admission a refusal at run time, so an arch missing from it
   cannot execute whatever the table says.
@@ -18,7 +19,8 @@ and the status *not built -- will refuse to load*. A support claim is worth
 nothing if the table quietly implies coverage nobody brought up.
 
     bazel run //tools:supported              # print the tables
-    bazel run //tools:supported -- --write   # rewrite README.md's generated blocks
+    bazel run //:readme_update               # write README.md's generated blocks (the graph's action runs
+                                             # `supported.py --readme README.md --out <file>`)
 
 GPU names are the only hand-written column, in ``GPUS`` below, because a compute
 capability does not know its own marketing name. They are labels; the hardware table
@@ -31,10 +33,12 @@ import re
 import sys
 from pathlib import Path
 
-import toolchains
-
-ROOT = Path(__file__).resolve().parents[1]
+#: unresolved: in the graph's action the script is a link, and its siblings are the action's declared inputs beside it
+ROOT = Path(__file__).absolute().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(1, str(ROOT))
+import toolchains  # noqa: E402
+
 from measure import hardware  # noqa: E402 -- the architecture rows' own names
 
 README = ROOT / "README.md"
@@ -56,7 +60,7 @@ def markers(marker: str) -> tuple[str, str]:
 
 def block(text: str, marker: str) -> str | None:
     """The README's generated block for `marker`, its text between the markers; None when it has none. The one reader
-    of the format: `--write` and the checks read it here."""
+    of the format: `render` and the checks read it here."""
     begin, end = markers(marker)
     if begin not in text or end not in text:
         return None
@@ -78,8 +82,7 @@ GPUS = {
 
 def tabulated_archs() -> list[str]:
     """The architectures the kernel can size itself for: the hardware table's rows, by compute capability
-    (`measure.hardware.tabulated`, which writes `common/hardware.cuh`'s `tabulated`; the hardware lint holds the header
-    to it)."""
+    (`measure.hardware.tabulated`, which `common/hardware.cuh`'s `tabulated` is generated from)."""
     return hardware.tabulated()
 
 
@@ -107,18 +110,9 @@ def table() -> str:
     return "\n".join(rows)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--write", action="store_true", help="rewrite README.md's generated blocks")
-    a = ap.parse_args()
-
-    if not a.write:
-        for marker, produce in BLOCKS.items():
-            print(f"--- {marker}")
-            print(produce())
-        return 0
-
-    new = README.read_text()
+def render(readme: str) -> str:
+    """The README's text with each generated block written: the one writer of the blocks."""
+    new = readme
     for marker, produce in BLOCKS.items():
         if block(new, marker) is None:
             raise SystemExit(f"README.md has no generated block for {marker}")
@@ -126,9 +120,23 @@ def main() -> int:
         head, rest = new.split(begin, 1)
         _, tail = rest.split(end, 1)
         new = f"{head}{begin}\n{produce()}\n{end}{tail}"
+    return new
 
-    README.write_text(new)
-    print(f"README.md: {len(BLOCKS)} generated blocks rewritten")
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--readme", type=Path, help="the README to write the generated blocks into")
+    ap.add_argument("--out", type=Path, help="where to write the README's text with its generated blocks")
+    a = ap.parse_args()
+
+    if bool(a.readme) != bool(a.out):
+        raise SystemExit("--readme and --out go together")
+    if not a.readme:
+        for marker, produce in BLOCKS.items():
+            print(f"--- {marker}")
+            print(produce())
+        return 0
+    a.out.write_text(render(a.readme.read_text()))
     return 0
 
 

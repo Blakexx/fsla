@@ -12,10 +12,7 @@ number nobody ships.
     bazel run //:ratify -- --census                 # the per-kernel table of the build's instantiations
     bazel run //:ratify -- --census --json PATH     # the raw per-instantiation record, for arm-versus-arm diffing
 
-THE DERIVATION'S GOLDENS. The addressing block is host code, `derive_carry_geom`, run once a launch; its outputs on the
-declared cases (`tools/manifests/derivation_cases.json`) are filed in `tools/manifests/derivation.json`, and
-`bazel test //:derivation` checks them against the harness the graph built. `--write-derivation` re-measures and files
-them. Docs: docs/internals/tools/ratify.md.
+Docs: docs/internals/tools/ratify.md.
 """
 from __future__ import annotations
 
@@ -31,7 +28,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import derivation  # noqa: E402
 import dev_config  # noqa: E402
 import kernels  # noqa: E402
 import sass  # noqa: E402
@@ -44,7 +40,7 @@ from rola_devtools.locks import host  # noqa: E402
 cuda_bin = dev_config.cuda_bin
 
 #: THE GRAPH'S BUILD (`--graph`, bazel/defs.bzl's `ratify_census`): the units its compile rule compiled (each one's ptxas
-#: report and object), its assembler and disassemblers, its derivation harness and the build's parameters. See
+#: report and object), its assembler and disassemblers and the build's parameters. See
 #: docs/internals/tools/ratify.md#graph
 _GRAPH: dict = {}
 
@@ -66,14 +62,12 @@ def use_graph(census: Path, runfiles: Path) -> None:
     _GRAPH.update(tools={name: where(path) for name, path in blob["tools"].items()},
                   units=[{"source": Path(u["source"]), "report": where(u["report"]), "object": where(u["object"])}
                          for u in blob["units"]],
-                  harness=where(blob["derivation"]["harness"]), harness_binary=where(blob["derivation"]["binary"]),
                   parameters=blob["parameters"])
     cuda_bin = _graph_bin
     sass.use_graph(cuobjdump=_graph_bin("cuobjdump"), nvdisasm=_graph_bin("nvdisasm"))
 
 
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
-RECORDS = Path(__file__).resolve().parent / "manifests"
 
 
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+a?)'")
@@ -95,239 +89,6 @@ def shard_field(entries: dict) -> dict[str, str]:
 def csrc_digest() -> str:
     """A digest of the kernel sources a census was read from (`tools/csrc_stamp.py`'s)."""
     return _csrc_digest(SRC)
-
-
-# ---------------------------------------------------------------------------
-# THE DERIVATION'S GOLDENS
-#
-# The addressing block is HOST code: one function, `derive_carry_geom`, run once per
-# launch, whose output every kernel of the family then addresses through. An off-by-one
-# in a span or a shift is a wrong answer nothing else would see, because the SASS it
-# produces is somebody else's kernel. So its outputs are filed and checked, with two
-# independent statements:
-#
-#   * A CODE HASH over the sources the derivation is computed from. That is the
-#     wholesale trigger: any edit there invalidates the record at once.
-#   * GOLDEN OUTPUTS -- the derived block, byte for byte, on a DECLARED set of named
-#     cases, plus the REFUSAL each declared-illegal case produces. That is the
-#     per-case answer the hash can only ask globally: with the hash matching, no golden
-#     may move; with the hash moved, the check names exactly which cases moved and which did not.
-#
-# The refusals are filed beside the outputs deliberately. R13 makes the kernel's
-# strict shape half a contract whose other half is what it REFUSES, and an unstated
-# refusal is the half that rots -- a derivation that quietly starts admitting a
-# non-power-of-two width would pass a gate that only checked the shapes it admits.
-#
-# The harness compiles the shipped header directly and links no extension, so this
-# check cannot be answered by a stale `.so`: there is no binary in the loop to be
-# stale. That is deliberate -- an extension-trap-proof check of a host function.
-DERIVATION_CASES_JSON = RECORDS / "derivation_cases.json"
-DERIVATION_JSON = RECORDS / "derivation.json"
-
-
-def load_derivation_cases() -> dict:
-    """The declared cases, read and refused field by field."""
-    if not DERIVATION_CASES_JSON.exists():
-        raise SystemExit(f"no declared derivation cases at {DERIVATION_CASES_JSON}; "
-                         f"the derivation cannot be checked against nothing")
-    blob = json.loads(DERIVATION_CASES_JSON.read_text())
-    if blob.get("schema") != 1:
-        raise SystemExit(f"{DERIVATION_CASES_JSON.name} declares schema "
-                         f"{blob.get('schema')!r}; this gate reads schema 1")
-    if not blob.get("sources"):
-        raise SystemExit(f"{DERIVATION_CASES_JSON.name} names no `sources`; a golden "
-                         f"output with no code hash beside it cannot say what it is "
-                         f"the output OF")
-    for rel in blob["sources"]:
-        if not (SRC / rel).exists():
-            raise SystemExit(f"{DERIVATION_CASES_JSON.name} names the derivation "
-                             f"source {rel}, which does not exist under {SRC}")
-    names = [c["name"] for c in blob["geometry"]] + [c["name"] for c in blob["sub_boxes"]]
-    if len(names) != len(set(names)):
-        dupes = sorted({n for n in names if names.count(n) > 1})
-        raise SystemExit(f"{DERIVATION_CASES_JSON.name}: duplicate case name(s) "
-                         f"{dupes}; a golden output is keyed by name, so two cases "
-                         f"sharing one would file one measurement over the other")
-    if not names:
-        raise SystemExit(f"{DERIVATION_CASES_JSON.name} declares no case; a record "
-                         f"that measures nothing would pass by existence alone")
-    return blob
-
-
-def derivation_sources(cases: dict) -> dict[str, str]:
-    """`{declared source -> sha256}`, the derivation's code hash, per file.
-
-    PER FILE rather than one digest over the set, so a drift report can name which
-    header moved. `csrc_digest()` is the wholesale trigger for the CODEGEN; this is
-    the narrow one for the derivation, and it must not be widened to all of `csrc/`:
-    a change to a kernel body is not a change to the derivation, and a record that
-    expires on every unrelated edit is a record people re-write without reading.
-    """
-    return {rel: hashlib.sha256((SRC / rel).read_bytes()).hexdigest()
-            for rel in sorted(cases["sources"])}
-
-
-def cases_digest(cases: dict) -> str:
-    """A digest of the DECLARED CASES themselves.
-
-    Without it a green run would be ambiguous: goldens can also stop failing because
-    somebody deleted the case that failed.
-    """
-    payload = {"geometry": cases["geometry"], "sub_boxes": cases["sub_boxes"],
-               "sources": cases["sources"]}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-
-def _golden_from_output(text: str) -> dict[str, str]:
-    """The harness's stdout, parsed into `{case name -> golden}`.
-
-    An `ok` line's byte dump is hashed HERE rather than in the harness so that one
-    hash function serves the whole gate; a `refused` line keeps its words, because
-    the words are the filed thing.
-    """
-    golden: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if parts[1] == "refused":
-            golden[parts[0]] = f"refused: {parts[2]}"
-        elif parts[1] == "ok":
-            golden[parts[0]] = (f"ok: {parts[2]} bytes, sha256 "
-                                f"{hashlib.sha256(parts[3].encode()).hexdigest()}")
-        else:
-            raise SystemExit(f"the derivation harness printed an unreadable line: "
-                             f"{line!r}")
-    return golden
-
-
-#: ONE COMPILE PER HARNESS TEXT, keyed by the text itself. The gate calls the
-#: derivation measurement more than once in a run (the check, and every self-test
-#: mutant), and the harness is a pure function of the declared cases -- so a second
-#: compile could only ever produce the same answer more slowly, or a different one,
-#: and a different one would mean the measurement is not reproducible, which is a
-#: property this record needs anyway.
-_DERIVATION_MEASURED: dict[str, dict[str, str]] = {}
-
-
-def measure_derivation(cases: dict) -> dict[str, str]:
-    """Run the graph's harness. Returns its goldens.
-
-    No GPU and no extension: the graph compiles it with `nvcc` because the header carries
-    `__host__ __device__` on the functions the device also calls, and defining those
-    away for a host compiler would measure a source the tree does not have.
-    """
-    text = derivation.harness(cases)
-    memo = _DERIVATION_MEASURED.get(text)
-    if memo is not None:
-        return memo
-    #: the graph compiled and linked the harness (tools/BUILD.bazel's derivation_harness) from this same rendering
-    if _GRAPH["harness"].read_text() != text:
-        raise SystemExit(f"the graph's derivation harness {_GRAPH['harness']} is not this tree's rendering of "
-                         f"{DERIVATION_CASES_JSON.name}: rebuild")
-    run = subprocess.run([str(_GRAPH["harness_binary"])], capture_output=True, text=True)
-    if run.returncode != 0:
-        raise SystemExit(f"the derivation harness exited {run.returncode}:\n{run.stderr}")
-    return _derivation_golden(cases, run.stdout, text)
-
-
-def _derivation_golden(cases: dict, stdout: str, text: str) -> dict[str, str]:
-    """The harness's output as goldens, every declared case among them."""
-    golden = _golden_from_output(stdout)
-    declared = [c["name"] for c in cases["geometry"]] + \
-               [c["name"] for c in cases["sub_boxes"]]
-    missing = [n for n in declared if n not in golden]
-    if missing:
-        raise SystemExit(f"the derivation harness printed no line for {missing}; a "
-                         f"record that silently drops a case proves nothing about it")
-    _DERIVATION_MEASURED[text] = golden
-    return golden
-
-
-def derivation_record(cases: dict) -> dict:
-    """The whole filed record, measured now."""
-    golden = measure_derivation(cases)
-    return {"schema": 1,
-            "sources": derivation_sources(cases),
-            "cases_sha256": cases_digest(cases),
-            "date": time.strftime("%Y-%m-%d"),
-            "golden": golden}
-
-
-def write_derivation() -> int:
-    """Re-measure and file `tools/manifests/derivation.json`."""
-    cases = load_derivation_cases()
-    record = derivation_record(cases)
-    with host.file_lock("ratify_derivation"):
-        DERIVATION_JSON.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
-    n_ok = sum(1 for v in record["golden"].values() if v.startswith("ok:"))
-    n_ref = len(record["golden"]) - n_ok
-    print(f"wrote {DERIVATION_JSON} ({n_ok} derived blocks, {n_ref} filed "
-          f"refusals) over {len(record['sources'])} source file(s)")
-    return 0
-
-
-def check_derivation(record: dict | None = None) -> bool:
-    """The derivation gate: the code hash, the case set, and every golden."""
-    cases = load_derivation_cases()
-    if record is None:
-        if not DERIVATION_JSON.exists():
-            print(f"\nFAIL  THE DERIVATION IS NOT RATIFIED. There is no "
-                  f"{DERIVATION_JSON.name}: the addressing block's outputs are "
-                  f"measured by nothing. File them:\n"
-                  f"    bazel run //:ratify -- --write-derivation")
-            return False
-        record = json.loads(DERIVATION_JSON.read_text())
-    if record.get("schema") != 1:
-        print(f"\nFAIL  {DERIVATION_JSON.name} records schema "
-              f"{record.get('schema')!r}; this gate reads schema 1")
-        return False
-
-    want_sources = derivation_sources(cases)
-    fresh = record.get("sources") == want_sources
-    want_cases = cases_digest(cases)
-    same_cases = record.get("cases_sha256") == want_cases
-    golden = measure_derivation(cases)
-    filed = record.get("golden", {})
-
-    moved = sorted(n for n in golden if n in filed and golden[n] != filed[n])
-    added = sorted(n for n in golden if n not in filed)
-    dropped = sorted(n for n in filed if n not in golden)
-
-    if not same_cases:
-        print(f"\nFAIL  DERIVATION CASE DRIFT. The declared cases hash "
-              f"{want_cases[:16]}...; the record was measured on "
-              f"{str(record.get('cases_sha256'))[:16]}.... A golden that stops "
-              f"failing because its case was edited or deleted proves nothing; "
-              f"re-file with --write-derivation.")
-    if not fresh:
-        print(f"\nFAIL  DERIVATION SOURCE DRIFT. The record was measured against "
-              f"{record.get('sources')}, the tree hashes to {want_sources}. The "
-              f"derivation's outputs must be re-measured "
-              f"(--write-derivation).")
-        unchanged = [n for n in golden if golden.get(n) == filed.get(n)]
-        print(f"      {len(unchanged)} of {len(golden)} golden outputs are "
-              f"unchanged and are still described by the record; "
-              f"{len(moved)} moved: {moved}")
-    if (moved or added or dropped) and fresh and same_cases:
-        print("\nFAIL  DERIVATION OUTPUT DRIFT with the sources and the cases "
-              "UNCHANGED. The addressing block derives different values from the "
-              "same code on the same inputs, which is a toolchain or a "
-              "platform difference, not an edit -- investigate before re-writing.")
-    for name in moved:
-        print(f"      {name}\n        filed: {filed[name]}\n"
-              f"        this run: {golden[name]}")
-    for name in added:
-        print(f"      {name}: measured now, filed by nothing")
-    for name in dropped:
-        print(f"      {name}: filed, but the harness produced no such case")
-
-    if fresh and same_cases and not (moved or added or dropped):
-        n_ref = sum(1 for v in golden.values() if v.startswith("refused:"))
-        print(f"derivation OK  {len(golden)} golden outputs ({n_ref} filed "
-              f"refusals) over {len(want_sources)} source file(s)")
-        return True
-    return False
 
 
 def ptxas_version() -> str:
@@ -607,8 +368,7 @@ def census_report(entries: dict, unhonored: list[str],
 
 def _self_test() -> int:
     """Prove the readers can fail: the loop parser counts an in-loop `LDL` and clears a cold one, the body hash separates
-    changed code and ignores listing padding, and the derivation check rejects each way its record can be wrong (a gate
-    that cannot fail is not a gate)."""
+    changed code and ignores listing padding (a gate that cannot fail is not a gate)."""
     #: THE LOOP PARSER, against synthetic SASS: one LDL
     #: inside a backward-branch interval MUST be flagged, and the same LDL
     #: outside every loop MUST NOT be.
@@ -666,37 +426,6 @@ def _self_test() -> int:
         return 1
     print("SELF-TEST PASSED: the body hash separates changed code and ignores "
           "listing padding")
-
-    #: THE DERIVATION RECORD, mutated one field at a time. The mutants are on the
-    #: RECORD rather than on the sources, so the harness is measured once and each
-    #: arm isolates exactly one of the record's claims -- and a mutant that only
-    #: moved a hash would not prove the golden comparison runs, which is why one
-    #: arm moves a golden with the hashes left intact.
-    print("\n--- SELF-TEST: the derivation record, mutated (all of these MUST "
-          "fail) ---")
-    base = json.loads(DERIVATION_JSON.read_text())
-    a_case = sorted(base["golden"])[0]
-    a_source = sorted(base["sources"])[0]
-    mutants = {
-        "a moved golden output": lambda b: b["golden"].__setitem__(
-            a_case, "ok: 4 bytes, sha256 " + "0" * 64),
-        "a perturbed source hash": lambda b: b["sources"].__setitem__(
-            a_source, "0" * 64),
-        "a perturbed case digest": lambda b: b.__setitem__(
-            "cases_sha256", "0" * 64),
-        "a dropped golden": lambda b: b["golden"].pop(a_case),
-        "a golden for no declared case": lambda b: b["golden"].__setitem__(
-            "__self_test__", "ok: 4 bytes, sha256 " + "0" * 64),
-        "an unreadable schema": lambda b: b.__setitem__("schema", 99),
-    }
-    for name, mutate in mutants.items():
-        blob = json.loads(json.dumps(base))
-        mutate(blob)
-        if check_derivation(blob):
-            print(f"\nSELF-TEST FAILED: the derivation gate ACCEPTED {name}")
-            return 1
-    print(f"SELF-TEST PASSED: the derivation gate rejects all "
-          f"{len(mutants)} record mutants")
     return 0
 
 
@@ -733,16 +462,12 @@ def main() -> int:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--census", action="store_true",
                       help="print the build's per-kernel register and spill table; exit 1 on a discarded launch bound")
-    mode.add_argument("--derivation", action="store_true",
-                      help="check the derivation's goldens against the harness the graph built")
-    mode.add_argument("--write-derivation", action="store_true",
-                      help="re-measure the addressing block's golden outputs and file tools/manifests/derivation.json")
     mode.add_argument("--self-test", action="store_true",
-                      help="prove the loop parser, the body hash and the derivation check can fail")
+                      help="prove the loop parser and the body hash can fail")
     ap.add_argument("--json", metavar="PATH", help="census only: dump the raw per-instantiation record")
     ap.add_argument("--graph", type=Path, metavar="CENSUS", required=True,
                     help="THE GRAPH'S BUILD: its census record (bazel/defs.bzl's ratify_census) names each unit's ptxas "
-                         "report and object, the graph's toolkit and derivation harness, and the build's parameters")
+                         "report and object, the graph's toolkit and the build's parameters")
     ap.add_argument("--runfiles", type=Path, metavar="DIR", required=True,
                     help="the directory the census record's paths are relative to")
     a = ap.parse_args()
@@ -752,10 +477,6 @@ def main() -> int:
     use_graph(a.graph, a.runfiles)
     if a.census:
         return _census(a)
-    if a.derivation:
-        return 0 if check_derivation() else 1
-    if a.write_derivation:
-        return write_derivation()
     return _self_test()
 
 

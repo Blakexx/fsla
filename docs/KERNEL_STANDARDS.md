@@ -246,6 +246,27 @@ profile, a sanitizer run, a build of a library or wheel and a package install ru
 command typed in a checkout nor a tool's own subprocess outside a graph rule: `.claude/hooks/graph_only.py` refuses
 `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and the pip installs
 as typed command words, naming the target that does it; `GRAPH_OVERRIDE=<why>` on the command is the stated exception.
+The commit gate (`//:graph_only`, `tools/lint/graph_only.py`) refuses the same steps in tracked code, with no baseline: its
+allowlist is one entry a call site, each citing a graph rule whose action runs the step or one of the clauses below.
+WHAT STAYS OUTSIDE THE GRAPH, and why (the only clauses; a step outside the graph that none of them names moves into a
+graph rule):
+- (a) THE PROFILER, on the host that grants its counters: `ncu` runs from the tool that reads its counters (`tools/lab.py`,
+  `tools/overlap_gate.py`, `tools/pipe_counters.py`, `tools/stall_census.py`) on the host whose driver grants them, which a sandboxed action
+  does not choose and a rented host may refuse (Blake, 2026-11-07: "can we not start with vast, and then when we actually need to
+  profile etc, we can find the best path forward"; §16 addendum 4 above: a gate that reads profiler counters runs on a host that grants them).
+- (b) MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as
+  machine-wide locks, which Bazel cannot give an action (`measure/executors.py`'s `pytest_tier`, and `rola_devtools.build`'s workers, which
+  `bazel run //:measure` triggers) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
+  believe we made it that way for specific reaosn and gaps in bazel").
+- (c) THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own
+  compute-sanitizer), and `tools/sanitize_oracle.py` runs each (family, tool) pair as its own compute-sanitizer-wrapped pytest process under the GPU
+  lock and a kill timeout, so one pair's hang or error cannot block another or hold the lock (Blake, 2026-10-12: "every commit too noisyt, maybe we
+  can run it on a reduced cadence, i remmeber it nearly crasehed the computer sometimes though, racecheck especially, so i asked it to be run less").
+- (d) WHAT RUNS ON A RENTED BOX OR IN THE DEVBOX: a machine's own provisioning is its bootstrap, which the devbox image wraps, and
+  a rental's sessions are run there, not by the graph of the machine that rents it; a tool that lives outside the graph is pinned into the image and the
+  dev setup (Blake, 2026-11-08: "the container is mostly just a thin wrapper around the setup / bootstrap process that normally is done on the machine
+  (installing all non-graph managed things)"; "If we have tooling that lives outside the graph, then it needs to be pinned into the image and part of
+  our dev setup."). No call site of tracked code names this clause today; the lint's allowlist cites it only for one that does.
 
 ## <a id="s15"></a>15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
 - A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
@@ -565,8 +586,8 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    is its content digest, named in `tools/devbox_image.json`. `bazel run //:container_check` runs the host's own loop
    inside it on fresh volumes of its own -- the bootstrap, `init`, the checkout's venv, `check`, the commit gate, the
    GPU and reference library, a host-held lock seen as held, an iteration build imported -- each step timed, and
-   records the result under the digest. The commit gate refuses a tree whose image is not the one it names, and a
-   change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
+   records the result under the digest. The commit gate refuses a tree whose image is not the one it names (`//:devbox_image`: the file is what the graph writes,
+   `bazel run //:devbox_image_update`), and a change to the name without a passing record for the new digest. The loop's own inputs (a pin, the lock, `dev.py`)
    are proven by every host that runs the same loop; the container shares only the host's locks, the image's digest
    (read-only) and, under WSL, the driver's libraries.
 4. STABLE BEFORE FASTER (Blake, 2026-09-13: "We should get the package, build, devloop, measure system stable before optimizing kernel. A standard process makes everything easier."): a broken or slow build, dev loop or measurement system is fixed before the next kernel optimization, and a toolchain move lands before more baselines accumulate.

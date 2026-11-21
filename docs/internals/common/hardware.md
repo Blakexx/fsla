@@ -1,8 +1,8 @@
-# `csrc/rola/src/common/hardware.cuh` — the hardware configuration
+# The hardware configuration (the generated `hardware.cuh`)
 
 The hardware a kernel runs on, mapped to the constants its code and its choices read, in one file:
-`csrc/rola/src/common/hardware.json`. `hardware.cuh` is generated from it (`python -m measure.hardware --write`)
-and must never be edited by hand; `measure/hardware.py` reads it, resolves it and checks it, and
+`csrc/rola/src/common/hardware.json`. `hardware.cuh` is generated from it by the build graph (`//csrc/rola:hardware_header`, `python -m measure.hardware --header`)
+into the units' include path and is checked in nowhere; `measure/hardware.py` reads it, resolves it and checks it, and
 `tools/lint/lint_standards.py` gates the check on every commit.
 
 <a id="layers"></a>
@@ -148,5 +148,5 @@ names, with exactly one source that holds.
 - A product: its block under `product`, with the overrides that differ from its architecture (and a
   confirmation lab on the card).
 - An architecture: its `caps` row and its default rates (documented where a document gives them, the rest
-  measured), then `--write`; [`bringup.md`](../../bringup.md) walks it.
+  measured), then the build; [`bringup.md`](../../bringup.md) walks it.
 - A rate: a field in the schema's vocabulary, a value with its source in each row that has it.
