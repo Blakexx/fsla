@@ -18,7 +18,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "rola_devtools", version = "0.1.0")
 git_override(
     module_name = "rola_devtools",
-    commit = "f0b5a778bea70b0927974567d5fd549601a85ed6",
+    commit = "9045d81ede7f95b158f159d20eedfc1542a65cc4",
     remote = "https://github.com/Blakexx/rola-devtools.git",
 )
 

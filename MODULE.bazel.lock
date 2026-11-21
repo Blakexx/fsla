@@ -277,7 +277,7 @@
     },
     "@@rola_devtools+//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "nYRcMSeAmQnM3u2iQk3pDAZ0dQ/8XSSaZkIxdBKMhXg=",
+        "bzlTransitiveDigest": "rdpfjwH/zvN6fSlu1+tgbqVU4uaTrU51Z9FuoX5z6WQ=",
         "usagesDigest": "x/s4U3plTMrIIN6uWCRlYWCHYzttDLobVP76oIlzTqY=",
         "recordedInputs": [
           "REPO_MAPPING:,rola_devtools rola_devtools+",
