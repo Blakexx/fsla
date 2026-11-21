@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
+import checked  # noqa: E402
 import dev_config  # noqa: E402
 import lab  # noqa: E402
 
@@ -93,7 +94,7 @@ def test_a_rule_whose_entry_has_no_triggers_names_no_source_text_for_it_and_is_n
 @needs_checker
 def test_the_lab_prints_the_checkers_fix_then_the_rola_note_after_a_refusal():
     notes = lab.guidance()
-    assert set(notes) == set(lab.checker().declare.rule_names(lab.notice_ledger()))
+    assert set(notes) == set(checked.checker().declare.rule_names(lab.notice_ledger()))
     refusal = SimpleNamespace(rule="step_rolled", kernel="k", count=4, allowed=0, message="", fix="write the steps a straight block",
                               note=notes["step_rolled"], findings=(SimpleNamespace(where="0x57d0", count=4, what="x"),))
     line, = lab.render_refusal(refusal)
@@ -102,6 +103,6 @@ def test_the_lab_prints_the_checkers_fix_then_the_rola_note_after_a_refusal():
 
 @needs_checker
 def test_the_checkers_own_refusal_carries_the_note_the_lab_passes():
-    c = lab.checker()
+    c = checked.checker()
     refusal = c.declare.judge("k", "step_rolled", [SimpleNamespace(where="0x57d0", count=4, what="x")], "m", "the fix", [], lab.guidance())
     assert refusal.note == lab.guidance()["step_rolled"] and refusal.lines()[-1] == f"  note: {refusal.note}"

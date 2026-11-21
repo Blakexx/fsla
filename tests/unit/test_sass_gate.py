@@ -189,8 +189,8 @@ def test_a_loops_exit_laid_out_as_its_latch_is_the_steps_end():
 
 def test_an_instruments_declaration_permits_the_step_signature_it_names(cubin, monkeypatch):
     """A probe keeps a step signature on purpose where its declarations name it (docs/internals/tools/sass_gate.md#instrument):
-    handed to the checker as a permit under the function's own name, so the conversion probe is clean and records what it keeps,
-    and the global-memory probe, undeclared, stays red."""
+    the gate matches the instrument's declarations to the function's name itself (`_declares`) and reads the step signatures itself,
+    so the conversion probe is clean and records what it keeps, and the global-memory probe, undeclared, stays red."""
     monkeypatch.setattr(sass_gate, "INSTRUMENT", {"step_xu_probe": {"step_xu": "the cost the probe measures"}})
     ok, report = sass_gate.gate(cubin, None, None)
     xu = next(v for k, v in sass_gate.STATS.items() if "step_xu_probe" in k)
@@ -199,8 +199,9 @@ def test_an_instruments_declaration_permits_the_step_signature_it_names(cubin, m
     assert memory["reds"] and not ok
 
 
-def test_the_instructions_per_step_ceiling_is_the_checkers_bound(cubin):
-    """`--max-per-hmma` is a declared bound of the checker's `step_density`: a kernel over it is red, one under it is not."""
+def test_the_instructions_per_step_ceiling_is_the_gates_own_bound(cubin):
+    """`--max-per-hmma` is the gate's own bound, on its own count of the static instructions per HMMA of a step loop: a kernel over it
+    is red, one under it is not."""
     ok, report = sass_gate.gate(cubin, "step_clean_probe", 1)
     assert not ok and "static instructions per HMMA" in report
     ok, report = sass_gate.gate(cubin, "step_clean_probe", 10**6)

@@ -13,7 +13,7 @@ none until a family's model exists.
 ## <a id="checker"></a>What the checker computes, and what stays the gate's
 
 Two signatures are warpline's checker's (`tools/checked.py` imports it and builds its model of a cubin's kernels; `tools/lab.py`
-still carries its own copies of the two functions): `stack_memory` (a nonzero stack frame, the `LDL`/`STL` instructions
+reads the checker through the same module): `stack_memory` (a nonzero stack frame, the `LDL`/`STL` instructions
 counted beside it) and `convergence_call` (a call into a convergence subroutine a converged warp executes; the guarded
 ones, which the model finds in cold blocks, are counted in `guarded` and not red). The gate holds no declaration for
 them: undeclared is zero. The graph's gate action and `bazel run //tools:sass_gate` hand the tool the checker's package

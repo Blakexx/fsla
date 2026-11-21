@@ -46,6 +46,11 @@ def use_graph(*, cuobjdump: str, nvdisasm: str) -> None:
                   scratch=Path(tempfile.mkdtemp(prefix="rola_sass_")))
 
 
+def in_graph() -> bool:
+    """Whether the graph's gate action runs this process (it handed in its own toolkit, `use_graph`), and has no dev config."""
+    return bool(_GRAPH)
+
+
 def tool(name: str) -> str:
     """The toolkit binary `name` (`cuobjdump`, `nvdisasm`)."""
     if _GRAPH:

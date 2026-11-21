@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import checked  # noqa: E402
 import dev_config  # noqa: E402
 import lab  # noqa: E402
 
@@ -70,8 +71,8 @@ def declare(kernel, hazard, count):
 
 def failures_of(tmp_path, monkeypatch, *lines, declared=()):
     """The lab's failures for a build of `x` with no kernels whose notices are `lines` (names as given: no demangling)."""
-    monkeypatch.setattr(lab, "demangle", lambda names: {n: n for n in names})
-    monkeypatch.setattr(lab, "checked_kernels", lambda binary: [])
+    monkeypatch.setattr(checked, "demangle", lambda names: {n: n for n in names})
+    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [])
     monkeypatch.setattr(lab, "experiments", lambda: {})
     return lab.checker_failures(binary_with(tmp_path, *lines, declared=declared), [json.loads(d) for d in declared], set())
 
@@ -151,9 +152,9 @@ def test_an_injected_wait_is_counted_a_kernel_unless_declared_and_an_injected_ar
 
 @needs_checker
 def test_a_report_row_prints_with_its_count_and_blocks_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr(lab, "demangle", lambda names: {n: n for n in names})
+    monkeypatch.setattr(checked, "demangle", lambda names: {n: n for n in names})
     binary = binary_with(tmp_path, C7519.format("a"), C7519.format("a"), C7519.format("b"), LOOP)
-    monkeypatch.setattr(lab, "checked_kernels", lambda binary: [])
+    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [])
     monkeypatch.setattr(lab, "experiments", lambda: {})
     assert lab.checker_failures(binary, [], set()) == []
     report = lab.notice_report(binary)
@@ -203,7 +204,7 @@ def test_the_toolkits_options_are_the_ones_ptxas_names():
 
 @needs_checker
 def test_the_projects_ledger_overrides_or_adds_to_the_checkers_base_and_repeats_none_of_it():
-    ledgers = lab.checker().ledgers
+    ledgers = checked.checker().ledgers
     project = ledgers.load_ledger(lab.PROJECT_LEDGER.read_text())
     base = {row.key: row for row in ledgers.base_ledger()}
     assert project
@@ -219,6 +220,6 @@ def test_the_projects_ledger_overrides_or_adds_to_the_checkers_base_and_repeats_
 
 @needs_checker
 def test_the_hazards_the_ledger_declares_are_the_ones_an_experiment_may_declare():
-    declared = set(lab.checker().ledgers.declared_rules(lab.notice_ledger()))
+    declared = set(checked.checker().ledgers.declared_rules(lab.notice_ledger()))
     assert declared == {lab.HAZARD_RULES[h] for h in lab.HAZARD_STATES} == {"mma_serialized", "wait_injected"}
     assert set(lab.HAZARD_STATES) <= set(lab.HAZARDS)

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import checked  # noqa: E402
 import dev_config  # noqa: E402
 import lab  # noqa: E402
 
@@ -117,19 +118,61 @@ def test_a_refused_notice_is_shown_with_its_row_and_an_unknown_one_quoted_whole(
 
 @needs_checker
 def test_every_hazard_names_a_rule_the_checker_has():
-    c = lab.checker()
-    known = set(c.rules.registry()) | set(c.ledgers.declared_rules(lab.notice_ledger()))
+    c = checked.checker()
+    known = set(c.rules.registry()) | set(c.ledgers.declared_rules(lab.notice_ledger())) | set(c.rules.profile_registry())
+    assert set(lab.PROFILE_HAZARDS) <= set(lab.HAZARD_RULES)
     assert set(lab.HAZARD_RULES.values()) | set(lab.PRESENCE_RULES.values()) | {"convergence_call"} <= known
 
 
 @needs_checker
 def test_the_declarations_a_translation_makes_are_the_checkers_own_to_load():
-    c = lab.checker()
+    c = checked.checker()
     entries = lab.declaration_entries([expect("k", "STEP_PORT", "<=", 2048), expect("k", "STEPS_SERIALIZED", "<=", 1),
                                        expect("k", "BSSY", ">=", 0)], {})
     loaded = c.declare.load_declarations(lab.json.dumps({"declarations": entries}), c.rules.registry(),
                                          c.ledgers.declared_rules(lab.notice_ledger()))
     assert {d.rule for d in loaded} == {"step_port", "mma_serialized", "step_branches"}
+    bank = lab.load_declarations([expect("k", "BANK_CONFLICT", "<=", 4)], {})
+    assert [(d.rule, d.allow) for d in bank] == [("shared_wavefronts_excess", 4)]
+
+
+#: a SourceCounters dump as the lab's boxes make them (`ncu --page source --print-source sass --csv`), cut to the columns the rule
+#: reads: three shared accesses, the second of them a 32-way conflict on a store (32 wavefronts where one is ideal), run 12 times
+DUMP = ('==PROF== Connected to process 1 (/x/k)\n'
+        '"Kernel Name","void tile::window<(int)0>(float *)",\n'
+        '"Address","Source","Instructions Executed","Address Space","L1 Wavefronts Shared Excessive","L1 Wavefronts Shared",'
+        '"L1 Wavefronts Shared Ideal"\n'
+        '"0x7f0000000100","LDS.128 R4, [R2]","12","shared","0","12","12"\n'
+        '"0x7f0000000110","STS [R0], R4","12","shared","372","384","12"\n'
+        '"0x7f0000000120","EXIT","12","","0","0","0"\n')
+
+
+@needs_checker
+def test_a_profile_with_excess_wavefronts_is_refused_by_kernel_and_source_line_and_a_declared_count_allows_it(tmp_path):
+    dump = tmp_path / "ledger_0.csv"
+    dump.write_text(DUMP)
+    source = ["", "  tile[lane * 32] = v;  // the clear", ""]
+    kernel = "void tile::window<(int)0>(float *)"
+    lines_at = {0x00: 1, 0x10: 2, 0x20: 3}
+    out = lab.profile_failures(dump, kernel, lab.load_declarations([], {}), lines_at, source, 12, "CTA-window")
+    assert out[0].startswith(f"{kernel}: 372 shared-memory wavefronts in excess of the conflict-free count, 0 declared (BANK_CONFLICT")
+    assert "31.0 a CTA-window (372 in the launch): line 2: tile[lane * 32] = v;  // the clear" in out[1]
+    assert any(line.startswith("    fix: ") for line in out) and any(line.startswith("    note: ") for line in out)
+    declared = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 372)], {"BANK_CONFLICT": "the probe's own conflict"})
+    assert lab.profile_failures(dump, kernel, declared, lines_at, source, 12, "CTA-window") == []
+    short = lab.load_declarations([expect("window", "BANK_CONFLICT", "<=", 371)], {})
+    assert len(lab.profile_failures(dump, kernel, short, lines_at, source, 12, "CTA-window")) > 1
+    other = lab.load_declarations([expect("elsewhere", "BANK_CONFLICT", "<=", 999)], {})
+    assert lab.profile_failures(dump, kernel, other, lines_at, source, 12, "CTA-window")
+
+
+@needs_checker
+def test_a_conflict_free_profile_passes_and_a_file_that_is_no_dump_is_named(tmp_path):
+    dump = tmp_path / "ledger_0.csv"
+    dump.write_text(DUMP.replace('"372","384"', '"0","12"'))
+    assert lab.profile_failures(dump, "k", lab.load_declarations([], {}), {}, [], 1, "launch") == []
+    dump.write_text("not a dump\n")
+    assert "is no SourceCounters dump" in lab.profile_failures(dump, "k", [], {}, [], 1, "launch")[0]
 
 
 def test_the_debts_decide_which_rules_an_experiment_is_held_to():
@@ -152,7 +195,7 @@ def test_the_steps_advisory_prints_the_checkers_figures_and_groups_kernels_with_
                              instructions=(instruction("tensor"), instruction("tensor"), instruction("integer/address"),
                                            instruction("control")))
     kernels = [SimpleNamespace(demangled=f"k<{i}>", regions=(region,)) for i in range(3)]
-    monkeypatch.setattr(lab, "checked_kernels", lambda binary: [*kernels, SimpleNamespace(demangled="plain", regions=())])
+    monkeypatch.setattr(checked, "kernels_of", lambda binary, demangled=False: [*kernels, SimpleNamespace(demangled="plain", regions=())])
     out = lab.steps_report(None)
     assert out[0] == "  k<0>  (and 2 kernels with the same lines)" and len(out) == 3
     assert out[1] == "    port: 2,304 B a step (18 wavefronts) operands 2,048 + shared 256 (x 4 warps)"

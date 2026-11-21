@@ -39,9 +39,9 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from types import SimpleNamespace
 
 import build_flags
+import checked
 import dev_config
 import region_ledger
 import sass
@@ -111,7 +111,11 @@ HAZARD_RULES = {
     "STORE_UNFENCED": "store_unfenced", "CLOCK_UNIFORM": "clock_uniform", "WAIT_AFTER_ISSUE": "wait_after_issue",
     "STEP_ROLLED": "step_rolled", "STEP_PORT": "step_port", "STEP_WORK": "step_work",
     "STEPS_SERIALIZED": "mma_serialized", "WAIT_INJECTED": "wait_injected",
+    "BANK_CONFLICT": "shared_wavefronts_excess",
 }
+#: the hazards a PROFILE computes (`ledger` runs them on a kernel's dump, `profile_failures`): the checker's profile rules, which `check`
+#: has no profile to run and only translates the declarations of. The count is the excess shared wavefronts of the profiled launch.
+PROFILE_HAZARDS = ("BANK_CONFLICT",)
 #: the hazards an experiment may declare a count of, beside its opcodes
 HAZARDS = tuple(HAZARD_RULES)
 #: the two a `declare` row of the notice ledger counts (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
@@ -138,40 +142,51 @@ PTXAS_OPTIONS = ("--warn-on-spills", "--warn-on-local-memory-usage", "--verbose"
 
 
 @functools.cache
-def checker() -> SimpleNamespace:
-    """warpline's checker modules, imported where first needed: the library's directory is handed in (`bazel run //tools:lab`, a test tier)."""
-    root = dev_config.warpline_python()
-    if root is None:
-        raise SystemExit("the lab's check needs warpline's checker, which the graph hands it: bazel run //tools:lab -- ...")
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    from warpline.checker import declare, model, readers, rules
-    from warpline.checker import notices as ledgers
-    from warpline.checker.rules import _steps as steps
-    return SimpleNamespace(declare=declare, model=model, readers=readers, rules=rules, ledgers=ledgers, steps=steps)
-
-
-@functools.cache
 def notice_ledger() -> list:
     """The ledger the checker reads the notices against: its base ledger with the project's rows (`PROJECT_LEDGER`)."""
-    ledgers = checker().ledgers
+    ledgers = checked.checker().ledgers
     return ledgers.merge(ledgers.base_ledger(), ledgers.load_ledger(PROJECT_LEDGER.read_text()))
 
 
-def checked_kernels(binary: Path) -> list:
-    """The checker's model of every kernel of `binary`, each named as the toolkit's own `cu++filt` names it (the patterns
-    `lab::kernel` writes are of that form)."""
-    c = checker()
+def load_declarations(expected: list[dict], reasons: dict[str, str]) -> list:
+    """The experiment's expectations as the checker's loaded declarations: the model rules', the notice ledger's and the profile rules'."""
+    c = checked.checker()
+    names = {*c.ledgers.declared_rules(notice_ledger()), *c.rules.profile_registry()}
+    return c.declare.load_declarations(json.dumps({"declarations": declaration_entries(expected, reasons)}), c.rules.registry(), names)
 
-    def run(*argv: str) -> str:
-        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
 
-    listing = run(dev_config.cuda_bin("cuobjdump"), "-sass", str(binary))
-    usage = run(dev_config.cuda_bin("cuobjdump"), "-res-usage", str(binary))
-    graphs = "\n".join(run(dev_config.cuda_bin("nvdisasm"), "-bbcfg", "-poff", str(cubin)) for cubin in sass.cubins(binary))
-    mangled = list(c.readers.sass_functions(listing))
-    pretty = demangle(mangled)
-    return list(c.model.kernels_from_text(listing, graphs, usage, "".join(f"{pretty[m]}\n" for m in mangled)).values())
+def expectations(binary: Path) -> list[dict]:
+    """The expectations the experiment declares (`Bench::expect`), as its binary prints them (`--expect`, which runs nothing)."""
+    lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
+    return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
+
+
+def profile_failures(csv_path: Path, kernel: str, declarations: list, lines_at: dict[int, int], source: list[str], div: float, unit: str) -> list[str]:
+    """The checker's profile rules on a kernel's SourceCounters dump (`ledger`), under the experiment's declarations (a count of the
+    profiled launch, zero where none names the kernel): a refusal names the kernel, then each source line that issues the excess
+    with its wavefronts a `unit` (`div` the launch's units), the checker's fix and rola's note. `lines_at` maps an instruction's
+    offset from the kernel's first to its line in the experiment's source."""
+    lines = csv_path.read_text().splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith('"Kernel Name"')), None)
+    if start is None:
+        return [f"{kernel}: {csv_path.name} is no SourceCounters dump: no `Kernel Name` line"]
+    text = "\n".join(line for i, line in enumerate(lines[start:]) if i < 2 or line.startswith('"0x'))
+    refusal = checked.profile_refusal(text, kernel, declarations, guidance())
+    if refusal is None:
+        return []
+    by_line: dict[int, int] = {}
+    for f in refusal.findings:
+        line = lines_at.get(int(f.where, 16), 0)
+        by_line[line] = by_line.get(line, 0) + f.count
+    out = [f"{kernel}: " + REFUSAL_TEXT[refusal.rule].format(n=refusal.count, declared=refusal.allowed)
+           + f" [checker rule {refusal.rule}; {csv_path.name}]"]
+    for line, n in sorted(by_line.items(), key=lambda x: -x[1]):
+        text = source[line - 1].strip()[:90] if 0 < line <= len(source) else "(outside the source)"
+        out.append(f"    {n / div:,.1f} a {unit} ({n:,} in the launch): line {line}: {text}")
+    out.append(f"    fix: {refusal.fix}")
+    if refusal.note:
+        out.append(f"    note: {refusal.note}")
+    return out
 
 
 def declared_reasons(source: str) -> dict[str, str]:
@@ -250,6 +265,8 @@ REFUSAL_TEXT = {
                        "FMA pipe; a form that keeps them declares STEP_XU)",
     "step_global": "{n} global accesses inside an MMA step nobody declared (KERNEL_STANDARDS 29: stage by cp.async; a form that "
                    "keeps them declares STEP_GLOBAL)",
+    "shared_wavefronts_excess": "{n:,} shared-memory wavefronts in excess of the conflict-free count, {declared:,} declared "
+                                "(BANK_CONFLICT; KERNEL_STANDARDS 30: conflict-free by construction)",
     "convergence_call": "{n} convergence calls nobody declared (a collective under role-dependent control flow becomes a call "
                         "into a convergence subroutine)",
 }
@@ -263,7 +280,7 @@ def guidance() -> dict[str, str]:
     evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
     entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
     notes = {rule: entry["guidance"] for rule, entry in entries.items()}
-    checker().declare.load_notes(json.dumps({"notes": notes}), checker().declare.rule_names(notice_ledger()))
+    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().declare.rule_names(notice_ledger()))
     return notes
 
 
@@ -294,19 +311,19 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
 def notice_names(read: list) -> dict[str, str]:
     """The functions the notices name (as the toolkit printed them, mangled), demangled."""
     functions = sorted({n.function for n in read if n.function})
-    return demangle(functions) if functions else {}
+    return checked.demangle(functions) if functions else {}
 
 
 def read_notices(binary: Path) -> list:
     """EVERY notice of `binary`'s build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
     left no notices (a packed binary run elsewhere)."""
-    return checker().ledgers.read_notices(notices(binary).read_text()) if notices(binary).exists() else []
+    return checked.checker().ledgers.read_notices(notices(binary).read_text()) if notices(binary).exists() else []
 
 
 def notice_report(binary: Path) -> list[str]:
     """THE REPORT: the notices of `report` rows, one line a row with its count, printed with the pack and blocking nothing."""
     read = read_notices(binary)
-    return checker().declare.check_notices(read, notice_ledger(), [], notice_names(read))[1] if read else []
+    return checked.checker().declare.check_notices(read, notice_ledger(), [], notice_names(read))[1] if read else []
 
 
 def held_rules(experiment: str) -> set[str]:
@@ -323,28 +340,19 @@ def held_rules(experiment: str) -> set[str]:
 def checker_failures(binary: Path, expected: list[dict], budgeted: set[str]) -> list[str]:
     """What the checker refuses of the build: the rules the experiment is held to (`held_rules`) over every kernel and every notice
     of the build against the ledger -- under the declarations its expectations translate to."""
-    c = checker()
+    c = checked.checker()
     experiment = binary.name.split(".")[0]
-    registry = c.rules.registry()
     names = held_rules(experiment)
     held = experiment not in _PRE_TIMELINE
-    kernels = checked_kernels(binary)
+    kernels = checked.kernels_of(binary, demangled=True)
     path = experiments().get(experiment)
     reasons = declared_reasons(path.read_text()) if path else {}
-    notice_rules = c.ledgers.declared_rules(notice_ledger())
-    declarations = c.declare.load_declarations(json.dumps({"declarations": declaration_entries(expected, reasons)}),
-                                               registry, notice_rules)
-    refusals = c.declare.check(kernels, {n: registry[n] for n in sorted(names)}, declarations, guidance())
+    declarations = load_declarations(expected, reasons)
+    refusals = checked.check(kernels, names, declarations, guidance())
     refusals = [r for r in refusals if held or r.rule != "loop_convergence" or r.kernel in budgeted]
     read = read_notices(binary)
     refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(read), guidance())[0]
     return bound_failures(expected, kernels) + [line for r in refusals for line in render_refusal(r, experiment)]
-
-
-def demangle(names: list[str]) -> dict[str, str]:
-    out = subprocess.run([dev_config.cuda_bin("cu++filt")], input="\n".join(names), capture_output=True, text=True,
-                         check=True).stdout.splitlines()
-    return dict(zip(names, out, strict=True))
 
 
 def kernels(binary: Path) -> dict[str, dict]:
@@ -367,7 +375,7 @@ def kernels(binary: Path) -> dict[str, dict]:
             name = m.group(1)
         elif name and (m := re.search(r"REG:(\d+).*LOCAL:(\d+)", line)):
             regs[name] = {"regs": int(m.group(1)), "local": int(m.group(2))}
-    names = demangle(list(ops))
+    names = checked.demangle(list(ops))
     return {names[k]: {"ops": dict(v), **regs.get(k, {})} for k, v in ops.items()}
 
 
@@ -524,7 +532,7 @@ def waits_report(binary: Path) -> list[str]:
     wait's candidates to precede it -- what follows the wait in straight-line code, reads none of the registers the
     waited steps write, and could be issued before the wait (`wait_candidates`). Never a refusal."""
     code = disassembled(binary)
-    names = demangle(list(code))
+    names = checked.demangle(list(code))
     groups: dict[tuple, list[str]] = {}
     for mangled, body in code.items():
         rows = Counter()
@@ -553,9 +561,9 @@ def steps_report(binary: Path) -> list[str]:
     executes a step, by class -- the figures of the checker's `step_port` and `step_work` rules, read over each of the
     kernel's regions (a kernel with several prints their range and the figures of the region with the most). Bounded by
     `STEP_PORT` and `STEP_WORK` where declared; never a refusal where not."""
-    steps = checker().steps
+    steps = checked.checker().steps
     groups: dict[tuple, list[str]] = {}
-    for kernel in checked_kernels(binary):
+    for kernel in checked.kernels_of(binary, demangled=True):
         rows = [steps.figures(r) for r in kernel.regions]
         if not rows:
             continue
@@ -587,8 +595,7 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
     """Every expectation the experiment declares, every hazard the checker's rules find in its kernels past what it declares, every
     notice of its build allowed by the ledger (local memory is the toolkit's own warning there), and the project's own checks of its
     source: the failures, empty when it may run."""
-    lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
-    expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
+    expected = expectations(binary)
     failures = []
     for e in (e for e in expected if e["op"] not in HAZARDS):
         hits = [k for k in table if re.search(e["kernel"], k)]
@@ -1164,12 +1171,14 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
     units = {k: (float(u["n"]), u["unit"]) for k in table for u in budgets(binary, "units")
              if re.search(u["kernel"], k)}
     heads = phases(path)
+    declarations = load_declarations(expectations(binary), declared_reasons(path.read_text()))
+    refused: list[str] = []
 
     images = [c for c in sass.cubins(binary) if arch in c.name]
     if len(images) != 1:
         print(f"lab: {len(images)} images for {arch} in {binary.name}")
         return 1
-    mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
+    mangled = dict(zip(checked.demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
     disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
     for k in table:
         if pattern and not re.search(pattern, k):
@@ -1219,6 +1228,9 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
                         else "loads" if op.startswith(("LDS", "LDSM")) else op)
                 key = (lines[0] if lines else 0, kind)
                 sites[key] = sites.get(key, 0.0) + waves / div
+        refused += profile_failures(csv_path, k, declarations,
+                                    {at - base: next((ln for f, ln in frames.get(at - base, []) if f == path.name), 0)
+                                     for at, *_ in rows}, path.read_text().splitlines(), div, unit)
         total = sum(v[0] for v in by.values())
         waves_all = sum(v[1] for v in by.values())
         samples_all = max(sum(v[3] for v in by.values()), 1.0)
@@ -1236,6 +1248,9 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         for (line, kind), w in sorted(sites.items(), key=lambda x: -x[1])[:top]:
             text = source[line - 1].strip()[:80] if 0 < line <= len(source) else "(outside the source)"
             print(f"    {w:10,.1f}  {kind:15}  line {line:5}  {text}")
+    if refused:
+        print("lab: REFUSED, the profile holds bank conflicts nobody declared (docs/internals/tools/lab.md#ledger):", *refused, sep="\n  ")
+        return 1
     return 0
 
 
@@ -1338,9 +1353,9 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
     if len(images) != 1:
         print(f"lab: {len(images)} images for {arch} in {binary.name}")
         return 1
-    mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
+    mangled = dict(zip(checked.demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
     disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
-    model = {k.name: k for k in checked_kernels(binary)}
+    model = {k.name: k for k in checked.kernels_of(binary, demangled=True)}
     #: a kernel the lab would refuse is counted all the same, its refusals stated first
     for failure in check(binary, kernels(binary)):
         print(f"  REFUSED AS IT STANDS: {failure}")
@@ -1409,7 +1424,8 @@ def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> i
     binary = build(path, arch or sass.device_arch())
     table = kernels(binary)
     #: a loop of steps' longest run without one: the checker's `step_gap` rule
-    gaps = {k.demangled: checker().rules.registry()["step_gap"].check(k) for k in checked_kernels(binary)}
+    step_gap = checked.checker().rules.registry()["step_gap"]
+    gaps = {k.demangled: step_gap.check(k) for k in checked.kernels_of(binary, demangled=True)}
     for k, info in table.items():
         if pattern and not re.search(pattern, k):
             continue
