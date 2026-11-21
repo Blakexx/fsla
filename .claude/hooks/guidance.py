@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The checker's guidance, at the edit (Blake, 2026-11-20): when an edit's new text lands in a kernel source (`csrc/**/*.cu*`,
-`measure/lab/**/*.cu*`), inject the lines of `docs/rules.json` whose `triggers` -- regexes over source -- that text matches,
-each the rule of warpline's checker it carries (`checker`) and rola's `guidance` for it: the atom or practice, the standards
+`measure/lab/**/*.cu*`), inject the lines of the `checker` section of `docs/rules.json` whose `triggers` -- regexes over source -- that text
+matches, each the rule of warpline's checker (the entry's key) and rola's `guidance` for it: the atom or practice, the standards
 anchor, the lab page. Advisory context, never a refusal; a malformed table or an unreadable file injects nothing. The new text
 is an Edit's `new_string`, a MultiEdit's every `new_string` and a Write's `content`. Fired by the repo's dispatcher
 (`.claude/hooks/repo_hooks.py`); docs: docs/internals/tools/lint.md#action-hooks."""
@@ -29,19 +29,20 @@ def kernel_source(path: str, root: Path) -> bool:
     return any(fnmatch.fnmatchcase(relative, pattern) for pattern in KERNEL_SOURCES)
 
 
-def fired(rows: list, text: str) -> list[str]:
-    """The guidance lines of the rows one of whose triggers matches `text`, in the table's order."""
+def fired(entries: dict, text: str) -> list[str]:
+    """The guidance lines of the entries one of whose triggers matches `text`, in the section's order; an entry names the rows it serves."""
     lines = []
-    for row in rows:
-        if not isinstance(row, dict) or "checker" not in row:
+    for rule, entry in entries.items():
+        if not isinstance(entry, dict):
             continue
-        for trigger in row.get("triggers") or []:
+        for trigger in entry.get("triggers") or []:
             try:
                 hit = re.search(trigger, text, re.M)
             except re.error:
                 continue
             if hit:
-                lines.append(f"- {row['checker']} ({row['id']}): {row['guidance']}")
+                served = f" ({', '.join(entry.get('rules') or [])})" if entry.get("rules") else ""
+                lines.append(f"- {rule}{served}: {entry['guidance']}")
                 break
     return lines
 
@@ -54,11 +55,11 @@ def main() -> int:
         path = str(args.get("file_path") or "")
         if not path or not kernel_source(path, root):
             return 0
-        lines = fired(json.loads((root / "docs" / "rules.json").read_text()), new_text(args))
+        lines = fired(json.loads((root / "docs" / "rules.json").read_text())["checker"], new_text(args))
     except Exception:
         return 0
     if lines:
-        context = ("This edit adds kernel code the checker holds to rules; rola's guidance (docs/rules.json, `checker` rows):\n"
+        context = ("This edit adds kernel code the checker holds to rules; rola's guidance (docs/rules.json, `checker` section):\n"
                    + "\n".join(lines))
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}))
     return 0

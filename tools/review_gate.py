@@ -115,7 +115,7 @@ def target(args) -> tuple[str, str, str]:
 
 def review_rules() -> str:
     """The `review` rows of the rules table, one line each: the rules no gate, tool or hook checks."""
-    rows = json.loads((ROOT / RULES).read_text())
+    rows = json.loads((ROOT / RULES).read_text())["rules"]
     return "\n".join(f"- {row['id']}: {row['statement']}" for row in rows if row["mechanism"] == "review")
 
 

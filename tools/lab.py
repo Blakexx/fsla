@@ -258,11 +258,11 @@ _RULE_HAZARDS = {rule: hazard for hazard, rule in HAZARD_RULES.items()}
 
 @functools.cache
 def guidance() -> dict[str, str]:
-    """ROLA'S GUIDANCE, a line a rule of the checker (Blake, 2026-11-20): each `docs/rules.json` row that names a checker rule
-    (`checker`) carries `guidance`, the atom or practice, the standards anchor and the lab page with the evidence; a refusal
-    prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
-    rows = json.loads((ROOT / "docs" / "rules.json").read_text())
-    notes = {row["checker"]: row["guidance"] for row in rows if "checker" in row}
+    """ROLA'S GUIDANCE, a line a rule of the checker (Blake, 2026-11-20): each entry of the `checker` section of `docs/rules.json`,
+    keyed by the checker rule's name, carries `guidance`, the atom or practice, the standards anchor and the lab page with the
+    evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
+    entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
+    notes = {rule: entry["guidance"] for rule, entry in entries.items()}
     checker().declare.load_notes(json.dumps({"notes": notes}), checker().declare.rule_names(notice_ledger()))
     return notes
 

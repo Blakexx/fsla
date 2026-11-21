@@ -44,7 +44,7 @@ through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev conf
 <a id="rules-table"></a>
 ## Every rule has a row
 
-EVERY RULE HAS A ROW (Blake, 2026-11-17; the standards' preamble). `docs/rules.json` is a JSON list with a row for each
+EVERY RULE HAS A ROW (Blake, 2026-11-17; the standards' preamble). `docs/rules.json` is a JSON object of two sections. `rules` is a list with a row for each
 rule of [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`KERNEL_STANDARDS.md`](../../KERNEL_STANDARDS.md), in the documents'
 order: its `site`, an `id`, a `statement` (25 words at most) and a `mechanism` -- `gate` (a check of `bazel test //:gate`),
 `tool` (a tool refuses when run), `hook` (a git hook tracked in `tools/git-hooks/`, or an action hook: a file under `.claude/hooks/` listed in
@@ -53,7 +53,8 @@ refuses the next commit, [`review_gate.md`](review_gate.md#blocking)), `owed` (n
 history note, a section that states no rule). Each carries what that mechanism needs: `enforcer` (a list of paths,
 `path::symbol` and Bazel labels) and `coverage` (`full`, or `partial: <what is not checked>`); `why_not_mechanical` for a
 `review` row; `would_be` for an `owed` row (the forcing point it will take and how); `why` for a `none` row. A `review` row's
-statement reaches the reviewer's prompt, which lists them as the rules only the review enforces.
+statement reaches the reviewer's prompt, which lists them as the rules only the review enforces. `checker` is not a standard and
+holds no row: it is rola's guidance on the rules of the pinned checker (check 5 [below](#rules-table)).
 
 A SITE is derived from the documents by the lint, never listed twice. `<DOC>#<anchor>` names every `<a id>` anchor (every
 `## ` heading of either document, each addendum paragraph and each paragraph of the standards' preamble carries one, and
@@ -75,21 +76,24 @@ site states more than one rule.
 4. a new `owed` row, through the ratchet: `rules_table.py --owed` prints each `owed` row's id as a finding and
    `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
    the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks;
-5. a rule of the pinned checker (`warpline.checker.declare.rule_names`, over the checker's base ledger with the project's
-   `tools/notice_ledger.json`) that no row names, a row whose `checker` names a rule the pin does not have, and a rule two rows
-   name. A row with a `checker` (a gate, tool or hook row) is rola's guidance on that rule: `guidance`, one line -- the atom or
+5. the `checker` section, against the rules of the pinned checker (`warpline.checker.declare.rule_names`, over the checker's base
+   ledger with the project's `tools/notice_ledger.json`): a rule with no entry, an entry whose key is a rule the pin does not have,
+   and an id an entry lists under `rules` that is no row. The section is the checker's own map to rola's mechanism, not a standard:
+   an entry is keyed by the checker rule's name and carries `guidance`, one line -- the atom or
    practice, the standards anchor, the lab page with the evidence, or "nothing beyond the generic fix" where rola has nothing to
-   add -- and `triggers`, regexes over kernel source (a list, empty where no source text shows the rule). The lint needs the
-   checker on its path (`//:rules_table` carries `@warpline` as data) and fails without it. `tools/lab.py` hands the guidance to the checker
+   add -- `triggers`, regexes over kernel source (a list, empty where no source text shows the rule), and `rules`, the ids of the
+   standards rows it serves (a list, empty where no row states the rule); it holds no mechanism, enforcer or coverage, so it claims
+   no enforcement, and a row's `enforcer` names `tools/lab.py::check` only where that check holds the rule. The lint needs the
+   checker on its path (`//:rules_table` carries `@warpline` as data) and fails without it. `tools/lab.py` hands each entry's guidance to the checker
    as its notes, so a refusal prints the finding, the checker's fix, then `note: <guidance>`
    ([`lab.md`](lab.md#hazards)); the edit hook [below](#action-hooks) injects it.
 
 A resolving enforcer is not proof that it checks the rule: the table names the check a person opened and saw check the rule,
 and `coverage` says what it leaves unchecked. A NEW RULE lands with its mechanism and never as `owed`. The fixtures are
-`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and eighteen edits of its
-table, each failing one check with its own message, the last six for the checker's rules (a rule with no row, a row naming a rule
-the pin lacks, two rows for one rule, a row with no guidance, a trigger that is no regex, a `checker` row that is no gate, tool or
-hook); its tree holds a manifest with one listed and one unlisted action hook. `tests/unit/test_lab_guidance.py` covers the lab's
+`tools/lint/fixtures/rules_table/`: a small tree (two documents, a table, build files) that passes, and twenty edits of its
+table, each failing one check with its own message, the last seven for the `checker` section (a rule with no entry, an entry naming a rule
+the pin lacks, an entry listing an id that is no row, an entry with no guidance, an entry with a key it does not carry, a trigger that is no regex,
+a table with no section); its tree holds a manifest with one listed and one unlisted action hook. `tests/unit/test_lab_guidance.py` covers the lab's
 note and the hook.
 
 <a id="action-hooks"></a>
@@ -104,7 +108,7 @@ session, runs only checkouts under the dev config's `workspace.hook_roots` (a cl
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
 Three exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
 `no_verify.py` (`#no-verify`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
-source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each `docs/rules.json` row with a `checker` whose
+source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each entry of the `checker` section of `docs/rules.json` whose
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).
 

@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""Rola's guidance on the checker's rules (docs/rules.json rows with `checker`, `guidance`, `triggers`): the lab prints a rule's line
+"""Rola's guidance on the checker's rules (the `checker` section of docs/rules.json: an entry a checker rule, with `guidance`, `triggers`, `rules`): the lab prints a rule's line
 after the checker's fix in a refusal (tools/lab.py `guidance`), and the edit hook (.claude/hooks/guidance.py) injects the lines whose
 triggers an edit's new text matches into a kernel source. The two-way lint of the table against the checker's rules is
 tools/lint/rules_table.py's, with its own fixtures; these tests cover the lab's call and the hook."""
@@ -44,8 +44,8 @@ SAMPLES = {
 }
 
 
-def rows():
-    return json.loads((ROOT / "docs" / "rules.json").read_text())
+def entries():
+    return json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
 
 
 def hook(path, **args):
@@ -81,13 +81,12 @@ def test_a_write_and_a_multi_edit_are_read_by_their_new_text():
 
 @pytest.mark.parametrize("rule", sorted(SAMPLES))
 def test_every_rule_with_triggers_fires_on_a_line_of_source_that_shows_it(rule):
-    row, = [r for r in rows() if r.get("checker") == rule]
-    assert row["triggers"], f"{rule} has a row with no trigger, and a sample of source that shows it"
-    assert f"- {rule} (" in hook("measure/lab/experiments/x.cu", new_string=SAMPLES[rule])["additionalContext"]
+    assert entries()[rule]["triggers"], f"{rule} has an entry with no trigger, and a sample of source that shows it"
+    assert f"- {rule}" in hook("measure/lab/experiments/x.cu", new_string=SAMPLES[rule])["additionalContext"]
 
 
-def test_a_rule_whose_row_has_no_triggers_names_no_source_text_for_it_and_is_not_in_the_samples():
-    quiet = {r["checker"] for r in rows() if "checker" in r and not r["triggers"]}
+def test_a_rule_whose_entry_has_no_triggers_names_no_source_text_for_it_and_is_not_in_the_samples():
+    quiet = {rule for rule, entry in entries().items() if not entry["triggers"]}
     assert quiet == {"step_density", "step_gap", "profiler_verdicts"} and not quiet & set(SAMPLES)
 
 
