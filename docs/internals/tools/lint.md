@@ -106,8 +106,8 @@ action hooks, which let a rule the rules table marks `hook` refuse a tool call a
 a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.claude/hooks/repo_hooks.py`, fires them from any
 session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
-Three exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
-`no_verify.py` (`#no-verify`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
+Four exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
+`no_verify.py` (`#no-verify`), `graph_only.py` (the 2026-11-21 ruling that what runs outside the graph moves into it: it refuses `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and `pip install` typed as a command word, by name or path, and names the target that runs it -- `//:library`, `//tools:lab`, `//tools:sass_gate`, `//:measure`, `//tests:sanitizer`, `//:dev_env`; a `bazel` command passes, and `GRAPH_OVERRIDE="<why>"` lifts it; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
 source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each entry of the `checker` section of `docs/rules.json` whose
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).

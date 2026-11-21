@@ -1,0 +1,60 @@
+"""The action hook `.claude/hooks/graph_only.py` refuses a toolchain or install command typed in a checkout and names the
+graph target that runs it; a `bazel` command, a quoted word, a pipe's argument and the override pass."""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+HOOK = ROOT / ".claude" / "hooks" / "graph_only.py"
+
+
+def run(command):
+    call = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
+    ran = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(call), capture_output=True, text=True, check=True)
+    return json.loads(ran.stdout)["hookSpecificOutput"] if ran.stdout.strip() else None
+
+
+@pytest.mark.parametrize("command,target", [
+    ("nvcc -arch=sm_90a x.cu", "//:library"),
+    ("/opt/cuda/bin/cuobjdump -sass f", "//tools:sass_gate"),
+    ("ptxas -arch=sm_90a x.ptx", "//tools:sass_gate"),
+    ("nvdisasm f.cubin", "//tools:sass_gate"),
+    ("ncu --metric m ./x", "//tools:lab -- ncu"),
+    ("nsys profile ./x", "//:measure"),
+    ("compute-sanitizer ./x", "//tests:sanitizer"),
+    ("cmake -B build", "//:library"),
+    ("cd build && make -j8", "//:library"),
+    ("ninja -C build", "//:library"),
+    ("pip install x", "//:dev_env"),
+    ("uv pip install x", "//:dev_env"),
+    ("python3 -m pip install -U x", "//:dev_env"),
+    ("CUDA_VISIBLE_DEVICES=0 sudo ncu ./x", "//tools:lab -- ncu"),
+    ("echo ok; /usr/local/cuda/bin/nvcc x.cu", "//:library"),
+    ("x=$(nvcc --version)", "//:library"),
+])
+def test_a_toolchain_or_install_command_is_refused_with_its_target(command, target):
+    out = run(command)
+    assert out["permissionDecision"] == "deny" and target in out["permissionDecisionReason"]
+    assert "GRAPH_OVERRIDE" in out["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("command", [
+    "bazel run //tools:lab -- pack x",
+    "bazel run //tools:lab -- ncu x --metric m",
+    "bazelisk test //tests:sanitizer -- nvcc",
+    'echo "nvcc is a compiler"',
+    "git log | grep nvcc",
+    "grep -rn 'pip install' docs",
+    "cat > f.txt <<'EOF'\nnvcc x.cu\nEOF",
+    'GRAPH_OVERRIDE="probe" nvcc -arch=sm_90a x.cu',
+    "nvcc --version  # GRAPH_OVERRIDE=probe",
+    "pip list",
+    "python3 -m pytest tests/unit",
+    "ls /opt/cuda/bin/nvcc-notes",
+    "git commit -m 'make it so'",
+])
+def test_a_graph_command_text_or_override_passes(command):
+    assert run(command) is None
