@@ -5,9 +5,9 @@ load("@rola_env//:flags.bzl", "BUILT_ARCHS", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:arms.bzl", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "census_test", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test")
+load("//bazel:defs.bzl", "census_test", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass")
 load(":src/carry/arms.bzl", "CARRY_ARMS", "CARRY_DOMAINS", "CARRY_KEY")
-load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DOMAINS", "DECODE_KEY")
+load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DECLARATIONS", "DECODE_DOMAINS", "DECODE_KERNEL", "DECODE_KEY")
 load(":units.bzl", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
@@ -127,6 +127,14 @@ cuda_unit(
     deps = _DEPS + [":stamp"],
 )
 
+#: EACH UNIT'S SASS AS TEXT, by the graph's disassembler: `bazel build //csrc/rola:<unit>_sass`, a unit by its source's name (`decode_sass`,
+#: `entmax_sass`), for a SASS diff that needs no disassembler typed by hand
+[unit_sass(
+    name = "%s_sass" % unit.rsplit("/", 1)[-1].removesuffix(".cu"),
+    library = "//:library",
+    unit = unit.rsplit("/", 1)[-1].removesuffix(".cu"),
+) for unit in glob(["src/**/*.cu"])]
+
 arm_family(
     name = "carry",
     arms = CARRY_ARMS,
@@ -148,9 +156,11 @@ arm_family(
     name = "decode",
     arms = DECODE_ARMS,
     built_archs = BUILT_ARCHS,
+    declarations = DECODE_DECLARATIONS,
     domains = DECODE_DOMAINS,
     flag = "//:decode_arms",
     includer = "csrc/rola/src/decode/decode.cu",
+    kernel = DECODE_KERNEL,
     key = DECODE_KEY,
 )
 

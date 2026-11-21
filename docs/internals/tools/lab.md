@@ -144,33 +144,35 @@ purpose declares its count in `main` with its reason (`carry_window`'s ready ski
 straight after the group's steps). The advisories `lab waits` (what could precede a wait, `waits_report`) and `lab steps` (the figures of
 `step_port` and `step_work` over each region of a kernel) never refuse.
 
-<a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`). nvcc and ptxas say, beside the code, what they did to
-it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The lab reads EVERY
-notice and warning of a build (the checker's `notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
-`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- the checker's BASE ledger (28 rows) with the project's, `tools/notice_ledger.json`, passed to it: a project row overrides the base row of the same tool, code and text or adds one, and the file's seven rows are the ones whose reason and fix name the lab's pages and constructs. One row
+<a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`), the project's default for every build, the lab's and the production gate's
+(`tools/sass_gate.py` reads the units' ptxas reports against it too). nvcc and ptxas say, beside the code, what they did to
+it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The checker reads EVERY
+notice and warning of a build (`notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
+`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- its BASE ledger with the project's, `tools/notice_ledger.json`: a project row overrides the base row of the same tool, code and text or adds one, and the file's seven rows are the ones whose reason and fix name the lab's pages and constructs. One row
 for each notice either tool can print that the lab has seen or knows the template of -- the toolkit's codes are not
 documented and a template's code is unknown until a build emits it, so a row is matched by its tool, its code where it
 names one, and its text (the template's fixed words, `{}` for a number or a name), and a row with no code matches the
-template whatever code the toolkit gave it. A notice the ledger has no row for REFUSES the pack and is quoted whole, with
-the instruction to add a row; so nothing the toolkit says is dropped unread. A row's DISPOSITION is what the lab does
-with its notice, and its REASON says why in one sentence:
-`refuse`, the pack fails -- the experiment is not what it measures, or the code is defective (a `setmaxnreg` the toolkit ignored, a variable read before it is set, a kernel that spills registers or keeps a
-stack frame); the refusal prints the row's fix. `declare`, allowed only up to the count an experiment declares of the
-row's named hazard (`STEPS_SERIALIZED`, `WAIT_INJECTED`), a kernel's notices of a hazard summed over its codes: the
-form is sometimes the point, and the declaration carries its reason. `report`, printed with the pack and blocking
-nothing -- the notice may matter but its cost is not measured (C7519, the arrive the toolkit injected) or the
-source it names is dead (nvcc #128-D, a loop proved unreachable: a measured loop that is not run measures nothing).
-`ignore`, known and harmless (#177-D, a name nothing reads emits no instruction; ptxas's verbose per-function
-summary). A row's reason names the `docs/lab/` page where it is a measured cost.
+template whatever code the toolkit gave it. A notice the ledger has no row for REFUSES the build and is quoted whole, with
+the instruction to add a row (`notice_without_row`, which no declaration lifts); so nothing the toolkit says is dropped unread.
+
+THE ONE ROW TYPE. A row is `tool, code, text, rule, allow, reason, fix`: the notice is counted under its RULE, at the function it names (a kernel's
+notices of one rule are summed over its rows), and `allow` is the row's default allowance -- 0 when absent (a refusal: the experiment is not what it
+measures, or the code is defective: a `setmaxnreg` the toolkit ignored, a variable read before it is set, a kernel that spills registers or keeps a stack frame;
+the refusal prints the row's fix), a count, or `null` for a notice accepted by default (counted, printed in a pack's report where it may matter and its cost is not
+measured -- C7519, the arrive the toolkit injected; #128-D, a loop proved unreachable: a measured loop that is not run measures nothing -- and silent for
+the toolkit's per-function summary and a name nothing reads, #177-D). A DECLARATION beside the kernel overrides the row's allowance for the kernels its
+pattern names, with its own reason, and may tighten as well as allow: an experiment declares the count of its hazard (`STEPS_SERIALIZED`, `WAIT_INJECTED`: the rules
+`mma_serialized` and `wait_injected`, a kernel's notices of a hazard summed over its codes -- the form is sometimes the point), a production arm's
+declarations (`docs/internals/tools/sass_gate.md#declarations`) do the same for the library. A row's reason names the `docs/lab/` page where it is a measured cost.
 
 HOW A NEW NOTICE IS DECIDED. The refusal is the prompt: read what the notice says the toolkit did, and ask what it
-does to the SASS the experiment times. If the kernel it names no longer runs the stream its source states (a step
+does to the SASS the kernel runs. If the kernel it names no longer runs the stream its source states (a step
 serialized, a wait or an arrive the source did not write, a register trade that did not happen, local memory traffic),
-the row is `refuse`, or `declare` when an experiment can mean the form (name the rule its notices are counted under -- a new rule joins `HAZARD_RULES` under a hazard's name). If it
-may matter and nothing measures it, `report`; the `docs/lab/` page that measures it is named in the row's reason. If it
-cannot reach the SASS, `ignore`, with the reason said. A new row lands in the same commit as the experiment that
-printed it; a notice is never ignored for want of a decision, and `ignore` of a notice whose cost is merely
-unmeasured is `report`.
+the row's allowance is 0, and a kernel that can mean the form declares its count (a new rule joins `HAZARD_RULES` under a hazard's name). If it
+may matter and nothing measures it, the allowance is `null` and the notice is reported; the `docs/lab/` page that measures it is named in the row's reason. If it
+cannot reach the SASS, `null` with the reason said, and the rule `build_info` or `unused_variable` where the pack's report is to leave it out. A new row lands in the same commit as the experiment that
+printed it; a notice is never accepted for want of a decision, and acceptance of a notice whose cost is merely
+unmeasured is a report.
 
 THE ASSEMBLER'S OWN WARNINGS. The experiment's compile (`bazel/lab.bzl`'s `_COPTS`) passes ptxas `--warn-on-spills` (`-warn-spills`: "Warning if registers are
 spilled to local memory"), `--warn-on-local-memory-usage` (`-warn-lmem-usage`: "Warning if local memory is used") and

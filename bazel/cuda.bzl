@@ -10,9 +10,35 @@ load("@rules_cuda//cuda/private:action_names.bzl", "ACTION_NAMES")
 load("@rules_cuda//cuda/private:cuda_helper.bzl", "cuda_helper")
 
 CudaUnitInfo = provider(
-    doc = "The units a target compiled or links, for ratify's census (bazel/defs.bzl's `ratify_census`).",
-    fields = {"units": "depset of struct(source, report, object): each unit's source, nvcc's diagnostics, its object"},
+    doc = "The units a target compiled or links, for ratify's census (bazel/defs.bzl's `ratify_census`), and what is declared beside them: the SASS gate " +
+          "reads the notices of their reports and the declarations of their kernels (bazel/defs.bzl).",
+    fields = {
+        "units": "depset of struct(source, report, object, sass): each unit's source, nvcc's diagnostics, its object, its SASS as text",
+        "declarations": "depset of struct(arch, kernel, rule, allow, reason): the declarations stated beside the units (`declaration`), an arm family's among them",
+        "arms": "depset of struct(arch, family, arm, kernel): the arms a family declares, each with its exact kernel pattern, which the gate holds the binary to",
+    },
 )
+
+def declaration(kernel, rule, allow, reason, arch = None):
+    """A declaration of a kernel's findings, stated beside the unit that compiles it (`cuda_unit(declarations = [...])`): the checker's form,
+    `kernel` a regex over the kernel's demangled name, `rule` a rule of the checker or a notice rule of the project's ledger, `allow` the count
+    the kernel may keep (a rule's bound for a bound rule; 0 refuses what the ledger accepts by default), `reason` why.
+
+    The architecture is the attachment's, not the declaration's: `arch` (`sm_90a`) says the build target the declaration attaches to, none
+    every architecture the unit is built for; the gate reads each architecture's declarations apart. A declaration the SASS of its
+    architecture does not show (a count allowed where none is found) is red.
+    """
+    if type(kernel) != "string" or not kernel:
+        fail("declaration: the kernel regex is empty")
+    if type(rule) != "string" or not rule:
+        fail("declaration: the rule is empty")
+    if type(allow) != "int" or allow < 0:
+        fail("declaration of %s on %r: allow is a count, 0 or more (not %r)" % (rule, kernel, allow))
+    if type(reason) != "string" or not reason.strip():
+        fail("declaration of %s on %r: a reason is required" % (rule, kernel))
+    if arch != None and (type(arch) != "string" or not arch.startswith("sm_")):
+        fail("declaration of %s on %r: arch is `sm_XX` (not %r)" % (rule, kernel, arch))
+    return struct(kernel = kernel, rule = rule, allow = allow, reason = reason, arch = arch)
 
 #: rules_cuda's own additions to nvcc's command line, off on every unit: its extended lambdas, its compilation-mode
 #: optimization and seed, the host toolchain's flags -- the command line is the unit's options alone
@@ -49,7 +75,7 @@ def _cuda_unit_impl(ctx):
     listed.add_all(common.headers)
     ctx.actions.write(candidates, listed)
 
-    objects, reports, units, names = [], [], [], {}
+    objects, reports, listings, units, names = [], [], [], [], {}
     for src in ctx.files.srcs:
         stem = src.basename.removesuffix(".cu")
         if stem in names:
@@ -102,9 +128,21 @@ def _cuda_unit_impl(ctx):
             mnemonic = "CudaCompile",
             progress_message = "Compiling %s" % src.path,
         )
+        #: the unit's SASS, one text a unit by the graph's own disassembler: read where a SASS diff is wanted (`bazel build :<name>_sass`)
+        listing = ctx.actions.declare_file("_objs/%s/%s.sass" % (ctx.label.name, stem))
+        ctx.actions.run_shell(
+            inputs = [obj],
+            tools = [ctx.file._cuobjdump],
+            outputs = [listing],
+            command = "\"$1\" -sass \"$2\" > \"$3\"",
+            arguments = [ctx.file._cuobjdump.path, obj.path, listing.path],
+            mnemonic = "CudaSass",
+            progress_message = "The SASS of %s" % src.path,
+        )
         objects.append(obj)
+        listings.append(listing)
         reports.append(report)
-        units.append(struct(source = src.path, report = report, object = obj))
+        units.append(struct(source = src.path, report = report, object = obj, sass = listing))
 
     linking, _ = cc_common.create_linking_context_from_compilation_outputs(
         name = ctx.label.name,
@@ -118,8 +156,12 @@ def _cuda_unit_impl(ctx):
     )
     return [
         DefaultInfo(files = depset(objects)),
-        OutputGroupInfo(ptxas_reports = depset(reports)),
-        CudaUnitInfo(units = depset(units)),
+        OutputGroupInfo(ptxas_reports = depset(reports), sass = depset(listings)),
+        CudaUnitInfo(
+            units = depset(units),
+            declarations = depset([declaration(**json.decode(d)) for d in ctx.attr.declarations]),
+            arms = depset(),
+        ),
         cc_common.merge_cc_infos(direct_cc_infos = [CcInfo(linking_context = linking)], cc_infos = [common.transitive_cc_info]),
     ]
 
@@ -140,6 +182,7 @@ _cuda_unit = rule(
         "host_local_defines": attr.string_list(),
         "ptxasopts": attr.string_list(),
         "archs": attr.string_list(),
+        "declarations": attr.string_list(doc = "the declarations of the units' kernels (`declaration`), each as JSON"),
         "_builtin_deps": attr.label_list(default = ["@rules_cuda//cuda:runtime"]),
         "_default_cuda_copts": attr.label(default = "@rules_cuda//cuda:copts"),
         "_default_host_copts": attr.label(default = "@rules_cuda//cuda:host_copts"),
@@ -147,6 +190,7 @@ _cuda_unit = rule(
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_script": attr.label(default = "//bazel:cuda_compile.py", allow_single_file = True),
         "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     },
     fragments = ["cpp"],
     #: rules_cuda's `use_cuda_toolchain()` names the type relative to the rule that calls it, our repository
@@ -156,6 +200,9 @@ _cuda_unit = rule(
           "position-independent object, always linked), each by one action whose unread headers leave its cache key.",
 )
 
-def cuda_unit(name, features = [], **kwargs):
-    """CUDA units, rules_cuda's own additions to nvcc's command line off (`_RULES_CUDA_ADDITIONS`)."""
-    _cuda_unit(name = name, features = _RULES_CUDA_ADDITIONS + features, **kwargs)
+def cuda_unit(name, features = [], declarations = [], **kwargs):
+    """CUDA units, rules_cuda's own additions to nvcc's command line off (`_RULES_CUDA_ADDITIONS`); `declarations` (`declaration`) the
+    findings their kernels keep, which the library's SASS gate holds them to. The output group `sass` is the SASS of each of its units as text, by the
+    graph's own disassembler (`_objs/<name>/<unit>.sass`, every architecture the build carries), which `unit_sass` (bazel/defs.bzl) names by unit."""
+    _cuda_unit(name = name, features = _RULES_CUDA_ADDITIONS + features, declarations = [json.encode(d) for d in declarations], **kwargs)
+

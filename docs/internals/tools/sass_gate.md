@@ -2,17 +2,17 @@
 
 The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
 [§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (a stack frame, convergence calls a converged
-warp executes, predicated HMMAs, branches, the conversion unit and global memory in a step, instructions per HMMA over a stated ceiling) and
-reports the gaps in a step (the report's gap figures) without failing; guarded convergence
-fallbacks are counted, cold code, not red. Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
-`bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--loops] [--json PATH]`. Each function's line
+warp executes, predicated HMMAs, branches, the conversion unit and global memory in a step, instructions per HMMA over a declared ceiling), on the build's ptxas
+notices its ledger refuses, and on what a declaration over them does not hold; it shows the figures of the bound rules (`function_size`, `step_gap`) without failing;
+guarded convergence fallbacks are counted, cold code, not red. Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
+`bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--declare FILE] [--notices LOG]... [--loops] [--json PATH]`. Each function's line
 carries its registers (`regs`, off `cuobjdump -res-usage`), so an iteration build still shows a
 register change. The step cover (KERNEL_STANDARDS §32.4) is a family's machine model's reading, and the gate runs
 none until a family's model exists.
 
 ## <a id="checker"></a>What the checker computes, and what stays the gate's
 
-Every ptxas signature is warpline's checker's rule (`tools/checked.py` imports it and builds its model of a cubin's kernels;
+Every ptxas signature is warpline's checker's rule (`tools/checked.py` imports it and builds its model of a cubin's kernels, named by their demangled names, which a declaration's regex is over;
 `tools/lab.py` reads the checker through the same module). Its model reads `mma.sync` (`HMMA`, `IMMA`, `DMMA`) and the
 warpgroup's `HGMMA` family alike as tensor steps, so the rules over steps read a production sm_90a cubin's `mma.sync` and `wgmma` steps alike:
 
@@ -24,24 +24,24 @@ warpgroup's `HGMMA` family alike as tensor steps, so the rules over steps read a
 | a convergence barrier or forward conditional branch in a loop of steps (the exit laid out as its latch excepted) | `step_branches` |
 | the conversion unit in a loop of steps | `step_conversion` |
 | global memory other than a staging copy in a loop of steps | `step_global` |
-| static instructions per step over the ceiling `--max-per-hmma` states | `step_density` |
+| static instructions per step over the ceiling a `step_density` declaration states | `step_density` (a bound) |
+| a function's instructions, padding excluded (`instr`) | `function_size` (a figure: a bound once a declaration names one) |
+| the longest run without a step in a loop of steps (`mma_gap`, the larger of inside a trip and around the back edge) | `step_gap` (a figure) |
+| the toolkit's notices (a spill, a serialized step, ...) | the rules of the ledger's rows (`register_spill`, `mma_serialized`, ...) |
 
-The gate holds no declaration of its own for them: undeclared is zero, and its two declarations are translated to the
-checker's: `--max-per-hmma N` is `step_density` allowing `N` on every function, and an instrument's declaration
-(`step_branches`, `step_xu` = `step_conversion`, `step_global`, [below](#instrument)) is the rule's declaration on the
-functions its pattern names, its allowance `_PERMIT` (no bound: the probe keeps the signature whatever its count). The
-graph's gate action and `bazel run //tools:sass_gate` hand the tool the checker's package (`ROLA_WARPLINE_PYTHON`, the pin
-`MODULE.bazel` names); the verdict cache's key includes the checker's source. A step is one natural loop's body, so a
-fallback's return (the stub a `BRA.DIV` enters) and a compare-and-swap spin inside a step are the checker's model's
-(`warpline/tests/test_checker_stage3.py`, `test_checker_model.py`), not a gate's lines.
+THE ONE JUDGMENT. The gate takes the checker's FACTS of a cubin (every rule's count and sites at every function, the build's notices counted at the functions they
+name) and COMPARES them with the declarations (`checked.compare`: `facts.collect` and `declare.compare`, the code the lab's check calls too): undeclared is zero, a
+declaration's `allow` is the count its kernels may keep (a bound rule's ceiling), the first declaration of a rule whose regex names the function wins, and a count above it is
+a refusal printed in the checker's lines -- the kernel, the rule, the count found and declared, the declaration's reason or `undeclared`, the sites and the fix. A refusal is red.
+The gate holds no refusal text of its own; a function's report line carries its figures and the refused rules.
 
-What stays the gate's own: (1) a function's `instr`, the listing's count with the padding to the next 128-byte boundary
-(the checker's `step_density` counts the function's instructions without it, and its figure is a whole count, the
-quotient rounded up, so `per_hmma` is the checker's); (2) the two gap figures of the report and the JSON (inside, around), the two figures the checker's
-`step_gap` takes the larger of (`gap_split`, over the model's loops of steps; the checker's figure is the larger and is what a
-declared bound holds, and the gate declares none); (3) a PTX image in a binary (closed-world rule 2); (4) a source kernel no
-cubin carries (`tools/kernels.py`); (5) the narrowing that matches nothing is red. The gate reads no build notices (its
-action has no ptxas log), so the project's notice ledger is the lab's alone.
+What stays the gate's own: (1) a PTX image in a binary (closed-world rule 2); (2) a source kernel no cubin carries (`tools/kernels.py`); (3) the narrowing that
+matches nothing is red; (4) the declarations' own check, which the checker does not make across cubins: a declaration that allows a count (not a bound, not a tightening) where
+no function it names has one on its architecture is red, and so is an arm whose exact kernel pattern does not match one function of the architecture's SASS
+(the pattern is generated from the arm's template arguments, [below](#declarations)); (5) the report and the JSON (`instr`, `mma_gap` are the rules' figures: the padding to
+the next 128-byte boundary is not counted, and `mma_gap` is the larger of the two gap figures the old gate kept apart). The notices are the units' ptxas
+reports (`--notices`, one a unit), read against the project's ledger; a notice naming a function of a cubin is judged with it, and what no cubin claims (a front end's
+warning, a function no cubin carries) once for the build. A warning of ptxas carries no architecture, so a build of several architectures counts each notice for each architecture's cubin.
 
 ## <a id="step-branches"></a>A branch inside a step
 
@@ -70,32 +70,50 @@ verdict cache leaves to the cubins that changed.
 
 A cubin's verdict, report and statistics are recorded under the key of everything that decides them -- the cubin's
 bytes, the gate's own source closure (every module of `tools/` it has loaded, and the checker's), the disassemblers' identity (`nvdisasm` and `cuobjdump` by
-their version lines) and the arguments (`--kernel`, `--max-per-hmma`, `--loops`, and `--instrument`'s declarations, by
+their version lines), the project's ledger and the arguments (`--kernel`, `--loops`, and the architecture's declarations and the notices, by
 content) -- in the dev config's scratch
 (`sass_gate_verdicts/`). A cubin whose key matches is replayed: its verdict is the reading of identical bytes under an
 identical gate, the argument the graph's action cache makes for every unit. Any change to the cubin or the gate misses and
 re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that kernel's cubin and the stamp's.
 `--no-cache` reads every cubin and records nothing.
 
-## <a id="instrument"></a>An instrument's library
+## <a id="declarations"></a>Declarations, beside the kernels
 
-`--instrument DECLARATIONS` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`: a family's part
+A kernel states what it keeps beside the unit that compiles it, in Starlark (`bazel/cuda.bzl`'s `declaration(kernel, rule, allow, reason)`, the checker's form, on
+`cuda_unit(declarations = [...])`), and a family states its arms' beside the arms: `csrc/rola/src/<family>/arms.bzl` holds `<FAMILY>_KERNEL`, the arm's kernel name up to its parameter
+list as the toolkit demangles it with `@<field>@` for each template argument of the key and `@cc@` for the architecture (`decode`'s is
+`rola::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
+`<FAMILY>_DECLARATIONS`, `arm_declaration(rule, allow, reason, where = {field: [values]})`s over the arms they select. `arm_family(kernel =, declarations =)` generates each arm's EXACT pattern
+(`bazel/arms.bzl`'s `arm_kernel_pattern`: the template's text escaped, anchored at `^void` and the `(` of the parameter list) for each arm the build carries (`--//:<family>_arms`) and
+each architecture it carries (`--//:archs`), and the declarations on the arms they select; nobody writes a kernel regex by hand for an arm.
+The architecture is the attachment's: a declaration carries none, and `arch` on the Starlark struct says which build target it attaches to (none: every one the unit is built for); the
+library rule writes one file (`<label>_declarations.json`: per architecture, its declarations and its arms) and the gate reads each cubin's under its own architecture. A
+declaration may tighten (`allow` 0 where a ledger row accepts the notice by default) as well as allow; a rule is a rule of the checker or of the project's ledger
+(`docs/internals/tools/lab.md#ledger`). `decode`'s declarations are empty: its arms are clean of everything the gate refuses and the toolkit's notices of production (ptxas's per-function summaries) are the base ledger's accepted rows.
+
+## <a id="probes"></a>A library of probes
+
+`--probes` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`: a family's part
 harness, which lands with the family's first schedule): its kernels are PROBES, so it owes none of the source's
-kernels, and a probe keeps a step signature -- branches, the conversion unit or global memory in an MMA step -- only
-where its declarations name it (the checker's declarations, above). A calibration that puts a global reduction between its MMAs does so to measure that
-very cost, so it declares it, by a pattern over the function's mangled name, with the cost it measures (a JSON file,
-`kernels`: `{pattern: {lint: cost}}`, the lints `step_branches`, `step_xu`, `step_global`); `sm_XX <pattern>` declares
-a signature one architecture's SASS keeps alone (ptxas schedules each apart). An undeclared
-signature is red, as on the extension, and so is a declaration an architecture the binary carries does not show: a
-plain one on each such architecture, an `sm_XX` one on its own (a one-card iteration build reads none of another
-card's). The declarations say only what is so. Every other
-signature (local memory, a stack frame, convergence calls, predicated HMMA, instructions per HMMA over the ceiling) is red on a probe as on any kernel. This
+kernels, and a probe keeps a signature -- branches, the conversion unit or global memory in an MMA step -- only
+where its units' declarations name it (`cuda_unit(declarations = ...)`, a permit: `allow` of `checked.PERMIT`, the cost the probe measures as the reason; the same constant the lab's presence expectations use). A calibration that puts a global reduction between its MMAs does so to measure that
+very cost, so it declares it, by the regex over the function's demangled name. An undeclared
+signature is red, as on the extension, and so is a declaration an architecture the binary carries does not show (a declaration attaches to its architecture's target, so a
+one-card iteration build reads none of another card's). The declarations say only what is so. Every other
+signature (local memory, a stack frame, convergence calls, predicated HMMA, instructions per HMMA over a declared ceiling) is red on a probe as on any kernel. This
 is section 29's lab declaration (STEP_XU, STEP_GLOBAL) for an instrument, beside its source.
 
 ## <a id="graph"></a>The graph's gate
 
-The graph's library rule runs the gate as an action with `--cuobjdump` and `--nvdisasm` naming its hermetic toolkit's
-(`@cuda_tools`): `sass.use_graph` points every disassembly at those binaries and every scratch directory at one of the
+The graph's library rule runs the gate as an action with `--cuobjdump`, `--nvdisasm` and `--cuxxfilt` naming its hermetic toolkit's
+(`@cuda_tools`), `--declare` the file of the declarations stated beside the units and arms it links and `--notices` each unit's ptxas report
+(and the project's ledger as an input): `sass.use_graph` points every disassembly at those binaries and every scratch directory at one of the
 process's own, and the verdict cache is off -- the action is cached by Bazel on its inputs, the library and the gate's
 sources ([`../../build-graph.md#gates`](../../build-graph.md#gates)). Run from a checkout, the gate reads the dev
 config's toolkit and scratch, and its own cache.
+
+## <a id="sass-text"></a>A unit's SASS as text
+
+`bazel build //csrc/rola:<unit>_sass` (a unit by its source's name: `decode_sass`) gives that unit's SASS, every architecture the build carries, as text by the graph's own
+`cuobjdump -sass` (`bazel/defs.bzl`'s `unit_sass` over the library's units; the file is `_objs/<target>/<unit>.sass` under `bazel-bin`; `cuda_unit`'s output group `sass` holds
+them all, `bazel build //:library --output_groups=sass`), so a SASS diff of two commits is two builds and `diff`, never a disassembler typed by hand.

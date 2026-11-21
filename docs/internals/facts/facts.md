@@ -32,9 +32,9 @@ allocated. Every sparse level's rows are read once, whole, whatever their suppor
 
 ## The grid: a CTA a unit
 
-`kFactsWarps` = 8 warps a CTA, one CTA a UNIT; at W = 1,024 two CTAs an SM by `kFactsCtasMin` (a list lane holds
-twice the words and boundary pairs, which spill under four CTAs' 64 registers); (at W = 512, measured on sm_86, the branch `ampere`'s: four CTAs an SM, its 18.7 KB of shared memory a CTA and its
-registers a thread held to four CTAs by `kFactsCtasMin`, 46 used, which allow five): a
+`kFactsWarps` = 8 warps a CTA, one CTA a UNIT; the CTAs an SM (`kFactsCtasMin`) are the plan's, from the product's window:
+two at W = 1,024, where a list lane holds twice the words and boundary pairs, which spill under four CTAs' 64 registers,
+and four at a window of half that, whose lane fits them: a
 unit is a plan-fixed load
 and its work, independent of every other unit, so the hardware's block scheduler balances the units' unequal costs and
 several CTAs' loads and work overlap on an SM (R22's independent units). The grid is `(per_window, windows, BH)`, `BH`

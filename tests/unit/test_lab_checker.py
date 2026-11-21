@@ -60,7 +60,7 @@ def test_a_permit_is_any_number_of_its_rule_and_an_opcode_count_is_no_declaratio
     entries = lab.declaration_entries([expect("k", "BSSY", ">=", 0), expect("k", "STEP_XU", "<=", 64),
                                        expect("k", "STEP_GLOBAL", ">=", 0), expect("k", "CALL", ">=", 8),
                                        expect("k", "HMMA", ">=", 1)], {})
-    assert [(e["rule"], e["allow"]) for e in entries] == [(r, lab.PRESENCE_ALLOWANCE) for r in
+    assert [(e["rule"], e["allow"]) for e in entries] == [(r, checked.PERMIT) for r in
                                                          ("step_branches", "step_conversion", "step_global", "convergence_call")]
 
 
@@ -105,8 +105,8 @@ def test_a_declared_notice_count_is_shown_under_its_hazard():
 
 
 def test_a_refused_notice_is_shown_with_its_row_and_an_unknown_one_quoted_whole():
-    refused = SimpleNamespace(rule="notice ptxas C7505", kernel="k", count=1, allowed=0, message="the reason", fix="the fix",
-                              findings=(SimpleNamespace(where="k", count=1, what="'setmaxnreg' ignored"),))
+    refused = SimpleNamespace(rule="setmaxnreg_ignored", kernel="k", count=1, allowed=0, reason=None, message="the reason", fix="the fix",
+                              findings=(SimpleNamespace(where="k", count=1, what="ptxas C7505: 'setmaxnreg' ignored"),))
     assert lab.render_refusal(refused) == ["k: 'setmaxnreg' ignored (1 x, ptxas C7505): the reason the fix"]
     unknown = SimpleNamespace(rule="notice_without_row", kernel="k", count=2, allowed=0, fix="",
                               message="the toolkit printed a notice the ledger has no row for (ptxas C7777)",
@@ -119,17 +119,15 @@ def test_a_refused_notice_is_shown_with_its_row_and_an_unknown_one_quoted_whole(
 @needs_checker
 def test_every_hazard_names_a_rule_the_checker_has():
     c = checked.checker()
-    known = set(c.rules.registry()) | set(c.ledgers.declared_rules(lab.notice_ledger())) | set(c.rules.profile_registry())
+    known = set(c.rules.registry()) | set(c.declare.rule_names(checked.project_ledger())) | set(c.rules.profile_registry())
     assert set(lab.HAZARD_RULES.values()) | set(lab.PRESENCE_RULES.values()) | {"convergence_call"} <= known
 
 
 @needs_checker
 def test_the_declarations_a_translation_makes_are_the_checkers_own_to_load():
-    c = checked.checker()
     entries = lab.declaration_entries([expect("k", "STEP_PORT", "<=", 2048), expect("k", "STEPS_SERIALIZED", "<=", 1),
                                        expect("k", "BSSY", ">=", 0)], {})
-    loaded = c.declare.load_declarations(lab.json.dumps({"declarations": entries}), c.rules.registry(),
-                                         c.ledgers.declared_rules(lab.notice_ledger()))
+    loaded = checked.declarations(entries)
     assert {d.rule for d in loaded} == {"step_port", "mma_serialized", "step_branches"}
     bank = lab.load_declarations([expect("k", "BANK_CONFLICT", "<=", 4)], {})
     assert [(d.rule, d.allow) for d in bank] == [("shared_wavefronts_excess", 4)]

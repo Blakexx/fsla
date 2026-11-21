@@ -418,8 +418,8 @@ ever compared. From here the floor is a GATE, per component, before composition:
 `tools/sass_gate.py` runs after every build (the library's gate action, iteration builds included), on
 every function of every cubin, and fails on the first, second, fourth (its predicated-`HMMA` half) and fifth of these,
 and on a kernel the source defines that no cubin carries; the predicated-chain signature, the pair body's
-if-conversion count, copy-task coalescing and the instructions-per-MMA ceiling (a `--max-per-hmma` flag no build
-passes) are not read yet (OWED); each was re-learned by trial this week and costs a rebuild when missed.
+if-conversion count, copy-task coalescing and the instructions-per-MMA ceiling (a `step_density` declaration no arm
+states) are not read yet (OWED); each was re-learned by trial this week and costs a rebuild when missed.
 `[COMPILER]` Every signature below was read from sm_86 cubins, the MMA an `mma.sync`'s HMMA; each is re-read on this
 line's `wgmma` steps (owed).
 - LDL/STL > 0 or a stack frame: LOCAL MEMORY. Causes: a runtime index into a register array or
@@ -465,7 +465,7 @@ line's `wgmma` steps (owed).
   `docs/internals/tools/sass_gate.md#step-branches`). No kernel built before the rule still
   branches in a step, so the gate names no branch debt; a lab form that keeps its branches declares them (an
   expectation on BSSY), or its number is refused, and an instrument's probe declares the step signatures it keeps
-  beside its source, red when undeclared or unused (`docs/internals/tools/sass_gate.md#instrument`).
+  beside its source, red when undeclared or unused (`docs/internals/tools/sass_gate.md#probes`).
 - A warp's copy tasks mapped so its lanes touch different rows: one L2 request per copy. Rule: tasks
   CONTIGUOUS in memory across a warp's lanes; coalescing is checked by `l1tex__t_requests` per
   sector, not assumed.

@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The lab's ledger of the toolkit's notices: every notice of a build is read by warpline's checker against ITS base ledger with the
 project's rows (tools/notice_ledger.json, passed to the checker), and the lab shows the refusals under its own hazards' names -- a notice
-with no row refuses, `refuse` fails, `declare` allows the count an experiment declares of its hazard (`STEPS_SERIALIZED`,
-`WAIT_INJECTED`: the checker's rules `mma_serialized` and `wait_injected`), `report` prints, `ignore` is silent. The checker's own
+with no row refuses; a row counts the notice under its rule at the function it names and allows it the row's `allow` (0 when absent, null for a
+notice accepted by default), which a declaration overrides for the kernels it names -- an experiment declares the count of its hazard
+(`STEPS_SERIALIZED`, `WAIT_INJECTED`: the checker's rules `mma_serialized` and `wait_injected`); a notice accepted by default prints in the
+pack's report, the build's summaries and unused-variable warnings apart. The checker's own
 tests cover the reader and the ledger's mechanics (the module's tests/test_checker_notices.py); these cover how the lab calls them and the
 project's rows."""
 import json
@@ -92,7 +94,7 @@ def test_a_notice_the_ledger_has_no_row_for_refuses_and_is_quoted_whole(tmp_path
     new = "ptxas warning : (C7777) something the toolkit never printed before in the function 'k'"
     failures = failures_of(tmp_path, monkeypatch, new, UNSET.replace("549", "999"))
     assert len(failures) == 2
-    assert new in failures[0] and "add a row to tools/notice_ledger.json" in failures[0] and "disposition" in failures[0]
+    assert new in failures[0] and "add a row to tools/notice_ledger.json" in failures[0] and "a rule, the notice's default allowance" in failures[0]
     assert "warning #999-D" in failures[1] and "instantiation of" in failures[1]
     assert "some line that is no notice at all" in failures_of(tmp_path, monkeypatch, "some line that is no notice at all")[0]
 
@@ -207,21 +209,21 @@ def test_the_graphs_compile_switches_on_the_options_ptxas_names():
 @needs_checker
 def test_the_projects_ledger_overrides_or_adds_to_the_checkers_base_and_repeats_none_of_it():
     ledgers = checked.checker().ledgers
-    project = ledgers.load_ledger(lab.PROJECT_LEDGER.read_text())
+    project = ledgers.load_ledger(checked.PROJECT_LEDGER.read_text())
     base = {row.key: row for row in ledgers.base_ledger()}
     assert project
     for row in project:
-        assert row.reason.endswith(".") and "\n" not in row.reason and row.disposition in ledgers.DISPOSITIONS
+        assert row.reason.endswith(".") and "\n" not in row.reason and row.rule
         if row.key in base:
-            same = (row.disposition, row.rule, row.reason, row.fix) == (base[row.key].disposition, base[row.key].rule,
-                                                                           base[row.key].reason, base[row.key].fix)
+            same = (row.rule, row.allow, row.reason, row.fix) == (base[row.key].rule, base[row.key].allow,
+                                                                  base[row.key].reason, base[row.key].fix)
             assert not same, f"{row.text!r}: only repeats the base row"
     #: the merged ledger is the checker's own check: no key twice, no two rows matching one notice
-    assert len(lab.notice_ledger()) >= len(base)
+    assert len(checked.project_ledger()) >= len(base)
 
 
 @needs_checker
 def test_the_hazards_the_ledger_declares_are_the_ones_an_experiment_may_declare():
-    declared = set(checked.checker().ledgers.declared_rules(lab.notice_ledger()))
-    assert declared == {lab.HAZARD_RULES[h] for h in lab.HAZARD_STATES} == {"mma_serialized", "wait_injected"}
+    counted = set(checked.checker().ledgers.row_rules(checked.project_ledger()))
+    assert {lab.HAZARD_RULES[h] for h in lab.HAZARD_STATES} == {"mma_serialized", "wait_injected"} <= counted
     assert set(lab.HAZARD_STATES) <= set(lab.HAZARDS)

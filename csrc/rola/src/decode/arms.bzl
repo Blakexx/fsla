@@ -12,6 +12,16 @@ DECODE_DOMAINS = {
     "decay": [0, 1],
 }
 
+#: the arm's kernel, as the toolkit demangles its name up to the parameter list, with its template arguments the key's fields (`@field@`) and the
+#: architecture's compute capability (`@cc@`): bazel/arms.bzl generates each arm's exact pattern from it, which the SASS gate holds the binary to
+#: (every arm carried once) and every declaration below is stated over
+DECODE_KERNEL = "rola::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>"
+
+#: the arms' declarations (`arm_declaration`: a rule, the count its kernels may keep, why; over the arms `where` selects): none. Every decode
+#: arm is clean of what the SASS gate refuses and of the toolkit's notices (ptxas prints only its per-function summaries for them), so none
+#: keeps a finding and none is declared
+DECODE_DECLARATIONS = []
+
 DECODE_ARMS = [
     [32, 1, 0],
     [32, 1, 1],

@@ -414,6 +414,7 @@ ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("tools/lab_facts.py", "main", "temporary directory"): _LAB,
     ("tools/checked.py", "kernels_of", "cuobjdump"): rule("the checker's readers (`//tools:lab`, `//tools:sass_gate` and the gate's actions), on the graph's disassemblers (`sass.tool`)", "`cuobjdump`'s listing and resource report and `nvdisasm`'s graph of each image; named by the mangled name"),
     ("tools/checked.py", "kernels_of", "nvdisasm"): rule("the checker's readers (`//tools:lab`, `//tools:sass_gate` and the gate's actions), on the graph's disassemblers (`sass.tool`)", "`cuobjdump`'s listing and resource report and `nvdisasm`'s graph of each image; named by the mangled name"),
+    ("tools/checked.py", "kernels_of", "cu++filt"): rule("the checker's readers (`//tools:lab`, `//tools:sass_gate` and the gate's actions), on the graph's disassemblers (`sass.tool`)", "`cuobjdump`'s listing and resource report and `nvdisasm`'s graph of each image; named by the mangled name"),
     ("tools/sass.py", "use_graph", "temporary directory"): _READERS,
     ("tools/sass.py", "cubins", "cuobjdump"): _READERS,
     ("tools/sass.py", "cubins", "temporary directory"): _READERS,

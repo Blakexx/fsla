@@ -159,25 +159,49 @@ def _link(ctx, so):
         additional_inputs = ctx.files._linker + linked,
     )
 
-def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
+def _gated(ctx):
+    """What the library's units state for the gate, from `deps`: the ptxas report of every unit it links (the build's notices), and the
+    declarations beside the kernels and the arms' patterns, by built architecture, in the one file the gate reads (`--declare`). A
+    declaration with no architecture attaches to every one the build carries."""
+    infos = [dep[CudaUnitInfo] for dep in ctx.attr.deps if CudaUnitInfo in dep]
+    reports = [unit.report for unit in depset(transitive = [i.units for i in infos]).to_list()]
+    archs = ["sm_" + a for a in _value(ctx, "_archs")]
+    spec = {arch: {"declarations": [], "arms": []} for arch in archs}
+    for d in depset(transitive = [i.declarations for i in infos]).to_list():
+        for arch in ([d.arch] if d.arch else archs):
+            if arch in spec:
+                spec[arch]["declarations"].append({"kernel": d.kernel, "rule": d.rule, "allow": d.allow, "reason": d.reason})
+    for arm in depset(transitive = [i.arms for i in infos]).to_list():
+        if arm.arch in spec:
+            spec[arm.arch]["arms"].append({"family": arm.family, "arm": arm.arm, "kernel": arm.kernel})
+    declared = ctx.actions.declare_file(ctx.label.name + "_declarations.json")
+    ctx.actions.write(declared, json.encode_indent({"architectures": spec}) + "\n")
+    return declared, reports
+
+def _sass_gate(ctx, so, verdict_path, flags = []):
     """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers and the
-    checker it reads the code with (warpline's, `ROLA_WARPLINE_PYTHON`), `flags` and the files they name (`inputs`) its
-    own; its verdict, `verdict_path`, the action's output."""
+    checker it reads the code with (warpline's, `ROLA_WARPLINE_PYTHON`): its facts of every function and of the build's notices (the units'
+    ptxas reports, read against the project's ledger), compared with the declarations stated beside the kernels (`_gated`), `flags` its own;
+    its verdict, `verdict_path`, the action's output."""
     package = [f for f in ctx.files._warpline if f.path.endswith("/warpline/__init__.py")]
     if len(package) != 1:
         fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr._warpline.label, len(package)))
+    declared, reports = _gated(ctx)
     verdict = ctx.actions.declare_file(verdict_path)
     args = ctx.actions.args()
     args.add(ctx.file._sass_gate)
     args.add(so)
     args.add_all(flags)
+    args.add("--declare", declared)
+    args.add_all(reports, before_each = "--notices")
     args.add("--cuobjdump", ctx.file._cuobjdump)
     args.add("--nvdisasm", ctx.file._nvdisasm)
+    args.add("--cuxxfilt", ctx.file._cuxxfilt)
     args.add("--json", verdict)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._gate_sources + ctx.files._warpline + inputs + [so, ctx.file._sass_gate, ctx.file._cuobjdump, ctx.file._nvdisasm],
+        inputs = ctx.files._gate_sources + ctx.files._warpline + reports + [declared, so, ctx.file._sass_gate, ctx.file._ledger, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt],
         env = {"ROLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
         outputs = [verdict],
         mnemonic = "RolaSassGate",
@@ -189,9 +213,11 @@ def _sass_gate(ctx, so, verdict_path, flags = [], inputs = []):
 _SASS_GATE_ATTRS = {
     "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
     "_gate_sources": attr.label(default = "//bazel:gate_sources"),
+    "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
     "_warpline": attr.label(default = "@warpline//:warpline"),
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
+    "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
     "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
 }
 
@@ -263,7 +289,11 @@ def _extension_impl(ctx):
         DefaultInfo(files = depset([so, record] + verdicts), executable = install,
                     runfiles = ctx.runfiles(files = [so, record] + verdicts + headers)),
         #: the units it links, for the census (`ratify_census`)
-        CudaUnitInfo(units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep])),
+        CudaUnitInfo(
+            units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep]),
+            declarations = depset(transitive = [dep[CudaUnitInfo].declarations for dep in ctx.attr.deps if CudaUnitInfo in dep]),
+            arms = depset(transitive = [dep[CudaUnitInfo].arms for dep in ctx.attr.deps if CudaUnitInfo in dep]),
+        ),
     ]
 
 rola_extension = rule(
@@ -305,10 +335,9 @@ echo "installed $(basename "$dest")/$(basename {so}) from the graph"
 def _instrument_impl(ctx):
     so = ctx.actions.declare_file("rola_cu13/%s.abi3.so" % ctx.attr.module)
     _link(ctx, so)
-    #: the SASS gate, as on the extension, its probes keeping only the step signatures their declarations name; its
+    #: the SASS gate, as on the extension, its probes keeping only the signatures their units' declarations name; its
     #: verdict a runfile, so `bazel run` installs nothing it has not passed
-    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module,
-                         ["--instrument", ctx.file.kept.path], [ctx.file.kept])
+    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module, ["--probes"])
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
     return [DefaultInfo(files = depset([so, verdict]), executable = install, runfiles = ctx.runfiles(files = [so, verdict]))]
@@ -321,9 +350,7 @@ rola_instrument = rule(
     toolchains = use_cc_toolchain(),
     attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
         "module": attr.string(mandatory = True, doc = "the module's name in rola_cu13 (`_C_parts`)"),
-        "kept": attr.label(mandatory = True, allow_single_file = [".json"],
-                           doc = "the step signatures its probes keep on purpose (docs/internals/tools/sass_gate.md#instrument)"),
-        "deps": attr.label_list(providers = [CcInfo], doc = "its units"),
+        "deps": attr.label_list(providers = [CcInfo], doc = "its units, whose declarations are the signatures its probes keep on purpose (docs/internals/tools/sass_gate.md#probes)"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
         "_linker": attr.label(default = "@mold//:linker"),
         "_cudart": attr.label(default = "@cuda//:cudart_all_files"),
@@ -331,8 +358,24 @@ rola_instrument = rule(
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
-          "`--//:archs` names, and SASS-gated as it is, its probes keeping the step signatures `kept` declares; never " +
+          "`--//:archs` names, and SASS-gated as it is, its probes keeping the signatures its units declare; never " +
           "shipped, so no record or arm gate; `bazel run` copies it into the checkout.",
+)
+
+def _unit_sass_impl(ctx):
+    found = [u for u in ctx.attr.library[CudaUnitInfo].units.to_list() if u.source.rsplit("/", 1)[-1].removesuffix(".cu") == ctx.attr.unit]
+    if not found:
+        fail("%s: %s links no unit named %s" % (ctx.label, ctx.attr.library.label, ctx.attr.unit))
+    return [DefaultInfo(files = depset([u.sass for u in found]))]
+
+unit_sass = rule(
+    implementation = _unit_sass_impl,
+    attrs = {
+        "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library that links the unit"),
+        "unit": attr.string(mandatory = True, doc = "the unit's source, by its name without `.cu`"),
+    },
+    doc = "One unit's SASS as text, by the graph's own disassembler, for every architecture the build carries: `bazel build //csrc/rola:<unit>_sass`, " +
+          "so a SASS diff never needs a disassembler typed by hand (the file is `_objs/<target>/<unit>.sass` under `bazel-bin`).",
 )
 
 def _census_impl(ctx):

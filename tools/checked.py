@@ -9,9 +9,12 @@ rules are loaded once and one way.
     kernels_of(binary)              the checker's model of every kernel of a cubin or of a binary's images, each by its mangled name
     kernels_in(listing, usage, ...) the same model of the disassembly texts alone, named by the mangled name or by the demangled names given
                                     (the lab's built experiments carry the texts and the names: no tool runs)
-    declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the gate's and the
-                                    lab's translate what they allow to these)
-    check(kernels, rules, ...)      the named rules over the kernels, under loaded declarations and rola's notes: the refusals
+    project_ledger()                the notice ledger every build is read against: the checker's base rows with the project's (`tools/notice_ledger.json`)
+    declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the production gate's, from the
+                                    graph's declarations beside the arms, and the lab's, from `b.expect`, are this one form)
+    compare(kernels, rules, ...)    THE ONE JUDGMENT, the lab's and the production gate's: the facts of the kernels under the named rules and of the build's
+                                    notices (counted under their rows' rules), compared with the declarations under rola's notes: (comparison, facts)
+    check(kernels, rules, ...)      its refusals
     profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump, its declaration a CTA-window's: its refusal or None
 
 The disassemblers are `tools/sass.py`'s (the pinned toolkit's, or the graph's). -- see docs/internals/tools/sass_gate.md#checker"""
@@ -47,23 +50,26 @@ def checker() -> SimpleNamespace:
         raise SystemExit("the checker is warpline's, which the graph hands the tool: bazel run //tools:<tool> -- ...")
     if root not in sys.path:
         sys.path.insert(0, root)
-    from warpline.checker import declare, model, ncu, readers, rules
+    from warpline.checker import declare, facts, model, ncu, readers, rules
     from warpline.checker import notices as ledgers
     from warpline.checker.rules import _steps as steps
-    return SimpleNamespace(declare=declare, model=model, ncu=ncu, readers=readers, rules=rules, ledgers=ledgers, steps=steps,
+    return SimpleNamespace(declare=declare, facts=facts, model=model, ncu=ncu, readers=readers, rules=rules, ledgers=ledgers, steps=steps,
                            root=Path(root))
 
 
 def kernels_of(binary: Path) -> list:
     """The checker's model of every kernel of `binary` (a cubin, or a binary whose images `sass.cubins` extracts): `cuobjdump`'s
-    listing and resource report and `nvdisasm`'s graph of each image; named by the mangled name."""
-    def run(*argv: str) -> str:
-        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+    listing and resource report and `nvdisasm`'s graph of each image; named by the mangled name, each also by its demangled name
+    (`cu++filt`'s, which the declarations' patterns are over)."""
+    def run(*argv: str, text: str | None = None) -> str:
+        return subprocess.run(argv, input=text, capture_output=True, text=True, check=True).stdout
 
     listing = run(sass.tool("cuobjdump"), "-sass", str(binary))
     usage = run(sass.tool("cuobjdump"), "-res-usage", str(binary))
     graphs = "\n".join(run(sass.tool("nvdisasm"), "-bbcfg", "-poff", str(cubin)) for cubin in sass.cubins(binary))
-    return kernels_in(listing, usage, graphs)
+    mangled = list(checker().readers.sass_functions(listing))
+    pretty = run(sass.tool("cu++filt"), text="".join(f"{name}\n" for name in mangled)).splitlines() if mangled else []
+    return kernels_in(listing, usage, graphs, dict(zip(mangled, pretty, strict=True)))
 
 
 def kernels_in(listing: str, usage: str, graphs: str, names: dict[str, str] | None = None) -> list:
@@ -78,16 +84,44 @@ def kernels_in(listing: str, usage: str, graphs: str, names: dict[str, str] | No
     return list(c.model.kernels_from_text(listing, graphs, usage, "".join(f"{names[m]}\n" for m in mangled)).values())
 
 
+#: what a declaration of a PERMIT allows: the signature a probe or an experiment means to keep, whatever its count (no bound): the lab's presence
+#: expectations (`STEP_XU`, `BSSY`, a `CALL` opcode) and a production probe's kept signatures are declarations of this allowance
+PERMIT = 10**9
+
+#: the project's ledger of the toolkit's notices: its rows override or add to the checker's base ledger (the rows that only repeat the base are not
+#: here), the default every build's notices are read against -- the lab's and the production gate's
+PROJECT_LEDGER = Path(__file__).absolute().with_name("notice_ledger.json")
+
+
+@functools.cache
+def project_ledger() -> list:
+    """The ledger the checker reads a build's notices against: its base ledger with the project's rows (`PROJECT_LEDGER`)."""
+    ledgers = checker().ledgers
+    return ledgers.merge(ledgers.base_ledger(), ledgers.load_ledger(PROJECT_LEDGER.read_text()))
+
+
 def declarations(entries: list[dict]) -> list:
-    """The checker's loaded declarations of `entries` (`kernel`: a regex over the demangled name, `rule`, `allow`, `reason`)."""
-    return checker().declare.load_declarations(json.dumps({"declarations": entries}), checker().rules.registry())
+    """The checker's loaded declarations of `entries` (`kernel`: a regex over the demangled name, `rule`, `allow`, `reason`): the rules of
+    the model, the profiles and the project's ledger are the rules a declaration may name."""
+    c = checker()
+    return c.declare.load_declarations(json.dumps({"declarations": entries}), c.rules.registry(), c.declare.rule_names(project_ledger()))
 
 
-def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str]) -> list:
-    """The checker's refusals of `kernels` under the rules named (the model rules of its registry), the loaded `declarations` and
-    rola's `notes` (a line a rule, printed after the checker's fix)."""
-    registry = checker().rules.registry()
-    return checker().declare.check(kernels, {n: registry[n] for n in sorted(rules)}, declarations, notes)
+def compare(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None):
+    """THE ONE JUDGMENT: the facts of `kernels` under the rules named (the model rules of the checker's registry) and of the build's `notices`
+    (read, counted under their rows' rules of `project_ledger()` at the function they name; none: a build with no messages), compared with
+    the loaded `declarations` and rola's `notes` (a line a rule, printed after the checker's fix). The lab's check and the production gate both
+    judge through it; returns the comparison (the refusals, the figures of bound rules with no bound declared, the stale declarations) and the facts
+    it compared (every rule's count and sites at every place: the production gate's report reads its figures from them)."""
+    c = checker()
+    registry = c.rules.registry()
+    facts = c.facts.collect(kernels, {n: registry[n] for n in sorted(rules)}, notices=notices, ledger=project_ledger())
+    return c.declare.compare(facts, declarations, notes), facts
+
+
+def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None) -> list:
+    """The refusals of `compare`."""
+    return compare(kernels, rules, declarations, notes, notices)[0].refusals
 
 
 def profile_refusal(dump: str, kernel: str, declarations: list, notes: dict[str, str], windows: float | None):

@@ -132,10 +132,16 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
 - AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `rola_instrument`): a measurement's own kernels as
-  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--instrument`: it owes
-  none of the source's kernels, and its probes keep only the step signatures their declarations name, the rule's
-  `kept`, [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#instrument)), for the architectures `--//:archs` names; never shipped, so no record or arm gate. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
+  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
+  none of the source's kernels, and its probes keep only the signatures their units' declarations name,
+  [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#probes)), for the architectures `--//:archs` names; never shipped, so no record or arm gate. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
   the rule's user, with the family's first schedule.
+- <a id="declarations"></a>DECLARATIONS BESIDE THE KERNELS: a kernel states what its SASS and the toolkit's notices may keep in Starlark, next to its unit (`cuda_unit(declarations = [declaration(...)])`,
+  a non-arm unit's) or its arms (`<FAMILY>_KERNEL`, the arm's demangled name with `@field@` for its template arguments, and `<FAMILY>_DECLARATIONS`: `arm_family` generates each arm's exact pattern for each
+  built arm and architecture). The library rule writes them, with the arm patterns, as one file per target (`<label>_declarations.json`, by architecture), and the SASS gate reads it with the units' ptxas reports
+  and the project's notice ledger (`tools/notice_ledger.json`): [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#declarations).
+- A UNIT'S SASS AS TEXT: `bazel build //csrc/rola:<unit>_sass` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#sass-text)).
+
 ## <a id="gates"></a>The library's gates
 
 Building `//:library` runs the gates below; their verdicts are its outputs and its runfiles, so neither a build nor
@@ -150,7 +156,8 @@ among them: it is a report, on demand ([below](#census)).
   `vendored_pin`); then the record, `tools/build_record.py`'s writer.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
   `cuobjdump` and `nvdisasm` (`@cuda_tools`, the pinned toolkit, one `bin/` for both as an installed toolkit has
-  them) and no verdict cache: Bazel's is the cache. It reds a PTX image too: closed-world rule 2 on the binary itself.
+  them) and no verdict cache: Bazel's is the cache. It compares the checker's facts of every function and of the units' ptxas notices with the declarations
+  ([above](#declarations)), and reds a PTX image too: closed-world rule 2 on the binary itself.
 - THE ARM GATE (`bazel/gates.py`, `bazel/arms.py`): the built arm table against the declared arms, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
   binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's

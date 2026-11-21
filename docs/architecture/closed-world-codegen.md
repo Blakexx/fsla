@@ -80,7 +80,7 @@ inputs, so the spill is a number that can be read from it, and it is: the SASS g
 ([`KERNEL_STANDARDS.md`](../KERNEL_STANDARDS.md#s20)) runs on every build and refuses a nonzero
 stack frame (its `stack_memory` rule, the `LDL`/`STL` instructions named beside it) on every function of the
 extension, whatever its size. Its one declared exception is an instrument's probe naming a
-step signature it keeps on purpose with its cost (`rola_instrument`'s `kept`), and that is a step
+step signature it keeps on purpose with its cost (a declaration of the probe's unit), and that is a step
 signature (branches, the conversion unit, global memory inside an MMA step), never a stack frame: a spill
 the design accepts has no declaration to be accepted by, so it is red until the gate is amended to take
 one. The census (`bazel run //:ratify -- --census`, [`ratification.md`](../ratification.md)) reports each

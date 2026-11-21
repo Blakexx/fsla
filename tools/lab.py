@@ -177,7 +177,7 @@ HAZARD_RULES = {
 }
 #: the hazards an experiment may declare a count of, beside its opcodes
 HAZARDS = tuple(HAZARD_RULES)
-#: the two a `declare` row of the notice ledger counts (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
+#: the two hazards the notice ledger's rows count a kernel's notices under (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
 HAZARD_STATES = {
     "STEPS_SERIALIZED": "the toolkit serialized its asynchronous MMAs, each step waiting out the one before",
     "WAIT_INJECTED": "the toolkit injected a `warpgroup.wait` into the step stream, to let code read registers a tensor step defines",
@@ -185,29 +185,20 @@ HAZARD_STATES = {
 #: an expectation that is a permit, no count: the opcode an experiment means to keep (`BSSY`, `CALL...`) or the form it means
 #: (`STEP_XU`, `STEP_GLOBAL`) allows the rule it names any number of findings in the kernels it matches
 PRESENCE_RULES = {"STEP_XU": "step_conversion", "STEP_GLOBAL": "step_global", "BSSY": "step_branches"}
-PRESENCE_ALLOWANCE = 10**9
 #: the hazards that bound a figure, declared `<=`
 BOUND_HAZARDS = ("STEP_PORT", "STEP_WORK")
 #: the reason of a declaration whose experiment states none in a `//:` comment above it
 UNSTATED = "stated in the experiment's source, where it declares the count"
 _DECLARED = re.compile(r'"([A-Z][A-Z_]*)"\s*,\s*"(?:<=|>=|==)"')
-#: the project's ledger of the toolkit's notices: its rows override or add to the checker's base ledger (the rows that only repeat the
-#: base are not here); the hazards a `declare` row counts are the checker's rules `mma_serialized` and `wait_injected`
-PROJECT_LEDGER = Path(__file__).absolute().with_name("notice_ledger.json")
-
-
-@functools.cache
-def notice_ledger() -> list:
-    """The ledger the checker reads the notices against: its base ledger with the project's rows (`PROJECT_LEDGER`)."""
-    ledgers = checked.checker().ledgers
-    return ledgers.merge(ledgers.base_ledger(), ledgers.load_ledger(PROJECT_LEDGER.read_text()))
+#: the notice rules whose notices a pack's report leaves out: the toolkit's build summaries and its unused-variable warnings are accepted by default
+#: and say nothing a reader needs; every other notice a row accepts by default (an injected arrive, an unreachable loop) is reported with its count
+SILENT_RULES = ("build_info", "unused_variable")
 
 
 def load_declarations(expected: list[dict], reasons: dict[str, str]) -> list:
-    """The experiment's expectations as the checker's loaded declarations: the model rules', the notice ledger's and the profile rules'."""
-    c = checked.checker()
-    names = {*c.ledgers.declared_rules(notice_ledger()), *c.rules.profile_registry()}
-    return c.declare.load_declarations(json.dumps({"declarations": declaration_entries(expected, reasons)}), c.rules.registry(), names)
+    """The experiment's expectations as the checker's loaded declarations (`checked.declarations`: the model rules', the notice ledger's and the
+    profile rules')."""
+    return checked.declarations(declaration_entries(expected, reasons))
 
 
 def expectations(binary: Path) -> list[dict]:
@@ -277,7 +268,7 @@ def declaration_entries(expected: list[dict], reasons: dict[str, str]) -> list[d
                 continue
             rule, allow = HAZARD_RULES[op], e["count"]
         elif op in PRESENCE_RULES or "CALL" in op:
-            rule, allow = PRESENCE_RULES.get(op, "convergence_call"), PRESENCE_ALLOWANCE
+            rule, allow = PRESENCE_RULES.get(op, "convergence_call"), checked.PERMIT
         else:
             continue
         entries.append({"kernel": e["kernel"], "rule": rule, "allow": allow, "reason": reasons.get(op, UNSTATED)})
@@ -326,8 +317,14 @@ def guidance() -> dict[str, str]:
     evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
     entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
     notes = {rule: entry["guidance"] for rule, entry in entries.items()}
-    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().declare.rule_names(notice_ledger()))
+    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().declare.rule_names(checked.project_ledger()))
     return notes
+
+
+def is_notice_rule(rule: str) -> bool:
+    """A rule the project's ledger counts notices under and the lab renders as the notice's own words: not a hazard an experiment declares a
+    count of (`HAZARD_STATES`)."""
+    return rule in checked.checker().ledgers.row_rules(checked.project_ledger()) and rule not in _RULE_HAZARDS
 
 
 def render_refusal(r, experiment: str = "the build") -> list[str]:
@@ -339,10 +336,12 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
     ledger_rule = r.rule in _RULE_HAZARDS and _RULE_HAZARDS[r.rule] in HAZARD_STATES
     if r.rule == "notice_without_row":
         return [f"{place}: {r.count} x {r.message}:\n      {r.findings[0].what}\n    add a row to tools/notice_ledger.json with "
-                "a disposition (refuse, declare, report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)" + tail]
-    if r.rule.startswith("notice "):
-        return [f"{place}: {f.what} ({f.count} x, {r.rule.removeprefix('notice ').replace('no_code', 'no code')}): "
-                f"{r.message}" + (f" {r.fix}" if r.fix else "") + tail for f in r.findings]
+                "a rule, the notice's default allowance (`allow`: 0 when absent, null for a notice accepted by default) and the reason for it "
+                "(docs/internals/tools/lab.md#ledger)" + tail]
+    if is_notice_rule(r.rule):
+        return [f"{place}: {text} ({f.count} x, {label}): {r.message}" + (f" {r.fix}" if r.fix else "")
+                + (f" [{r.allowed} declared: {r.reason}]" if r.reason else "") + tail
+                for f in r.findings for label, _, text in [f.what.partition(": ")]]
     if ledger_rule:
         hazard = _RULE_HAZARDS[r.rule]
         what = "; ".join(f"{f.count} x {f.what}" for f in sorted(r.findings, key=lambda f: f.what))
@@ -354,12 +353,6 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
     return [f"{place}: {text} [checker rule {r.rule}: at {where}]{fix}{tail}"]
 
 
-def notice_names(built: Built, read: list) -> dict[str, str]:
-    """The functions the notices name (as the toolkit printed them, mangled), demangled."""
-    functions = sorted({n.function for n in read if n.function})
-    return built.demangle(functions) if functions else {}
-
-
 def read_notices(built: Built) -> list:
     """EVERY notice of the experiment's build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
     left no notices (a pack made without them)."""
@@ -367,9 +360,18 @@ def read_notices(built: Built) -> list:
 
 
 def notice_report(built: Built) -> list[str]:
-    """THE REPORT: the notices of `report` rows, one line a row with its count, printed with the pack and blocking nothing."""
-    read = read_notices(built)
-    return checked.checker().declare.check_notices(read, notice_ledger(), [], notice_names(built, read))[1] if read else []
+    """THE REPORT: the notices a row accepts by default (`SILENT_RULES` apart), one line a row with its count, printed with the pack and blocking
+    nothing."""
+    ledgers = checked.checker().ledgers
+    ledger = checked.project_ledger()
+    found: dict[int, tuple] = {}
+    for n in read_notices(built):
+        row = ledgers.row_of(ledger, n)
+        if row is not None and row.allow is None and row.rule not in SILENT_RULES:
+            found.setdefault(id(row), (row, []))[1].append(n)
+    unplaced = " in function '{}'"
+    return [f"  {row.tool} {row.code or ''}: {len(ns)} x in {len({n.function or n.where or 'the build' for n in ns})} place(s): "
+            f"{row.text.replace(unplaced, '')} -- {row.reason}" for row, ns in found.values()]
 
 
 def held_rules(experiment: str) -> set[str]:
@@ -392,7 +394,6 @@ def model_of(built: Built) -> list:
 def checker_failures(built: Built, expected: list[dict], budgeted: set[str]) -> list[str]:
     """What the checker refuses of the build: the rules the experiment is held to (`held_rules`) over every kernel and every notice
     of the build against the ledger -- under the declarations its expectations translate to."""
-    c = checked.checker()
     experiment = built.name
     names = held_rules(experiment)
     held = experiment not in _PRE_TIMELINE
@@ -400,10 +401,8 @@ def checker_failures(built: Built, expected: list[dict], budgeted: set[str]) -> 
     path = experiments().get(experiment)
     reasons = declared_reasons(path.read_text()) if path else {}
     declarations = load_declarations(expected, reasons)
-    refusals = checked.check(kernels, names, declarations, guidance())
+    refusals = checked.check(kernels, names, declarations, guidance(), notices=read_notices(built))
     refusals = [r for r in refusals if held or r.rule != "loop_convergence" or r.kernel in budgeted]
-    read = read_notices(built)
-    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(built, read), guidance())[0]
     return bound_failures(expected, kernels) + [line for r in refusals for line in render_refusal(r, experiment)]
 
 

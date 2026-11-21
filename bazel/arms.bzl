@@ -9,7 +9,10 @@ canonical order). `arm_family` reads that one list and makes, for it:
   guard -- an arm the build does not select is a unit that compiles to nothing, and a unit the build never compiles;
 - the selection header of the build (`<name>_selection.inc`): which arms this build carries, from `--//:<name>_arms`
   (`flag`), with the arm set the host dispatches over;
-- the Python table (`<name>_arms.py`): the key and the rows, which the build's gates and the measurement read.
+- the Python table (`<name>_arms.py`): the key and the rows, which the build's gates and the measurement read;
+- when the family states its kernel (`kernel`), its declarations (`<name>_declarations`): each arm's exact kernel-name pattern, generated from the
+  arm's template arguments, and the declarations of `declarations` for the arms they select, on each architecture the build carries
+  (docs/build-graph.md#declarations).
 
 The Hopper carry fills its list; a family with no rows makes no unit and a selection naming none.
 """
@@ -17,7 +20,7 @@ The Hopper carry fills its list; a family with no rows makes no unit and a selec
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
-load(":cuda.bzl", "CudaUnitInfo", "cuda_unit")
+load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration")
 
 def _check(name, key, domains, arms):
     """The declaration, refused field by field: each way it could be wrong is a compile error in a generated file, or a
@@ -41,6 +44,89 @@ def _check(name, key, domains, arms):
     if [list(row) for row in arms] != sorted([list(row) for row in arms]):
         fail("%s: the rows are not in canonical order. An arm's index is named by --//:%s_arms, the selection header and the units, so it " % (name, name) +
              "must be a property of the declaration, not of where a row was typed. Write them sorted: %s" % sorted([list(row) for row in arms]))
+
+def arm_declaration(rule, allow, reason, where = {}, arch = None):
+    """A declaration of a family's arms, stated beside its arms (`<FAMILY>_DECLARATIONS`): the checker's form (`declaration` in cuda.bzl) over the arms
+    `where` selects (`{field: [values]}`, every arm where none), its kernel pattern generated from each arm's template arguments, not written by hand.
+
+    Args:
+      rule: a rule of the checker, or a notice rule of the project's ledger (`tools/notice_ledger.json`).
+      allow: the count the arm's kernel may keep.
+      reason: why; required.
+      where: the arms it covers, by the key's fields.
+      arch: the build target it attaches to (`sm_90a`), every built architecture where none.
+    """
+    declaration("^", rule, allow, reason, arch)
+    return struct(rule = rule, allow = allow, reason = reason, where = where, arch = arch)
+
+def _escape(text):
+    """A regex that matches the text and nothing else."""
+    out = ""
+    for ch in text.elems():
+        if ch in "\\.^$*+?{}[]|()":
+            out += "\\"
+        out += ch
+    return out
+
+def arm_kernel_pattern(kernel, key, row, arch):
+    """The exact pattern of an arm's kernel, over its demangled name (the toolkit's `cu++filt`): `kernel` is the name's text up to its parameter list,
+    with `@<field>@` for a field of the key (its value, as the demangler prints an integer or a bool template argument: the number) and `@cc@` for the
+    architecture's compute capability as `__CUDA_ARCH__` reads it (`90a` is 900). The pattern is anchored at the return type and the parameter list."""
+    parts = kernel.split("@")
+    if len(parts) % 2 == 0:
+        fail("%s: an unbalanced `@`" % kernel)
+    values = {field: str(value) for field, value in zip(key, row)}
+    values["cc"] = str(int(arch.removesuffix("a")) * 10)
+    text = ""
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            text += _escape(part)
+        elif part not in values:
+            fail("%s: `@%s@` is no field of the key %s (nor `cc`)" % (kernel, part, list(key)))
+        else:
+            text += values[part]
+    return "^void " + text + "\\("
+
+def _selected(declaration, key, row):
+    for field, wanted in declaration["where"].items():
+        if row[list(key).index(field)] not in wanted:
+            return False
+    return True
+
+def _arm_declarations_impl(ctx):
+    rows = json.decode(ctx.attr.rows)
+    key = ctx.attr.key
+    picked = _chosen(ctx.attr.flag[BuildSettingInfo].value, len(rows), "--//:%s_arms" % ctx.attr.family)
+    declared = [json.decode(d) for d in ctx.attr.declarations]
+    found, arms = [], []
+    for arch in ctx.attr.archs_flag[BuildSettingInfo].value:
+        on = "sm_" + arch
+        for i in picked:
+            pattern = arm_kernel_pattern(ctx.attr.kernel, key, rows[i], arch)
+            arms.append(struct(arch = on, family = ctx.attr.family, arm = i, kernel = pattern))
+            for d in declared:
+                if d["arch"] in (None, on) and _selected(d, key, rows[i]):
+                    found.append(declaration(pattern, d["rule"], d["allow"], d["reason"], on))
+    return [
+        CudaUnitInfo(units = depset(), declarations = depset(found), arms = depset(arms)),
+        CcInfo(),
+    ]
+
+arm_declarations = rule(
+    implementation = _arm_declarations_impl,
+    attrs = {
+        "family": attr.string(mandatory = True),
+        "key": attr.string_list(mandatory = True),
+        "rows": attr.string(mandatory = True, doc = "the declared arms, JSON"),
+        "kernel": attr.string(mandatory = True, doc = "the arm's kernel name with `@field@` for its template arguments (`arm_kernel_pattern`)"),
+        "declarations": attr.string_list(doc = "the family's declarations (`arm_declaration`), each as JSON"),
+        "flag": attr.label(mandatory = True, providers = [BuildSettingInfo]),
+        "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
+    },
+    provides = [CudaUnitInfo, CcInfo],
+    doc = "One arm family's declarations for the build: the exact kernel pattern of each arm the build carries, for each architecture it carries, " +
+          "and the family's declarations on the arms they select.",
+)
 
 def _chosen(tokens, rows, flag):
     """The arm indices a build's `--//:<family>_arms` names: indices or `all`, empty for every arm, an index out of range
@@ -142,7 +228,7 @@ def _arm_set_impl(ctx):
     return [
         DefaultInfo(files = depset(transitive = [unit[DefaultInfo].files for unit in chosen])),
         cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen]),
-        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen])),
+        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen]), declarations = depset(), arms = depset()),
     ]
 
 _arm_set = rule(
@@ -168,7 +254,7 @@ def _arm_source(name, i, row, arm_header, define, selection_header):
         ),
     )
 
-def arm_family(name, key, domains, arms, flag, includer, built_archs, unit = None):
+def arm_family(name, key, domains, arms, flag, includer, built_archs, unit = None, kernel = None, declarations = []):
     """One kernel's arm family: its selection header, its Python table and, when `unit` is given, one translation unit
     per arm and built architecture.
 
@@ -182,11 +268,34 @@ def arm_family(name, key, domains, arms, flag, includer, built_archs, unit = Non
       built_archs: the architectures the units are made for (`BUILT_ARCHS`); a build compiles those its `--//:archs` names.
       unit: None, or a dict(arm_header, define, copts, host_cc, deps): the header that defines the arm macro, the macro
         (`<NAME>_ARM_DEFINE`) and the CUDA rule's options and dependencies.
+      kernel: None, or the arm's kernel name up to its parameter list, as the toolkit demangles it, with `@<field>@` for a template argument
+        and `@cc@` for the architecture (`arm_kernel_pattern`): `<name>_declarations` then holds each arm's exact pattern, which the SASS gate
+        holds the binary to (every arm carried once), and the `declarations`.
+      declarations: the family's declarations (`arm_declaration`), over the arms they select; they need `kernel`.
     """
     _check(name, key, domains, arms)
+    if declarations and not kernel:
+        fail("%s: declarations need the arm's `kernel`, which generates the pattern each is stated over" % name)
+    for d in declarations:
+        for field, values in d.where.items():
+            if field not in key:
+                fail("%s: a declaration of %s selects on %r, which is not a field of the key %s" % (name, d.rule, field, list(key)))
+            for value in values:
+                if value not in domains[field]:
+                    fail("%s: a declaration of %s selects %s=%r, which is not in the declared domain %s" % (name, d.rule, field, value, domains[field]))
     rows = json.encode([list(row) for row in arms])
     arm_selection(name = name + "_selection", family = name, key = list(key), rows = rows, includer = includer, flag = flag)
     arm_table(name = name + "_table", family = name, key = list(key), rows = rows)
+    if kernel:
+        arm_declarations(
+            name = name + "_declarations",
+            family = name,
+            key = list(key),
+            rows = rows,
+            kernel = kernel,
+            declarations = [json.encode(d) for d in declarations],
+            flag = flag,
+        )
     if unit == None:
         return
     units = {}
