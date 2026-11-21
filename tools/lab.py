@@ -400,10 +400,6 @@ def timeline(path: Path) -> bool:
     return any("TIMELINE:" in line for line in head)
 
 
-#: a branch's target in `cuobjdump -sass` text (function-relative)
-BRANCH = re.compile(r"\bBRA(?:\.[A-Z.]+)?\s+(?:!?U?P[T\d]+,\s*)?(?:~?URZ,\s*)?(0x[0-9a-f]+)")
-
-
 def disassembled(binary: Path) -> dict[str, list[tuple[int, str, str]]]:
     """Per kernel (mangled): its instructions as (address, opcode, line)."""
     code: dict[str, list[tuple[int, str, str]]] = {}
@@ -416,12 +412,6 @@ def disassembled(binary: Path) -> dict[str, list[tuple[int, str, str]]]:
             elif current and (m := sass.INSTRUCTION.match(line)):
                 code[current].append((int(m.group(1), 16), m.group(3), line))
     return code
-
-
-def loops_of(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
-    """A kernel's loops: the spans a backward branch closes."""
-    return [(int(t.group(1), 16), at) for at, op, line in body
-            if op.startswith("BRA") and (t := BRANCH.search(line)) and int(t.group(1), 16) < at]
 
 
 #: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
@@ -1321,7 +1311,7 @@ def static_kind(opcode: str) -> str:
 
 
 def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
-    """A kernel's instructions AS COMPILED, with no device: each innermost loop's body by the role that holds it (the
+    """A kernel's instructions AS COMPILED, with no device: each innermost natural loop's body (the checker's model of the kernel) by the role that holds it (the
     call in the kernel's body the instruction was inlined from), its phases (the source's `//:` headings) and its
     kinds. A loop's cost a unit is this count times its trips, which the source states; a card that grants no
     profiler counters has no executed ledger, and this one stands in its place."""
@@ -1336,7 +1326,7 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
         return 1
     mangled = dict(zip(demangle(list(kernels_mangled(binary))).values(), kernels_mangled(binary), strict=True))
     disassembly = sass.disassemble(images[0], "--print-line-info-inline", "-gi")
-    bodies = disassembled(binary)
+    model = {k.name: k for k in checked_kernels(binary)}
     #: a kernel the lab would refuse is counted all the same, its refusals stated first
     for failure in check(binary, kernels(binary)):
         print(f"  REFUSED AS IT STANDS: {failure}")
@@ -1346,14 +1336,16 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
             continue
         text = own_section(disassembly, symbol)
         frames = sass.frames(text)
-        loops = loops_of(bodies[symbol])
+        kernel = model[symbol]
+        at_address = {i.address: i for i in kernel.instructions}
         by: dict[tuple, Counter] = {}
         for line in text.splitlines():
             if not (m := sass.INSTRUCTION.match(line)):
                 continue
             at = int(m.group(1), 16)
-            inside = [loop for loop in loops if loop[0] <= at <= loop[1]]
-            loop = min(inside, key=lambda span: span[1] - span[0]) if inside else None
+            #: the innermost natural loop around the instruction, as its header's address and its last tail's
+            around = kernel.loop_of(at_address[at]) if at in at_address else None
+            loop = (around.address, max(kernel.block(t).end for t in around.tails)) if around else None
             own = [ln for f, ln in frames.get(at, []) if f == path.name]
             #: the role: the outermost frame that calls one (`NAME_role`) names it
             called = next((c for ln in reversed(own) if (c := re.search(r"\b(\w+_role)\b", source[ln - 1]))), None)

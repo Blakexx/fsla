@@ -3461,8 +3461,8 @@ int main(int argc, char** argv) {
                                               + (roles & kChunk8 ? 1 : 0)
                                               //: (a serve row's fold stores its window's plan once, and its own thread reads it
                                               //: back at each of the two copy barriers' arrivals, for the copies' expected
-                                              //: bytes: no step reads it -- 2 arrivals after the one store, not counted
-                                              //: before the checker's natural loops)
+                                              //: bytes: no step reads it, so the two arrivals after the one store are
+                                              //: declared, not fenced)
                                               + (roles & kServe ? 2 : 0));
       //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
       //: pipe is idle most of a window

@@ -35,7 +35,7 @@ the `//:` headings of the experiment's source -- per declared unit (KERNEL_STAND
 `BSYNC`, `BRA.DIV`) beyond what it declares as `LOOP_CONVERGENCE`. `ledger <name> --static --arch sm_90a` needs no device and no counters (without `--arch` it reads the
 device's): it prints each
 kernel's instructions AS COMPILED, by the role that holds them (the `NAME_role` call they were inlined from), by
-innermost loop (every backward branch closes one) and by phase and kind (global loads, stores and adds, shared
+innermost natural loop (the checker's model of the kernel; an instruction in none is outside every loop) and by phase and kind (global loads, stores and adds, shared
 loads and stores, MMAs); a loop's cost a unit is its count times its trips, which the source states. It is the
 ledger of a card that grants no profiler counters.
 `bazel run //tools:lab -- path <name> [--row REGEX] [--record FILE]` names THE WINDOW'S PATH from a record's
@@ -118,11 +118,11 @@ runs the rules and shows each refusal under the hazard's name the experiment dec
 | `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
 | `BSSY`, `STEP_XU`, `STEP_GLOBAL`, a `CALL` opcode | `step_branches`, `step_conversion`, `step_global`, `convergence_call` | always checked in every kernel; an expectation of one of these names is a PERMIT (any number in the kernels it matches), not a count |
 
-A declaration of `BSSY`, `STEP_XU`, `STEP_GLOBAL` or a `CALL` opcode is a presence permit and its number is never compared: the lab's own check never counted these (`STEP_XU` is no opcode, so its count was always 0 and `STEP_XU <= 40` held for any conversions), so `<= 40` permits them in the kernels it names and does not bound them.
+A declaration of `BSSY`, `STEP_XU`, `STEP_GLOBAL` or a `CALL` opcode is a presence permit and its number is never compared: `<= 40` permits them in the kernels it names and does not bound them (`STEP_XU` is no opcode).
 
 A loop is a natural loop of the kernel's graph (a back edge to a block that dominates its source), the blocks it holds wherever the
-toolkit laid them out; the lab's own checks took the address span a backward branch closes, which a `try_wait`'s out-of-line retry stretches
-over the whole function and a cold block inside the span joins. What stays in `tools/lab.py` is the project's own: a bound
+toolkit laid them out: an address span between a backward branch and its target is no loop of it (a `try_wait`'s out-of-line retry, a stub's return jump
+and a cold block laid inside such a span are not in one). The static ledger reads the same loops. What stays in `tools/lab.py` is the project's own: a bound
 declared `<=` and naming a kernel with tensor steps (`bound_failures`), the DEBTS below, the refusals' texts (`REFUSAL_TEXT`), and the checks of
 the experiment's own source -- an experiment outside `_PRE_TIMELINE` (the experiments written before these checks; the list only shrinks) is
 refused by `run` and by `pack` unless its header comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use,
@@ -138,7 +138,7 @@ straight after the group's steps). The advisories `lab waits` (what could preced
 <a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`). nvcc and ptxas say, beside the code, what they did to
 it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The lab reads EVERY
 notice and warning of a build (the checker's `notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
-`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- the checker's BASE ledger (28 rows) with the project's, `tools/notice_ledger.json`, passed to it: a project row overrides the base row of the same tool, code and text or adds one, and the rows that only repeated the base are not kept (the file's seven are the ones whose reason and fix name the lab's pages and constructs). One row
+`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- the checker's BASE ledger (28 rows) with the project's, `tools/notice_ledger.json`, passed to it: a project row overrides the base row of the same tool, code and text or adds one, and the file's seven rows are the ones whose reason and fix name the lab's pages and constructs. One row
 for each notice either tool can print that the lab has seen or knows the template of -- the toolkit's codes are not
 documented and a template's code is unknown until a build emits it, so a row is matched by its tool, its code where it
 names one, and its text (the template's fixed words, `{}` for a number or a name), and a row with no code matches the

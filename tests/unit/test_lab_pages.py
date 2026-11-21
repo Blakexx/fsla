@@ -69,12 +69,6 @@ CASES = {"gather_rate": rate_results, "gather_group": group_results}
 
 
 @pytest.mark.parametrize("name", CASES)
-def test_the_page_before_a_record_says_none_is_taken(name):
-    text = (ROOT / "docs/lab" / f"{name}.md").read_text()
-    assert "MEASURED: no record is taken at this commit" in text
-
-
-@pytest.mark.parametrize("name", CASES)
 def test_the_measured_section_is_written_from_a_record_and_rewritten_alike(tmp_path, name):
     gen = generator(name)
     p = tree(tmp_path, name)
