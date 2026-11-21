@@ -22,13 +22,13 @@ git_override(
     remote = "https://github.com/Blakexx/rola-devtools.git",
 )
 
-#: THE IN-KERNEL STAMP, warpline's module: the header `warpline/stamp.cuh` the lab's `lab.cuh` includes
-#: (`@warpline//:headers`, which the `lab` run target hands `tools/lab.py`; compile time only), at the public commit
-#: this tree is tested with -- the one pin of warpline
+#: WARPLINE'S MODULE: the header `warpline/stamp.cuh` the lab's `lab.cuh` includes (`@warpline//:headers`, which the `lab` run
+#: target hands `tools/lab.py`; compile time only), and the checker (`warpline.checker`, `@warpline//:warpline`) the lab's `check`
+#: calls for every hazard a rule computes -- at the public commit this tree is tested with, the one pin of warpline
 bazel_dep(name = "warpline", version = "0.1.0")
 git_override(
     module_name = "warpline",
-    commit = "d63b7a0572866f73a7a1e19bc1c18aea4fd51732",
+    commit = "2295c362c390c42a24212d49a5ffa2bee87f72a2",
     remote = "https://github.com/Blakexx/warpline.git",
 )
 

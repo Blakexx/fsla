@@ -121,6 +121,10 @@ int main(int argc, char** argv) {
       //: the narrow ring: the toolkit copies two of a trip's loaded words at the trip's end, whatever the source's
       //: form, so those two rows' loads run half a trip ahead of their use, not a whole one
       if (!wide) b.expect(lab::kernel("fetch", {warps, 0, 16}), "LOAD_IN_TRIP", "<=", 2);
+      //: the wide ring: the toolkit copies the fourth register of one of a trip's wide loads at the trip's end, so that
+      //: instruction's four rows are read in the trip that issued it; the same form as the narrow copy, not counted
+      //: before the checker's natural loops, which follow a load's every register
+      if (wide) b.expect(lab::kernel("fetch", {warps, 1, 16}), "LOAD_IN_TRIP", "<=", 1);
     }
   for (int depth : {4, 64}) {
     b.expect(lab::kernel("fetch", {4, 0, depth}), "LDG", ">=", depth);

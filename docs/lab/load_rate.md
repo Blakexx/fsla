@@ -14,7 +14,7 @@ word's use out of the trip that loaded it.
 - WIDE: a lane loads 16 bytes, an instruction FOUR rows, 8 lanes a row.
 A ring of 4, 16 or 64 instructions is in flight, in two halves at their own registers. In the narrow form the
 toolkit copies two of a trip's loaded words at the trip's end, whatever the source's form: those two rows' loads
-run half a trip ahead of their use. Every lane's chain is checked exactly.
+run half a trip ahead of their use; in the wide form it copies the fourth register of one instruction, so that instruction's four rows are read in the trip that issued them (one of the ring's 16 instructions). Every lane's chain is checked exactly.
 
 MEASURED (H100 SXM, 132 SMs, vast.ai instance 60313590, driver 595.91.07; 2026-11-12, the experiment at
 3699007c; 7 repetitions, every chain exact; cycles a 128-byte row a CTA, the median, the spread under 5%).

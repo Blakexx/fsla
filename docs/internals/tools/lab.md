@@ -98,44 +98,47 @@ conflicts), its share of the stall samples and, for the phases holding the most,
 then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its
 first N: an experiment's first is its checked launch, the timed ones follow.
 
-<a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). An experiment outside `tools/lab.py`'s `_PRE_TIMELINE` (the
-experiments written before these checks; the list only shrinks) is refused by `run` and by `pack` unless its header
-comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use, the live registers;
-it is refused too where its source has a warp collective after a conditional's `?` (`collective_selected`: only
-the lanes the condition takes reach a collective every lane must), and where a kernel sums a cycle-counter
-reading in uniform registers past the count it declares (`clocks_summed_uniform`, `CLOCK_UNIFORM`: a lap's sum is
-each thread's own). And EVERY kernel of it, budgeted or exempt, is held to the counts below, each zero unless the experiment
-declares it (`Bench::expect(kernel, NAME, "<=", n)`): `LOOP_CONVERGENCE`; `LOAD_IN_TRIP`, the global loads whose
-value an instruction of the same innermost trip reads; `STORE_RELOAD`, the shared loads of an address the same trip
-stored to; `STORE_UNFENCED`, in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
-`fence.proxy.async` between them; `STEPS_SERIALIZED`, the kernel's asynchronous MMAs the toolkit serialized, each step then waiting out the one before it, so the kernel does not
-measure the steps its source states (a notice, [below](#ledger)); an experiment that keeps a serialized form on purpose declares the count in
-`main` with its reason (`carry_window`'s ready skipping rows declare their C7520: their numbers are of a serialized
-form);
-`STEP_ROLLED`, the loops that are the innermost around a tensor step and hold no wait on its group: steps issued from a
-rolled loop were measured at about half a straight block's rate on a build that was not kept (H100, 2026-11-20: no lab
-record holds the figure yet) and the toolkit says nothing, so only the SASS shows it. A step that may be absent goes under a forward branch behind its own fence, or in a
-straight block; a window's trip that holds the steps and the wait on them is not the hazard. An experiment that keeps
-the form on purpose declares the count with its reason (`fold_forms`'s tile forms and `carry_window`'s packed rows, whose recorded figures are of steps
-that do not pipeline);
-`WAIT_INJECTED`, a `warpgroup.wait` the toolkit wrote into the step stream (a notice, [below](#ledger)): a wait the source did not state, ahead of code that reads
-a tensor step's registers, so the kernel's stream is not the one its source writes. An experiment whose point is that
-read declares the count with its reason (`wgmma_regs`'s narrowed forms read the fold's accumulators and declare one a
-kernel);
-`WAIT_AFTER_ISSUE` (KERNEL_STANDARDS 29.16), the tensor waits that leave no group in flight (`WARPGROUP.DEPBAR`, count
-0) whose group's last step (`HGMMA`; the commit is no instruction, the `gsb0` flag on that step) is followed by no
-WORK OF SUBSTANCE before them: a load or store (generic, global, shared, local, the matrix forms, atomics,
-reductions), another asynchronous issue (`LDGSTS`, the bulk copies `UBLKCP`/`UBLKRED`, `UTMA*`) or a barrier arrival
-(`SYNCS.ARRIVE`, `BAR.ARV`); register moves, address and predicate arithmetic, `LDC` and `WARPGROUP.ARRIVE` are not.
-Seen in straight-line code only: a branch, a barrier, another wait or the kernel's start between the step and the
-wait leaves it uncounted, as does a wait that leaves a group in flight (the older group's steps are not the nearest).
-The experiments past `_PRE_TIMELINE` that had it when the check landed are `_PRE_WAIT` (held to it when next changed;
-the list only shrinks); `carry_token` and `carry_window` declare it in `main`, with the reason.
+<a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). The hazards are WARPLINE'S CHECKER'S RULES (`warpline.checker`, the module
+`MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. `check` translates the experiment's
+`Bench::expect(kernel, NAME, "<=", n)` declarations to the checker's (kernel regex, rule, allowed count, reason -- the reason is the `//:` comment
+block above the `expect` where exactly one stands above the experiment's declarations of that NAME, else a fixed text saying it is in the source),
+reads the kernels into the checker's model (named as the toolkit's `cu++filt` names them: the patterns `lab::kernel` writes are of that form),
+runs the rules and shows each refusal under the hazard's name the experiment declares. Each hazard is zero unless declared:
+
+| hazard (`HAZARDS`) | the checker's rule | what it counts |
+|---|---|---|
+| `LOOP_CONVERGENCE` | `loop_convergence` | `BSSY`, `BSYNC`, `BRA.DIV` inside a natural loop |
+| `LOAD_IN_TRIP` | `load_in_trip` | global loads whose value an instruction of the same innermost trip reads |
+| `STORE_RELOAD` | `store_reload` | shared loads of an address the same trip stored to |
+| `STORE_UNFENCED` | `store_unfenced` | in a kernel that holds a wgmma, barrier arrivals after a shared store with no async-proxy fence between |
+| `CLOCK_UNIFORM` | `clock_uniform` | a cycle-counter reading summed in uniform registers |
+| `WAIT_AFTER_ISSUE` | `wait_after_issue` | a tensor wait that leaves no group in flight directly after its group's steps (KERNEL_STANDARDS 29.16) |
+| `STEP_ROLLED` | `step_rolled` | tensor steps in the innermost natural loop that holds no wait on them (the rule counts the steps; the declaration is a count of them) |
+| `STEP_PORT`, `STEP_WORK` | `step_port`, `step_work` | a BOUND, declared `<=`: the bytes a step puts through the shared-memory port, the instructions a thread issues a step |
+| `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
+| `BSSY`, `STEP_XU`, `STEP_GLOBAL`, a `CALL` opcode | `step_branches`, `step_conversion`, `step_global`, `convergence_call` | always checked in every kernel; an expectation of one of these names is a PERMIT (any number in the kernels it matches), not a count |
+
+A declaration of `BSSY`, `STEP_XU`, `STEP_GLOBAL` or a `CALL` opcode is a presence permit and its number is never compared: the lab's own check never counted these (`STEP_XU` is no opcode, so its count was always 0 and `STEP_XU <= 40` held for any conversions), so `<= 40` permits them in the kernels it names and does not bound them.
+
+A loop is a natural loop of the kernel's graph (a back edge to a block that dominates its source), the blocks it holds wherever the
+toolkit laid them out; the lab's own checks took the address span a backward branch closes, which a `try_wait`'s out-of-line retry stretches
+over the whole function and a cold block inside the span joins. What stays in `tools/lab.py` is the project's own: a bound
+declared `<=` and naming a kernel with tensor steps (`bound_failures`), the DEBTS below, the refusals' texts (`REFUSAL_TEXT`), and the checks of
+the experiment's own source -- an experiment outside `_PRE_TIMELINE` (the experiments written before these checks; the list only shrinks) is
+refused by `run` and by `pack` unless its header comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use,
+the live registers -- and where its source has a warp collective after a conditional's `?` (`collective_selected`: only the lanes the condition
+takes reach a collective every lane must). Past `_PRE_TIMELINE` every kernel of an experiment, budgeted or exempt, is held to every hazard;
+inside it, `LOOP_CONVERGENCE` is held in budgeted kernels only and the others not at all. The experiments past `_PRE_TIMELINE` that had
+`WAIT_AFTER_ISSUE` when the check landed are `_PRE_WAIT` (held to it when next changed; the list only shrinks). An experiment that keeps a hazard on
+purpose declares its count in `main` with its reason (`carry_window`'s ready skipping rows their C7520, `fold_forms`'s tile forms and
+`carry_window`'s packed rows their steps in a loop, `wgmma_regs`'s narrowed forms their injected wait, `carry_token` and `carry_window` their waits
+straight after the group's steps). The advisories `lab waits` (what could precede a wait, `waits_report`) and `lab steps` (the figures of
+`step_port` and `step_work` over each region of a kernel) never refuse.
 
 <a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`). nvcc and ptxas say, beside the code, what they did to
 it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The lab reads EVERY
-notice and warning of a build (`read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
-`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger, one row
+notice and warning of a build (the checker's `notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
+`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- the checker's BASE ledger (28 rows) with the project's, `tools/notice_ledger.json`, passed to it: a project row overrides the base row of the same tool, code and text or adds one, and the rows that only repeated the base are not kept (the file's seven are the ones whose reason and fix name the lab's pages and constructs). One row
 for each notice either tool can print that the lab has seen or knows the template of -- the toolkit's codes are not
 documented and a template's code is unknown until a build emits it, so a row is matched by its tool, its code where it
 names one, and its text (the template's fixed words, `{}` for a number or a name), and a row with no code matches the
@@ -149,13 +152,13 @@ form is sometimes the point, and the declaration carries its reason. `report`, p
 nothing -- the notice may matter but its cost is not measured (C7519, the arrive the toolkit injected) or the
 source it names is dead (nvcc #128-D, a loop proved unreachable: a measured loop that is not run measures nothing).
 `ignore`, known and harmless (#177-D, a name nothing reads emits no instruction; ptxas's verbose per-function
-summary). A row's `evidence` names the `docs/lab/` page where its reason is a measured cost.
+summary). A row's reason names the `docs/lab/` page where it is a measured cost.
 
 HOW A NEW NOTICE IS DECIDED. The refusal is the prompt: read what the notice says the toolkit did, and ask what it
 does to the SASS the experiment times. If the kernel it names no longer runs the stream its source states (a step
 serialized, a wait or an arrive the source did not write, a register trade that did not happen, local memory traffic),
-the row is `refuse`, or `declare` when an experiment can mean the form (name the hazard; it joins `HAZARDS`). If it
-may matter and nothing measures it, `report`; the `docs/lab/` page that measures it becomes the row's evidence. If it
+the row is `refuse`, or `declare` when an experiment can mean the form (name the rule its notices are counted under -- a new rule joins `HAZARD_RULES` under a hazard's name). If it
+may matter and nothing measures it, `report`; the `docs/lab/` page that measures it is named in the row's reason. If it
 cannot reach the SASS, `ignore`, with the reason said. A new row lands in the same commit as the experiment that
 printed it; a notice is never ignored for want of a decision, and `ignore` of a notice whose cost is merely
 unmeasured is `report`.

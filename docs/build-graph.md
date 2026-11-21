@@ -38,11 +38,12 @@ in a checkout -- typed, or run by a tool -- goes through it. It runs under the m
 exists: a stub that runs rola-devtools' front door (`rola_devtools.graph.front_door`, every RoLA repository's) from the
 rola-devtools checkout `tools/bootstrap.py` finds.
 
-- THE LAB'S IN-KERNEL STAMP IS WARPLINE'S MODULE: `MODULE.bazel` pins it at a public commit (`git_override`, the one pin
+- THE LAB'S IN-KERNEL STAMP AND ITS CHECKER ARE WARPLINE'S MODULE: `MODULE.bazel` pins it at a public commit (`git_override`, the one pin
   of warpline), and `bazel run //tools:lab` (bazel/defs.bzl's `lab_run`) hands `tools/lab.py` the directory that holds
   `warpline/stamp.cuh` (`@warpline//:headers`, with `warpline/host.hpp`, the writer of the record of a traced row) as
   `ROLA_WARPLINE_INCLUDE`, which its nvcc takes as one more `-I`, and the directory of the `warpline` Python package
-  (`@warpline//:warpline`) as `ROLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with (the CPU test
+  (`@warpline//:warpline`) as `ROLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with and `tools/lab.py`'s `check` calls the checker
+  (`warpline.checker`) through, for every hazard one of its rules computes (the CPU test
   tier and `unit_cuda` carry the same target as data). The headers are compile-time only: a `lab pack` binary carries
   nothing of warpline, and the box needs none. The front door
   overrides only rola-devtools' pin with a local checkout; warpline is always the pinned commit.

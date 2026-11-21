@@ -39,13 +39,12 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import NamedTuple
+from types import SimpleNamespace
 
 import build_flags
 import dev_config
 import region_ledger
 import sass
-import sass_gate
 
 ROOT = Path(__file__).resolve().parents[1]
 LAB = ROOT / "measure" / "lab"
@@ -102,176 +101,230 @@ def notices(binary: Path) -> Path:
     return binary.with_name(binary.name + ".ptxas")
 
 
-#: THE TOOLKIT'S NOTICES of a build, read against THE LEDGER (`notice_ledger.json`, docs/internals/tools/lab.md#ledger):
-#: nvcc's own output, kept beside the binary, every notice and warning of it -- ptxas's `info` and `warning` lines with a
-#: code (`(C7512) text in function 'k'`) and without, nvcc's `file(line): warning #N-D: text`, a bare `Potential
-#: Performance Loss: ...` line -- looked up by tool, code and text. A notice the ledger has no row for refuses the pack.
-LEDGER_FILE = Path(__file__).resolve().with_name("notice_ledger.json")
-#: what a row's disposition does: `refuse` fails the pack, `declare` allows the count an experiment declares of the row's
-#: hazard, `report` prints with the pack, `ignore` is known and harmless
-DISPOSITIONS = ("refuse", "declare", "report", "ignore")
+#: THE CHECKER, warpline's (`warpline.checker`, docs/internals/tools/lab.md#hazards): it computes every hazard below from the code the
+#: toolkit made -- the lab computes none of them. `bazel run //tools:lab` hands in the module's directory with the stamp's headers
+#: (`dev_config.warpline_python()`; the pin is `MODULE.bazel`'s). A hazard is the name an experiment declares a count of
+#: (`Bench::expect(kernel, NAME, "<=", n)`); `HAZARD_RULES` says which rule computes it. What stays here is the project's own: which
+#: experiments are held to which hazard (the `_PRE_*` debts), the refusals' texts and the declarations' translation.
+HAZARD_RULES = {
+    "LOOP_CONVERGENCE": "loop_convergence", "LOAD_IN_TRIP": "load_in_trip", "STORE_RELOAD": "store_reload",
+    "STORE_UNFENCED": "store_unfenced", "CLOCK_UNIFORM": "clock_uniform", "WAIT_AFTER_ISSUE": "wait_after_issue",
+    "STEP_ROLLED": "step_rolled", "STEP_PORT": "step_port", "STEP_WORK": "step_work",
+    "STEPS_SERIALIZED": "mma_serialized", "WAIT_INJECTED": "wait_injected",
+}
+#: the hazards an experiment may declare a count of, beside its opcodes
+HAZARDS = tuple(HAZARD_RULES)
+#: the two a `declare` row of the notice ledger counts (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
+HAZARD_STATES = {
+    "STEPS_SERIALIZED": "the toolkit serialized its asynchronous MMAs, each step waiting out the one before",
+    "WAIT_INJECTED": "the toolkit injected a `warpgroup.wait` into the step stream, to let code read registers a tensor step defines",
+}
+#: an expectation that is a permit, no count: the opcode an experiment means to keep (`BSSY`, `CALL...`) or the form it means
+#: (`STEP_XU`, `STEP_GLOBAL`) allows the rule it names any number of findings in the kernels it matches
+PRESENCE_RULES = {"STEP_XU": "step_conversion", "STEP_GLOBAL": "step_global", "BSSY": "step_branches"}
+PRESENCE_ALLOWANCE = 10**9
+#: the hazards that bound a figure, declared `<=`
+BOUND_HAZARDS = ("STEP_PORT", "STEP_WORK")
+#: the reason of a declaration whose experiment states none in a `//:` comment above it
+UNSTATED = "stated in the experiment's source, where it declares the count"
+_DECLARED = re.compile(r'"([A-Z][A-Z_]*)"\s*,\s*"(?:<=|>=|==)"')
+#: the project's ledger of the toolkit's notices: its rows override or add to the checker's base ledger (the rows that only repeat the
+#: base are not here); the hazards a `declare` row counts are the checker's rules `mma_serialized` and `wait_injected`
+PROJECT_LEDGER = Path(__file__).resolve().with_name("notice_ledger.json")
 #: ptxas's own options the build switches on (`ptxas --help`, passed through nvcc's `-Xptxas`): the warning where a
 #: function spills registers to local memory, the warning where a function uses local memory (its stack frame's size in
 #: the text) and the verbose per-function summary
 PTXAS_OPTIONS = ("--warn-on-spills", "--warn-on-local-memory-usage", "--verbose")
-_TOOL_LINE = re.compile(r"^(ptxas|nvcc|nvlink|cicc|fatbinary) (?:info|warning)\s*: (?:\((C\d+)\) )?(.*)$")
-_NVCC_LINE = re.compile(r"^(\S.*?)\((\d+)\): (?:warning|remark)(?: (#\d+-D))?: (.*)$")
-_BARE_LINE = re.compile(r"^(Potential Performance Loss: .*)$")
-_REMARK_LINE = re.compile(r"^Remark: (.*)$")
-_FUNCTION = re.compile(r"function '([^']+)'")
 
 
-class Notice(NamedTuple):
-    """One notice of a build: its tool (`ptxas`, `nvcc`, or `unreadable` for a line nothing reads), its code, its text
-    with each function's name as `'{}'` (what the ledger matches), the function it names (mangled), the `file(line)`
-    nvcc gives, the lines it printed whole and its message as printed."""
-    tool: str
-    code: str | None
-    text: str
-    function: str | None
-    where: str | None
-    raw: str
-    message: str
+@functools.cache
+def checker() -> SimpleNamespace:
+    """warpline's checker modules, imported where first needed: the library's directory is handed in (`bazel run //tools:lab`, a test tier)."""
+    root = dev_config.warpline_python()
+    if root is None:
+        raise SystemExit("the lab's check needs warpline's checker, which the graph hands it: bazel run //tools:lab -- ...")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from warpline.checker import declare, model, readers, rules
+    from warpline.checker import notices as ledgers
+    from warpline.checker.rules import _steps as steps
+    return SimpleNamespace(declare=declare, model=model, readers=readers, rules=rules, ledgers=ledgers, steps=steps)
 
 
-def _notice(tool: str, code: str | None, message: str, where: str | None, raw: str) -> Notice:
-    text = " ".join(message.split())
-    found = _FUNCTION.search(text)
-    return Notice(tool, code, _FUNCTION.sub("function '{}'", text), found.group(1) if found else None, where, raw, text)
+@functools.cache
+def notice_ledger() -> list:
+    """The ledger the checker reads the notices against: its base ledger with the project's rows (`PROJECT_LEDGER`)."""
+    ledgers = checker().ledgers
+    return ledgers.merge(ledgers.base_ledger(), ledgers.load_ledger(PROJECT_LEDGER.read_text()))
 
 
-def read_notices(binary: Path) -> list[Notice]:
-    """EVERY notice of `binary`'s build, in order: the lines nvcc printed beside it. What follows a notice -- the
-    indented lines of ptxas's per-function summary, an nvcc warning's source line and instantiations up to the blank
-    line -- belongs to it. Nothing where the build left no notices (a packed binary run elsewhere)."""
-    if not notices(binary).exists():
-        return []
-    found: list[Notice] = []
-    in_block = False
-    for line in notices(binary).read_text().splitlines():
-        if (in_block and line.strip()) or (line[:1].isspace() and found):
-            found[-1] = found[-1]._replace(raw=found[-1].raw + "\n" + line)
+def checked_kernels(binary: Path) -> list:
+    """The checker's model of every kernel of `binary`, each named as the toolkit's own `cu++filt` names it (the patterns
+    `lab::kernel` writes are of that form)."""
+    c = checker()
+
+    def run(*argv: str) -> str:
+        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+
+    listing = run(dev_config.cuda_bin("cuobjdump"), "-sass", str(binary))
+    usage = run(dev_config.cuda_bin("cuobjdump"), "-res-usage", str(binary))
+    graphs = "\n".join(run(dev_config.cuda_bin("nvdisasm"), "-bbcfg", "-poff", str(cubin)) for cubin in sass.cubins(binary))
+    mangled = list(c.readers.sass_functions(listing))
+    pretty = demangle(mangled)
+    return list(c.model.kernels_from_text(listing, graphs, usage, "".join(f"{pretty[m]}\n" for m in mangled)).values())
+
+
+def declared_reasons(source: str) -> dict[str, str]:
+    """Per hazard an experiment's source declares: the `//:` comment block directly above its `b.expect(..., "NAME", ...)` calls, where
+    exactly one distinct block stands above them (the declaration's reason); a name with none, or with two, has none."""
+    lines = source.splitlines()
+    found: dict[str, set[str]] = {}
+    for i, line in enumerate(lines):
+        if "expect(" not in line or not (m := _DECLARED.search(line)):
             continue
-        in_block = False
-        if not line.strip():
-            continue
-        if m := _TOOL_LINE.match(line):
-            found.append(_notice(m.group(1), m.group(2), m.group(3), None, line))
-        elif m := _NVCC_LINE.match(line):
-            found.append(_notice("nvcc", m.group(3), m.group(4), f"{Path(m.group(1)).name}({m.group(2)})", line))
-            in_block = True
-        elif m := _BARE_LINE.match(line):
-            found.append(_notice("ptxas", None, m.group(1), None, line))
-        elif m := _REMARK_LINE.match(line):
-            found.append(_notice("nvcc", None, m.group(1), None, line))
+        block, j = [], i - 1
+        while j >= 0 and lines[j].lstrip().startswith("//:"):
+            block.insert(0, lines[j].lstrip()[3:].strip())
+            j -= 1
+        found.setdefault(m.group(1), set()).add(" ".join(block))
+    return {name: next(iter(blocks)) for name, blocks in found.items() if len(blocks) == 1 and "" not in blocks}
+
+
+def declaration_entries(expected: list[dict], reasons: dict[str, str]) -> list[dict]:
+    """The experiment's expectations as the checker's declarations (kernel regex, rule, allowed count, reason): a hazard's count, a bound
+    for `STEP_PORT` and `STEP_WORK` (declared `<=`, refused otherwise: `bound_failures`), a permit for `STEP_XU`, `STEP_GLOBAL`, `BSSY`
+    and a `CALL` opcode. The declarations of a rule are ordered by their allowance, largest first: the checker takes the first
+    that names a kernel, which is the largest of the declarations that do."""
+    entries = []
+    for e in expected:
+        op = e["op"]
+        if op in HAZARD_RULES:
+            if op in BOUND_HAZARDS and e["cmp"] != "<=":
+                continue
+            rule, allow = HAZARD_RULES[op], e["count"]
+        elif op in PRESENCE_RULES or "CALL" in op:
+            rule, allow = PRESENCE_RULES.get(op, "convergence_call"), PRESENCE_ALLOWANCE
         else:
-            found.append(Notice("unreadable", None, line, None, None, line, line))
-    return found
+            continue
+        entries.append({"kernel": e["kernel"], "rule": rule, "allow": allow, "reason": reasons.get(op, UNSTATED)})
+    return sorted(entries, key=lambda d: -d["allow"])
 
 
-@functools.cache
-def _ledger_file() -> dict:
-    return json.loads(LEDGER_FILE.read_text())
+def bound_failures(expected: list[dict], kernels: list) -> list[str]:
+    """A declared `STEP_PORT` or `STEP_WORK` that is no `<=` bound, or that bounds no kernel with tensor steps."""
+    failures = []
+    for e in (e for e in expected if e["op"] in BOUND_HAZARDS):
+        if e["cmp"] != "<=":
+            failures.append(f"{e['kernel']!r}: {e['op']} is a bound, declared \"<=\" (not {e['cmp']!r})")
+        elif not any(k.regions and re.search(e["kernel"], k.demangled) for k in kernels):
+            failures.append(f"no kernel with tensor steps matches {e['kernel']!r} ({e['op']} declared)")
+    return failures
 
 
-def notice_ledger() -> tuple[dict, ...]:
-    """The ledger's rows (`notice_ledger.json`)."""
-    return tuple(_ledger_file()["rows"])
+#: what a refusal of each rule says, with the hazard's name the experiment declares (`{n}` the findings counted, `{declared}` the count
+#: declared, `{where}` the addresses of the first findings)
+REFUSAL_TEXT = {
+    "loop_convergence": "{n} convergence instructions inside its loops, {declared} declared (KERNEL_STANDARDS 29.13: the source "
+                        "patterns of 29.9, or LOOP_CONVERGENCE)",
+    "load_in_trip": "{n} global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage ahead of its use), "
+                    "{declared} declared (LOAD_IN_TRIP)",
+    "store_reload": "{n} shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no other warp reads "
+                    "stays in a register), {declared} declared (STORE_RELOAD)",
+    "store_unfenced": "{n} barrier arrivals after a shared store with no fence between, in a kernel whose steps read shared "
+                      "memory (KERNEL_STANDARDS 12: the writer's fence), {declared} declared (STORE_UNFENCED)",
+    "clock_uniform": "{n} sums of a cycle-counter reading in uniform registers, {declared} declared (CLOCK_UNIFORM): a lap's sum "
+                     "is each thread's own (docs/internals/LEARNINGS.md, lap-in-uniform)",
+    "wait_after_issue": "{n} tensor waits directly after their group's steps, {declared} declared (WAIT_AFTER_ISSUE): work that "
+                        "does not read the group's accumulators belongs between the issue and the wait: KERNEL_STANDARDS 29.16 "
+                        "(`lab waits` lists the candidates)",
+    "step_rolled": "{n} tensor steps in loops that hold no wait on them (loops at {where}), {declared} declared (STEP_ROLLED): "
+                   "steps in a rolled loop were measured at about half a straight block's rate (a build not kept: no lab record "
+                   "holds the figure yet) and the toolkit says nothing: write them a straight block, or a step that may be "
+                   "absent under a forward branch behind its own fence (docs/internals/LEARNINGS.md)",
+    "step_port": "{n:,} bytes a step through the shared-memory port, over the {declared:,} declared (STEP_PORT; `lab steps` lists "
+                 "the regions)",
+    "step_work": "{n:,} instructions a step, over the {declared:,} declared (STEP_WORK; `lab steps` lists the regions)",
+    "step_branches": "{n} branches inside an MMA step nobody declared (KERNEL_STANDARDS 27: a step body is one basic block; a form "
+                     "that keeps them declares BSSY)",
+    "step_conversion": "{n} conversion-unit instructions inside an MMA step nobody declared (KERNEL_STANDARDS 29: convert on the "
+                       "FMA pipe; a form that keeps them declares STEP_XU)",
+    "step_global": "{n} global accesses inside an MMA step nobody declared (KERNEL_STANDARDS 29: stage by cp.async; a form that "
+                   "keeps them declares STEP_GLOBAL)",
+    "convergence_call": "{n} convergence calls nobody declared (a collective under role-dependent control flow becomes a call "
+                        "into a convergence subroutine)",
+}
+_RULE_HAZARDS = {rule: hazard for hazard, rule in HAZARD_RULES.items()}
 
 
-#: what each hazard a `declare` row names says of a kernel that exceeds its declared count
-HAZARD_STATES = _ledger_file()["hazards"]
+def render_refusal(r, experiment: str = "the build") -> list[str]:
+    """A checker refusal as the lab's failure lines: the hazard's name the experiment declares, the kernel (the experiment's name for a
+    notice that names none), the count found and declared, and the lab's own words for it."""
+    place = experiment if r.kernel == "the build" else r.kernel
+    ledger_rule = r.rule in _RULE_HAZARDS and _RULE_HAZARDS[r.rule] in HAZARD_STATES
+    if r.rule == "notice_without_row":
+        return [f"{place}: {r.count} x {r.message}:\n      {r.findings[0].what}\n    add a row to tools/notice_ledger.json with "
+                "a disposition (refuse, declare, report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)"]
+    if r.rule.startswith("notice "):
+        return [f"{place}: {f.what} ({f.count} x, {r.rule.removeprefix('notice ').replace('no_code', 'no code')}): "
+                f"{r.message}" + (f" {r.fix}" if r.fix else "") for f in r.findings]
+    if ledger_rule:
+        hazard = _RULE_HAZARDS[r.rule]
+        what = "; ".join(f"{f.count} x {f.what}" for f in sorted(r.findings, key=lambda f: f.what))
+        return [f"{place}: {HAZARD_STATES[hazard]}: {what}; {r.allowed} declared ({hazard}). "
+                f"{r.fix} (docs/internals/LEARNINGS.md)"]
+    where = ", ".join(f.where for f in r.findings[:4]) + (", ..." if len(r.findings) > 4 else "")
+    text = REFUSAL_TEXT[r.rule].format(n=r.count, declared=r.allowed, where=where)
+    return [f"{place}: {text} [checker rule {r.rule}: at {where}]"]
 
 
-def hazard_names() -> tuple[str, ...]:
-    """The hazards the ledger's `declare` rows name: counts an experiment may declare (`Bench::expect(kernel, NAME,
-    "<=", n)`)."""
-    return tuple(sorted({r["hazard"] for r in notice_ledger() if r["disposition"] == "declare"}))
-
-
-@functools.cache
-def _template(text: str) -> re.Pattern:
-    return re.compile(".*?".join(re.escape(part) for part in " ".join(text.split()).split("{}")))
-
-
-def row_of(notice: Notice) -> dict | None:
-    """The ledger's row for `notice`: the tool, the code where the row names one, and the template's words. The ledger
-    keeps one row to a notice (`tests/unit/test_lab_notices.py` proves it)."""
-    found = [r for r in notice_ledger() if r["tool"] == notice.tool and r["code"] in (None, notice.code)
-             and _template(r["text"]).fullmatch(notice.text)]
-    return found[0] if found else None
-
-
-def _shown(notice: Notice, names: dict[str, str]) -> str:
-    """The notice's text as the toolkit printed it, its function's name demangled."""
-    return _FUNCTION.sub(lambda m: f"function '{names[m.group(1)]}'", notice.message)
-
-
-def _names(read: list[Notice]) -> dict[str, str]:
+def notice_names(read: list) -> dict[str, str]:
+    """The functions the notices name (as the toolkit printed them, mangled), demangled."""
     functions = sorted({n.function for n in read if n.function})
     return demangle(functions) if functions else {}
 
 
-def notice_failures(binary: Path, expected: list[dict]) -> list[str]:
-    """THE LEDGER'S REFUSALS: every notice of the build read against its row. A notice with no row; a `refuse` row's
-    notice; and a `declare` row's notices past the count the experiment declares of the row's hazard, a kernel's
-    notices of one hazard summed -- the failures, empty where every notice is allowed."""
-    read = read_notices(binary)
-    names = _names(read)
-    experiment = binary.name.split(".")[0]
-    unknown: dict[tuple, list] = {}
-    refused: Counter = Counter()
-    declared: dict[tuple, Counter] = {}
-    rows = {id(r): r for r in notice_ledger()}
-    for n in read:
-        row = row_of(n)
-        place = names[n.function] if n.function else (n.where or experiment)
-        if row is None:
-            unknown.setdefault((n.tool, n.code, n.text, place), []).append(n)
-        elif row["disposition"] == "refuse":
-            refused[id(row), place, _shown(n, names)] += 1
-        elif row["disposition"] == "declare":
-            declared.setdefault((row["hazard"], place), Counter())[row["code"] or n.code, id(row)] += 1
-    failures = []
-    for (tool, code, _, place), found in unknown.items():
-        whole = "\n      ".join(found[0].raw.splitlines())
-        failures.append(f"{place}: {len(found)} x a notice the ledger has no row for ({tool} {code or 'with no code'}):\n"
-                        f"      {whole}\n    add a row to tools/notice_ledger.json with a disposition (refuse, declare, "
-                        "report or ignore) and the reason for it (docs/internals/tools/lab.md#ledger)")
-    for (key, place, shown), n in refused.items():
-        row = rows[key]
-        failures.append(f"{place}: {shown} ({n} x, {row['tool']} {row['code'] or 'no code'}): {row['reason']}"
-                        + (f" {row['fix']}" if row["fix"] else ""))
-    for (hazard, place), by_row in declared.items():
-        allowed = max((e["count"] for e in expected if e["op"] == hazard and re.search(e["kernel"], place)), default=0)
-        if sum(by_row.values()) > allowed:
-            what = "; ".join(f"{n} x ({code or 'no code'}) {rows[key]['cause']}" for (code, key), n in sorted(
-                by_row.items(), key=lambda item: (item[0][0] or "", rows[item[0][1]]["cause"])))
-            fixes = "; ".join(sorted({rows[key]["fix"] for _, key in by_row if rows[key]["fix"]}))
-            failures.append(f"{place}: {HAZARD_STATES[hazard]}: {what}; {allowed} declared ({hazard}). "
-                            f"{fixes or 'A notice seen here first: read its cause'} (docs/internals/LEARNINGS.md)")
-    return failures
+def read_notices(binary: Path) -> list:
+    """EVERY notice of `binary`'s build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
+    left no notices (a packed binary run elsewhere)."""
+    return checker().ledgers.read_notices(notices(binary).read_text()) if notices(binary).exists() else []
 
 
 def notice_report(binary: Path) -> list[str]:
-    """THE REPORT: the notices of `report` rows, one line a row with its count and where (an nvcc notice's lines),
-    printed with the pack and blocking nothing."""
+    """THE REPORT: the notices of `report` rows, one line a row with its count, printed with the pack and blocking nothing."""
     read = read_notices(binary)
-    found: dict[int, list[Notice]] = {}
-    for n in read:
-        row = row_of(n)
-        if row and row["disposition"] == "report":
-            found.setdefault(id(row), []).append(n)
-    rows = {id(r): r for r in notice_ledger()}
-    lines = []
-    for key, those in found.items():
-        row = rows[key]
-        places = {n.function or n.where or "the build" for n in those}
-        lines_at = sorted({n.where for n in those if n.where})
-        where = f", at {', '.join(lines_at[:3])}" + (f" and {len(lines_at) - 3} more" if len(lines_at) > 3 else "") if lines_at else ""
-        text = row["text"].replace(" in function '{}'", "")
-        lines.append(f"  {row['tool']} {row['code'] or ''}: {len(those)} x in {len(places)} places{where}: {text} -- {row['reason']}")
-    return lines
+    return checker().declare.check_notices(read, notice_ledger(), [], notice_names(read))[1] if read else []
+
+
+def held_rules(experiment: str) -> set[str]:
+    """The checker's rules an experiment is held to: the steps' and the calls' in every experiment, `loop_convergence` too (in the
+    budgeted kernels only, for an experiment in `_PRE_TIMELINE`), and past `_PRE_TIMELINE` the rest -- `wait_after_issue` past `_PRE_WAIT`."""
+    names = {"step_port", "step_work", "step_branches", "step_conversion", "step_global", "convergence_call", "loop_convergence"}
+    if experiment not in _PRE_TIMELINE:
+        names |= {"load_in_trip", "store_reload", "store_unfenced", "clock_uniform", "step_rolled"}
+        if experiment not in _PRE_WAIT:
+            names.add("wait_after_issue")
+    return names
+
+
+def checker_failures(binary: Path, expected: list[dict], budgeted: set[str]) -> list[str]:
+    """What the checker refuses of the build: the rules the experiment is held to (`held_rules`) over every kernel and every notice
+    of the build against the ledger -- under the declarations its expectations translate to."""
+    c = checker()
+    experiment = binary.name.split(".")[0]
+    registry = c.rules.registry()
+    names = held_rules(experiment)
+    held = experiment not in _PRE_TIMELINE
+    kernels = checked_kernels(binary)
+    path = experiments().get(experiment)
+    reasons = declared_reasons(path.read_text()) if path else {}
+    notice_rules = c.ledgers.declared_rules(notice_ledger())
+    declarations = c.declare.load_declarations(json.dumps({"declarations": declaration_entries(expected, reasons)}),
+                                               registry, notice_rules)
+    refusals = c.declare.check(kernels, {n: registry[n] for n in sorted(names)}, declarations)
+    refusals = [r for r in refusals if held or r.rule != "loop_convergence" or r.kernel in budgeted]
+    read = read_notices(binary)
+    refusals += c.declare.check_notices(read, notice_ledger(), declarations, notice_names(read))[0]
+    return bound_failures(expected, kernels) + [line for r in refusals for line in render_refusal(r, experiment)]
 
 
 def demangle(names: list[str]) -> dict[str, str]:
@@ -310,24 +363,13 @@ def count(ops: dict[str, int], prefixes: str) -> int:
     return sum(n for op, n in ops.items() if any(op.startswith(p) for p in prefixes.split("|")))
 
 
-def signatures(binary: Path) -> dict[str, dict]:
-    """Per kernel (demangled): the SASS gate's signature (`tools/sass_gate.py`) -- local memory, and the calls into a
-    convergence subroutine a converged warp executes (not ptxas's loop-exit `CALL.REL.NOINC`, nor a guarded fallback)."""
-    found: dict[str, dict] = {}
-    for cubin in sass.cubins(binary):
-        sass_gate.gate(cubin, None, None)
-        found |= sass_gate.STATS
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
-
-
 #: KERNEL_STANDARDS section 29's debts: the experiments recorded before a lab had to budget its MMA kernels and check
 #: its outputs; each is held to both when it is next changed, and the list only shrinks
 _PRE_29 = {"collective_branch", "facts_block", "mma_k8", "row_span", "tensor_tax", "vote_stash"}
 
 
 #: THE LEARNINGS' DEBTS (docs/internals/LEARNINGS.md): the experiments written before an experiment's header had to
-#: state its TIMELINE and every kernel's loops were held to the hazards below; each is held to them when it is next
+#: state its TIMELINE and every kernel's loops were held to the checker's hazards (`HAZARD_RULES`); each is held to them when it is next
 #: changed, and the list only shrinks
 _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch", "facts_block", "facts_two",
                  "issue_latency", "reg_trade", "row_ring", "row_span", "state_move", "tensor_tax",
@@ -336,12 +378,6 @@ _PRE_TIMELINE = {"bulk_drain", "byte_expand", "cluster_sum", "collective_branch"
 #: straight after its steps; each is held to `WAIT_AFTER_ISSUE` when it is next changed, and the list only shrinks
 _PRE_WAIT = {"clock_time", "fold_stream", "intra_chain", "intra_window", "pool_fill", "readout_role", "stamp_cost",
              "state_image", "step_queue", "wgmma_width"}
-#: the hazards an experiment may declare a count of (`Bench::expect(kernel, NAME, "<=", n)`), beside its opcodes: the
-#: ledger's own (`STEPS_SERIALIZED`, `WAIT_INJECTED`, the toolkit's notices) and these
-HAZARDS = ("LOOP_CONVERGENCE", "LOAD_IN_TRIP", "STORE_RELOAD", "STORE_UNFENCED", "CLOCK_UNIFORM", "WAIT_AFTER_ISSUE",
-           "STEP_ROLLED", "STEP_PORT", "STEP_WORK", *hazard_names())
-
-
 #: a warp collective after the `?` of a statement's conditional: only the lanes the condition takes reach it
 _SELECTED = re.compile(r"\?[^;{}]*\b__(?:shfl\w*|reduce_\w+|ballot|any|all)_sync\s*\(")
 
@@ -388,116 +424,13 @@ def loops_of(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
             if op.startswith("BRA") and (t := BRANCH.search(line)) and int(t.group(1), 16) < at]
 
 
-def loop_convergence(binary: Path) -> dict[str, int]:
-    """Per kernel (demangled): the convergence instructions (`BSSY`, `BSYNC`, `BRA.DIV`) inside its loops -- the spans a
-    backward branch closes -- which KERNEL_STANDARDS section 29.13 has removed by the source patterns of 29.9 or
-    declared (`LOOP_CONVERGENCE`)."""
-    found = {}
-    for name, body in disassembled(binary).items():
-        loops = loops_of(body)
-        found[name] = sum(1 for at, op, _ in body if op.startswith(("BSSY", "BSYNC", "BRA.DIV"))
-                          and any(lo <= at <= hi for lo, hi in loops))
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
-
-
 #: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
 WGMMA = tuple(op for op in sass.OPCODE_CLASSES["mma"] if op.endswith("GMMA"))
 
-#: an instruction's operands, and the registers and the one bracketed address among them
+#: an instruction's operands
 OPERANDS = re.compile(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?[A-Z0-9_.$]+\s+(.*?)\s*;")
-REGISTER = re.compile(r"\bR(\d+)\b")
-ADDRESS = re.compile(r"\[[^\]]*\]")
 #: the opcodes whose first operand is read, not written
 READS_FIRST = ("ST", "BRA", "RED", "ATOM", "BSSY", "BSYNC", *WGMMA, "ISETP", "FSETP", "CALL", "EXIT", "NOP", "BAR")
-
-
-def unfenced(body: list[tuple[int, str, str]]) -> int:
-    """STORE_UNFENCED: in a kernel that holds a wgmma, the barrier arrivals that follow a shared store with no
-    `fence.proxy.async` between them -- a step reads shared memory through the tensor pipe's own view, and a
-    writer's ordinary stores reach it only past the writer's fence (KERNEL_STANDARDS section 12)."""
-    if not any(op.startswith(WGMMA) for _, op, _ in body):
-        return 0
-    found, stored = 0, False
-    for _, op, _ in body:
-        if op.startswith("STS"):
-            stored = True
-        elif op.startswith("FENCE.VIEW.ASYNC"):
-            stored = False
-        elif op.startswith("SYNCS.ARRIVE"):
-            found += stored
-            stored = False
-    return found
-
-
-def loop_hazards(binary: Path) -> dict[str, dict[str, int]]:
-    """Per kernel (demangled), inside its innermost loops: LOAD_IN_TRIP, the global loads whose value an instruction
-    of the same trip reads -- that trip waits out its own load, where a load a stage ahead is hidden (KERNEL_STANDARDS
-    section 32); and STORE_RELOAD, the shared loads of an address the same trip stored to -- a value kept in shared
-    memory that no other warp reads belongs in a register (section 33). And over the whole kernel, STORE_UNFENCED
-    (`unfenced`)."""
-    found = {}
-    for name, body in disassembled(binary).items():
-        loops = loops_of(body)
-        inner = [(lo, hi) for lo, hi in loops if not any((a, b) != (lo, hi) and lo <= a and b <= hi for a, b in loops)]
-        in_trip = reloads = 0
-        for lo, hi in inner:
-            trip = [(op, m.group(1)) for at, op, line in body if lo <= at <= hi and (m := OPERANDS.match(line))]
-            for i, (op, operands) in enumerate(trip):
-                registers = REGISTER.findall(operands)
-                if op.startswith("LDG") and not op.startswith("LDGSTS") and registers:
-                    value = registers[0]
-                    for later, text in trip[i + 1:]:
-                        named = REGISTER.findall(text)
-                        written = named[:1] if named and not later.startswith(READS_FIRST) else []
-                        if value in (named[1:] if written else named):
-                            in_trip += 1
-                            break
-                        if value in written:
-                            break
-                if op.startswith("STS") and (address := ADDRESS.search(operands)):
-                    base = REGISTER.findall(address.group(0))
-                    for later, text in trip[i + 1:]:
-                        named = REGISTER.findall(text)
-                        if later.startswith("LDS") and address.group(0) in text:
-                            reloads += 1
-                            break
-                        if named and not later.startswith(READS_FIRST) and named[0] in base:
-                            break
-        found[name] = {"LOAD_IN_TRIP": in_trip, "STORE_RELOAD": reloads, "STORE_UNFENCED": unfenced(body)}
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
-
-
-#: a uniform register, and the reading of the cycle counter into one
-UNIFORM = re.compile(r"\bUR(\d+)\b")
-CLOCK_UNIFORM = re.compile(r"\bS2UR\s+UR(\d+),\s*SR_CLOCKLO\b")
-
-
-def clock_summed_uniform(body: list[tuple[int, str, str]]) -> int:
-    """The uniform sums (`UIADD3`) that read a uniform register holding a cycle-counter reading: a phase clock
-    accumulated in a warp's uniform registers is not a thread's count (docs/internals/LEARNINGS.md,
-    lap-in-uniform). A straight-line scan: a register stops holding a reading where it is next written."""
-    found, holding = 0, set()
-    for _, op, line in body:
-        if m := CLOCK_UNIFORM.search(line):
-            holding.add(m.group(1))
-            continue
-        if not (ops := OPERANDS.match(line)):
-            continue
-        written, *read = [o.strip() for o in ops.group(1).split(",")]
-        if op.startswith("UIADD3") and any(r in holding for o in read for r in UNIFORM.findall(o)):
-            found += 1
-        if (w := UNIFORM.fullmatch(written)) and op.startswith(("U", "R2UR", "S2UR")):
-            holding.discard(w.group(1))
-    return found
-
-
-def clocks_summed_uniform(binary: Path) -> dict[str, int]:
-    """Per kernel (demangled): `clock_summed_uniform`."""
-    found = {name: clock_summed_uniform(body) for name, body in disassembled(binary).items()}
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
 
 
 #: WORK OF SUBSTANCE (WAIT_AFTER_ISSUE, KERNEL_STANDARDS 29.16): what a warp can usefully do while its tensor steps
@@ -523,53 +456,6 @@ def tensor_waits(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
     """A kernel's tensor waits as (index in `body`, groups left in flight)."""
     return [(i, int(m.group(1), 16)) for i, (_, op, line) in enumerate(body)
             if op.startswith("WARPGROUP.DEPBAR") and (m := TENSOR_WAIT.match(f"{op} {_operands(line)}"))]
-
-
-def wait_after_issue(body: list[tuple[int, str, str]]) -> int:
-    """WAIT_AFTER_ISSUE: the tensor waits for ALL in-flight groups (`wgmma.wait_group 0`) that follow their group's
-    last step with no work of substance between (KERNEL_STANDARDS 29.16). Scanned backward from the wait through
-    straight-line code: the nearest `HGMMA` found before any work of substance counts it; a branch, a barrier, another
-    wait or the kernel's start first leaves it uncounted (a wait whose steps sit across a branch is not seen)."""
-    found = 0
-    for i, left in tensor_waits(body):
-        if left:
-            continue
-        for _, op, _ in reversed(body[:i]):
-            if op.startswith(WGMMA):
-                found += 1
-                break
-            if SUBSTANCE.match(op) or op.startswith(STOPS):
-                break
-    return found
-
-
-def steps_rolled(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
-    """STEP_ROLLED: the loops (address spans a backward branch closes) that are the innermost around a tensor step and
-    hold no tensor wait (`WARPGROUP.DEPBAR`): steps issued from a rolled loop were measured at about half a
-    straight block's rate on a build that was not kept (H100, 2026-11-20: no lab record holds the figure yet), with no
-    notice from the toolkit. A kernel's outer loop, which holds its
-    steps and the wait on them, is not one; nor is a step under a forward branch."""
-    loops = loops_of(body)
-    innermost = set()
-    for at, op, _ in body:
-        if op.startswith(WGMMA) and (around := [span for span in loops if span[0] <= at <= span[1]]):
-            innermost.add(min(around, key=lambda span: span[1] - span[0]))
-    return sorted(span for span in innermost
-                  if not any(span[0] <= at <= span[1] and op.startswith("WARPGROUP.DEPBAR") for at, op, _ in body))
-
-
-def rolled_steps(binary: Path) -> dict[str, list[tuple[int, int]]]:
-    """Per kernel (demangled) that has any: `steps_rolled`."""
-    found = {name: spans for name, body in disassembled(binary).items() if (spans := steps_rolled(body))}
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
-
-
-def waits_after_issue(binary: Path) -> dict[str, int]:
-    """Per kernel (demangled): `wait_after_issue`."""
-    found = {name: wait_after_issue(body) for name, body in disassembled(binary).items()}
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
 
 
 #: a step's shape, accumulator type and first register (`HGMMA.64x16x16.F32.BF16 R24, ...`: the opcode's `x`s are
@@ -656,134 +542,34 @@ def waits_report(binary: Path) -> list[str]:
     return out
 
 
-#: a step as the listing names it: `HGMMA.64x16x16.F32.BF16 R24, gdesc[UR24], R24` -- the shape `64xNxK`, the
-#: accumulator type, the input type (a second, the same, follows for the 8-bit forms); then the operands: the
-#: accumulator, A, B, the accumulator again
-STEP_LINE = re.compile(r"\b[HI]GMMA\.64x(\d+)x(\d+)\.[A-Z0-9]+\.([A-Z0-9]+)\S*\s+(.*?)\s*;")
-#: the bytes an input type takes
-ELEMENT_BYTES = {"F16": 2, "BF16": 2, "TF32": 4, "E4M3": 1, "E5M2": 1, "S8": 1, "U8": 1}
-#: a shared access's bytes a lane by the opcode's own suffix (`LDS.U16`, `STS.128`); a word without one
-LANE_BYTES = {"U8": 1, "S8": 1, "U16": 2, "S16": 2, "64": 8, "128": 16}
-#: a matrix access, `LDSM.16.M88.4`: N matrices of 8 x 8 sixteen-bit elements a warp, 128 bytes each
-MATRIX = re.compile(r"^(?:LDSM|STSM)\.\d+\.MT?88\.(\d)")
-#: the bounds an experiment declares of a step or a kernel (`Bench::expect(kernel, NAME, "<=", n)`)
-STEP_BOUNDS = ("STEP_PORT", "STEP_WORK")
-
-
-def step_operand_bytes(line: str) -> int | None:
-    """The shared-memory bytes one step reads: A is 64 x K elements and B is K x N elements, at the element size its
-    type names, each only when the listing gives it as a descriptor (`gdesc[URn]`). The operands after the
-    accumulator are EITHER one descriptor (`R24, gdesc[UR4], R24`: A and B both in shared memory) OR a register and a
-    descriptor (`R24, R8, gdesc[UR4], R24`: A in registers, B alone shared). None for a line this does not read."""
-    m = STEP_LINE.search(line)
-    if not m or m.group(3) not in ELEMENT_BYTES:
-        return None
-    n, k, size = int(m.group(1)), int(m.group(2)), ELEMENT_BYTES[m.group(3)]
-    operands = [o.strip() for o in m.group(4).split(",")]
-    if len(operands) < 3:
-        return None
-    if operands[1].startswith("gdesc["):
-        return (64 * k + k * n) * size
-    if operands[2].startswith("gdesc[") and re.fullmatch(r"R(?:\d+|Z)", operands[1]):
-        return k * n * size
-    return None
-
-
-def shared_bytes(op: str) -> int:
-    """The bytes a warp's shared load or store moves, by the width its opcode names, all 32 lanes (an `LDS.U16` is 64);
-    0 for any other instruction."""
-    if m := MATRIX.match(op):
-        return 128 * int(m.group(1))
-    if op.startswith(("LDS", "STS")) and not op.startswith(("LDSM", "STSM")):
-        return 32 * next((LANE_BYTES[p] for p in op.split(".")[1:] if p in LANE_BYTES), 4)
-    return 0
-
-
-#: a null step: the empty group ptxas issues to hold a wait where no step is in flight (`HGMMA.64x8x16.F16 RZ,
-#: gdesc[URZ], RZ, !UPT`) -- it moves no operand and computes nothing, so it is no step of the report
-NULL_STEP = re.compile(r"\bRZ,\s*gdesc\[URZ\]")
-#: a warpgroup's warps: a shared load or store between two steps is executed by each of them
-WARPS = 4
-
-
-def is_step(op: str, line: str) -> bool:
-    return op.startswith(WGMMA) and not NULL_STEP.search(line)
-
-
-def step_regions(body: list[tuple[int, str, str]]) -> list[tuple[str, int, list[int]]]:
-    """A kernel's step regions as (what, steps, indices into `body`): each innermost loop that holds a step -- all its
-    instructions, its steps counted -- and each step outside such a loop, alone: the instructions after the previous
-    step (or a loop's back-edge, or the kernel's start) up to and including it."""
-    steps = [i for i, (_, op, line) in enumerate(body) if is_step(op, line)]
-    holding = [(lo, hi) for lo, hi in loops_of(body) if any(lo <= body[i][0] <= hi for i in steps)]
-    inner = {(lo, hi) for lo, hi in holding if not any((a, b) != (lo, hi) and lo <= a and b <= hi for a, b in holding)}
-    regions, in_loop = [], set()
-    for lo, hi in sorted(inner):
-        members = [i for i, (at, _, _) in enumerate(body) if lo <= at <= hi]
-        found = [i for i in members if i in steps]
-        in_loop |= set(found)
-        regions.append((f"loop {lo:#x}-{hi:#x}", len(found), members))
-    edges = {hi for _, hi in loops_of(body)}
-    previous = -1
-    for i in steps:
-        if i not in in_loop:
-            start = i
-            while start - 1 > previous and body[start - 1][0] not in edges:
-                start -= 1
-            regions.append(("an unrolled step", 1, list(range(start, i + 1))))
-        previous = i
-    return regions
-
-
-def region_figures(body: list[tuple[int, str, str]], steps: int, members: list[int]) -> tuple[int, int, int, Counter]:
-    """A region's figures a step, each the region's total over its steps, rounded up: the bytes through the shared-memory
-    port as (the steps' own operands, the shared loads and stores, their sum), and the instructions by class
-    (`sass.opcode_class`). A step this does not read makes the operand and total bytes -1."""
-    own = [step_operand_bytes(body[i][2]) for i in members if is_step(body[i][1], body[i][2])]
-    shared = WARPS * sum(shared_bytes(body[i][1]) for i in members)
-    per = lambda n: -(-n // steps)  # noqa: E731
-    classes = Counter({c: per(n) for c, n in Counter(sass.opcode_class(body[i][1]) for i in members).items()})
-    if None in own:
-        return -1, per(shared), -1, classes
-    return per(sum(own)), per(shared), per(sum(own) + shared), classes
-
-
-def step_report(binary: Path) -> dict[str, list[tuple[str, int, int, int, int, Counter]]]:
-    """Per kernel (demangled) with tensor steps: its regions as (what, steps, operand bytes, shared bytes, total bytes,
-    work by class), the figures a step (`step_regions`, `region_figures`)."""
-    found = {}
-    for mangled, body in disassembled(binary).items():
-        rows = [(what, steps, *region_figures(body, steps, members)) for what, steps, members in step_regions(body)]
-        if rows:
-            found[mangled] = rows
-    names = demangle(list(found))
-    return {names[k]: v for k, v in found.items()}
-
-
 def steps_report(binary: Path) -> list[str]:
     """THE ADVISORY: per kernel with tensor steps (kernels with the same lines grouped, a count each; at most
     `REPORT_GROUPS` groups), two lines: the bytes a step puts through the shared-memory port (its own operands and the
     shared loads and stores of its region; wavefronts are those bytes / 128, rounded up) and the instructions a thread
-    executes a step, by class. A kernel with several regions (`step_regions`) prints their range and the figures of the
-    region with the most. Bounded by `STEP_PORT` and `STEP_WORK` where declared (`step_bounds`, every region); never a
-    refusal where not."""
+    executes a step, by class -- the figures of the checker's `step_port` and `step_work` rules, read over each of the
+    kernel's regions (a kernel with several prints their range and the figures of the region with the most). Bounded by
+    `STEP_PORT` and `STEP_WORK` where declared; never a refusal where not."""
+    steps = checker().steps
     groups: dict[tuple, list[str]] = {}
-    for name, rows in step_report(binary).items():
+    for kernel in checked_kernels(binary):
+        rows = [steps.figures(r) for r in kernel.regions]
+        if not rows:
+            continue
         many = f" over {len(rows)} regions; the most is" if len(rows) > 1 else ""
-        if any(row[4] < 0 for row in rows):
+        if any(f.unread for f in rows):
             port = "port: a step this does not read"
         else:
-            lo, hi = min(row[4] for row in rows), max(row[4] for row in rows)
-            top = max(rows, key=lambda row: row[4])
+            lo, hi = min(f.port for f in rows), max(f.port for f in rows)
+            top = max(rows, key=lambda f: f.port)
             span = f"{lo:,}-{hi:,}" if lo != hi else f"{hi:,}"
-            waves = f"{-(-lo // 128)}-{-(-hi // 128)}" if lo != hi else f"{-(-hi // 128)}"
-            port = f"port: {span} B a step ({waves} wavefronts){many} operands {top[2]:,} + shared {top[3]:,}{f' (x {WARPS} warps)' if top[3] else ''}"
-        work_of = lambda row: sum(row[5].values())  # noqa: E731
-        lo, hi = min(map(work_of, rows)), max(map(work_of, rows))
-        top = max(rows, key=work_of)
-        by = ", ".join(f"{c} {top[5][c]}" for c in (*sass.OPCODE_CLASSES, "other") if top[5][c])
+            waves = f"{-(-lo // steps.WAVEFRONT)}-{-(-hi // steps.WAVEFRONT)}" if lo != hi else f"{-(-hi // steps.WAVEFRONT)}"
+            port = (f"port: {span} B a step ({waves} wavefronts){many} operands {top.operands:,} + shared {top.shared:,}"
+                    f"{f' (x {steps.WARPS} warps)' if top.shared else ''}")
+        lo, hi = min(f.instructions for f in rows), max(f.instructions for f in rows)
+        top = max(rows, key=lambda f: f.instructions)
+        by = ", ".join(f"{c} {n}" for c, n in sorted(top.work.items(), key=lambda cn: -cn[1]))
         work = f"work: {f'{lo}-{hi}' if lo != hi else hi} instructions a step{many} {by}"
-        groups.setdefault((port, work), []).append(name)
+        groups.setdefault((port, work), []).append(kernel.demangled)
     out = []
     for lines, kernels_ in list(groups.items())[:REPORT_GROUPS]:
         out.append(f"  {kernels_[0]}" + (f"  (and {len(kernels_) - 1} kernels with the same lines)" if kernels_[1:] else ""))
@@ -793,34 +579,10 @@ def steps_report(binary: Path) -> list[str]:
     return out
 
 
-def step_bounds(binary: Path, expected: list[dict]) -> list[str]:
-    """The declared `STEP_PORT` and `STEP_WORK` (bytes and instructions a step, of every region of the kernel) that are
-    exceeded, and the declarations that bound nothing."""
-    failures = []
-    report = step_report(binary)
-    for e in (e for e in expected if e["op"] in STEP_BOUNDS):
-        if e["cmp"] != "<=":
-            failures.append(f"{e['kernel']!r}: {e['op']} is a bound, declared \"<=\" (not {e['cmp']!r})")
-            continue
-        hits = [k for k in report if re.search(e["kernel"], k)]
-        if not hits:
-            failures.append(f"no kernel with tensor steps matches {e['kernel']!r} ({e['op']} declared)")
-        for k in hits:
-            for what, _, _, _, total, classes in report[k]:
-                figure, unit = ((total, "bytes through the shared-memory port") if e["op"] == "STEP_PORT" else
-                                (sum(classes.values()), "instructions"))
-                if e["op"] == "STEP_PORT" and total < 0:
-                    failures.append(f"{k}: {what}: a step whose operands this does not read (STEP_PORT)")
-                elif figure > e["count"]:
-                    failures.append(f"{k}: {what}: {figure:,} {unit} a step, over the {e['count']:,} declared "
-                                    f"({e['op']}; `lab steps` lists the region)")
-    return failures
-
-
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
-    """Every expectation the experiment declares, every notice of its build allowed by the ledger (local memory is
-    the toolkit's own warning there) and no undeclared convergence call anywhere: the failures, empty when it may
-    run."""
+    """Every expectation the experiment declares, every hazard the checker's rules find in its kernels past what it declares, every
+    notice of its build allowed by the ledger (local memory is the toolkit's own warning there), and the project's own checks of its
+    source: the failures, empty when it may run."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     expected = [e for e in map(json.loads, lines.splitlines()) if e["lab"] == "expect"]
     failures = []
@@ -833,66 +595,17 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             ok = {">=": n >= e["count"], "==": n == e["count"], "<=": n <= e["count"]}[e["cmp"]]
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
-    failures += step_bounds(binary, expected)
-    #: every notice the toolkit printed, read against the ledger: one with no row, a refusal, a declared count exceeded
-    failures += notice_failures(binary, expected)
-    declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
-    declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
-
-    declared_loops = {k: e["count"] for e in expected if e["op"] == "LOOP_CONVERGENCE"
-                      for k in table if re.search(e["kernel"], k)}
-    budgeted = {k for b in budgets(binary) for k in table if re.search(b["kernel"], k)}
-    #: an experiment past the learnings' debts is held to every hazard in every kernel, budgeted or not
     experiment = binary.name.split(".")[0]
-    held = experiment not in _PRE_TIMELINE
-    for k, n in loop_convergence(binary).items():
-        if (k in budgeted or held) and n > declared_loops.get(k, 0):
-            failures.append(f"{k}: {n} convergence instructions inside its loops, {declared_loops.get(k, 0)} "
-                            "declared (KERNEL_STANDARDS 29.13: the source patterns of 29.9, or LOOP_CONVERGENCE)")
-    if held:
+    budgeted = {k for b in budgets(binary) for k in table if re.search(b["kernel"], k)}
+    failures += checker_failures(binary, expected, budgeted)
+    if experiment not in _PRE_TIMELINE:
         if not timeline(experiments()[experiment]):
             failures.append(f"{experiment}: its header states no TIMELINE -- each phase's stream and which load is a "
                             "stage ahead of which use, written before the kernel (docs/internals/LEARNINGS.md)")
-        for k, n in clocks_summed_uniform(binary).items():
-            declared = max((e["count"] for e in expected if e["op"] == "CLOCK_UNIFORM" and re.search(e["kernel"], k)),
-                           default=0)
-            if n > declared:
-                failures.append(f"{k}: {n} sums of a cycle-counter reading in uniform registers, {declared} declared "
-                                "(CLOCK_UNIFORM): a lap's sum is each thread's own (docs/internals/LEARNINGS.md, "
-                                "lap-in-uniform)")
         for at in collective_selected(experiments()[experiment]):
             failures.append(f"{experiment}: line {at}: a warp collective is an operand of a conditional -- every "
                             "lane takes it, and the select follows (docs/internals/LEARNINGS.md)")
-        why = {"LOAD_IN_TRIP": "global loads read in the trip that issued them (KERNEL_STANDARDS 32: a load a stage "
-                               "ahead of its use)",
-               "STORE_RELOAD": "shared loads of an address the same trip stored to (KERNEL_STANDARDS 33: a value no "
-                               "other warp reads stays in a register)",
-               "STORE_UNFENCED": "barrier arrivals after a shared store with no fence between, in a kernel whose "
-                                 "steps read shared memory (KERNEL_STANDARDS 12: the writer's fence)"}
-        for k, hazards in loop_hazards(binary).items():
-            for kind, n in hazards.items():
-                declared = max((e["count"] for e in expected if e["op"] == kind and re.search(e["kernel"], k)), default=0)
-                if n > declared:
-                    failures.append(f"{k}: {n} {why[kind]}, {declared} declared ({kind})")
-        for k, n in (waits_after_issue(binary).items() if experiment not in _PRE_WAIT else ()):
-            declared = max((e["count"] for e in expected if e["op"] == "WAIT_AFTER_ISSUE" and re.search(e["kernel"], k)),
-                           default=0)
-            if n > declared:
-                failures.append(f"{k}: {n} tensor waits directly after their group's steps, {declared} declared "
-                                "(WAIT_AFTER_ISSUE): work that does not read the group's accumulators belongs between "
-                                "the issue and the wait: KERNEL_STANDARDS 29.16 (`lab waits` lists the candidates)")
-        for k, spans in rolled_steps(binary).items():
-            declared = max((e["count"] for e in expected if e["op"] == "STEP_ROLLED" and re.search(e["kernel"], k)),
-                           default=0)
-            if len(spans) > declared:
-                where = ", ".join(f"{lo:#x}-{hi:#x}" for lo, hi in spans)
-                failures.append(f"{k}: {len(spans)} loops issue tensor steps and hold no wait on them (at {where}), "
-                                f"{declared} declared (STEP_ROLLED): steps in a rolled loop were measured at about half "
-                                "a straight block's rate (a build not kept: no lab record holds the figure yet) and the "
-                                "toolkit says nothing: "
-                                "write them a straight block, or a step that may be absent under a forward branch behind "
-                                "its own fence (docs/internals/LEARNINGS.md)")
-    if binary.name.split(".")[0] not in _PRE_29:
+    if experiment not in _PRE_29:
         stated = budgets(binary) + budgets(binary, "exempt")
         for k, info in table.items():
             if count(info["ops"], "|".join(WGMMA)) and any(re.search(b["kernel"], k) for b in budgets(binary)):
@@ -901,22 +614,6 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if count(info["ops"], "|".join(sass.OPCODE_CLASSES["mma"])) and not any(re.search(b["kernel"], k) for b in stated):
                 failures.append(f"{k}: an MMA kernel with no instruction budget (KERNEL_STANDARDS 29: `Bench::budget` "
                                 "-- `HMMA` and `IMMA` kernels -- or `Bench::exempt` with its reason)")
-    declared = {op: {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == op}
-                for op in ("STEP_XU", "STEP_GLOBAL")}
-
-    for k, sig in signatures(binary).items():
-        if sig["mma_loop_branches"] and k not in declared_branches:
-            failures.append(f"{k}: {sig['mma_loop_branches']} branches inside an MMA step nobody declared "
-                            "(KERNEL_STANDARDS 27: a step body is one basic block; a form that keeps them declares BSSY)")
-        if sig["step_xu"] and k not in declared["STEP_XU"]:
-            failures.append(f"{k}: {sig['step_xu']} conversion-unit instructions inside an MMA step nobody declared "
-                            "(KERNEL_STANDARDS 29: convert on the FMA pipe; a form that keeps them declares STEP_XU)")
-        if sig["step_global"] and k not in declared["STEP_GLOBAL"]:
-            failures.append(f"{k}: {sig['step_global']} global accesses inside an MMA step nobody declared "
-                            "(KERNEL_STANDARDS 29: stage by cp.async; a form that keeps them declares STEP_GLOBAL)")
-        if sig["calls"] and k not in declared_calls:
-            failures.append(f"{k}: {sig['calls']} convergence calls nobody declared (a collective under "
-                            "role-dependent control flow becomes a call into a convergence subroutine)")
     return failures
 
 
@@ -1699,13 +1396,13 @@ def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> i
     path = experiments()[name]
     binary = build(path, arch or sass.device_arch())
     table = kernels(binary)
-    sigs = signatures(binary)
+    #: a loop of steps' longest run without one: the checker's `step_gap` rule
+    gaps = {k.demangled: checker().rules.registry()["step_gap"].check(k) for k in checked_kernels(binary)}
     for k, info in table.items():
         if pattern and not re.search(pattern, k):
             continue
         top = ", ".join(f"{op} {n}" for op, n in Counter(info["ops"]).most_common(10))
-        sig = sigs.get(k, {})
-        gap = f", MMA gap {sig['mma_gap']} (around the loop {sig['mma_gap_around']})" if sig.get("mma_gap_around") else ""
+        gap = "".join(f", {f.what}" for f in gaps.get(k, []))
         print(f"{k}\n  {info.get('regs')} registers{gap}; {top}")
     if full:
         print(subprocess.run([dev_config.cuda_bin("cuobjdump"), "-sass", str(binary)], capture_output=True,

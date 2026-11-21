@@ -146,6 +146,10 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   for (int form : {kLoad, kStore, kOut}) b.expect(lab::kernel("fetch", {form, 8}), "LDG", ">=", 8);
   b.expect(lab::kernel("fetch", {kOut, 4}), "LDG", ">=", 4);
+  //: the LOAD form's ring: the toolkit copies the fourth register of one of a round's 8 wide loads at the round's end, so that
+  //: instruction's four rows are read in the round that issued it; not counted before the checker's natural loops, which follow
+  //: every register of a wide load
+  b.expect(lab::kernel("fetch", {kLoad, 8}), "LOAD_IN_TRIP", "<=", 1);
   //: one thread issues a round's copy and waits the copy before: that branch's pair, once a round
   for (int depth : {4, 8}) b.expect(lab::kernel("fetch", {kOut, depth}), "LOOP_CONVERGENCE", "<=", 2);
   if (b.expect_only) return 0;

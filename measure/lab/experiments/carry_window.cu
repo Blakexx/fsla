@@ -3459,9 +3459,11 @@ int main(int argc, char** argv) {
       //: (a chunk of 8 digits arrives at both panels, each behind its stores)
       b.expect(k, "STORE_UNFENCED", "<=", (roles & kNoFence ? 5 : roles & kWide ? 2 : 1) + ((roles & kPacked) == kPacked ? 1 : 0)
                                               + (roles & kChunk8 ? 1 : 0)
-                                              //: (a serve row's fold stores its window's plan and only its own thread
-                                              //: reads it back, for its copy's expected bytes: no step reads it)
-                                              + (roles & kServe ? 1 : 0));
+                                              //: (a serve row's fold stores its window's plan once, and its own thread reads it
+                                              //: back at each of the two copy barriers' arrivals, for the copies' expected
+                                              //: bytes: no step reads it -- 2 arrivals after the one store, not counted
+                                              //: before the checker's natural loops)
+                                              + (roles & kServe ? 2 : 0));
       //: the readout's trip holds its coefficients' rounds and their load beside its steps, by design: the tensor
       //: pipe is idle most of a window
       b.expect(k, "STEP_XU", ">=", 0);

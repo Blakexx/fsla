@@ -10,7 +10,7 @@ read, and sends the image out to global memory by one bulk copy. What does that 
 fresh memory?
 
 THE FORM. A CTA an SM of 16 warps. A round is 64 DEPTH rows of 128 bytes (512 at DEPTH 8, 256 at DEPTH 4): a lane
-loads 16 bytes, an instruction four rows, DEPTH instructions a warp in flight, each loaded a round before its use.
+loads 16 bytes, an instruction four rows, DEPTH instructions a warp in flight, each loaded a round before its use, except that in the LOAD form at DEPTH 8 the toolkit copies the fourth register of one instruction at the round's end, so that instruction's four rows are read in the round that issued them.
 - LOAD: every word folded into a chain a lane; nothing stored.
 - STORE: a round's rows stored into one of three images in shared memory, a warp's lanes on 32 banks.
 - OUT: the image then stored to the CTA's span of global memory by one bulk copy, a round's copy waited two rounds on,
