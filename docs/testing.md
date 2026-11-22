@@ -157,7 +157,7 @@ performance-only under drifting realized routing.
    call graph and the gate runs the shipped binary.
 4. **Every tolerance is either DECLARED with its derivation in a module comment or DERIVED in code.** A number with
    neither is a defect.
-5. **Loosening a tolerance is a semantic change**: changelog entry, derivation, reviewer sign-off. Tightening needs none
+5. **Loosening a tolerance is a semantic change**: its commit states it as a semantic change with its derivation, and the reviewer signs it off. Tightening needs none
    of that.
 
 ## The two-branches-agree class

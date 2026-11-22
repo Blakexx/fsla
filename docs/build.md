@@ -37,7 +37,7 @@ CPU-heavy command runs under the same pool with `python -m fsla_devtools.locks.h
 ## What the build checks
 
 The library's record action and gates ([`build-graph.md`](build-graph.md#gates)) refuse a build that breaks a
-closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rules)):
+closed-world rule ([`ratification.md`](ratification.md#the-closed-world-rules)):
 
 1. **R2 — cubins only.** Each architecture is compiled `code=sm_XX` alone (the library's transition writes the compile's
    spec `compute_XX:sm_XX`, `//bazel:cuda_archs`), and the SASS gate refuses a library carrying a PTX image. A `code=compute_XX` entry would
@@ -113,18 +113,15 @@ tensor library's headers: a translation unit that includes them parses longer, a
 arm's own codegen. So a family's per-arm ABI speaks POINTERS and not
 tensors, and only the dispatch unit includes the torch seam: a tensor-typed seam would re-pay the headers once per arm
 and pin every arm unit's resident set at theirs. The ast-grep rule `tools/lint/rules/torch_include_in_arm_tu.yml`
-refuses a torch header in a per-arm unit. MEASURED per `cicc` (sm_86, `--threads=1`):
+refuses a torch header in a per-arm unit. MEASURED per `cicc` (`--threads=1`, on the ampere branch's build: unreproducible here, no record cited):
 
 | translation unit | wall | peak a `cicc` |
 |---|---|---|
 | a bare CUDA unit (one trivial kernel) | 0.9 s | 0.19 GB |
 | the same, plus `torch/extension.h` | 33.7 s | 2.86 GB |
-| one carry arm (the torch-free ABI) | 4.7 s | 0.33 GB |
-| `carry/carry.cu` (the dispatch alone) | 36.2 s | 2.88 GB |
 
 Over a full both-arch build every unit that parses the extension header lands in one narrow band (`factor.cu` 2.92 GB,
-`entmax.cu` 2.89, `decode.cu` 2.81, `carry/carry.cu` 2.75), and no generated arm unit is in the top twelve; the carry
-family's single unit, before the per-arm split, peaked at 6.14 GB. A build's peak is the header's footprint times the
+`entmax.cu` 2.89, `decode.cu` 2.81), and no generated arm unit is in the top twelve. A build's peak is the header's footprint times the
 `cicc` the host budget runs at once, and it stops being a function of the arm count.
 
 Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, each a Bazel action keyed
@@ -189,7 +186,7 @@ CUDA context already up so the number is the module and not the context:
 is where it should be. Import is noise-dominated and shows no separable effect.
 
 The codegen flag list is `tools/build_flags.py`'s alone, written into the graph's flags (`bazel/flags.py`), so a
-codegen-affecting flag change is one edit in one file ([`ratification.md`'s closed-world rules](ratification.md#the-four-closed-world-rules)).
+codegen-affecting flag change is one edit in one file ([`ratification.md`'s closed-world rules](ratification.md#the-closed-world-rules)).
 
 ## Verifying a built binary
 

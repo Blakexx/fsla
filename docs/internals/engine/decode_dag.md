@@ -99,10 +99,9 @@ lattice's OWN `BC` (the leaf count one owner holds) is a layout fact the `(k, m)
 carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
-It is `DecodePlan`'s CONFIG HALF rather than a field of it, because the memo key is over
-this alone: `geometry` is declared `pure_of` `(widths, d_v, has_decay, write_dense)` (`write_dense` off the
-bundle's `sparse` flag, `docs/api.md` §2.1) and
-the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
+The DAG's nodes are `decode_call` (`BH`, `device`, `paged`), `scratch`, `backing`, `state_plane`, `build_launch` and `step`
+(`write_atom_bitmap` is the reference-only one, section 6). The memo key is over the plan alone: `scratch` is declared
+`pure_of` `(plan, BH, device)`, and the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
 are per-call and never cached.
 
 `scratch` is declared `per_state`, which makes its table a `WeakKeyDictionary` keyed on

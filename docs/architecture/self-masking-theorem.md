@@ -196,8 +196,8 @@ direction that matters.
 
 **The direction is asymmetric and that asymmetry is the whole content.**
 Over-approximating support is always safe. **Under-approximating it is wrong** —
-and no declaration in the API is permitted to shrink a support. Membership is
-decided by the realized support bits and by nothing else.
+and no declaration other than the masks themselves is permitted to shrink a support: the masks are the support's source
+(`api.md` §2.6), and a mask under a nonzero row drops the term. Membership is decided by the masks and by nothing else.
 
 ## 6. When it would fail
 
@@ -226,7 +226,7 @@ performs the multiplication the theorem is about.
 
 Concretely: the trustless-flag consequence (§5.3) is proved **against today's
 kernel**, in which the density declaration selects a code path but membership is
-still decided by the support bits the kernel reads. A future factored feeder that
+still decided by the supplied masks' words the kernel reads. A future factored feeder that
 let a declaration become execution-affecting — deciding what is fetched *without*
 consulting the realized masks — would step outside the theorem and need its own
 argument.

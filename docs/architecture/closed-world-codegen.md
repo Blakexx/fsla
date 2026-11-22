@@ -37,7 +37,7 @@ an architecture nobody measured. Read-back has a narrower job in this design:
 ## 2. The rules
 
 The rules and their enforcement points are one table, in
-[`docs/ratification.md`](../ratification.md#the-four-closed-world-rules); this section
+[`docs/ratification.md`](../ratification.md#the-closed-world-rules); this section
 keeps only their argument.
 
 R2 is the no-fallbacks rule applied to the compiler: an unknown architecture must

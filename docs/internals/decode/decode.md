@@ -1,5 +1,7 @@
 # `csrc/fsla/src/decode/decode.cuh` + `csrc/fsla/src/decode/decode.cu` — the `T = 1` decode path
 
+**DECAY IS NOT BUILT (owed).** The arms carry a `decay` axis, but decay is a facade on this line: nothing here that describes the decay arm (its clock, dials, share scale, sections 28 and 36) is a built and verified feature; it is the design.
+
 <a id="note-l3"></a>This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the objects both decode translation units share,
 and the `.cu` carries the GEMV kernel, its dispatch and its host entry. The
@@ -332,7 +334,7 @@ is the same step whole, and a caller that captures it replays one graph a token
 (`tests/integration/test_decode_graph_step.py`); capture is an optimization the caller
 selects, not a fallback either way.
 
-Measured before the absorption (RTX 3080 Ti, medians of 15 x 50, one steady paged step,
+Measured before the absorption (RTX 3080 Ti, ampere branch, unreproducible here, medians of 15 x 50, one steady paged step,
 `d_v = 64`, `BH = 6`), a loop of steps with one synchronize at the end, against the
 admit-preamble-every-step order that preceded the device-side verdict:
 
@@ -955,7 +957,7 @@ amplitude reads are paid once for `kGroups` leaves. The channels are unpacked by
 permute (`state_page.cuh`'s `mantissa8`: the permute's sign replication extends the s24) and
 the stored row is packed back the same way (`pack_hi8`, `pack_lo8`).
 
-Why: the one-leaf-a-warp walk measured (sm_86, N 64K, d_v 64, H 16 at k ~27, ncu): DRAM 25%,
+Why: the one-leaf-a-warp walk measured (sm_86 (ampere branch, unreproducible here), N 64K, d_v 64, H 16 at k ~27, ncu): DRAM 25%,
 0.88 eligible warps a scheduler, 66% of the stall samples on the leaf's loads, and ~144 warp
 instructions a leaf -- latency- and issue-bound at once, each warp holding one leaf's
 loads in flight and paying the whole leaf's overhead per 2-channel slice.
@@ -984,7 +986,7 @@ Every visit derives its head's tables itself before it walks
 The visit then lays out the head's positions and takes its admission
 ([the admission](#queue-admission)).
 
-MEASURED (sm_86, N 64K at (256, 256), d_v 64, H 16, k ~5, the phase ledger): the prologue it
+MEASURED (sm_86 (ampere branch, unreproducible here), N 64K at (256, 256), d_v 64, H 16, k ~5, the phase ledger): the prologue it
 replaced was 16.5K cycles a warp -- the digit masks 5.8K (sixteen threads each reading 32
 digits one shared load at a time), the operand fold 5.0K (a global round trip per level
 and side, one after another), the owner masks, compaction, term layout and admission 5.2K
@@ -1018,7 +1020,7 @@ The decision is the declaration's, not the data's: branching on how many of an a
 token writes would be a fuzzy threshold (KERNEL_STANDARDS R9). A topology that declares a sparse
 innermost write side walks its write term a leaf a lane group, correctly, at the pieces' rate.
 
-MEASURED (sm_86, N 64K at (256, 256), d_v 64, B 1, 16 warps of <= 128 registers, no spill): H 16
+MEASURED (sm_86 (ampere branch, unreproducible here), N 64K at (256, 256), d_v 64, B 1, 16 warps of <= 128 registers, no spill): H 16
 at k ~27, 159 -> 116 us dense (124 paged) -- the write term moves its 43.8 MB of pages at ~650
 GB/s against the page pattern's ~820, the read terms their ~19 MB of pieces at ~475 against the
 pieces' ~480; H 4 at k ~5, 23 -> 16 us. The read terms are at their pattern's ceiling: the next
@@ -1108,7 +1110,7 @@ head only if at least the plan's `kWarps` positions are left: a steal pays a who
 takes a head only where every warp gets a position. With nothing to take, the CTA exits, and
 the last one out resets the queue.
 
-MEASURED (sm_86, N 64K at (256, 256), `d_v = 64`, B 1), a split-K grid (every head cut the same
+MEASURED (sm_86 (ampere branch, unreproducible here), N 64K at (256, 256), `d_v = 64`, B 1), a split-K grid (every head cut the same
 number of ways) against the queue:
 
 | cell | split-K grid | work queue |

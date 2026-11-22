@@ -31,16 +31,15 @@ second path. ``slot < 0`` -- an atom the plan committed nothing for -- is skippe
 ends, exactly and not defensively, because the plan's bitmap holds the whole write set:
 the write set itself where every write level is sparse, and a superset where a dense
 level's digit rounded to zero. The decode step is today's reader
-([`../decode/decode.md#paged-address`](../decode/decode.md#paged-address)); the rebuilt
-carry has no state I/O yet.
+([`../decode/decode.md#paged-address`](../decode/decode.md#paged-address)); no carry
+kernel is built.
 
 ## Allocation: Planned-Exact-Async
 
 The pool is sized from the plan, not grown: the popcount of the atom condensation is the
 number of atoms this call may touch, so the arena knows its own footprint before the
 kernel launches, and there is nothing to discover. The condensation comes from the
-call's own arm and never from a second derivation — the facts pass at `T > 1`
-(deleted: `../DELETIONS.md`), the decode step's own published `atom_bits` at `T = 1`
+call's own arm and never from a second derivation — the masks' host fold at `T > 1`, the decode step's own published `atom_bits` at `T = 1`
 ([`decode/decode_api.md` §4](../decode/decode_api.md#the-verdict)) — and the step's
 is exact, as the pass's is where every write level is sparse: there `resident == realized`
 is a fact. A dense write level makes the pass's a bound: an atom reached only through a
@@ -162,7 +161,7 @@ appears on a measured path.
 ## <a id="granule"></a>The Savings-Claim Rule: State The Pool Size
 
 **A paging-savings statement that does not state its pool size is not a result.** The
-driver commits in ALLOCATION GRANULES (2 MiB, measured on sm_86; the H100's is owed), so a pool smaller than one
+driver commits in ALLOCATION GRANULES (2 MiB, measured on sm_86 (ampere branch, unreproducible here); the H100's is owed), so a pool smaller than one
 granule commits its whole dense limit in a single mapping and saves NOTHING, however
 sparse its residency. Measured, at `BH = 8`, `widths = (16, 16)`, `cols = 65`: a 0.51 MiB
 dense limit reports `committed 2.00 MiB` — 394% of dense — while the same routing at

@@ -3,7 +3,7 @@
 **The closed world is the declared targets and the gates every build runs.** Only measured binaries run: a kernel's
 arms are Bazel targets declared in Starlark (`csrc/fsla/src/<kernel>/arms.bzl`, [`build-graph.md`](build-graph.md#arms)),
 the build's architectures are the hardware table's built ones (`measure.hardware.built`, [`architecture/families.md`](architecture/families.md)),
-the toolchain is the pinned one, and the gates of [the rules below](#the-four-closed-world-rules) run on every build.
+the toolchain is the pinned one, and the gates of [the rules below](#the-closed-world-rules) run on every build.
 There is no committed record of what the assembler did: it is derivable from the pinned hermetic build, and the device
 stamp ties a loaded binary to the source it was built from.
 
@@ -115,14 +115,14 @@ stamp action writes the header before anything compiles, from `tools/csrc_stamp.
 The footprint stamps each family already carries are untouched and answer a different
 question: whether the loaded binary's struct sizes are the ones this source declares.
 
-## <a id="the-four-closed-world-rules"></a>The closed-world rules
+## <a id="the-closed-world-rules"></a>The closed-world rules
 
 | Rule | Refused | Enforced by |
 |---|---|---|
 | **R1** | building under an assembler, disassemblers or torch the toolchain record does not name | `tools/toolchains.py::rule1` (the graph's record action) |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | the library's architecture spec (`compute_XX:sm_XX`, `bazel/defs.bzl`'s transition), asserted on the linked library by the SASS gate (`cuobjdump --list-ptx` lists **0 PTX images**) |
 | **R3** | an architecture in the fatbin that is not built | `tools/build_record.py::rule3` (the graph's record action, whose refusal hands over no library): the architecture's row in `common/hardware.json` must choose a window ([`internals/common/hardware.md`](internals/common/hardware.md#traits)) |
-| **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry, carry included), `static_assert` at compile time |
+| **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry), `static_assert` at compile time |
 | **R5** | building from a vendored codegen input (the CUTLASS/CuTe headers under `csrc/third_party/`) that does not match its recorded pin | `tools/build_record.py::vendored_pin` (the graph's record action); the pin is stamped into `_build_config.py` |
 
 There is no environment variable that turns any of these off.

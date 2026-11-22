@@ -78,7 +78,7 @@ by oversight:
   ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
   fact values, so it carries no `rule` marker and could not live here (§2).
 * `run_table` is in NO tuple: no kernel takes the skip table as a launch argument
-  ([`#run-table`](#run-table)); the rebuilt carry has no state I/O yet.
+  ([`#run-table`](#run-table)); no carry kernel is built.
 
 ## <a id="derive-never-author"></a>4. Derive; never hand-author the derived artefact
 
@@ -116,7 +116,7 @@ two layers are separated at all.
 The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs
 two operations on it: the fold over the write side's lists and the readout over the read
 side's. The box and both sides' operation plans are one value, `Carve` (`types.py`), and
-every kernel that depends on the geometry takes it: the facts pass groups its unions and
+every kernel that depends on the geometry takes it: the gather pass (designed, not built) would group its unions and
 lists by the box's list levels, and the carry addresses by it. A kernel
 validates the carve it is handed and refuses one it was not built for; it never decides
 a carve. So the planner can change -- a cost model in place of fixed rules -- and every
@@ -148,7 +148,7 @@ read-dense ones. Every side has a dense level, so every side has an operand.
   box cannot be filled under it, the cap lifts to the widths.
 * The channel extent is chosen first, toward `d_v` (at most 128): a token's output then
   leaves a CTA as whole lines, and each readout warp owns its channels -- halved until every
-  listed level spans one of the facts pass's list groups (16 or 32 digits, or its whole width)
+  listed level spans one of the gather pass's list groups (16 or 32 digits, or its whole width)
   and each side's rows fill an MMA tile, and a box with a listed side holds at most 64 channels
   (`carve.md#producer-v1`).
 

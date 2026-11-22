@@ -36,7 +36,7 @@ Per token `t` and leaf `n`:
 `R[t,n] = Π_l q[t,l,d_l(n)]` and `Wt[t,n] = Π_l k[t,l,d_l(n)]` are the per-leaf products of the per-level routing
 levels — each level a nonnegative row over its `B_l` digits, of any magnitude: no level need sum to 1, and a
 producer's write gain is a factor of write level 0 ([`CONSTITUTION.md` R23](CONSTITUTION.md#r23)) — and `d_l(n)` is
-leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials; the clock `c`
+leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials (decay is not built (owed): this is its design); the clock `c`
 is the product of the write levels' SHARES (each level's row over its own sum), detached. There is no query, no key
 and no feature map: the routing IS the addressing.
 
@@ -107,7 +107,7 @@ column of a head's projection scores the hidden state against one digit's weight
 both sides' level widths (a tied level counted once) plus `d_v` columns for the product of the widths in leaves. A
 cheaper projection is a narrower level or more levels, priced in the model's own declared knobs (level count, widths,
 tied levels, the grouped write side), never a special projection form: a codebook or a low-rank factor is today's matrix
-under a rank cap (Blake, 2026-10-18). Every kernel takes depth 1-4: `D` may be a runtime value, and WHICH level is
+under a rank cap (Blake, 2026-10-18). Decode and the producer take depth 1-4 (the intra's shape law is 1-2, open-work C-g): `D` may be a runtime value, and WHICH level is
 addressed is compile-time (`uniform_switch` or a guarded `static_for`), never a runtime index (Blake, 2026-10-18). At
 matched density the carry's work is the same at every depth, so depth's price is the producer's columns and the model's
 quality.
@@ -179,9 +179,9 @@ never on a measured path, since allocating that tensor is exactly what paging ex
 
 ### 3.4 Activity
 
-Residency is the arena's fact; **activity is the facts' fact**, and only the second decides what a call touches
-(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the facts
-pass's words (`fsla.engine.facts.liveness.page_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
+Residency is the arena's fact; **activity is the masks' fact**, and only the second decides what a call touches
+(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the masks'
+words (`page_bits(gather_words(masks))`, `fsla.engine.facts.liveness`): exact allocation admits an atom iff it is WRITTEN this call; a
 state sweep LOADS an atom iff it is resident and `(read ∨ written)` and STORES it iff `written`. Dense and paged touch
 the identical atom set, so the byte gate certifies the skip logic and not merely the addressing, and a resident but
 idle atom costs no state traffic. The price is the in-place law: an atom a sweep skips must already hold what it
@@ -232,7 +232,7 @@ The compiled key is the family's own:
 | carry | not built on this line: no arm is declared | the box's per-level extents, the depth, the widths |
 | decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
-| producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan or the layout |
+| producer, gather pass (designs, not built) | none: one instantiation each | every width, kind and offset, from the plan or the layout |
 | entmax solves | the padded width class, alpha, the operand dtypes | the level table |
 
 The window `W`, the warp counts and the register budgets are constants. **Structure is branched on, never a
@@ -293,7 +293,7 @@ No carry kernel is built on this line: its hopper schedule is a design of its ow
 The causal term inside a window, its own kernel over the bundle, reducing into the output planes the carry reduces
 into: per tile pair each level's Gram accumulates EXACTLY over its u8 digits by integer tensor ops, the levels multiply
 in fp32, and the value product follows in bf16 against fp32 sums. The `[W × W]` matrix is never materialized, and a
-tile pair whose digits meet nowhere is skipped on the facts pass's tile unions, an exact certificate. The kernel reads
+tile pair whose digits meet nowhere is skipped on the gather pass's tile unions (designed, not built), an exact certificate. The kernel reads
 no state: every pair it computes is written and read inside the one window. No intra kernel is built on this line
 ([`open-work.md`](open-work.md)). ON HOPPER it is a kernel of its own BESIDE THE CARRY, not a role in its CTA (Blake, 2026-11-13): its
 chain alone is MEASURED at 985 cycles a tile pair of 64 readers by 64 writers at 256 digits a level
@@ -322,8 +322,8 @@ admits its own growth ([`internals/decode/decode.md`](internals/decode/decode.md
 ## 7. Launch shape and the CTA policy
 
 **The CTA is the multiprocessor** (CONSTITUTION §R15): every heavy kernel launches one CTA an SM with all the warps
-its register plan admits — the carry eight warps of up to 255 registers a lane (`__launch_bounds__(kThreads, 1)`, 128
-of them the box's state), decode sixteen warps of up to 128, the facts pass two teams of eight warps. Latency hiding
+its register plan admits — decode sixteen warps of up to 128 registers a lane; the carry's figures (eight warps of up to 255 registers a lane, 128
+of them the box's state) are the design, not built. Latency hiding
 is the kernel's job — covers, pipelines and split-phase edges — so exposed
 latency is a coverage finding and never grounds to split the CTA. **Registers per leaf is the lever** that raises the
 leaves resident per SM, not the block count, and the census reports the state's share of the register file beside the
@@ -336,7 +336,7 @@ rather than at a threshold (R22).
 
 **A user of the Python package never registers an arm** (CONSTITUTION §R16). The shipped set is each family's
 compiled key above, per architecture, and every other shape a family serves is served by runtime addressing, checked
-at the seam: a call is either lawful and runs, or the refusal names the field (`fsla.expert.envelope_refusal`).
+at the seam: a call is either lawful and runs, or the refusal names the field (`fsla.expert.envelope_refusal`); no call runs a prefill yet, so every prefill call refuses.
 
 **Closed-world codegen** is the rule for the binaries — pinned assembler, ahead-of-time only, the declared targets and the gates every build runs, and a device-side stamp asserted before any gate
 ([`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md)).

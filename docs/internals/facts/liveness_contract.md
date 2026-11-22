@@ -60,7 +60,7 @@ up to its last digit and no further (a partial quantum zero-fills the rest).
 
 Every level's rows are u8 against the row max (`AMP_LEVELS` = 255), on either side, and a zero digit is an exact
 zero: there is no floor under a row ([`docs/CONSTITUTION.md` R23](../../CONSTITUTION.md#r23)). A DENSE level is one
-whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax); it differs from a sparse
+whose activation has no exact zeros (softmax, not entmax); it differs from a sparse
 one only in that its support is not worded -- no pass reads or writes its rows, and its bits are its
 width mask over the live tokens. A dead row (scale 0) is zero everywhere, including where a consumer divides the row by
 its own sum (the decay's shares).

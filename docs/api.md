@@ -12,9 +12,7 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 import fsla
 
 routing = fsla.Routing(fsla.uniform(2, fsla.union_routing(64, alpha=1.5)))
-decay   = fsla.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
-
-layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
@@ -22,7 +20,7 @@ or, without the layer, from levels you computed yourself -- the format's own uti
 
 ```python
 factors = fsla.RouteFactors.from_levels(topology, read_levels, write_levels)
-y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, decay(), plan=plan)
+y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, plan=plan)
 ```
 
 ---
@@ -37,7 +35,7 @@ fsla_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
 `masks` is the data beside the rows, like attention's mask (§2.6): the op computes with `r * m`.
-`decay` is the recurrence dial. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
+`decay` is the recurrence dial and is NOT BUILT (owed, §3): leave it `None`. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
 what to do, never what you are giving, and it changes at most rounding within the oracle's tolerance, never the
 mathematical output -- the data does.
 
@@ -87,7 +85,7 @@ the no-fallback rule forbids.
 | `d_v` | the intra's value width (`fsla.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`fsla.ops.intra.admits`) | refused |
 | `T` | any (a partial last window runs inside the kernels; the layer's segments are whole windows, §4.2) | — |
-| `decay` | not implemented in the prefill (decode has it) | refused |
+| `decay` | not built (owed, §3) | refused |
 
 No activation reaches the op: it computes on the factors and the masks the producer made and is agnostic to what
 produced them, so there is no row for an activation here. What a producer supports is its own registry
@@ -161,8 +159,7 @@ op, never a side effect of a call. See
 [`internals/state.md`](internals/state.md#format).
 
 **Status.** `fsla_op` validates the call against the envelope and walks the prefill DAG.
-The DAG's carry leg (`fsla.ops.prefill`) is not yet re-pointed at the rebuilt carry's
-launch surface (`fsla.ops.carry.carry`), so a prefill does not yet run end to end
+No carry kernel is built (`fsla.ops.carry.carry` raises `KernelNotBuilt`), so a prefill does not run
 ([`docs/open-work.md`](open-work.md)).
 
 ## 2. The feature map
@@ -192,7 +189,7 @@ grouped run is the ungrouped run with each write head's side repeated for its qu
 today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it
 over, whatever its sum ([§2.2](#22-the-scaled-block-and-the-gain)). This is what
-the int carry, the intra and the decode kernels read, and it is written by the framework's producer
+the consumers read, and it is written by the framework's producer
 alone: the fused kernel's epilogue, and the reference's (`fsla/routing/quant.py`, `RouteFactors.from_levels`),
 the first gated against the second where it is built. The op's oracle takes the
 bundle itself as its input.
@@ -359,8 +356,7 @@ producer, its reference and its oracle -- and what it returns is the internal fo
 own levels builds the bundles through the format's own utilities (`RouteFactors.from_levels`,
 `Values.from_projection`), which are the same epilogue the producer applies; nothing else constructs a bundle the op
 admits: the format's fields are required, checked structurally, and a bundle assembled from bare floating levels is
-refused by name. Correctness is still producer-blind -- every support bit is derived from the rows (a zero digit is
-dead) and nothing about a producer's identity reaches a kernel -- but the FORMAT is ours, because it is what every
+refused by name. Correctness is still producer-blind -- liveness is the supplied masks, never derived from the rows, and nothing about a producer's identity reaches a kernel -- but the FORMAT is ours, because it is what every
 kernel reads and what the oracle gates against.
 
 A level filled by a production that names none of our activations is *opaque*: it declares
@@ -401,8 +397,11 @@ all-live mask. The rows, scales and values need no conversion: the producer alre
 
 ## 3. The decay-source slot
 
-Where the recurrence's forgetting rates come from is a CHOICE, and the recurrence cannot
-tell the answers apart:
+**NOT BUILT (owed).** Decay is a facade on this line: the source classes below exist as the declared surface, no kernel
+reads a decay, and nothing here is a working feature. What follows is the surface's design.
+
+Where the recurrence's forgetting rates would come from is a CHOICE, and the recurrence could
+not tell the answers apart:
 
 ```python
 fsla.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fixed
@@ -420,10 +419,8 @@ delta_l)**c` (one write-conditioned clock per leaf, `c` the leaf's share of the 
 recurrence through that per-leaf product, so per-digit and per-head are the two degrees
 of freedom the product structure lets the recurrence actually distinguish.
 
-`ConstantDecay` set high is a legitimate performance lever: the state forgets fast and
-the realized routing shows it, through exactly the same door a learned source uses.
-Nothing about it is a special case. The prefill refuses a decay today (§1.1), so the
-lever reaches production through the decode step.
+Nothing about a constant source is a special case: it enters through exactly the same door a learned source would.
+No call runs a decay today (§1.1).
 
 The decay is **write-conditioned** (mass decay), never time decay. A leaf whose write
 amplitude is exactly zero ticks its clock by zero, so `keep = (1 - rate) ** 0 = 1`
@@ -527,10 +524,7 @@ layer = fsla.FSLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 
 The contract for everything there is **stable construction, advisory contents**:
-build these objects and pass them; do not assert on their fields. What a `Dispatch`
-reports is the answer to "how will this call run", and that answer moves with the
-machine and with the built matrix. The model facts it carries are the exception,
-because they are not decisions.
+build these objects and pass them; do not assert on their fields.
 
 **Every pin is a declared restriction rather than a dial, and each refuses by name
 rather than being ignored.** `PrefillPlan` carries two fields. `paging` is the state's

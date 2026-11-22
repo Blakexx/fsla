@@ -10,7 +10,7 @@ Mirrors `csrc/fsla/src/common/atoms/barrier.cuh`, a concern of the baseline oper
   the same barrier), so a role hands its output to another and runs on. <a id="rendezvous-if"></a>`rendezvous_if(cond)`
   is `rendezvous()` predicated on a CTA-uniform `cond` (PTX allows a predicated `bar.sync` where every thread
   evaluates the condition alike): one instruction, so where a barrier is needed only sometimes no branch splits the
-  block (the carry's rendezvous on its step words' `reuse`, `carry_kernel.md#kernel`).
+  block (the carry's rendezvous on its step words' `reuse`; the carry is designed, not built).
 
 - <a id="mbarrier"></a>`mbar_init`, `mbar_arrive`, `mbar_wait`: an `mbarrier`
   completes a phase at `count` arrivals and flips its parity. A thread's own arrive releases its

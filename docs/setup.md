@@ -180,21 +180,20 @@ bazel test //:lane     # every test tier: cpu, lab, unit_cuda, oracle, integrati
 
 This is the battery `docs/testing.md` "Running it" names; the session-scoped
 `gpu_lock()` fixture in `tests/conftest.py` serializes GPU-touching runs the
-way it does on the bare host — the container adds no scheduling of its own. Expect
-~3.6 min total on hardware comparable to this repo's dev box (`docs/testing.md`,
-measured 2026-08-06).
+way it does on the bare host — the container adds no scheduling of its own. The wall time is
+`docs/testing.md`'s.
 
 ## 6. Measure this checkout
 
 ```bash
-bazel run //:measure -- run declare.py:all --only 'fsla/phases' --only 'fsla/sass'
+bazel run //:measure -- run declare.py:all --only 'fsla/sass'
 ```
 
 fsla-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library
 (`bazel run //:library`), SASS, and a timing
-session of the carry arms on the cell under the GPU and clock locks, each result stored. A timing entry this binary
+session of the decode and entmax subjects (`entmax_solve`, `decode_step`; the prefill subjects refuse by name, no prefill kernel being built) on the cell under the GPU and clock locks, each result stored. A timing entry this binary
 cannot run is recorded as that entry's failure in the session's output, not skipped — which is the check this step
-stands in for: that the graph's build in the container carries the arms a session measures.
+stands in for: that the graph's build in the container carries the subjects a session measures.
 
 ## <a id="the-devbox"></a>What's in the image, and why: the devbox
 

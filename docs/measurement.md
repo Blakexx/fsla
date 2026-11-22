@@ -20,7 +20,7 @@ sessions. Both are one method: a number taken either way is the same measurement
 ## The method
 
 A session is a `measure_timing` target (`fsla_devtools.timing`): the timing entries it depends on -- a checkout's arm on
-a central cell, fsla's `carry_forward` or fsla-bench's `flash` -- are set up in their checkouts' worker processes behind a
+a central cell, one of fsla's subjects (`entmax_solve`, `layer_prefill`, `layer_op`, `decode_step`) or fsla-bench's `flash` -- are set up in their checkouts' worker processes behind a
 barrier (nothing is timed until every entry has set up), each warmed past the floor of 10 calls, and then every rep of
 every round calls every entry once, in a fresh random order, one call at a time: the next call is sent only when the
 last has replied. Each sample is one launch on the entry's own stopwatch, taken inside its worker, so the pipe between
@@ -33,12 +33,10 @@ stopwatches in one session fail it.
 
 A NULL GATE (`measure_null_gate`) times one registration's entries against copies of themselves in second workers of the
 same checkout: where the per-rep ratios of the two copies put one outside their interquartile range, a worker's bias is
-found, and a ratio between two checkouts' workers on that cell is read beside it. fsla-bench's root declares one over
-the target's `carry_forward`.
+found, and a ratio between two checkouts' workers on that cell is read beside it.
 
 Call by call, because drift on this host is the size of the effects measured: its sustained clock has two states ~17 %
-apart with a minutes-long time constant, and the same binary in both arms once read 0.864 vs 0.739 ms under a fixed
-order. Blocks let a clock change land between arms, and a fixed order charges drift to one arm. A timing only compares
+apart with a minutes-long time constant (measured here, no record cited). Blocks let a clock change land between arms, and a fixed order charges drift to one arm. A timing only compares
 within the session that interleaved it.
 
 ## Preconditions, which the targets acquire
@@ -55,10 +53,9 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 
 ## The host a measurement runs on
 
-The local card is small by design (Blake, 2026-08-01: "ITS OK TO MEASURE, JUST DONT TAKE DOWN MY GPU"): tests, gates,
-correctness benches and micro-probes, sized to fit it. Big runs and the results that are published are taken on a
-rented card; a cell that cannot honestly fit locally goes to the rental, with per-token latency extrapolated from the
-cells that do.
+The local card runs no GPU test (`docs/CONSTITUTION.md#r8`, `docs/KERNEL_STANDARDS.md#cards`): master is Hopper only, and
+every GPU run -- test, gate, probe and measurement -- is taken on a rented H100. The bullets below are the rules a
+session on that card follows; sizing a cell to fit is the same arithmetic there.
 
 * **A session's whole member set fits the card, with headroom.** A session sets up every entry before timing and holds
   them all resident at once, each in its checkout's entry worker, so what must fit is every arm on every cell of the
@@ -89,11 +86,11 @@ kernels; a KERNEL runs its own launches and nothing around them. Every subject s
 A comparison between this library and another is therefore a LAYER comparison: FSLA's
 own layer against attention's, because FSLA's number includes the state its capacity buys.
 
-What this line can measure today: the KERNEL level (`entmax_solve`) and one OP-level path
-(`decode_step`, through the engine's decode DAG, which commits the pages the prefill's words write; its measurement seeds them from the liveness model, no facts kernel being built). There is no
-op-level prefill subject and no layer subject: `fsla.interface.fsla_op` walks the prefill DAG, whose carry leg is not
-yet
-wired to the rebuilt carry ([`open-work.md`](open-work.md)). The flash reference is a layer entry, and until a
+What this line declares today (`measure/subjects.py`): the KERNEL level (`entmax_solve`), the OP level (`prefill`,
+`layer_op`, and `decode_step` through the engine's decode DAG) and the LAYER level (`layer_prefill`). No prefill kernel is
+built (the carry, intra and producer are designed and measured in the lab, [`open-work.md`](open-work.md)), so every
+subject that reaches the prefill refuses by name and is recorded as that entry's failure; the ones that run are
+`entmax_solve` and `decode_step`. The flash reference is a layer entry, and until a
 FSLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
 
 ## The reference
@@ -109,16 +106,16 @@ the implementation.
 <a id="incremental"></a>
 THE INCREMENTAL CELL is the headline (Blake, 2026-10-18): the time to process `c` NEW tokens given `T` tokens already
 absorbed, for a model of state count `N`. FlashAttention's `c` queries attend over a KV cache of `T + c` keys,
-bottom-right causal (the entry's `context` parameter); FSLA's layer runs the `c` tokens' producer, facts pass, carry
-from its `N`-leaf state and intra. FlashAttention's cost grows with `T`; FSLA's does not once its state holds the
+bottom-right causal (the entry's `context` parameter); FSLA's layer runs the `c` tokens' producer, carry
+from its `N`-leaf state and intra (none of them built; this is the design). FlashAttention's cost grows with `T`; FSLA's does not once its state holds the
 history, so the comparison is a grid -- `T` in {0, 4K, 16K, 64K, 256K, 1M} by `c` in {1, 512, 4K, 16K}, the model's
 hidden width and heads stated -- never one number. Each side's per-call overhead is in its time: FlashAttention's KV
-read and launch; FSLA's state load and store (its HBM round trip, ~12.6 MB a head at `N` 64K), launch, partial last
+read and launch; FSLA's state load and store (its HBM round trip, projected from the state's bytes), launch, partial last
 window and wave quantization.
 
 AT LAYER LEVEL, WITH BOTH SIDES' PROJECTIONS: FlashAttention's QKV projection of the `c` tokens (the entry's `hidden`:
-one cuBLAS GEMM for every head, the library's own form) against FSLA's producer (its routing, gain and values: 1,088
-columns a head against QKV's 192), so a number is what a user pays. The output projection is the same on both sides and
+one cuBLAS GEMM for every head, the library's own form) against FSLA's producer (its routing, gain and values: its
+wider per-head outputs against QKV's 192), so a number is what a user pays. The output projection is the same on both sides and
 is in neither.
 
 `N = L` -- `T = 0`, `c = L`, the whole sequence from zero tokens -- is the grid's whole-sequence case and the
@@ -165,8 +162,8 @@ There is one, it is named, and its name travels with every number.
 | `ncu` | a counter, or a duration taken under profiling conditions: replayed, caches flushed, base clocks |
 
 **A comparison across two of them is refused, not warned about.** The gap is not
-noise; it is the launch and sync cost one instrument includes: roughly constant on this
-box (~0.22 ms, RTX 3080 Ti), so nearly the whole measurement on a sub-millisecond cell
+noise; it is the launch and sync cost one instrument includes: roughly constant on a given
+box, so nearly the whole measurement on a sub-millisecond cell
 and a rounding error at scale. An `ncu` duration reads above the event time (25 % on a
 small cell), which is why it is a third instrument and not a cross-check on the first
 two.
@@ -265,10 +262,9 @@ every build: Bazel's cache is its key, and the library's digest, its output, key
 its machine
 facts, each instrument over the cells sized for measurement (`tier` probe or both), its timing arms, its diff sides
 and its own kernel-vs-oracle diff, the oracle tier as one node -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
-nothing of cells, groups or instruments: `--only 'fsla/phases'` runs that instrument and what it needs, `--skip
+nothing of cells, groups or instruments: `--only 'fsla/sass'` runs that instrument and what it needs, `--skip
 '*/timeline'` drops that instrument and everything that reads it. A node whose code, binary and inputs have not changed
-is a cache hit and does not run. A full run of fsla-bench's suite over one checkout is seven minutes (measured
-2026-09-16, 212 targets); the dev loop is a pruned run, seconds.
+is a cache hit and does not run. The dev loop is a pruned run, seconds.
 
 THE ORACLE TIER IS A TARGET (`fsla/oracle-tier`): the oracle battery run whole, keyed on its code and the binary, its
 output the counts, WHICH cases failed and the per-comparison margins (`--oracle-margins`, the worst per output kind),
@@ -292,8 +288,6 @@ timing session:
 | target | tool | what it reads |
 |---|---|---|
 | `sass` | `tools/sass_gate.py` | the build's SASS signatures (KERNEL_STANDARDS §20) |
-| `counters` | [`tools/pipe_counters.py`](internals/tools/pipe_counters.md) | the profiler's pipe and resource counters |
-| `census` | [`tools/stall_census.py`](internals/tools/stall_census.md) | every warp-stall sample, by source line |
 | `support` | [`tools/realized_support.py`](internals/tools/realized_support.md) | what each layer construction's weights route on its cells |
 | `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
 

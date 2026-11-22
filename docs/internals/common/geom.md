@@ -180,7 +180,7 @@ asserted where the set can be reached from, which on this branch is the geometry
 (see "What consumes this block today"), and in the body's own static_assert once a body
 consumes the block.
 
-**`(1, 8)` DOES NOT FIT sm_86, and the number is the panel ring.** The readout law ties
+**`(1, 8)` DOES NOT FIT sm_86 (ampere branch, unreproducible here), and the number is the panel ring.** The readout law ties
 the batch tile to the warps (`kWarps` times the MMA's N, 8, is `C`), so eight warps means `C = 64`, and
 `panel_bytes = 2 * kWarps * C * LdS * 2` is therefore QUADRATIC in the warp count:
 81,920 B at `(1, 8)` against 20,480 B at `(2, 4)`. With the readout block and two V slots
@@ -370,7 +370,7 @@ each with every SM draining (measured 2026-09-27). A token touches `k × 256 / d
 so the square's 32 lines a token sat six times above its tensor time at the sparse cell,
 while 128 dense digits a region give 8 lines against a fold whose tiles still fill. The wide
 span is capped rather than taken whole because the fold's per-list leaf count is the region's
-sparse span, and 4 × 256 halves it again for drain margin sm_86 does not need.
+sparse span, and 4 × 256 halves it again for drain margin sm_86 (ampere branch, unreproducible here) does not need.
 
 THE TWO CARVES OF THE TALL SET. The FOLD warps carve top-down in the write side's order from
 the tall spans (`carve_from_bits`): the write-sparse level is outermost, so at `[128, 8]` the

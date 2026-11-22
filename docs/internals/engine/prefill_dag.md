@@ -14,8 +14,8 @@ against the state the call is handed. `fsla.fsla_op` validates the context in th
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.variant` | `variant` | the variant: stateless or stateful |
-| `facts` | `facts`, `carve`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch (NOT BUILT: `fsla.ops.facts.facts` raises `KernelNotBuilt` on this line, so the node does, and everything after it is unreached): both sides' class-1 words and their tile unions, each side's lists at its list group and the writers' factor products, with the carve the planner picks, the layout the words are read in and the two sides' statics (`fsla.ops.facts`) |
-| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words: the state's write set (`fsla.engine.facts.liveness.page_bits`) |
+| `facts` | `facts`, `layout` | the pass over the supplied masks (NOT BUILT: `fsla.ops.facts.facts` raises `KernelNotBuilt` on this line, so the node does, and everything after it is unreached), with the layout the words are read in (`fsla.ops.facts`); it reads the masks and nothing else |
+| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, the host fold of the masks' words (`gather_words`): the state's write set (`fsla.engine.facts.liveness.page_bits`) |
 | `box` (stateful) | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
@@ -25,7 +25,7 @@ against the state the call is handed. `fsla.fsla_op` validates the context in th
 
 ## The seam
 
-The DAG is seeded with the bundle itself. The facts pass (deleted), the carry and the intra read its rows and values where the
+The DAG is seeded with the bundle itself. The carry and the intra (not built) read its rows and values where the
 producer stores them, grouped or not (`docs/api.md#grouped-queries`). The `launch` node is one composition
 (`fsla.ops.prefill.prefill`): the carry reduces its partials and reads each token's earlier-window denominator out as
 its v+1 channel, and the intra reduces its in-window pairs into the same two planes, both sums the recurrence's over

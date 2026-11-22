@@ -3,7 +3,7 @@
 Mirror doc for `csrc/fsla/src/common/state_page.cuh`. `Blocks<DV>` is the ONE definition of the int8 state
 format's page (ruled 2026-09-28), and `fsla.ops.paging.page_layout` its Python mirror; the device codec below is
 the arithmetic every kernel that reads or writes a stored state uses, and `fsla.ops.paging.encode_pages` /
-`decode_pages` its host statement for the oracle and the tests. `SplitBlocks<DV>` is the unported carry's own page.
+`decode_pages` its host statement for the oracle and the tests. `SplitBlocks<DV>` is the page of a split fp32 carry, which no kernel on this tree reads.
 
 ## <a id="geometry"></a>The page, in bytes
 
@@ -43,7 +43,7 @@ A value is exact to within half a quantum `2^e`, i.e. `2^-24` of its group's lar
 values keep that absolute precision, not a relative one, which is why the gates allow the store's quantum
 (`tests/oracle/fixtures.py`'s `state_quantum` and `state_rounded`, the declared store mirrored in fp64).
 
-## <a id="split"></a>`SplitBlocks`: the unported carry's page
+## <a id="split"></a>`SplitBlocks`: a split fp32 page
 
 `[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, an fp32 word as two bf16 halves, `16 * (DV + 1) * 4` bytes. The
-struct is read by no kernel on this tree; the carry's int8 port deletes it.
+struct is read by no kernel on this tree; a built carry would not use it.

@@ -72,12 +72,12 @@ binary's own declared arm set -- never a literal tuple, because a literal would 
 moment the binary's arm table changed and a call would silently pad to a width the loaded
 `.so` does not carry. The intra reads one value width, `fsla.ops.intra.VALUE_WIDTH`.
 
-The prefill's carry leg pads nothing either: the rebuilt carry takes the value width as
+The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as
 runtime addressing over the carve's channel extent
 ([`engine/rules.md#carve`](engine/rules.md#carve)), and the envelope refuses a carve no
 built arm carries. The stateful band's `box` node still reads `carry_ops.SHIPPED_DV`, which
-the rebuilt `fsla.ops.carry` does not define; the envelope refuses a stateful call before
-that node runs, and the node is re-pointed with the carry's state I/O
+`fsla.ops.carry` does not define; the envelope refuses a stateful call before
+that node runs, and the node is re-pointed when a carry kernel is built
 ([`docs/open-work.md`](../open-work.md) C-e).
 
 ## What this does not do

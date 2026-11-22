@@ -49,8 +49,7 @@ it at all:
   refusal every no-backward clause raises —
   `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, `DecodePlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan`, `operands`, `workspace`).
 * `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
-  bitmap (`planes.py`), the liveness words and their folds (`liveness.py`), the facts
-  pass's list model (`lists.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
+  bitmap (`planes.py`), the liveness words and their folds (`liveness.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
   envelope authority they fold into — `envelope_refusal` and `require_envelope`
   (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
@@ -163,7 +162,7 @@ inherits nothing through a cache (`docs/internals/state.md` §9.1).
 raises on any attribute read, so the property is proven per node rather than declared.
 
 A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
-not a node and no node memo reaches it: the binary's arm census (`fsla.ops.carry.arms`) is
+not a node and no node memo reaches it: the binary's arm census (`fsla.ops.decode.arms`) is
 read by the envelope adapter in `facts/call.py` at each call. The intra's admitted widths are not one: they are a law
 over the widths and the value width (`fsla.ops.intra.admits`).
 

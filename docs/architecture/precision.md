@@ -39,7 +39,7 @@ CTAs.
 WHY NOT 16-BIT FLOAT OPERANDS WITH 5 EXPONENT BITS. The fp16 family (the branch `ampere`'s) kept an unbounded fp32
 state and a token's unbounded sum inside f16's range by machinery: the state's image at an exponent a digit, list
 exponents, pre-scaled coefficients, a dense row's floor at 2^-13, a pass that bounded each token's sum, and a switch of
-accumulation by card. Its last measurement (2026-11-09, sm_86) closed it: with each (token, digit)'s factor on the
+accumulation by card. Its last measurement (2026-11-09, sm_86 (ampere branch, unreproducible here)) closed it: with each (token, digit)'s factor on the
 read rows before the MMA, the rows under f16's normal floor 2^-14 were 32% at flagship-alt-k4, 71% at alt-k16, 57% at
 cohort-k16 and 100% at flagship-dense. bf16's 8 exponent bits hold every one of those values with no machinery, at 8
 significant bits where f16 has 11.
@@ -49,7 +49,7 @@ significant bits where f16 has 11.
 
 Per token, `|dy| / |y|` against fp64 on continuous values (`docs/testing.md`).
 
-MEASURED on kernels (2026-10-03 and 2026-10-12, sm_86, the carry's own output, median a token): a bf16 family 0.16-0.20% on the flagship cells; the fp16 family 0.018-0.029%. The class is accepted on every
+MEASURED on kernels (2026-10-03 and 2026-10-12, sm_86 (ampere branch, unreproducible here), the carry's own output, median a token): a bf16 family 0.16-0.20% on the flagship cells; the fp16 family 0.018-0.029%. The class is accepted on every
 card (Blake, 2026-11-09): it is the bf16 output store's own.
 
 MODELLED for this family before any kernel of it exists ([`tools/arith_model.py`](../internals/tools/arith_model.md),

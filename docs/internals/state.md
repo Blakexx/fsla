@@ -88,7 +88,7 @@ what every kernel derives its addressing from:
 | `order` | the canonical leaf order — MSB-first mixed radix, and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
 | `page_bits` | the page rectangle: the trailing `log2(16)` canonical bits. The page IS that rectangle |
 | `DV` | the value width, a multiple of 32 (one exponent a 32-channel group); `cols = DV + 1` is the page's LOGICAL width, not its layout |
-| `dtype` | `"s24 hi/lo planes at an s8 group exponent, fp32 mass"` — the int8 state format ([section 3](#backing)); the unported carry's own descriptor names its split fp32 page |
+| `dtype` | `"s24 hi/lo planes at an s8 group exponent, fp32 mass"` — the int8 state format ([section 3](#backing)); no carry kernel is built |
 | `ids` | the page-table id space, `BH * N / 16` |
 
 **PREFILL AND DECODE SHARE ONE ADMISSION LAW: THE DESCRIPTOR** (Blake, 2026-08-29).
@@ -159,8 +159,7 @@ a leaf-channel the s24 `hi << 8 | lo` at its (leaf, 32-channel group)'s power-of
 about 3.03 bytes a leaf-channel against fp32's 4, fp32-class precision (a 24-bit mantissa, a shared exponent a
 group). The arena, the page table, the id space and the VMM commitment address `page_bytes`-sized slots and are
 otherwise unmoved; a read that needs only the s16 operand touches the hi plane alone. The geometry and the codec
-live in [`common/state_page.md`](common/state_page.md#geometry). The unported carry keeps its split fp32 page and
-refuses this format by name, so a stateful prefill is refused until its int8 port.
+live in [`common/state_page.md`](common/state_page.md#geometry). No carry kernel is built, so a stateful prefill is refused by name.
 
 THERE IS NO RAGGED STATE (Blake, 2026-08-29). `N = prod_l B_l` with every `B_l` a power
 of two at or above 16, so a lawful state is PAGE ALIGNED BY CONSTRUCTION, and a leaf
@@ -175,9 +174,9 @@ halves — so a byte claim about pages is asserted on the integer view
 and would call a byte-identical pair unequal the moment a word happened to read as
 NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
 
-<a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS', and only the second one decides what a call TOUCHES.** Activity now decides one
+<a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE MASKS', and only the second one decides what a call TOUCHES.** Activity now decides one
 thing more: which PLANES an atom moves (read-only → hi; written → both), which is why
-the byte saving and the skip are the same mechanism. The facts pass emits
+the byte saving and the skip are the same mechanism. The host's fold of the masks' words (`page_bits(gather_words(masks))`) gives
 two orthogonal bits per atom — READ and WRITTEN, never pre-ORed — beside the table,
 and every body with state sweeps derives the same two predicates from them, under
 either backing: LOAD an atom iff it is RESIDENT and (read or written); STORE it iff
@@ -198,7 +197,7 @@ activity bitmap is supplied, rather than silently dropping every unwritten atom.
 one READ and one WRITTEN bit per atom, which is what `plan_exact` allocates from, what
 residency checks read and what a decode step consumes (its unit is the atom). The
 ruling makes them the DERIVED set: the PRIMARY bits are per (warp-box, side) over the WHOLE CALL at
-the carve's grain, emitted by the facts pass, and the page bits are the host's OR over
+the carve's grain, from the masks' words (the pass that would emit them is not built), and the page bits are the host's OR over
 the warp-boxes each page intersects, through the box→page map. NOT BUILT HERE: the
 primary emission needs the carve as a kernel axis, and the carve is derived at the four
 sites the runtime-addressing stage owns — G1 built the page-grain half it consumes, and
@@ -262,7 +261,7 @@ space exactly, so each atom belongs to exactly one CTA. A kernel with state I/O 
 box's atoms ONCE, before its first window, and stores them ONCE, after its last, from the
 same base, so no CTA reads an atom another CTA may already have stored and no CTA reads
 its own after storing it. That is the contract the carry's entry and exit sweeps owe;
-the rebuilt carry has no state I/O yet ([`docs/open-work.md`](../open-work.md)). The decode
+no carry kernel is built ([`docs/open-work.md`](../open-work.md)). The decode
 step updates in place under its own argument: its write positions partition the leaves
 ([`decode/decode.md#determinism`](decode/decode.md#determinism)).
 

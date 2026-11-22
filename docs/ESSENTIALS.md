@@ -35,7 +35,7 @@ kernel:
 - Perf: `bazel run //:measure -- run declare.py:all` (this checkout's declared measurement: its instruments and one
   clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:
   `bazel run //tools:region_ledger -- --csv <ncu SourceCounters> --so <.so> --member <cubin member>
-  --source <kernel.cuh> --budget tools/budgets/<k>.json`.
+  --source <kernel.cuh> --budget tools/budgets/<k>.json` (no kernel has a budget file yet: owed).
 - Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).
 - Guidance on a checker rule: its entry in the `checker` section of `docs/rules.json` (`guidance`, `triggers`, `rules`; no standard, no row) is printed after the checker's fix in a lab refusal and injected by the edit hook `.claude/hooks/guidance.py` when new kernel source matches its triggers (`docs/internals/tools/lint.md#rules-table`).
 - Build: `bazel run //:library` with `--//:archs`; the machine is `bazel run //:check`

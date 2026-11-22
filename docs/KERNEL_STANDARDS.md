@@ -48,7 +48,7 @@ schedules. These land with the first of them, each red or an owed entry until th
 6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
    that reproduces it -- until it exists, work on the composition stops at it.
 
-# <a id="craft"></a>FSLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
+# <a id="craft"></a>FSLA KERNEL STANDARDS — how we write CUDA here
 
 SCOPE. This document is about CRAFT: how a designed piece is realized at the hardware's grain. It is not
 about design. Design authority is Blake's rulings and `docs/ARCHITECTURE.md`; nothing cited here is an
@@ -394,7 +394,7 @@ ever compared. From here the floor is a GATE, per component, before composition:
 - The COMPOSED kernel carries a phase ledger (a debug build's per-warp `clock64` per phase) and is
   compared to the sum of its parts; the difference is the composition cost and is reported as such.
 - The per-component instruction count of the shipped binary is attributed by `tools/region_ledger.py`
-  (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json`; a
+  (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json` (no kernel has one yet: owed); a
   component over budget is red, the same as a spill; the tool runs by hand over a profiler CSV, and no budget file
   exists yet (OWED: every kernel's budget is an owed entry). Every kernel has its budget file, or an owed or exempt
   entry in `tools/coverage.json` saying why not (§25).
@@ -793,7 +793,7 @@ method is a procedure with a gate, not a memory.
    load, shared store, shared atomic, global, shuffle, pack, conversion unit, float, select/compare, integer/address,
    control), derived from the design at the declared regime: per step, plus each per-digit (per-list) and per-window
    cost divided by the steps it amortizes over there (at alt-k4 a read digit is one step a window, so its bookkeeping
-   lands on every step). The lab states it with `Bench::budget`; a production component in `tools/budgets/<kernel>.json`.
+   lands on every step). The lab states it with `Bench::budget`; a production component in `tools/budgets/<kernel>.json` (owed: none exists yet).
 2. HOIST BY FREQUENCY: every value is computed at the outermost level its inputs allow -- once a kernel (a lane's
    fragment offsets), a window, a digit or list, a token, a step, an element -- and never again below it, WITHIN THE
    REGISTER LINE (§32.3): a hoisted value is a register for its whole level, and one that would pass a phase's line

@@ -36,8 +36,7 @@ standards, the message, the diff -- and kept in the git common dir's `fsla-revie
 
 <a id="pipelined"></a>PIPELINED (Blake, 2026-11-08): nothing waits on a review. The next commit is made while it runs;
 each report is read when it lands, and its findings go into the next commit after it, each block fixed or answered in
-words. A review may trail a commit or two; a push to the default branch, which publishes (CI mirrors it to the public
-repository, `.github/workflows/mirror.yml`), waits until every review of its commits has landed and been read.
+words. A review may trail a commit or two; a push to the default branch waits until every review of its commits has landed and been read.
 
 AFTER THE COMMIT: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so no commit is
 slowed by its own review; it is skipped mid-rebase or without the `claude` CLI, and it runs from
