@@ -1,97 +1,99 @@
 # FSLA — Factored Sparse Linear Attention
 
-FSLA is a linear-attention layer whose recurrent state is a **set of addressable
-slots**, and whose per-token routing decides which slots each token reads from and
-writes to. The state is a fixed size chosen by the topology, not a cache that grows
-with the sequence — so the memory footprint at token *T* is the same as at token 1.
-This repository ships the CUDA consumer kernel that executes that factored sparse
-recurrence, the layer around it, and the evidence for both.
+FSLA is linear attention whose recurrent state is a **set of addressable slots** (leaves), and whose routing decides,
+for every token, which slots it reads from and writes to. The routing is a *feature map*: each head's query and key are
+products of per-level routing rows, so the leaf address space is a product space (a mixed-radix tree of levels) and the
+routing's cost is the sum of the level widths, not the number of leaves. The state has a fixed capacity chosen by the
+topology; it is not a cache that grows with the sequence.
+
+Written out over all leaves, the recurrence is textbook gated linear attention, and a dense implementation pays for
+every leaf on every token. A **real kernel** is the point: the factored structure and the exact zeros the routing
+produces (entmax) only become speed if the kernel reads them, so this repository is the kernels, the layer around them,
+and the evidence for both. The executable definition is an fp64 oracle (`fsla.naive_fsla`); the kernels are
+optimizations of it, never a second definition ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
 
 Paper: *(link on publication)* · Citation: [below](#citation)
 
----
+## Status today
 
-## What this repository ships that a kernel repository usually does not
+The library is architecture-generic by design: kernels are built per architecture, and a new architecture or arm slots
+in through the architecture table and the arm registry ([`docs/bringup.md`](docs/bringup.md) for an architecture,
+[`docs/build-graph.md`](docs/build-graph.md#arms) for an arm). **Hopper (`sm_90a`) is the one architecture built
+today**; one that is not built refuses to build and refuses to load. Kernels are added one at a time, each designed and
+measured in the lab before it is written into the library.
 
-**A ratified supported matrix, not a supported-arch aspiration.** Every
-architecture this package will run on has a committed manifest of measured
-per-instantiation register and spill counts, pinned to the exact assembler that
-produced them. The build refuses to compile an architecture without one; the binary
-refuses to launch on a device without one. There is **no PTX JIT fallback** — an
-unmeasured architecture fails loudly rather than silently running codegen nobody
-looked at. → [`tools/manifests/`](tools/manifests/), [`docs/bringup.md`](docs/bringup.md)
-
-**A test taxonomy in three tiers, where each tier ASSUMES the one below it.**
-`tests/oracle` gates the kernels against an fp64 oracle (and, once, against
-torch's own linear-attention loop) across the full semantic matrix, at tolerances
-that are derived and documented rather than tuned until green.
-`tests/integration` gates the COMPOSITION — the layer, the dispatch walks, the
-prefill/decode handoff, and the two-branches-agree class where the kernel is
-gated against **itself** across every geometry the built matrix carries and under
-both state backings; engineered identities are tested as **byte equality**, and
-legitimate reassociations against the oracle plus a **derived** error bound, with
-a pair changing class itself a test failure. `tests/unit` gates each file's own
-public contract. A tier never re-grades the arithmetic the tier below it proved.
-→ [`docs/testing.md`](docs/testing.md),
-[`tests/oracle/`](tests/oracle/), [`tests/integration/`](tests/integration/)
-
-**Committed measured cells, with provenance.** The benchmark results in this
-README are files in this repository, each carrying the machine, driver, toolchain,
-and the SHA of the ratification manifest the binary was built from. Regression
-thresholds are derived from each cell's own measured spread, never an invented
-percentage, and the kernel's geometry is read out of the *built binary's own* arm
-list rather than modelled.
-→ [`measure/cells/`](measure/cells/), [`docs/build.md`](docs/build.md)
-
-**A documentation tree the code is checked against.** The engine's design reasons
-live in `docs/internals/`, one document per source file, with one-line hazard
-stubs left in the code at the sites they explain; the decisions that outlive any
-particular kernel live in `docs/architecture/`. A test fails if a source file has
-no mirror document or a stub cites an anchor that no longer exists, so the two
-cannot drift apart.
-→ [`docs/architecture/`](docs/architecture/README.md),
-[`docs/internals/`](docs/internals/README.md)
-
----
-
-## Installation
-
-### Requirements
-
-| | |
+| piece | state |
 |---|---|
-| Python | 3.10 – 3.13 |
-| PyTorch | built for the toolchain's CUDA major (`tools/toolchains/<name>.json`, `torch_index`) |
-| CUDA toolkit | a declared toolchain's exact `ptxas` — the table below names each ratified one |
-| GPU | a **ratified** compute capability (see the table below) |
-| Build | the build graph (`bazel`, the pinned bazelisk: [docs/setup.md](docs/setup.md)); there is no source install |
+| fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
+| decode (the `T = 1` step, over the paged fixed-size state) | **built** |
+| entmax / softmax row solves, the paged state | built |
+| prefill: the carry, the gather pass, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla_op` refuses every prefill call by name until the carry exists |
+| backward | **not built.** `fsla_op` refuses any call that carries a gradient; there is no training path yet |
+| decay in the prefill, depth three and four, state in and out of a prefill | not built (decode has decay) |
 
-### Install modes
+[`docs/open-work.md`](docs/open-work.md) is the full list of what is owed, with where each item's contract lives.
+Nothing here is a speed claim: no end-to-end performance number is stated for the built decode kernel. The measured
+facts the designs rest on are the lab pages; for example the intra's window as a kernel of its own costs 176 SM-cycles a
+token at 1,024 tokens with the levels tile-major ([`docs/lab/intra_window.md`](docs/lab/intra_window.md)), and a carry,
+its denominator and an intra together run 0.392 ms a head on two streams against 0.401 on one at 65,536 tokens, one
+cell, tables cached ([`docs/lab/call_pair.md`](docs/lab/call_pair.md)). Those are measurements of lab kernels on one
+H100, not of the library.
 
-| Mode | Command | Notes |
-|---|---|---|
-| Wheel | `pip install "fsla[cu13]"` | `fsla` (pure Python) and `fsla-cu13` (the fatbin for the built matrix), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
-| Development | `bazel run //:library` | The graph's build, into the checkout: rules 1, 3 and 5, the SASS gate and the arm gate on every build |
-| Release | `bazel run //:wheels` | The two wheels of a clean commit ([docs/build.md#wheels](docs/build.md#wheels)) |
+## What the interface looks like
 
-`pip install .` refuses: fsla builds through its graph alone, so a source install, which would build a package
-without its kernels, is not supported.
+Masks are data. A routing row carries its liveness as a mask beside it, in the layout of the kernel that consumes it,
+and the op computes with the product `r * m`; sparsity is declared by the producer, never detected by the kernel
+([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans (the carve, the state's
+backing) are frozen static objects chosen from the declaration, never a runtime configuration. Anything outside the
+built envelope is refused by name rather than routed to a slower path: there is no fallback.
 
-The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, never
-`code=compute_XX`, so the fatbin carries no PTX for a driver to JIT; the shipped
-`.so` is asserted to contain zero PTX images. Naming an architecture that is not built
-(`--//:archs`) fails the build.
+```python
+import fsla
 
-A family's arms are compiled as **translation units, one an arm and a built architecture**
-(declared in the family's `arms.bzl`, registered in `ARM_FAMILIES`, instantiated by the graph), so the matrix parallelizes
-across the build's jobs instead of serializing inside one compiler process. Every build runs under the machine's host budget, its jobs the slots it
-holds ([`docs/build-graph.md`](docs/build-graph.md#front-door)).
+routing = fsla.Routing(fsla.uniform(2, fsla.union_routing(64, alpha=1.5)))
+decay   = fsla.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
+layer   = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+
+# decode: one token of a carried sequence against the fixed-size state
+cont = fsla.LayerContinuation(state=fsla.state())
+y, cont = layer(token, continuation=cont)            # token: [B, 1, 1024]
+```
+
+`fsla.fsla_op(factors, values, masks, decay, plan=plan, state=state)` is the op under the layer; `fsla.naive_fsla` is the
+oracle, shipped in the wheel so a suspected numerical problem can be checked on your own shapes with no checkout. The
+contract in full is [`docs/api.md`](docs/api.md).
+
+## Building and testing
+
+Bazel is the one entry point: there is no source install (`pip install .` refuses), and no tool is run by hand.
+Setup of a machine and a checkout is [`docs/setup.md`](docs/setup.md).
+
+```bash
+bazel run //:init                      # set up the machine, wire the commit gate
+bazel run //:dev_env                   # the checkout's venv
+bazel run //:check                     # every dependency, one row each
+bazel run //:library                   # build the extension for the built architectures
+bazel run //:wheels                    # the two wheels (fsla, fsla-cu13) of a clean commit
+
+bazel test //:gate                     # the commit checks: lints, docrefs, the committed generated files, the lab's tests
+bazel test //tests:cpu                 # each unit's public contract, no device
+bazel test //tests:unit_cuda           # the unit tier's CUDA rows
+bazel test //tests:oracle              # kernels against the fp64 oracle
+bazel test //tests:integration         # composition: the layer, dispatch, paging
+bazel run  //:ratify -- --census       # every instantiation's registers and spills
+```
+
+The build is ahead-of-time and closed-world: a pinned assembler, `code=sm_XX` only (no PTX, so nothing is
+JIT-compiled for a device nobody measured), and gates on every build ([`docs/build.md`](docs/build.md),
+[`docs/ratification.md`](docs/ratification.md)). The three test tiers (oracle, integration, unit) are described in
+[`docs/testing.md`](docs/testing.md); never run `pytest tests/` unscoped.
+
+Requirements: Python 3.10 or newer, torch 2.13 or newer built for the toolchain's CUDA major, a GPU of a built architecture (Hopper today).
 
 ## Supported configurations
 
-This table is **generated** by `tools/supported.py` from the kernel's arch table and
-the architectures it builds, and CI fails if it drifts. A hand-maintained support table
-is a claim; a generated one is a report.
+This table is **generated** by `tools/supported.py` from the kernel's architecture table and the architectures the build
+produces; the gate fails if it drifts. Change the generator, not the table.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
 | Compute capability | GPUs | Toolchain | Assembler | Status |
@@ -100,18 +102,13 @@ is a claim; a generated one is a report.
 | `sm_100a` | B200 | — | — | **not built — will refuse to load** |
 <!-- END GENERATED: tools/supported.py -->
 
-The unbuilt rows are not an apology; they are the product statement. The first
-claim above is worth nothing if this table quietly implied coverage that was never
-brought up. Bringing up a new architecture is a measurement, and
-[`docs/bringup.md`](docs/bringup.md) is the procedure.
+An architecture that is not built refuses to load. Bringing one up is a measurement:
+[`docs/bringup.md`](docs/bringup.md).
 
 ### Routing activations
 
-Also generated, from the one registry every validator reads
-(`fsla/routing/activations.py`). `kerneled` is what decides dispatch: an
-unratified activation routes to the differentiable reference path carrying an
-explicit `not_kerneled` flag, and the kernel entry refuses it outright — a labelled
-research surface, never a silent fallback.
+Also generated, from the registry every validator reads (`fsla/routing/activations.py`). `kerneled` decides dispatch: an
+unratified activation is refused by the kernel entry.
 
 <!-- BEGIN GENERATED: fsla.routing.activations.capability_table -->
 | activation | exact_zeros | kerneled |
@@ -122,145 +119,34 @@ research surface, never a silent fallback.
 | softmax | no | yes |
 <!-- END GENERATED: fsla.routing.activations.capability_table -->
 
-## Usage
+## Repository layout
 
-The API is the reduction theorem: linear attention's contract, plus ONE new concept —
-the feature map. `docs/api.md` is the contract in full.
+| path | what lives there |
+|---|---|
+| `fsla/` | the Python package: the oracle, routing, the layer, the state, the engine's plans and graphs |
+| `csrc/fsla/` | the CUDA kernels (decode, the entmax solves, paging) and the code they share |
+| `tests/` | `oracle/`, `integration/`, `unit/` |
+| `measure/` | the cells, the timing subjects, and the lab (`measure/lab/`: small CUDA experiments on the machine) |
+| `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's tables) |
+| `bazel/`, `BUILD.bazel`, `MODULE.bazel` | the build graph |
+| `docs/` | the documents, one owner per topic ([`docs/README.md`](docs/README.md)) |
 
-### The op
-
-```python
-import fsla
-
-routes   = fsla.RouteProducer(fsla.uniform(2, fsla.union_routing(8, alpha=1.5)),
-                              hidden_size=512, num_heads=8)
-
-factors = routes(hidden_states)          # the (q, k) pair, after the feature map
-y, state = fsla.fsla_op(factors, v, masks, plan=plan)
-```
-
-`fsla_op` runs the BUILT ENVELOPE and refuses everything else, by name — including
-every call that carries a gradient, because the backward arrives with the native
-backward. There is no second arm behind it: the fp64 oracle is the executable spec,
-called directly (below), never dispatched to, since a silent ~1000x-slower route is
-exactly what a fallback would be. It takes no plan and no configuration: those are how
-the op runs rather than what the model is, and the op decides how it runs, per call,
-from the routing it was actually given.
-
-### The layer
-
-```python
-from fsla import LayerContinuation, LearnedDecay, FSLA
-
-layer = FSLA(routes, d_v=64,
-             decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
-             layer_idx=0).cuda()
-y, continuation = layer(x, continuation=LayerContinuation(state=fsla.state()))
-```
-
-One positional argument, because everything else was either a fact about the feature
-map (which lives on the feature map, `hidden_size` and `num_heads` included) or a
-launch decision (which the op makes). `d_v` is the layer's: it sizes
-`v_proj`/`o_proj`, and the routing carries no value geometry.
-
-### The state
-
-`fsla.state()` builds one, and `fsla.FSLAState` is a **fixed-size recurrent state,
-not a KV cache**: a PAGED TENSOR — storage, page table, `[B, H, N, cols]`, device,
-dtype, strategy — and nothing else, paged by default so what stays resident scales
-with the leaves the routing REALIZES. Continuation is LAYERED: the layer returns
-`(y, LayerContinuation)`, a frozen container the layer owns (`.state` is the op's paged
-tensor, its only field today). Every `transformers` cache abstraction is built for the
-GROWING case, which this is not, so FSLA owns its object outright
-(docs/internals/state.md).
-
-### The launch geometry
-
-There is no planner and no cost model. The runtime geometry — `BC`, the CTA's
-resident state tile — belongs to the BUILT ARM: the op looks the topology up in the
-binary's own arm list and runs it, or names the clause that refuses. `fsla.expert` is
-the marked door for a caller that must ask whether a call has an arm at all
-(`envelope_refusal`) or pin the state's backing; the axes that are
-not host-selectable refuse by name rather than being ignored. The kernel's
-correctness does not depend on which arm a topology lands on, and that is what Tier
-2 exists to prove.
-
-### The oracle
-
-`fsla.naive_fsla` is the fp64 definition, and it **ships in the wheel**. A user who
-suspects a numerical problem can run the definition against the kernel on their own
-shapes, on their own hardware, with no repository checkout. That is what makes the
-tolerance claims auditable rather than asserted.
-
-## Performance
-
-The methodology — checkouts' arms interleaved call by call in one clock-locked session,
-raw samples stored, each candidate judged against a reference inside the session — is
-documented in [`docs/measurement.md`](docs/measurement.md).
-
-## Evidence
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the foundation: the recurrence,
-  the lattice, the state's format, the grains, the axis law and the shipped set.
-- [`docs/architecture/`](docs/architecture/README.md) — the permanent decision
-  record: the self-masking theorem, the affine-recurrence rule, the factored
-  representation, fp32 accumulation, closed-world codegen, the launch-geometry
-  rule, and the guarantees/choices/preferences taxonomy.
-- [`docs/internals/`](docs/internals/README.md) — one document per source file,
-  carrying the reasons attached to a line, plus the deletion ledger.
-- [`docs/testing.md`](docs/testing.md) — the tiers, the tolerance discipline, the
-  geometry pairs and their contract classes, and the conformance data-regime box.
-- [`docs/measurement.md`](docs/measurement.md) — the one stopwatch, the discipline a
-  harness must acquire rather than document, and the append-only ledger.
-- [`docs/ratification.md`](docs/ratification.md) — what a manifest is, what the
-  closed-world rules refuse, and why the gate self-tests.
-- [`docs/build.md`](docs/build.md) — the ahead-of-time build and the
-  self-describing binary.
-- [`docs/bringup.md`](docs/bringup.md) — bringing up an unratified architecture.
-- [`docs/provenance.md`](docs/provenance.md) — where this code came from.
-- [`docs/open-work.md`](docs/open-work.md) — what is knowingly unfinished.
-
-## Tests
-
-```bash
-bazel test //tests:cpu                          # each unit's public contract, with no device
-bazel test //tests:unit_cuda                    # the unit tier's CUDA-marked rows
-bazel test //tests:oracle                       # kernels vs the fp64/torch baselines
-bazel test //tests:integration                  # composition, dispatch, two-branches-agree
-bazel run //:ratify -- --census                         # every instantiation's registers and spills, no GPU needed
-bazel run //:ratify -- --self-test                      # prove the census's readers can fail
-```
-
-Never `pytest tests/` unscoped. The `cuda` marker exists so that `-m "not cuda"`
-deselects at *collection* time, before torch initializes a CUDA context.
-
-## Bringing up new hardware
-
-Probe → manifest → gate, and the manifest change is always a reviewed diff, never a
-CI auto-commit. See [`docs/bringup.md`](docs/bringup.md).
+Start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (what is computed and what is built),
+[`docs/api.md`](docs/api.md), [`docs/open-work.md`](docs/open-work.md), and
+[`docs/measurement.md`](docs/measurement.md) for how anything here is measured. A contribution that changes a kernel
+starts from [`docs/KERNEL_STANDARDS.md`](docs/KERNEL_STANDARDS.md) and the lab ([`docs/lab/`](docs/lab/README.md)).
 
 ## Related repositories
 
 | Repository | What lives there |
 |---|---|
-| `flash-linear-attention` | The fla fork: its `fsla` branch holds the FSLA layer and HF model over this package |
-| `fsla-zoology` | Synthetic capability evaluations (MQAR and friends) |
-| `fsla-bench` | The benchmarks and the local measurement suite |
-| `fsla-results` | The measurement records every reported number is read from |
-| `fsla-devtools` | The development tools every FSLA repository shares: the public mirror's export, the central cells, the declared build system and its timing system |
-| `fsla-paper` | The paper source |
-
-Each is developed in a private `-dev` repository and published here by a mirror job: a push to the development
-default branch publishes its declared files as one snapshot commit (`.github/mirror/declarations.json`; the export is [fsla-devtools](https://github.com/Blakexx/fsla-devtools)').
-
-## Changelog
-
-Semantic changes are listed per minor version. **A loosened tolerance is a semantic
-change** and requires a changelog entry, the derivation that justifies the new
-number, and reviewer sign-off; tightening one requires none of that.
-
-`0.1.0` — first extracted release. See [`docs/open-work.md`](docs/open-work.md) for
-what is deliberately not in it.
+| [`fsla-devtools`](https://github.com/Blakexx/fsla-devtools) | the tools every FSLA repository shares: the build system front door, the central cells, the timing system |
+| [`warpline`](https://github.com/Blakexx/warpline) | the GPU lab's checker and recorder, and the stamp header the lab's experiments include |
+| [`fsla-bench`](https://github.com/Blakexx/fsla-bench) | the benchmarks and the measurement suite |
+| [`fsla-results`](https://github.com/Blakexx/fsla-results) | the measurement records every reported number is read from |
+| `chromatic-recall` | recall tasks whose difficulty is a certified number (the chromatic number of the contract's conflict graph); the research harness for what a state of a given size can recall |
+| [`flash-linear-attention`](https://github.com/Blakexx/flash-linear-attention) | a fork whose `fsla` branch holds the FSLA layer and HF model over this package |
+| [`fsla-paper`](https://github.com/Blakexx/fsla-paper) | the paper |
 
 ## Citation
 
