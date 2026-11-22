@@ -44,6 +44,8 @@ TOKEN4_TILES = ", a token on all four digits of its group, groups of four in a g
 TOKEN2 = ", a token on two digits of its group, groups of four"
 CLEARED = ", its tiles cleared"
 COUNTED = ", a group's steps counted at run time"
+TOKEN8 = ", groups of four taking four, two, one and one steps"
+LOOPED = ", a group's steps a voted loop on its count"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -51,6 +53,7 @@ LAYOUTS = (
     (TOKEN4_TILES, "a token on all four digits of its group, groups of four in a group's two tile places"),
     (TOKEN4, "a token on all four digits of its group, groups of four"),
     (TOKEN2, "a token on two digits of its group, groups of four"),
+    (TOKEN8, "groups of four taking four, two, one and one steps"),
     (TOKEN16, "a token on all 16 digits of its box, groups of four on one run of value lines"),
     (GROUP4, "groups of four digits"),
 )
@@ -123,7 +126,7 @@ def short(name: str) -> str:
             layout, rest = words, rest.replace(suffix, "")
             break
     for suffix, words in ((COLUMN, "the box's width word choosing its fold"), (CLEARED, "its tiles cleared"),
-                          (COUNTED, "a group's steps counted at run time"), (SPLIT, "registers 176 / 112 / 48"),
+                          (COUNTED, "a group's steps counted at run time"), (LOOPED, "a group's steps a voted loop on its count"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
             probes.append(words)
@@ -397,16 +400,40 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     counted_text = (
         "(f) A GROUP'S STEPS COUNTED AT RUN TIME: the count is a byte a group in the packet's header, and a group's steps are a choice between two "
         "straight blocks (one step or two, each its own fence and commit group, the group's accumulators held across the choice) made outside them, "
-        "in the group's own two places of the tiles' room and of the header's starts; any other count traps. (A loop on the loaded count is serialized "
-        "by ptxas 13.5, C7519 \"serialized due to program dependence on compiler-inserted WG.AR in divergent path\", which the lab's checks refuse: a "
-        f"compile fact of this kernel.) At one step a group the counted fold is {g(cnt[132][0])} composed and {g(cnt[132][1])} with the read side idle "
+        "in the group's own two places of the tiles' room and of the header's starts; any other count traps. (A loop on the loaded count, each thread deciding "
+        "for itself, was serialized by ptxas 13.5, C7519 \"serialized due to program dependence on compiler-inserted WG.AR in divergent path\", which the "
+        f"lab's checks refuse: a compile fact of this kernel; (g)'s loop, whose test is a warp vote, is not.) At one step a group the counted fold is {g(cnt[132][0])} composed and {g(cnt[132][1])} with the read side idle "
         f"against the cleared fixed-block fold's {g(clr[132][0])} and {g(clr[132][1])}: {g(choice[132][0])} more composed and {g(choice[132][1])} more alone, "
         f"{choice[132][0] / choice[132][1]:.2f} times (at one CTA {g(choice[1][0])} and {g(choice[1][1])}, {choice[1][0] / choice[1][1]:.2f} times): "
         f"not the clear's {diff[132][0] / diff[132][1]:.2f}, so the two kinds of issue work are not one price. At two steps a group (a token on two digits of its group) "
         f"it is {g(cnt[132][2])} and {g(cnt[132][3])}, {g(second[132][0])} more composed and {g(second[132][1])} more alone than the one-step rows (at one CTA "
         f"{g(second[1][0])} and {g(second[1][1])}); the rows are {'exact' if exact_counted else 'NOT exact'}. What follows from those two differences alone: "
         "for a count of one or two, the choice costs about what a second step does. NOT MEASURED: a fold that always issues two steps a group with the "
-        "absent one on zeros; counts over two a group."
+        "absent one on zeros (counts over two a group are (g)'s)."
+    )
+
+    # ---- a group's steps as a voted loop on its count (any count)
+    loop4, loop2, loopu = TOKEN4 + CLEARED + LOOPED, TOKEN2 + CLEARED + LOOPED, TOKEN8 + CLEARED + LOOPED
+    lp = {n: (cycles_of(n, loop4), cycles_of(n, loop4, idle=True), cycles_of(n, loop2), cycles_of(n, loopu), cycles_of(n, loopu, idle=True)) for n in (1, 132)}
+    vs_fixed = {n: (lp[n][0] - clr[n][0], lp[n][1] - clr[n][1]) for n in lp}
+    vs_choice = {n: (lp[n][0] - cnt[n][0], lp[n][1] - cnt[n][1]) for n in lp}
+    vs_two = {n: (lp[n][2] - cnt[n][2]) for n in lp}
+    exact_loop = all(exact(PREFIX + x) for x in (loop4, loop2, loopu))
+    loop_text = (
+        "(g) A GROUP'S STEPS AS A VOTED LOOP ON ITS COUNT: a loop a group on the packet's count whose test is a warp vote, a step's tile and start the "
+        "window's next in the order issued: any count. On the four-digit packets (one step a group) it is "
+        f"{g(lp[132][0])} composed and {g(lp[132][1])} with the read side idle against the cleared fixed block's {g(clr[132][0])} and {g(clr[132][1])}: "
+        f"{g(vs_fixed[132][0])} more composed and {g(vs_fixed[132][1])} more alone (at one CTA {g(vs_fixed[1][0])} and {g(vs_fixed[1][1])}); against the "
+        f"choice of straight blocks on the same four-digit tokens (the counted one-step row, {g(cnt[132][0])} and {g(cnt[132][1])}) it is "
+        f"{g(vs_choice[132][0])} more composed and {g(vs_choice[132][1])} more alone (at one CTA {g(vs_choice[1][0])} and {g(vs_choice[1][1])}). "
+        f"On a token on two digits of its group it is {g(lp[132][2])} against the counted two-step row's {g(cnt[132][2])} "
+        f"({g(vs_two[132])} more; at one CTA {g(lp[1][2])} against {g(cnt[1][2])}, {g(vs_two[1])} more). "
+        f"On the packet whose groups take four, two, one and one steps (a token on one digit of the first group, on two of the second, on all four of the "
+        f"third and the fourth) it is {g(lp[132][3])} composed and {g(lp[132][4])} with the read side idle (at one CTA {g(lp[1][3])} and {g(lp[1][4])}). "
+        f"Every row is {'exact, the uneven one included' if exact_loop else 'NOT exact'}. A compile fact of this kernel: ptxas 13.5 does not serialize the voted loop "
+        "(no C7519), and its steps are rolled, which the lab's `step_rolled` rule names and the rows declare ([`step_rolled`](step_rolled.md) prices a rolled "
+        "16-column step alone). NOT MEASURED: a window that needs more steps than the tiles' room holds in one pass (eight a box), a second pass, an outer "
+        "loop on the count of passes; what carries a rolled step's cost (the vote, the branch, the run-time operands, the overlap between a group's steps)."
     )
 
     # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants
@@ -439,7 +466,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     grouping = (
         "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
-        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}"
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}\n- {loop_text}"
     )
 
     # ---- rows of the experiment the record does not hold yet

@@ -1655,6 +1655,7 @@
   {"doc": "docs/lab/call_pair.md", "pinned_at": "89ce5851da59", "reviewed": true, "sha256": "", "target": "measure/lab/results/call_pair/sm_90a.json"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "0d03abc29883", "reviewed": true, "sha256": "1ac5d82833dfd167", "target": "docs/KERNEL_STANDARDS.md#s30"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "e55eb45b8160", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
+  {"doc": "docs/lab/carry_token.md", "pinned_at": "0d4122bac4a2", "reviewed": true, "sha256": "", "target": "docs/lab/step_rolled.md"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "e55eb45b8160", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/carry_token.cu"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "b551de5d1ae8", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_token/sm_90a.blocks1.json"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "c98cbf59c46c", "reviewed": true, "sha256": "280b33a4ebc8d817", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},

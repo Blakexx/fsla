@@ -308,13 +308,17 @@ columns and never wider. A layout wider than a step -- 8 or 16 digits -- is seve
 names the one run of value lines, so the layout's width is data the gather writes a window and no step shape follows
 from it. A step's shape pins its accumulator's registers, so the shape is chosen where no step is in flight: a box's
 word of the device plan, read before its window loop.
+A group issues the number of steps its data needs, read from the packet: a loop on that count whose test is a warp vote
+(Blake, 2026-11-22: "So voted loop achieved the goal with a small performance cost? Fine").
 MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns
 ([`lab/wgmma_width.md`](lab/wgmma_width.md)): past 64 a wider step buys no tensor time. A token on all 16 digits of its
 box, executed as four 64-column steps on one run of value lines, is the four-digit window, exact; and a kernel holding a
 per-list fold and a grouped fold, choosing by a word read before the loop, costs nothing a window
 ([`lab/carry_token.md`](lab/carry_token.md)).
-NOT YET SO: a group's steps are a count of the packet's only for one or two a pass; a count over two, and the form that
-always issues two with the absent step on zeros, are not measured ([`open-work.md`](open-work.md)).
+The voted loop is 4,985 cycles a window against a fixed block's 4,709 on the same packets, and exact on a packet whose
+groups take four, two, one and one steps ([`lab/carry_token.md`](lab/carry_token.md)).
+NOT YET SO: the loop is measured within one pass of the tiles' room, eight steps a box; a window that needs more is a
+second pass, which is not built ([`open-work.md`](open-work.md)).
 ON BLACKWELL (R8; Blake, 2026-11-22) the layout half holds unchanged. The step-shape half as written is hopper's: a wgmma
 step's shape pins its accumulator's registers, and the 64-column price is an H100 record. Blackwell's widest step and
 where its shape is chosen are owed with its bring-up ([`open-work.md`](open-work.md)).
