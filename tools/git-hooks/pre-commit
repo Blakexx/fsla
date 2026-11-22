@@ -46,9 +46,9 @@ if [ -s "$patch" ]; then
 fi
 
 status=0
-#: the mirror's content checks over the staged diff (fsla_devtools.tripwire: home paths, other people's emails, IPv4
+#: the content checks over the staged diff (fsla_devtools.tripwire: home paths, other people's emails, IPv4
 #: addresses, credential formats, provider ids, ledger event ids, the private scratch repository's name): history is
-#: public, so a line the mirror would refuse never enters it. The index is the commit's; the unstaged set-aside is no part
+#: public, so a line a public repository must not carry never enters it. The index is the commit's; the unstaged set-aside is no part
 if ! bazel run --noshow_progress --ui_event_filters=-info --lockfile_mode=error --repo_env=GIT_INDEX_FILE //:tripwire -- --staged; then
   exit 1
 fi

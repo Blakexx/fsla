@@ -1,10 +1,9 @@
 # `fsla/engine/facts/planes.py` — the liveness contract: the digits, the row alignment law and the atom byte
 
 Mirror doc for the liveness the masks state and the one fold over it that has a consumer: `atom_bits`, the per-atom READ and
-WRITTEN byte a stateful call's residency is keyed on (`tests/unit/test_atom_bits.py` gates it). THE FACTS PASS IS DELETED
-(Blake, 2026-11-22: "lets just delete facts"): there is no kernel, no word table, no tile union and no box fold; the Hopper
-design reads the digits in its gather pass (`docs/architecture/hopper-gather.md`). What stays is what has another subject:
-the digits' statement, the row alignment law, and the byte.
+WRITTEN byte a stateful call's residency is keyed on (`tests/unit/test_atom_bits.py` gates it). The Hopper design reads
+the digits in its gather pass (`docs/architecture/hopper-gather.md`); this page holds the digits' statement, the row
+alignment law, and the byte.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth;
 `B_l` = level `l`'s PADDED width (a power of two at or above 16 — the descriptor's,

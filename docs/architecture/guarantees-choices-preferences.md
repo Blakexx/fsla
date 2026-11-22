@@ -33,7 +33,7 @@ same week.
   straight-through estimator, no thresholded skip. A skip is exact by
   construction or it does not ship.
 - **Membership is decided by the supplied masks and by nothing else.**
-  A digit is live exactly when its mask bit is set (`api.md` §2.6; never derived from the rows), and the words carry that bit to every consumer
+  A digit is live exactly when its mask bit is set (`api.md` §2.6; never derived from the rows), and the masks carry that bit to every consumer
   ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). An
   amplitude comparison in a kernel is only ever a *performance* skip on a value where
   inclusion is a no-op, and none decides membership.

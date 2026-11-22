@@ -67,10 +67,10 @@ legal execution. Everything the engine gets from that follows:
   load-bearing only because the recurrence is affine.
 
 **The precision that matters**: "routing exists before launch" means the
-schedule's **factors** — per-level digit words, the window lists and the tile
-unions, sized by the *sum* of the widths — are complete and immutable at launch. The
+schedule's **factors** — the per-level digit masks and the window lists, sized by
+the *sum* of the widths — are complete and immutable at launch. The
 per-leaf schedule is **never stored**: a box's liveness for one token is the AND over
-levels, evaluated by the owning warp
+levels, evaluated by the reading warp
 ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). Storing it
 would be the `O(L·N)` materialization wall. **Schedulability is evaluation, not
 generation** — see [factored-representation.md](factored-representation.md), of which

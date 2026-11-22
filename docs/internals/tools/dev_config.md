@@ -20,7 +20,7 @@ source, and `bazel run //:init` links the `workspace.devtools` checkout into eve
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `store_max_gb` and `store_max_age_days` (the environment store's bound), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a fsla-results checkout) |
-| `workspace.json` | `suite` (the fsla-bench checkout whose root `declare.py` measures this tree), `devtools` (the fsla-devtools checkout, the public mirror's declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `hook_roots` (the folders the action-hook dispatcher may run a checkout's hooks under; null: this repository's checkouts and `worktrees`), `base_venv` (a venv the checkouts on the machine whose hooks run from it read; this tree reads none of it) |
+| `workspace.json` | `suite` (the fsla-bench checkout whose root `declare.py` measures this tree), `devtools` (the fsla-devtools checkout, the declared build system, linked into every venv), `worktrees` (the one folder worktrees live in), `hook_roots` (the folders the action-hook dispatcher may run a checkout's hooks under; null: this repository's checkouts and `worktrees`), `base_venv` (a venv the checkouts on the machine whose hooks run from it read; this tree reads none of it) |
 
 <a id="bootstrap"></a>**Before the reader is importable.** The graph's front door (`bazel/front_door.py`, a stub over
 `fsla_devtools.graph.front_door`) runs

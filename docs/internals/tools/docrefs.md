@@ -28,8 +28,8 @@ directory is checked only to exist, and a build output the tree ignores (`_gener
 ## The locks
 
 `docs/references.lock.json` holds one pin per (doc, target): the digest, the commit it was pinned at, and whether a
-docs pass has read it. A doc the public mirror does not ship keeps its pins in `.claude/references.lock.json`
-(`_visibility` reads `.github/mirror/declarations.json`), so the public lock never names it. `init` pinned the tree's
+docs pass has read it. A doc declared `private` in `.github/mirror/declarations.json` keeps its pins in `.claude/references.lock.json`
+(`_visibility` reads the declarations), so the public lock never names it. `init` pinned the tree's
 references unread, the broken ones with a null digest.
 
 Each lock records the Python version its digests were taken under (`PYTHON`): `ast.unparse`'s output moves between

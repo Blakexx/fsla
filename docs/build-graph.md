@@ -182,7 +182,7 @@ whose record is no iteration build.
 `bazel test //:gate` runs every check the graph holds -- `//:lints`, the checks over files (the repo's own and
 `//csrc/fsla:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; `//tests:lab`, the lab's unit
 tests; and `//:commit_checks`, the checks of the commit -- and is the commit gate (before it, `tools/git-hooks/pre-commit`
-runs the mirror's content checks over the staged diff, `bazel run //:tripwire -- --staged`, and `tools/git-hooks/pre-push`
+runs the content checks over the staged diff, `bazel run //:tripwire -- --staged`, and `tools/git-hooks/pre-push`
 over every commit pushed, `-- --range`: the full history is public, so a home path, another person's email, an IPv4
 address, a credential format, a provider id or a ledger event id is refused before it is history):
 `tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
@@ -203,7 +203,7 @@ index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
   the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the template kernels no unit instantiates and the
   unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
   standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
-  (`tools/lint/portable_claude.py`), the mirror's declarations (`fsla_devtools.mirror --check`), and each ratchet
+  (`tools/lint/portable_claude.py`), the path declarations (`fsla_devtools.mirror --check`), and each ratchet
   (`tools/lint/ratchet.py <lint>`: the lint's findings against its baseline, a new finding and a fixed one each red).
 - THE UNIT LINTS (`//csrc/fsla:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
@@ -332,7 +332,7 @@ names one).
     bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
     bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (fsla-devtools' build system)
     bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
-    bazel run //:mirror -- --check                                  # the public mirror's export (CI's mirror job)
+    bazel run //:tripwire -- --tree                                 # the content checks over every tracked file of HEAD
 
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into

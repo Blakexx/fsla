@@ -2,9 +2,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# THE MIRROR'S CONTENT CHECKS, BEFORE A PUSH: every commit the push adds to the remote (the pushed ref's commits not
+# THE CONTENT CHECKS, BEFORE A PUSH: every commit the push adds to the remote (the pushed ref's commits not
 # already on a ref of that remote) is read patch by patch by fsla_devtools.tripwire (`bazel run //:tripwire -- --range`),
-# so a line the public mirror would refuse -- the full history ships -- never leaves the machine. docs/build-graph.md#checks
+# so a line a public repository must not carry -- the full history is public -- never leaves the machine. docs/build-graph.md#checks
 set -euo pipefail
 zero="0000000000000000000000000000000000000000"
 status=0

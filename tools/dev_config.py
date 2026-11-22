@@ -84,7 +84,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "suite": Key("path", str(SIBLINGS / "fsla-bench"),
                      "the fsla-bench checkout whose measurement suite (its root declare.py) runs this tree's declarations"),
         "devtools": Key("path", str(DEVTOOLS),
-                        "the fsla-devtools checkout (the public mirror's export, the declared build system), linked into "
+                        "the fsla-devtools checkout (the content checks, the declared build system), linked into "
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),

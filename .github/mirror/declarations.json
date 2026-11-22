@@ -32,9 +32,7 @@
   ".claude",
   "CLAUDE.md"
  ],
- "private": [
-  ".github/workflows/mirror.yml"
- ],
+ "private": [],
  "allow": {},
  "agent_files": false,
  "emails": [

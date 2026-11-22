@@ -171,16 +171,8 @@ tool_run(
     module = "fsla_results",
 )
 
-#: the public mirror's export (`.github/mirror/declarations.json`), on the environment's interpreter, which carries
-#: fsla-devtools at its pin: what CI's mirror job runs
-tool_run(
-    name = "mirror",
-    environment = True,
-    module = "fsla_devtools.mirror",
-)
-
-#: the mirror's content checks over a staged diff or a pushed range (`--staged`, `--range A..B`): the pre-commit and
-#: pre-push hooks run it, before the mirror would refuse the same lines (docs/build-graph.md#checks)
+#: the content checks over a staged diff or a pushed range (`--staged`, `--range A..B`): the pre-commit and pre-push
+#: hooks run it, so a line a public repository must not carry never enters history (docs/build-graph.md#checks)
 tool_run(
     name = "tripwire",
     environment = True,
@@ -335,7 +327,7 @@ compile_database(
 )
 
 #: THE REPO'S CHECKS (docs/build-graph.md#checks): the policies over the whole tree -- the Python's lints, the
-#: standards, the agent files and the mirror, each ratchet against its baseline -- and the checks of the commit, run in
+#: standards, the agent files and the declarations, each ratchet against its baseline -- and the checks of the commit, run in
 #: the checkout: what git knows
 
 tree_test(
@@ -394,7 +386,7 @@ tree_test(
 )
 
 tree_test(
-    name = "mirror_declarations",
+    name = "declarations",
     size = "small",
     cmd = ["python3", "-m", "fsla_devtools.mirror", "--check"],
     data = [":tree"],
@@ -509,7 +501,7 @@ test_suite(
         ":graph_only",
         ":readability_spacing",
         ":portable_agent_files",
-        ":mirror_declarations",
+        ":declarations",
         ":rules_table",
         ":ratchet_burst_tier",
         ":ratchet_constant_parameters",

@@ -17,7 +17,7 @@ hashed -- Python through `ast.unparse` with docstrings dropped, everything else 
 collapsed -- so a reformat or a comment edit moves no pin.
 
 `docs/references.lock.json` holds one pin per (doc, target) -- `.claude/references.lock.json` for the docs the
-public mirror does not ship: the digest, the commit it was pinned at, and whether a docs pass has read it (`init` pins today's references UNREAD). A pinned reference whose target's digest moved is
+declarations list `private`: the digest, the commit it was pinned at, and whether a docs pass has read it (`init` pins today's references UNREAD). A pinned reference whose target's digest moved is
 PENDING, and so is one whose target vanished. THE GATE FAILS ON ANY REFERENCE NOT CLEAN (a commit that changes what a doc
 cites re-reads and re-pins those references in the same commit): one the lock does not hold, one pending, one unread, one
 that resolves to nothing, and a pin whose reference no doc makes any more (`prune`). Its message names each citing
@@ -40,8 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-#: The pins live with the docs they pin: a doc the public mirror does not ship (`.github/mirror/declarations.json`'s
-#: `private`) keeps its pins in the private lock, so the public lock never names it.
+#: The pins live with the docs they pin: a doc `.github/mirror/declarations.json` lists under
+#: `private` keeps its pins in the private lock, so the public lock never names it.
 LOCKS = {"public": "docs/references.lock.json", "private": ".claude/references.lock.json"}
 MIRROR_DECLARATIONS = ".github/mirror/declarations.json"
 #: A dotted name in code font is a reference when its first component is one of these; the value is the directory
