@@ -24,6 +24,9 @@ import sys
 
 from _record import Record
 
+#: the grouped rows' figures at 132 CTAs in the records of the commit before this page's (git history of this file's records at that commit)
+OLD_SHA = "8e909ad0"
+OLD = {"t4g": 4705, "t4g_alone": 2814, "g4": 6164, "g4_alone": 3998}
 #: two windows (or two figures) within this share of each other (of the lesser) are said to agree
 SAME = 0.02
 #: the first windows left out of a traced row's steady span (`lab trace`'s default)
@@ -367,8 +370,20 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"the per-list folds' {g(plain_idle)} ({vs(g4idle, plain_idle)}), and the per-list fold at the wide kernel's registers (176 / 112 / 48) "
         f"{g(split)} ({vs(split, w(132, PLAIN), 'the per-list row')}: the registers are not the excess). A token on all four digits of its group: the folds "
         f"alone are {g(t4gi)} against {g(t4li)} a list a digit ({vs(t4gi, t4li)}), and the composed window {g(t4g)} against {g(t4l)} ({vs(t4g, t4l)}): "
-        f"the window keeps {g(t4g - t4gi)} cycles of the read side ({pct((t4g - t4gi) / t4g)} of it) and gains {g(t4l - t4g)} of the folds' {g(t4li - t4gi)}, so the composed "
-        f"window is then bound by the read side."
+        "the fold's gain is paid in the composed window."
+    )
+    # the same fold at the commit before (the records of OLD_SHA, git history): the needless tile clear and its barrier taken out
+    d_alone, d_comp = OLD["t4g_alone"] - t4gi, OLD["t4g"] - t4g
+    two_pass_alone, two_pass_comp = g4idle - OLD["g4_alone"], g4 - OLD["g4"]
+    model = (
+        f"THE FOLDS' ISSUE WORK IS PAID COMPOSED, ONE POINT, AND THE READ SIDE IS NOT A CONSTANT: an earlier reading of this page, that the composed window "
+        f"at four digits a token is bound by the read side and keeps a share of it, is WRONG. Between the records of {OLD_SHA} and of this page's commit "
+        f"the four-digit fold stopped clearing its tiles and the barrier that followed the clear: the folds alone went {g(OLD['t4g_alone'])} to {g(t4gi)} "
+        f"({g(d_alone)} cycles) and the composed window {g(OLD['t4g'])} to {g(t4g)} ({g(d_comp)} cycles), so the window is not its longer chain plus a "
+        f"constant; a fold's issue work (stores, fences, barriers) is paid composed at {d_comp / d_alone:.2f} times its alone time, sixteen warps sharing the SM's "
+        f"issue ports. It is ONE point: the two-pass rows (groups of four digits, which gained one barrier) agree within their spread: one barrier more is "
+        f"+{g(two_pass_alone)} alone and +{g(two_pass_comp)} composed, and a second point is owed before it is used as a price "
+        "([`open-work.md`](../open-work.md))."
     )
     run_time = (
         "(d) NOT MEASURED: a run-time count of steps a group -- every grouped fold of the record issues a fixed number of steps a window."
@@ -404,7 +419,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     grouping = (
         "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
-        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}"
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n\n{model}"
     )
 
     # ---- rows of the experiment the record does not hold yet

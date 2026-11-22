@@ -299,7 +299,10 @@ MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns
 ([`lab/wgmma_width.md`](lab/wgmma_width.md)): past 64 a wider step buys no tensor time. A token on all 16 digits of its
 box, executed as four 64-column steps on one run of value lines, is the four-digit window, exact; and a kernel holding a
 per-list fold and a grouped fold, choosing by a word read before the loop, costs nothing a window
-([`lab/carry_token.md`](lab/carry_token.md)). A 256-column step is also refused by ptxas in a CTA that enters at 128
-registers a thread ([`lab/reg_trade.md`](lab/reg_trade.md)).
+([`lab/carry_token.md`](lab/carry_token.md)).
+BLACKWELL (R8): the layout half holds on every architecture, a group is data. The step-shape half as written is
+hopper's: a wgmma step's shape pins its accumulator's registers, and the 64-column price is an H100 record. On blackwell
+the accumulator is in tensor memory (R20), so neither the register reason nor the price is established there:
+blackwell's widest step and where its shape is chosen are NOT YET MEASURED and are stated when blackwell is brought up.
 NOT YET SO: the lab's grouped folds issue a fixed number of steps a window; a run-time count a group is owed
 ([`open-work.md`](open-work.md)).
