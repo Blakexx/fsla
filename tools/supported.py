@@ -1,29 +1,19 @@
 """Generate the README's generated blocks: the "Supported configurations" table. **A REPORT, NOT A CLAIM.**
 
 A hand-maintained support table says what someone hoped was true when
-they last edited it; this one is derived from the two artifacts that decide the
-answer, and the commit gate fails on drift (`//:readme`, which holds the committed README to what the graph writes,
-docs/build-graph.md#committed-files):
+they last edited it; this one is derived from the CONTRACT, the registry of run-time contexts FSLA accepts (``hardware/``,
+docs/internals/hardware/registry.md), and the toolchain that builds each context's architecture. The build fails if any context of the contract
+reaches no arm (``arms_gen``), so the published support and the guaranteed support are one file. The commit gate fails on drift
+(`//:readme`, which holds the committed README to what the graph writes, docs/build-graph.md#committed-files):
 
-* ``csrc/fsla/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also gives
-  ``common/hardware.cuh``'s ``tabulated``) -- the architectures the KERNEL knows how to size itself for: a
-  ``static_assert`` at compile time and the card's admission a refusal at run time, so an arch missing from it
-  cannot execute whatever the table says.
-* the same file's BUILT architectures (``measure.hardware.built``: the rows whose build chooses a window) and the
-  toolchain that builds them (``tools/toolchains.py``).
-
-The two are not the same set, and **the difference is the product statement**. An
-arch that is tabulated but not built is listed with an empty toolchain column
-and the status *not built -- will refuse to load*. A support claim is worth
-nothing if the table quietly implies coverage nobody brought up.
+* ``hardware/descriptors``' contexts (``hardware.registry.contexts``): each descriptor's architecture, the GPUs it covers and, for every fact the
+  CALL supplies, the values the contract admits.
+* the BUILT architectures (``measure.hardware.built``: the rows whose build chooses a window) and the toolchain that builds them
+  (``tools/toolchains.py``). A contract architecture the build does not build is refused here: the contract is what is built.
 
     bazel run //tools:supported              # print the tables
     bazel run //:readme_update               # write README.md's generated blocks (the graph's action runs
                                              # `supported.py --readme README.md --out <file>`)
-
-GPU names are the only hand-written column, in ``GPUS`` below, because a compute
-capability does not know its own marketing name. They are labels; the hardware table
-is what the table is actually reporting.
 """
 from __future__ import annotations
 
@@ -38,7 +28,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(1, str(ROOT))
 import toolchains  # noqa: E402
 
-from measure import hardware  # noqa: E402 -- the architecture rows' own names
+from hardware import registry  # noqa: E402 -- the contract
+from measure import hardware  # noqa: E402 -- which architectures the build builds
 
 #: The README's generated regions: `marker -> producer`. One today: the support table, which no hand edit may touch.
 BLOCKS = {
@@ -60,19 +51,6 @@ def block(text: str, marker: str) -> str | None:
     return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
 
 
-#: Marketing names per compute capability. The ONLY hand-written column.
-GPUS = {
-    "sm_90a": "H100",
-    "sm_100a": "B200",
-}
-
-
-def tabulated_archs() -> list[str]:
-    """The architectures the kernel can size itself for: the hardware table's rows, by compute capability
-    (`measure.hardware.tabulated`, which `common/hardware.cuh`'s `tabulated` is generated from)."""
-    return hardware.tabulated()
-
-
 def built() -> dict[str, list[dict]]:
     """`sm_XX -> [{toolchain, ptxas}]`: each built architecture, with the toolchain that builds it."""
     return {arch: [{"toolchain": t.name, "ptxas": t.ptxas} for t in toolchains.records().values()]
@@ -84,16 +62,36 @@ def _ptxas_short(version: str) -> str:
     return f"ptxas {m.group(2)}" if m else version
 
 
+def _spell(values: set) -> str:
+    """A fact's admitted values: points as a sorted list, a range as `lo..hi`."""
+    points = sorted(v[0] for v in values if v[0] == v[1])
+    ranges = sorted(f"{v[0]}..{v[1]}" for v in values if v[0] != v[1])
+    return ", ".join([str(p) for p in points] + ranges)
+
+
+def contract() -> dict[tuple[str, str], dict[str, set]]:
+    """`(arch, gpus) -> {call fact: the values the contract admits}`, over every context of the registry."""
+    facts = registry.schema()
+    calls = [n for n, f in facts.items() if f.read == "CALL"]
+    out: dict[tuple[str, str], dict[str, set]] = {}
+    for c in registry.contexts():
+        seen = out.setdefault((c.arch, c.gpus), {n: set() for n in calls})
+        for n in calls:
+            seen[n].add(c.facts[n])
+    return out
+
+
 def table() -> str:
     built_rows = built()
-    rows = ["| Compute capability | GPUs | Toolchain | Assembler | Status |",
-            "|---|---|---|---|---|"]
-    for arch in tabulated_archs():
-        gpus = GPUS.get(arch, "—")
-        for r in built_rows.get(arch, []):
-            rows.append(f"| `{arch}` | {gpus} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | built |")
+    calls = [n for n, f in registry.schema().items() if f.read == "CALL"]
+    rows = [f"| Compute capability | GPUs | {' | '.join(calls)} | Toolchain | Assembler | Status |",
+            "|---" * (len(calls) + 5) + "|"]
+    for (arch, gpus), admitted in sorted(contract().items()):
         if arch not in built_rows:
-            rows.append(f"| `{arch}` | {gpus} | — | — | **not built — will refuse to load** |")
+            raise SystemExit(f"the contract holds {arch}, which the build does not build: the contract is what is built")
+        spelled = " | ".join(_spell(admitted[n]) for n in calls)
+        for r in built_rows[arch]:
+            rows.append(f"| `{arch}` | {gpus} | {spelled} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | built |")
     return "\n".join(rows)
 
 

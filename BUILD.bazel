@@ -104,7 +104,7 @@ ratify_census(
 
 #: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
 #: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The derivation's goldens, from the harness
-#: the graph built (docs/ratification.md); the README's generated blocks (`tools/supported.py`); the devbox image's digest
+#: the graph built (docs/ratification.md); the README's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
 #: (docs/setup.md#the-devbox-image)
 committed_file(
     name = "derivation",
@@ -120,6 +120,7 @@ genrule(
         "measure/__init__.py",
         "measure/hardware.py",
         "//csrc/fsla:src/common/hardware.json",
+        "//hardware:registry",
         "//tools:toolchain_records",
         "//tools:toolchains.py",
     ],

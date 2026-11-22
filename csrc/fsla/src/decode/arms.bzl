@@ -1,18 +1,12 @@
-"""THE DECODE FAMILY'S ARMS, declared: d_v x levels x decay, every one built and shipped
-(docs/internals/decode/decode.md#decode-arm-0). Rows in canonical order: an arm's index is its row's. The decode step
-is one hand unit (`decode.cu`) that dispatches over the selection header's arm set, so the family has no unit of its own
-(bazel/arms.bzl's `arm_family`, without `unit`).
+"""THE DECODE FAMILY'S ARM KEY, kernel and declarations (docs/internals/decode/decode.md#decode-arm-0). Its arms are not listed here: they are
+what `decode_arms` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows file `arm_family` reads, an arm's index
+its row's in canonical order. The decode step is one hand unit (`decode.cu`) that dispatches over the selection header's arm set, so the
+family has no unit of its own (bazel/arms.bzl's `arm_family`, without `unit`).
 """
 
 load("//bazel:arms.bzl", "arm_declaration")
 
 DECODE_KEY = ("d_v", "levels", "decay")
-
-DECODE_DOMAINS = {
-    "d_v": [32, 64],
-    "levels": [1, 2, 3, 4],
-    "decay": [0, 1],
-}
 
 #: the arm's kernel, as the toolkit demangles its name up to the parameter list, with its template arguments the key's fields (`@field@`) and the
 #: architecture's compute capability (`@cc@`): bazel/arms.bzl generates each arm's exact pattern from it, which the SASS gate holds the binary to
@@ -50,23 +44,4 @@ DECODE_DECLARATIONS = [
     arm_declaration(rule, row[3 + i], _PREDATES + _FOUND[rule], where = {"d_v": [row[0]], "levels": [row[1]], "decay": [row[2]]}, arch = "sm_90a")
     for row in _FINDINGS
     for i, rule in enumerate(["load_in_trip", "loop_convergence"])
-]
-
-DECODE_ARMS = [
-    [32, 1, 0],
-    [32, 1, 1],
-    [32, 2, 0],
-    [32, 2, 1],
-    [32, 3, 0],
-    [32, 3, 1],
-    [32, 4, 0],
-    [32, 4, 1],
-    [64, 1, 0],
-    [64, 1, 1],
-    [64, 2, 0],
-    [64, 2, 1],
-    [64, 3, 0],
-    [64, 3, 1],
-    [64, 4, 0],
-    [64, 4, 1],
 ]

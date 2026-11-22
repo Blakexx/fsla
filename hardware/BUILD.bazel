@@ -1,0 +1,53 @@
+"""THE CONTRACT REGISTRY'S GRAPH TARGETS (docs/internals/hardware/registry.md): the registry's files, the `Facts` header generated from the schema and the
+contract as the matchers' tools read it."""
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:defs.bzl", "tree_part")
+
+package(default_visibility = ["//visibility:public"])
+
+#: this package's part of the tree the checks read
+tree_part()
+
+#: every file of the registry: the schema, the parts, the descriptors and the modules that expand them
+filegroup(
+    name = "registry",
+    srcs = glob([
+        "*.py",
+        "*.json",
+        "parts/**/*.json",
+        "descriptors/*.json",
+    ]),
+)
+
+exports_files(["emit.py"])
+
+genrule(
+    name = "facts_header",
+    srcs = [":registry"],
+    outs = ["plan/facts.h"],
+    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --facts-header $@",
+    tools = [
+        "emit.py",
+        "@fsla_env//:python",
+    ],
+)
+
+#: `plan/facts.h`, the struct of every fact, generated from `schema.json`
+cc_library(
+    name = "facts",
+    hdrs = [":facts_header"],
+    includes = ["."],
+)
+
+#: THE CONTRACT: every context FSLA accepts, a line each (`registry.contexts_text`)
+genrule(
+    name = "contexts",
+    srcs = [":registry"],
+    outs = ["contexts.txt"],
+    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --contexts $@",
+    tools = [
+        "emit.py",
+        "@fsla_env//:python",
+    ],
+)

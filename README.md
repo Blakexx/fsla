@@ -138,14 +138,13 @@ Requirements: Python 3.10 or newer, torch 2.13 or newer built for the toolchain'
 
 ## Supported configurations
 
-This table is **generated** by `tools/supported.py` from the kernel's architecture table and the architectures the build
-produces; the gate fails if it drifts. Change the generator, not the table.
+This table is **generated** by `tools/supported.py` from the contract (`hardware/`: every run-time context FSLA accepts, which the build
+guarantees an arm for) and the architectures the build produces; the gate fails if it drifts. Change the contract, not the table.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
-| Compute capability | GPUs | Toolchain | Assembler | Status |
-|---|---|---|---|---|
-| `sm_90a` | H100 | `cu13` | ptxas 13.5.37 | built |
-| `sm_100a` | B200 | — | — | **not built — will refuse to load** |
+| Compute capability | GPUs | d_v | levels | decay | Toolchain | Assembler | Status |
+|---|---|---|---|---|---|---|---|
+| `sm_90a` | H100 | 32, 64 | 1, 2, 3, 4 | 0, 1 | `cu13` | ptxas 13.5.37 | built |
 <!-- END GENERATED: tools/supported.py -->
 
 An architecture that is not built refuses to load. Bringing one up is a measurement:

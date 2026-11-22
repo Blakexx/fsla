@@ -2,11 +2,11 @@
 (`bazel/arms.bzl`), the registration unit, the generated headers and the device stamp (docs/build-graph.md#compile)."""
 
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "HOST_CXX_FLAGS", "NVCC_FLAGS")
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel:arms.bzl", "ARM_FAMILIES", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "census_test", "include_root", "fsla_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass")
-load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DECLARATIONS", "DECODE_DOMAINS", "DECODE_KERNEL", "DECODE_KEY")
+load(":src/decode/arms.bzl", "DECODE_DECLARATIONS", "DECODE_KERNEL", "DECODE_KEY")
 load(":src/entmax/declarations.bzl", "ENTMAX_DECLARATIONS")
 load(":units.bzl", "RUNTIME_UNITS")
 
@@ -140,12 +140,41 @@ cuda_unit(
     unit = unit.rsplit("/", 1)[-1].removesuffix(".cu"),
 ) for unit in glob(["src/**/*.cu"])]
 
+#: THE PLANNER'S HEADERS, `common/plan/rules.h` and the launch functions (`common/plan/decode_launch.h`), with the `Facts` struct generated from the schema (`//hardware:facts`)
+cc_library(
+    name = "plan_headers",
+    hdrs = glob(["src/common/plan/*.h"]),
+    includes = ["src/common"],
+    deps = ["//hardware:facts"],
+)
+
+#: DECODE'S ARM GENERATOR: the matcher evaluated over the whole contract. It writes the rows file `arm_family` instantiates, the built-set header and
+#: the selection record, and FAILS the build, naming the context, when a contract context reaches no arm (docs/internals/decode/arms_gen.md)
+cc_binary(
+    name = "decode_arms_gen",
+    srcs = ["src/decode/arms_gen.cpp"],
+    additional_compiler_inputs = [_HOST_CC],
+    copts = ["-std=c++20"],
+    deps = [":plan_headers"],
+)
+
+genrule(
+    name = "decode_plan",
+    srcs = ["//hardware:contexts"],
+    outs = [
+        "decode_plan/decode_arm_rows.json",
+        "decode_plan/decode_built.h",
+        "decode_plan/decode_selection_record.txt",
+    ],
+    cmd = "$(execpath :decode_arms_gen) --contexts $(execpath //hardware:contexts) --out-dir $(RULEDIR)/decode_plan",
+    tools = [":decode_arms_gen"],
+)
+
 arm_family(
     name = "decode",
-    arms = DECODE_ARMS,
+    arms_file = ":decode_plan/decode_arm_rows.json",
     built_archs = BUILT_ARCHS,
     declarations = DECODE_DECLARATIONS,
-    domains = DECODE_DOMAINS,
     flag = "//:decode_arms",
     includer = "csrc/fsla/src/decode/decode.cu",
     kernel = DECODE_KERNEL,

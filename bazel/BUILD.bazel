@@ -38,6 +38,7 @@ cuda_root(
 
 exports_files([
     "cuda_compile.py",
+    "arm_emit.py",
     "arms.py",
     "flags.py",
     "gates.py",

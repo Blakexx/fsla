@@ -37,9 +37,9 @@ separate claim from the capacity is [`decode.md`
 [`decode.md` §6](decode.md#level-width-capacity).
 
 <a id="arm-subset"></a><a id="fsladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
-the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
-one row per arm in `csrc/fsla/src/decode/arms.bzl` (an arm family of `bazel/arms.bzl`:
-[`../../build-graph.md#arms`](../../build-graph.md#arms)) so a BUILD can name a subset
+the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, the arms
+`decode_arms` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows of an
+arm family of `bazel/arms.bzl` ([`arms_gen.md`](arms_gen.md), [`../../build-graph.md#arms`](../../build-graph.md#arms)), so a BUILD can name a subset
 by index: `--//:decode_arms=5` compiles arm 5 and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build

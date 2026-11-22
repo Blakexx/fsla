@@ -953,9 +953,9 @@ def check_hardware() -> list[str]:
 
 
 def check_arch_coverage() -> list[str]:
-    """Ported from tests/unit/test_arch_coverage.py (deleted). A tabulated arch that is not built is the "will refuse to
-    load" row, and the generated support table must say so -- a hole on one arch is invisible to every other gate, which
-    all run on whichever arch the developer's own card happens to be. Device-free: reads `hardware.json` only.
+    """Every architecture the contract holds (`hardware/`) is built, and the generated support table has its row: the contract is what is
+    built, so a context on an unbuilt architecture is a promise nothing keeps -- a hole on one arch is invisible to every other gate, which
+    all run on whichever arch the developer's own card happens to be. Device-free: reads the registry and `hardware.json` only.
 
     THE PER-TOPOLOGY HALF WENT WITH THE STATS PASSES. It asserted that every built arch carried a facts arm
     for every `(D, B)` class any other arch carried one for; there are no facts arms. It returns with the kernel, keyed
@@ -968,26 +968,20 @@ def check_arch_coverage() -> list[str]:
     except ImportError as ex:
         return [f"check_arch_coverage: could not import tools/supported.py: {ex}"]
 
+    from hardware import registry
     from measure import hardware
 
     built = set(hardware.built())
-    findings = []
     if not built:
         return ["no tabulated arch is built; nothing was brought up"]
 
-    unbuilt = sorted(set(supported.tabulated_archs()) - built)
+    findings = []
     table = supported.table()
-    for arch in unbuilt:
-        marker = f"| `{arch}` |"
-        if marker not in table:
-            findings.append(f"{arch} is tabulated and not built but has no row "
-                            f"in the README support table at all")
-            continue
-        tail = table.split(marker, 1)[1].split("\n", 1)[0]
-        if "will refuse to load" not in tail:
-            findings.append(f"{arch} is tabulated and not built, which is the "
-                            f"'will refuse to load' row; the generated support table "
-                            f"does not say so")
+    for arch in sorted({c.arch for c in registry.contexts()}):
+        if arch not in built:
+            findings.append(f"the contract holds {arch}, which is not built: narrow the contract or bring the architecture up")
+        elif f"| `{arch}` |" not in table:
+            findings.append(f"the contract holds {arch} but the generated support table has no row for it")
     return findings
 
 

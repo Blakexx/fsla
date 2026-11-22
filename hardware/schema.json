@@ -1,0 +1,16 @@
+{
+  "facts": [
+    {"name": "cc", "type": "int", "unit": "compute capability x10", "read": "DEVICE", "doc": "major * 100 + minor * 10, e.g. 900"},
+    {"name": "regs_per_sm", "type": "int", "unit": "32-bit registers", "read": "DEVICE", "doc": "registers one SM holds"},
+    {"name": "smem_per_sm", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerMultiprocessor"},
+    {"name": "smem_per_cta_optin", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerBlockOptin: the opt-in dynamic maximum of one CTA"},
+    {"name": "max_threads_per_sm", "type": "int", "unit": "threads", "read": "DEVICE", "doc": "resident threads one SM holds"},
+    {"name": "tensor", "type": "set<enum>", "unit": "MMA instruction kinds", "read": "DEVICE",
+     "members": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"], "doc": "the tensor-core instruction kinds the device issues"},
+    {"name": "instructions", "type": "set<enum>", "unit": "instruction capabilities", "read": "DEVICE",
+     "members": ["bf16_cvt_packed", "reg_transpose_b16", "bf16_simd_arith", "bf16_simd_fma"], "doc": "the instruction capabilities kernels select code on (common/hardware.json's INSTRUCTION caps)"},
+    {"name": "d_v", "type": "int", "unit": "value channels", "read": "CALL", "doc": "the value width of the call's state"},
+    {"name": "levels", "type": "int", "unit": "hierarchy levels", "read": "CALL", "doc": "the depth of the call's hierarchy (decode's D)"},
+    {"name": "decay", "type": "int", "unit": "0 or 1", "read": "CALL", "doc": "whether the call's recurrence decays"}
+  ]
+}

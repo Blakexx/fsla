@@ -86,7 +86,7 @@ A kernel states what it keeps beside the unit that compiles it, in Starlark (`ba
 list as the toolkit demangles it with `@<field>@` for each template argument of the key and `@cc@` for the architecture (`decode`'s is
 `fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
 `<FAMILY>_DECLARATIONS`, `arm_declaration(rule, allow, reason, where = {field: [values]})`s over the arms they select. `arm_family(kernel =, declarations =)` generates each arm's EXACT pattern
-(`bazel/arms.bzl`'s `arm_kernel_pattern`: the template's text escaped, anchored at `^void` and the `(` of the parameter list) for each arm the build carries (`--//:<family>_arms`) and
+(`bazel/arm_emit.py`'s `kernel_pattern`: the template's text escaped, anchored at `^void` and the `(` of the parameter list) for each arm the build carries (`--//:<family>_arms`) and
 each architecture it carries (`--//:archs`), and the declarations on the arms they select; nobody writes a kernel regex by hand for an arm.
 The architecture is the attachment's: a declaration carries none, and `arch` on the Starlark struct says which build target it attaches to (none: every one the unit is built for); the
 library rule writes one file (`<label>_declarations.json`: per architecture, its declarations and its arms) and the gate reads each cubin's under its own architecture. A

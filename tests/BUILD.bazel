@@ -5,10 +5,9 @@ visible; a device tier runs alone. Every tier takes the library: collecting a ti
 load("@bazel_skylib//rules:common_settings.bzl", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("//bazel:arms.bzl", "arm_family", "arm_selection")
+load("//bazel:arms.bzl", "arm_family", "arm_rows", "arm_selection")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
-load("//csrc/fsla:src/decode/arms.bzl", "DECODE_DOMAINS", "DECODE_KEY")
 load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
 
 #: THE LAB'S UNIT TESTS: the lab's, the dev config's and the measurement declaration's (`declare.py`), which `:lab` runs and `:cpu` leaves out
@@ -52,6 +51,14 @@ cc_binary(
     ],
 )
 
+#: the fixture's key and the domain of each field, the decode family's shape
+_FIXTURE_KEY = ["d_v", "levels", "decay"]
+_FIXTURE_DOMAINS = {
+    "d_v": [32, 64],
+    "levels": [1, 2, 3, 4],
+    "decay": [0, 1],
+}
+
 #: THE FIXTURE ARM FAMILY (tests/unit/fixtures/fixture_arms.bzl): the macro of bazel/arms.bzl on a family that is not a shipped one. Its three rows make a unit each for each built architecture, its selection header names the arms
 #: `--//tests:fixture_arms` does, and its table is the rows (tests/unit/test_arm_family.py reads all three)
 string_list_flag(
@@ -75,10 +82,10 @@ arm_family(
     name = "fixture",
     arms = FIXTURE_ROWS,
     built_archs = BUILT_ARCHS,
-    domains = DECODE_DOMAINS,
+    domains = _FIXTURE_DOMAINS,
     flag = ":fixture_arms",
     includer = "the fixture's arm units",
-    key = DECODE_KEY,
+    key = _FIXTURE_KEY,
     unit = {
         "arm_header": "fixture_arm.cuh",
         "copts": NVCC_FLAGS,
@@ -90,13 +97,18 @@ arm_family(
 
 #: the host arm switch's probe over a synthetic selection header: one binary each for a build carrying two of the fixture's
 #: three arms and one carrying none (c10's `TORCH_CHECK` is the refusal; the test hands its library path)
+arm_rows(
+    name = "arm_switch_rows",
+    arms = json.encode(FIXTURE_ROWS),
+    key = _FIXTURE_KEY,
+)
+
 [arm_selection(
     name = "arm_switch_%s_selection" % variant,
     dir = "arm_switch_%s" % variant,
     family = "fixture",
     includer = "the arm switch's probe",
-    key = list(DECODE_KEY),
-    rows = json.encode(FIXTURE_ROWS),
+    rows = ":arm_switch_rows",
     selected = selected,
 ) for variant, selected in {"built": ["0", "2"], "empty": []}.items()]
 
@@ -132,6 +144,8 @@ pytest_tier(
         "@warpline//:recorder",
         ":arm_switch_probe_built",
         ":arm_switch_probe_empty",
+        "//csrc/fsla:decode_arms_gen",
+        "//csrc/fsla:decode_plan",
         ":fixture_arm_set",
         ":fixture_selection",
         ":fixture_table",

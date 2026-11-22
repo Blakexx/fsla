@@ -26,6 +26,7 @@
   "requirements.lock",
   "fsla",
   "fsla_cu13",
+  "hardware",
   "sgconfig.yml",
   "tests",
   "tools",

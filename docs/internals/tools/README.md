@@ -23,7 +23,7 @@ target ([`measurement.md`](../../measurement.md)).
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built under | `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`wheels.py`](wheels.md) | the graph's library of a clean commit, packaged as the pure-Python wheel and the binary plugin | a person, at a release (`bazel run //:wheels`) | the wheels |
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
-| `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
+| `supported.py` | the README's supported-configuration table, generated from the contract (`hardware/`) — a REPORT, not a claim | a person, after an arm change | the table |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `ratify.py`, every kernel gate | — |
 | `build/dag_to_dot.py` | a DAG tuple (`fsla.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change: `fsla/engine/runner.py` pushes one NVTX range per DAG node, so one `nsys` run settles what a host-side span is, and `--dot` checks a page's diagram against the DAG | the `.svg` beside its page |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |

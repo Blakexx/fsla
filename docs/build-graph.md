@@ -111,9 +111,11 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   (`csrc/fsla/units.bzl`'s `RUNTIME_UNITS`, `//csrc/fsla:runtime`, held to `tools/kernels.py`'s `runtime_units` by
   `tests/unit/test_units_list.py`); a family's arm units are the next section's.
 - <a id="arms"></a>A KERNEL'S ARMS are Bazel targets declared in Starlark: `csrc/fsla/src/<kernel>/arms.bzl` holds the arm
-  key (`<FAMILY>_KEY`), each field's domain and the arms, one row of the key each in canonical order (the decode's holds its sixteen;
-  a kernel not built on this line declares no family). `bazel/arms.bzl`'s `arm_family` reads
-  that one list and makes the family's pieces: one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
+  key (`<FAMILY>_KEY`), the kernel's name and its declarations; the arms are literal rows with each field's domain (a family with per-arm
+  units: the fixture's), or a rows file a host tool writes (decode's: `arms_gen` evaluates the family's launch function over the contract in
+  `hardware/` and fails the build on a contract context no arm covers, [`internals/decode/arms_gen.md`](internals/decode/arms_gen.md)); a kernel
+  not built on this line declares no family. `bazel/arms.bzl`'s `arm_family` reads
+  that one list and makes the family's pieces (the selection header, table and declarations written by `bazel/arm_emit.py` over the rows file): one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
   a generated source that defines the arm under its own selection guard) when the family has per-arm units; the selection
   header of the build (`<family>_selection.inc`, from `--//:<family>_arms`: indices or `all`, empty for every arm, an index
   out of range refused); and the Python table (`<family>_arms.py`: the key and the rows) that the record, the arm gate and
@@ -241,7 +243,7 @@ date or host, so the same tree writes the same bytes.
 | committed file | the graph writes it | the test | the update |
 |---|---|---|---|
 | `tools/manifests/derivation.json` | `//tools:derivation_record`: the derivation harness the graph built, run over the sources the declared cases name | `//:derivation` | `//:derivation_update` |
-| `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the hardware table, the toolchain record | `//:readme` | `//:readme_update` |
+| `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract (`hardware/`), the hardware table, the toolchain record | `//:readme` | `//:readme_update` |
 | `tools/devbox_image.json` | `//:devbox_image_record`: `//:image`'s content digest (`tools/oci_layout.py --record`) | `//:devbox_image` | `//:devbox_image_update` |
 
 `common/hardware.cuh` is not a committed file: it is a graph output the units include, and nothing checks a copy in. A change to the

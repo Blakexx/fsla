@@ -6,7 +6,7 @@
 component. And one page a Python module group the kernels' host side is built from: `engine/` mirrors `fsla/engine/`
 (the package, the rule layer, the carve planner, the two DAGs), `state.md` mirrors `fsla/_state.py`, `paging/paging.md`
 mirrors `fsla/ops/paging.py` and `padding.md` mirrors `fsla/ops/padding.py`. `tools/` mirrors `tools/`, one page a
-script with something to say ([the tools map](tools/README.md)).
+script with something to say ([the tools map](tools/README.md)); `hardware/` mirrors `hardware/` (the contract registry: [its page](hardware/registry.md)).
 
 **No exemptions.** The per-arm units are the graph's, generated into its output tree from each family's `arms.bzl`
 ([`docs/build-graph.md`](../build-graph.md#arms)); no source in `csrc/fsla/` is generated, so every source file has its page.

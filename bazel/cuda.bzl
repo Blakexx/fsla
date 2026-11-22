@@ -15,6 +15,7 @@ CudaUnitInfo = provider(
         "units": "depset of struct(source, report, object, sass): each unit's source, nvcc's diagnostics, its object, its SASS as text",
         "declarations": "depset of struct(arch, kernel, rule, allow, reason): the declarations stated beside the units (`declaration`), an arm family's among them",
         "arms": "depset of struct(arch, family, arm, kernel): the arms a family declares, each with its exact kernel pattern, which the gate holds the binary to",
+        "declaration_files": "depset of the files an action wrote for an arm family whose rows are known only when the build runs (`arm_declarations`): the same declarations and arms as JSON, merged by the gate",
     },
 )
 
@@ -50,7 +51,7 @@ def regex_escape(text):
 
 def kernel_pattern(text):
     """The exact pattern of a kernel over its demangled name: `text` is the name up to its parameter list (the toolkit's `cu++filt`),
-    anchored at the return type and the parameter list, as `arm_kernel_pattern` anchors an arm's."""
+    anchored at the return type and the parameter list, as `kernel_pattern` of `bazel/arm_emit.py` anchors an arm's."""
     return "^void " + regex_escape(text) + "\\("
 
 #: nvcc's options a unit never states: the compile's mode and the architectures are the rule's (`archs`), never a `copts` entry
@@ -181,6 +182,7 @@ def _cuda_unit_impl(ctx):
             units = depset(units),
             declarations = depset([declaration(**json.decode(d)) for d in ctx.attr.declarations]),
             arms = depset(),
+            declaration_files = depset(),
         ),
         cc_common.merge_cc_infos(direct_cc_infos = [CcInfo(linking_context = linking)], cc_infos = [merged]),
     ]

@@ -168,8 +168,28 @@ def _gated(ctx):
     for arm in depset(transitive = [i.arms for i in infos]).to_list():
         if arm.arch in spec:
             spec[arm.arch]["arms"].append({"family": arm.family, "arm": arm.arm, "kernel": arm.kernel})
+    files = depset(transitive = [i.declaration_files for i in infos]).to_list()
     declared = ctx.actions.declare_file(ctx.label.name + "_declarations.json")
-    ctx.actions.write(declared, json.encode_indent({"architectures": spec}) + "\n")
+    if not files:
+        ctx.actions.write(declared, json.encode_indent({"architectures": spec}) + "\n")
+        return declared, reports
+    #: an arm family whose arms the build computes (`arm_declarations`) wrote its declarations as files, added to the ones stated above
+    base = ctx.actions.declare_file(ctx.label.name + "_declarations_base.json")
+    ctx.actions.write(base, json.encode_indent({"architectures": spec}) + "\n")
+    args = ctx.actions.args()
+    args.add(ctx.file._arm_emit)
+    args.add("merge")
+    args.add("--base", base)
+    args.add_all(files, before_each = "--file")
+    args.add("--out", declared)
+    ctx.actions.run(
+        executable = ctx.file._python,
+        arguments = [args],
+        inputs = [base, ctx.file._arm_emit] + files,
+        outputs = [declared],
+        mnemonic = "FslaDeclarations",
+        progress_message = "Merging the arm families' declarations for %{label}",
+    )
     return declared, reports
 
 def warpline_root(ctx, target):
@@ -220,6 +240,7 @@ _SASS_GATE_ATTRS = {
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
     "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
+    "_arm_emit": attr.label(default = "//bazel:arm_emit.py", allow_single_file = True),
 }
 
 def _extension_impl(ctx):
@@ -294,6 +315,7 @@ def _extension_impl(ctx):
             units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep]),
             declarations = depset(transitive = [dep[CudaUnitInfo].declarations for dep in ctx.attr.deps if CudaUnitInfo in dep]),
             arms = depset(transitive = [dep[CudaUnitInfo].arms for dep in ctx.attr.deps if CudaUnitInfo in dep]),
+            declaration_files = depset(transitive = [dep[CudaUnitInfo].declaration_files for dep in ctx.attr.deps if CudaUnitInfo in dep]),
         ),
     ]
 
