@@ -225,7 +225,7 @@ index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
   a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
-  resolving (`tools/docrefs.py`), the devbox image the one the tree names and checked (`tools/dev.py container
+  pinned, read, current and resolving (`tools/docrefs.py`: nothing pending, unread or broken), the devbox image the one the tree names and checked (`tools/dev.py container
   gate`, which builds `//:image`). Each runs in the
   checkout, outside the sandbox and never cached, its input the repository's state.
 

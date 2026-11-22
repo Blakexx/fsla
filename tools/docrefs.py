@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """THE DOC REFERENCES: every place a doc cites the tree is pinned to the content it was last read against.
 
-    bazel test //:docrefs                       # the gate: every reference pinned, the lock matching the docs
+    bazel test //:docrefs                       # the gate: every reference pinned and read, none pending or broken
     bazel run //:docrefs -- pending            # the references whose target changed or vanished, with the change
     bazel run //:docrefs -- accept DOC...      # pin DOC's new and changed references, read against their targets
-    bazel run //:docrefs -- accept --whole DOC  # the docs pass read all of DOC: every reference in it is read
+    bazel run //:docrefs -- accept --whole DOC  # the whole of DOC was read: every reference in it is read
     bazel run //:docrefs -- prune              # drop the pins of references no doc makes any more
-    bazel run //:docrefs -- --closing          # the docs pass is done: nothing pending, unread or broken
     bazel run //:docrefs -- init               # pin today's references, unread; refused when a lock exists
 
 A REFERENCE is a doc's citation of a primitive: `` `tools/ratify.py`'s `main` ``, a dotted name in code font whose
@@ -19,11 +18,10 @@ collapsed -- so a reformat or a comment edit moves no pin.
 
 `docs/references.lock.json` holds one pin per (doc, target) -- `.claude/references.lock.json` for the docs the
 public mirror does not ship: the digest, the commit it was pinned at, and whether a docs pass has read it (`init` pins today's references UNREAD). A pinned reference whose target's digest moved is
-PENDING, and so is one whose target vanished; neither fails the gate, because docs are rewritten in one pass with the
-whole change in view, and `pending` shows each target's change since its pin. The gate fails on a reference the lock
-does not hold (a new citation: read it, then `accept` its doc), a new reference that resolves to nothing, and a pin
-whose reference no doc makes any more (`prune`). The references that were already broken at `init` are the lock's
-backlog: it only shrinks. `--closing` fails on anything pending, unread or broken.
+PENDING, and so is one whose target vanished. THE GATE FAILS ON ANY REFERENCE NOT CLEAN (a commit that changes what a doc
+cites re-reads and re-pins those references in the same commit): one the lock does not hold, one pending, one unread, one
+that resolves to nothing, and a pin whose reference no doc makes any more (`prune`). Its message names each citing
+doc:line and target and the one command that re-pins after the sentence was read against the target.
 Docs: docs/internals/tools/docrefs.md.
 """
 from __future__ import annotations
@@ -409,15 +407,6 @@ def _lock() -> dict[tuple[str, str], dict] | None:
     return _load(blobs) if blobs else None
 
 
-def _head_lock() -> dict[tuple[str, str], dict] | None:
-    blobs = []
-    for path in LOCKS.values():
-        shown = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=ROOT, capture_output=True, text=True)
-        if shown.returncode == 0:
-            blobs.append(shown.stdout)
-    return _load(blobs) if blobs else None
-
-
 def _head_sha() -> str:
     return subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True, text=True,
                           check=True).stdout.strip()
@@ -433,16 +422,16 @@ def survey(files: set[str], lock: dict | None) -> dict[tuple[str, str], tuple[Ta
     return out
 
 
-def verdict(found, lock, head):
-    """``(new, stale, grown, pending)``: references the lock lacks, pins no doc makes, broken pins HEAD's lock did not
-    hold, and pinned references whose target's digest moved (a vanished target reads None)."""
+def verdict(found, lock):
+    """``(new, stale, broken, unread, pending)``: references the lock lacks, pins no doc makes, references that resolve
+    to nothing, pinned references no docs pass has read, and pinned references whose target's digest moved (a vanished
+    target reads None)."""
     new = {k: v for k, v in found.items() if k not in lock}
     stale = sorted(k for k in lock if k not in found)
-    grown = sorted(k for k, v in lock.items() if v["sha256"] is None and head is not None
-                   and (k not in head or head[k]["sha256"] is not None))
-    pending = {k: (found[k], lock[k]) for k in found.keys() & lock.keys()
-               if lock[k]["sha256"] is not None and found[k][2] != lock[k]["sha256"]}
-    return new, stale, grown, pending
+    broken = sorted(k for k in found.keys() & lock.keys() if found[k][2] is None and lock[k]["sha256"] is None)
+    unread = sorted(k for k in found.keys() & lock.keys() if not lock[k]["reviewed"])
+    pending = {k: (found[k], lock[k]) for k in found.keys() & lock.keys() if found[k][2] != lock[k]["sha256"]}
+    return new, stale, broken, unread, pending
 
 
 def _pin(target: Target, digest: str | None, sha: str, doc: str, reviewed: bool) -> dict:
@@ -453,7 +442,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="?", default="check", choices=("check", "pending", "accept", "prune", "init"))
     ap.add_argument("docs", nargs="*", help="accept: the docs whose references were read")
-    ap.add_argument("--closing", action="store_true", help="check: also fail on anything pending, unread or broken")
     ap.add_argument("--whole", action="store_true",
                     help="accept: every reference in the doc was read, not only the new and changed ones")
     a = ap.parse_intermixed_args()
@@ -475,18 +463,25 @@ def main() -> int:
     if a.command == "accept":
         if not a.docs:
             raise SystemExit("docrefs accept: name the docs whose references you read")
-        sha, refused = _head_sha(), []
+        sha, refused, dropped = _head_sha(), [], []
         for doc in a.docs:
             doc = str(Path(doc).resolve().relative_to(ROOT)) if Path(doc).exists() else doc
             for key, (target, line, digest) in sorted((k, v) for k, v in found.items() if k[0] == doc):
                 pin = lock.get(key)
                 if digest is None:
-                    if pin is None or pin["sha256"] is not None:
+                    if pin is not None and pin["sha256"] is not None:
+                        #: the target left and the sentence was read: a bare name stops being a citation, and a reference
+                        #: of any other form shows again as one that resolves to nothing, which the gate fails
+                        del lock[key]
+                        dropped.append(f"  {doc}:{line}: `{target}` names nothing now; its pin is dropped")
+                    else:
                         refused.append(f"  {doc}:{line}: `{target}` resolves to nothing")
                     continue
                 if pin is None or pin["sha256"] != digest or (a.whole and not pin["reviewed"]):
                     lock[key] = _pin(target, digest, sha, doc, True)
         _dump(lock)
+        if dropped:
+            print("\n".join(dropped))
         if refused:
             print("docrefs accept: these references stay unpinned until they name something that exists:")
             print("\n".join(refused))
@@ -502,7 +497,7 @@ def main() -> int:
         print(f"docrefs: pruned {len(gone)} pin(s) no doc makes any more")
         return 0
 
-    new, stale, grown, pending = verdict(found, lock, _head_lock())
+    new, stale, broken, unread, pending = verdict(found, lock)
 
     if a.command == "pending":
         by_target: dict[Target, list] = {}
@@ -521,23 +516,26 @@ def main() -> int:
         print(f"{doc}:{line}: the reference to `{target}` {why}")
     for doc, target in stale:
         print(f"{doc}: the pin for `{target}` names a reference the doc no longer makes (`prune`)")
-    for doc, target in grown:
-        print(f"{doc}: `{target}` joined the broken backlog, which only shrinks")
-    unread = sum(1 for v in lock.values() if not v["reviewed"])
-    broken = sum(1 for v in lock.values() if v["sha256"] is None)
-    failed = bool(new or stale or grown)
-    if a.closing:
-        for (doc, target), ((_, line, digest), _) in sorted(pending.items()):
-            print(f"{doc}:{line}: `{target}` {'vanished' if digest is None else 'changed'} since its pin")
-        for (doc, target), pin in sorted(lock.items()):
-            if pin["sha256"] is None:
-                print(f"{doc}: `{target}` resolves to nothing")
-        unread_docs = sorted({doc for (doc, _), pin in lock.items() if not pin["reviewed"]})
-        if unread_docs:
-            print(f"docs with unread references (`accept --whole` once read): {', '.join(unread_docs)}")
-        failed = failed or bool(pending or unread or broken)
-    print(f"docrefs: {'FAIL' if failed else 'OK'} -- {len(found)} reference(s), {len(pending)} pending, {unread} unread, "
-          f"{broken} broken")
+    for key in broken:
+        doc, target = key
+        print(f"{doc}:{found[key][1]}: `{target}` resolves to nothing: fix the sentence")
+    for key in sorted(pending):
+        (_, line, digest), _ = pending[key]
+        print(f"{key[0]}:{line}: `{key[1]}` {'vanished' if digest is None else 'changed'} since its pin: read the sentence "
+              "against the target (`bazel run //:docrefs -- pending` shows the change), fix it if it no longer holds")
+    for key in unread:
+        print(f"{key[0]}:{found[key][1]}: `{key[1]}` was never read against its target")
+    docs_to_read = sorted({k[0] for k in pending} | {k[0] for k in new if found[k][2] is not None})
+    whole = sorted({k[0] for k in unread})
+    if docs_to_read:
+        print("after reading: bazel run //:docrefs -- accept " + " ".join(docs_to_read))
+    if whole:
+        print("after reading each reference of the whole doc: bazel run //:docrefs -- accept --whole " + " ".join(whole))
+    if pending or new or unread or broken:
+        print("then stage `docs/references.lock.json` and `.claude/references.lock.json` (they move with the docs).")
+    failed = bool(new or stale or broken or unread or pending)
+    print(f"docrefs: {'FAIL' if failed else 'OK'} -- {len(found)} reference(s), {len(pending)} pending, {len(unread)} unread, "
+          f"{len(broken)} broken")
     return 1 if failed else 0
 
 

@@ -1,9 +1,10 @@
 # `tools/docrefs.py` — the doc references
 
 Mirrors `tools/docrefs.py`. Every citation a doc makes of the tree is pinned to the content of what it cites, so a
-change to that content marks the citation for rereading instead of leaving it to rot. Docs are rewritten in one pass
-at the end of a piece of work, with the whole change in view, so a changed target does not fail a commit; it waits in
-`pending` until that pass.
+change to that content marks the citation for rereading instead of leaving it to rot. A commit that changes code or a
+doc another doc cites re-reads those citations and re-pins them in the same commit (Blake, 2026-11-22): the gate fails
+on a reference that is pending, unread or broken, so a change cannot land with a sentence left standing over a target it
+no longer describes.
 
 ## What a reference is
 
@@ -35,15 +36,28 @@ Each lock records the Python version its digests were taken under (`PYTHON`): `a
 versions, so a lock read under another one would show drift where nothing moved, and the tool refuses to give a verdict
 there. It runs from the checkout's venv, as the commit gate does.
 
-## The gate and the pass
+## The gate and the re-read
 
 `verdict` compares the survey to the locks. The gate (`bazel test //:docrefs`, run by the commit gate and a CI step)
-fails on a reference no pin holds (read it, then `accept` its doc; a reference that resolves to nothing cannot be
-accepted), a pin whose reference no doc makes any more (`prune`), and a broken pin HEAD's lock did not hold, so the
-broken backlog only shrinks. A pinned reference whose target's digest moved or vanished is pending: `pending` prints
-each target with the docs citing it and the target's own source as a diff from its pin (`change`).
+fails on any reference that is not clean:
 
-`accept DOC` pins the doc's new and changed references; `accept --whole DOC` also marks every other reference in it
-read, for the docs pass that read the whole page. `--closing` is the pass's end: it fails on anything pending, unread
-or broken, and lists each. `accept` writes `docs/references.lock.json` and/or `.claude/references.lock.json`: stage
-them.
+- NEW: a citation no pin holds, or one that resolves to nothing (a reference that resolves to nothing cannot be accepted);
+- PENDING: a pinned reference whose target's digest moved or vanished since its pin;
+- UNREAD: a pin no docs pass has read (`init` pinned the tree's references unread);
+- BROKEN: a reference that resolved to nothing when it was pinned and still does;
+- STALE: a pin whose reference no doc makes any more (`prune`).
+
+Its message names each citing `doc:line` and target, and the one command that re-pins after the reading. The reading is
+the work: for each pending reference `pending` prints the target's own source as a diff from its pin (`change`), the
+citing sentence is read against it and fixed where it no longer holds, and only then is the doc accepted. Accepting a doc
+without reading each of its pending references is the failure the gate exists to prevent.
+
+`accept DOC` pins the doc's new and changed references (a pending one is a changed one), read; `accept --whole DOC` also
+marks every other reference in it read, for a pass that read the whole page. When the target of a pinned reference is
+gone, `accept` drops its pin: a bare name on a mirror page then stops being a citation, and a reference of any other form
+shows again as one that resolves to nothing, which stays red until the sentence names something that exists. `accept`
+writes `docs/references.lock.json` and/or `.claude/references.lock.json`: stage them.
+
+`tests/unit/test_docrefs.py` holds the gate to a fixture tree: an unread reference is red until its doc is accepted whole,
+a changed target is red naming the citing `doc:line` and the accept command and green once accepted, a comment in the
+target moves nothing, and a vanished target is red until its sentence is fixed.

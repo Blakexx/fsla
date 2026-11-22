@@ -223,7 +223,8 @@ A document nothing checks is a document that drifts. These run in the commit gat
 ([`internals/tools/lint.md`](internals/tools/lint.md)):
 
 - **`tools/docrefs.py`**: every citation a doc makes of the tree is pinned to its target's content; a new
-  citation is read and accepted, and a changed target waits in `pending` for the docs pass
+  citation is read and accepted, and a commit that changes a cited target re-reads its citations and re-pins them in
+  the same commit: the gate fails on any pending, unread or broken reference
   ([`internals/tools/docrefs.md`](internals/tools/docrefs.md)).
 - **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/fsla/` has a mirror doc at the same
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its

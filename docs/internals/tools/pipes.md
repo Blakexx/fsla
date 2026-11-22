@@ -2,7 +2,7 @@
 
 KERNEL_STANDARDS §29.14. One set of ncu counters for any kernel's launch (`METRICS`, `STALLS`), read by the lab
 (`tools/lab.py run`, every experiment kernel) and by the production capture ([`pipe_counters.py`](pipe_counters.md),
-one carry launch), and priced the same way for both: each pipe's cycles a unit at `common/hardware.json`'s rates,
+one launch of a kernel family), and priced the same way for both: each pipe's cycles a unit at `common/hardware.json`'s rates,
 the largest binding.
 
 <a id="price"></a>

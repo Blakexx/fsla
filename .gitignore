@@ -8,6 +8,11 @@ dist/
 # Bazel's output links (`.bazelrc`'s `--symlink_prefix=.bazel/`); `.clangd` reads the compile database through `.bazel/bin`
 /.bazel/
 
+# the binary plugin's build outputs: the graph writes them under `.bazel/bin/fsla_cu13/`, never the source tree; docs cite the record,
+# and `tools/docrefs.py` reads a path the tree ignores as a generated one
+/fsla_cu13/_build_config.py
+/fsla_cu13/*.so
+
 # the dev container's host mounts, written by `python3 tools/dev.py container compose` (host paths, never committed)
 .devcontainer/compose.local.yaml
 .devcontainer/devbox_image.local

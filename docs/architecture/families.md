@@ -2,7 +2,7 @@
 
 Every kernel runs on every product it is built for, specialized to it at compile time, and adapts to the product's
 numbers rather than holding them (the constitution's R8; [`../KERNEL_STANDARDS.md` section
-8](../KERNEL_STANDARDS.md#8-arch-mapping-at-the-atom-closed-world-at-the-arm)). This page is how that is organized.
+8](../KERNEL_STANDARDS.md#s8)). This page is how that is organized.
 
 ## Products, builds and families
 

@@ -9,8 +9,8 @@ token's reader factor ``r`` out (`fsla.ops.prefill`), so each is multiplied by i
 slot's envelope (the same reference on ``|v|``).
 
 OWED: no carry kernel is built on this line, so each test that launches it is reported owed (`requires_kernel("carry")`,
-`tests/conftest.py`) and runs whole the day the registry (`fsla.ops._ext.LAUNCHES`) says it is built; the decomposition test runs no
-kernel and holds.
+`tests/conftest.py`): a strict xfail on the carry's not-built refusal, so the day the carry is built a marked test that passes is a
+failure until its marker comes off; the decomposition test runs no kernel and holds.
 
 Symbols: ``W`` the window (`fsla.ops.window.window_of`, the device's), ``L`` tokens, ``C`` value channels.
 """

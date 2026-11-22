@@ -3,7 +3,7 @@
 Mirrors `csrc/fsla/src/common/select.{cu,cuh}`.
 
 Every kernel adapts to its card (the constitution's R8; [`KERNEL_STANDARDS.md` section
-8](../../KERNEL_STANDARDS.md#8-arch-mapping-at-the-atom-closed-world-at-the-arm)): its sizes come from its plan at a
+8](../../KERNEL_STANDARDS.md#s8)): its sizes come from its plan at a
 BUILD ([`hardware.md#builds`](hardware.md#builds)), and the host reaches the build of the device it holds through
 this one layer -- the device's card, the builds the binary carries, one branch to the card's build at compile time --
 rather than a switch over compute capabilities in each kernel.

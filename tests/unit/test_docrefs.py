@@ -4,6 +4,8 @@ No GPU and no repository: each test plants a small tree under `tmp_path` and poi
 """
 from __future__ import annotations
 
+import sys
+
 import docrefs
 import pytest
 
@@ -78,18 +80,94 @@ def test_device_code_pins_a_function_body_or_a_named_region(tree):
     assert docrefs.read(docrefs.Target("csrc/k.cu", "fold"), files) != region
 
 
-def test_the_verdict_fails_what_is_new_or_stale_and_only_reports_what_changed():
+def test_the_verdict_names_what_is_new_stale_broken_unread_and_pending():
     target = docrefs.Target("fsla/a.py", "f")
     pin = {"doc": "docs/p.md", "target": str(target), "sha256": "aaaa", "pinned_at": "0", "reviewed": True}
     lock = {("docs/p.md", str(target)): pin,
             ("docs/p.md", "fsla/gone.py"): {**pin, "target": "fsla/gone.py"},
-            ("docs/p.md", "fsla/broken.py"): {**pin, "target": "fsla/broken.py", "sha256": None}}
+            ("docs/p.md", "fsla/broken.py"): {**pin, "target": "fsla/broken.py", "sha256": None},
+            ("docs/p.md", "fsla/unread.py"): {**pin, "target": "fsla/unread.py", "reviewed": False}}
     found = {("docs/p.md", str(target)): (target, 3, "bbbb"),
              ("docs/p.md", "fsla/broken.py"): (docrefs.Target("fsla/broken.py"), 4, None),
+             ("docs/p.md", "fsla/unread.py"): (docrefs.Target("fsla/unread.py"), 5, "aaaa"),
              ("docs/q.md", str(target)): (target, 1, "bbbb")}
-    new, stale, grown, pending = docrefs.verdict(found, lock, head={})
+    new, stale, broken, unread, pending = docrefs.verdict(found, lock)
     assert set(new) == {("docs/q.md", str(target))}
     assert stale == [("docs/p.md", "fsla/gone.py")]
-    assert grown == [("docs/p.md", "fsla/broken.py")]
+    assert broken == [("docs/p.md", "fsla/broken.py")]
+    assert unread == [("docs/p.md", "fsla/unread.py")]
     assert set(pending) == {("docs/p.md", str(target))}
-    assert docrefs.verdict(found, lock, head=lock)[2] == []
+
+
+#: THE GATE: a doc is clean only when every reference in it is pinned, read and current
+
+def _run(*args: str) -> int:
+    """The tool's command line, as `bazel run //:docrefs -- ARGS` gives it."""
+    saved, sys.argv = sys.argv, ["docrefs", *args]
+    try:
+        return docrefs.main()
+    finally:
+        sys.argv = saved
+
+
+CODE_V1 = "def f(x):\n    return x + 1\n"
+DOC = "# Page\n\nThe function adds one: `fsla/a.py`'s `f`.\n"
+
+
+@pytest.fixture
+def repo(tree, monkeypatch):
+    """``plant(files)`` adds tracked files; the tool's git reads are held to what was planted."""
+    held: set[str] = set()
+    monkeypatch.setattr(docrefs, "tracked", lambda: set(held))
+    monkeypatch.setattr(docrefs, "_head_sha", lambda: "0" * 12)
+
+    def plant(files: dict[str, str]) -> None:
+        held.update(tree(files))
+    plant({"fsla/a.py": CODE_V1, "docs/p.md": DOC, ".github/mirror/declarations.json": '{"private": []}\n'})
+    return plant
+
+
+def test_an_unread_reference_makes_the_gate_red_and_accepting_the_whole_doc_makes_it_green(repo, capsys):
+    assert _run("init") == 0
+    assert _run() == 1
+    assert "docs/p.md:3: `fsla/a.py::f` was never read" in capsys.readouterr().out
+    assert _run("accept", "--whole", "docs/p.md") == 0
+    assert _run() == 0
+
+
+def test_a_changed_target_makes_the_gate_red_naming_the_doc_and_the_command_and_an_accept_makes_it_green(repo, capsys):
+    _run("init")
+    _run("accept", "--whole", "docs/p.md")
+    assert _run() == 0
+    repo({"fsla/a.py": "def f(x):\n    return x + 2\n"})
+    capsys.readouterr()
+    assert _run() == 1
+    out = capsys.readouterr().out
+    assert "docs/p.md:3: `fsla/a.py::f` changed since its pin" in out
+    assert "bazel run //:docrefs -- accept docs/p.md" in out
+    assert _run("accept", "docs/p.md") == 0
+    assert _run() == 0
+
+
+def test_a_comment_in_the_target_leaves_the_gate_green(repo):
+    _run("init")
+    _run("accept", "--whole", "docs/p.md")
+    repo({"fsla/a.py": "def f(x):  # reworded\n    return x + 1\n"})
+    assert _run() == 0
+
+
+def test_a_vanished_target_is_red_and_a_read_accept_drops_a_bare_name_but_a_path_form_stays_red(repo, capsys):
+    repo({"tools/t.py": "def helper():\n    pass\n", "docs/internals/tools/t.md": "# `tools/t.py`\n\n`helper` is called.\n"})
+    _run("init")
+    _run("accept", "--whole", "docs/p.md", "docs/internals/tools/t.md")
+    assert _run() == 0
+    repo({"tools/t.py": "def other():\n    pass\n", "fsla/a.py": "def g(x):\n    return x\n"})
+    capsys.readouterr()
+    assert _run() == 1
+    out = capsys.readouterr().out
+    assert "docs/internals/tools/t.md:3: `tools/t.py::helper` vanished since its pin" in out
+    assert "docs/p.md:3: `fsla/a.py::f` vanished since its pin" in out
+    _run("accept", "docs/p.md", "docs/internals/tools/t.md")
+    assert "`tools/t.py::helper` names nothing now" in capsys.readouterr().out
+    assert _run() == 1  #: the possessive names a function that is gone: it shows as a reference that resolves to nothing
+    assert "docs/p.md:3: the reference to `fsla/a.py::f` resolves to nothing" in capsys.readouterr().out

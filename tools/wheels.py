@@ -173,7 +173,7 @@ except ImportError as e:
 
 def check(wheels: Path) -> int:
     """A scratch venv over this interpreter's torch: `fsla` alone refuses a kernel naming the extra, and with
-    `fsla-cu13` beside it the binary loads and names its carry arms."""
+    `fsla-cu13` beside it the binary loads and names its decode arms."""
     (core,) = wheels.glob("fsla-*-py3-none-any.whl")
     (plugin,) = wheels.glob(f"{PLUGIN}-*.whl")
     torch_site = Path(subprocess.run([sys.executable, "-c", "import torch, pathlib; print(pathlib.Path(torch.__file__)"
