@@ -63,7 +63,7 @@ def test_a_layer_cells_arms_are_its_declared_constructions(binary):
 def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
-    with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:contract"):
+    with pytest.raises(RuntimeError, match="lacks the declared arms.*rebuild it"):
         provider.arms(by_name(DECODE_CELL))
 
 
@@ -82,7 +82,7 @@ def test_a_cell_is_refused_by_name(binary):
     with pytest.raises(TypeError, match="fsla's runner takes a central carry cell or layer cell"):
         provider.arms(by_name("qkv-L1024-dv64"))
     binary.decode = []
-    with pytest.raises(RuntimeError, match="iteration build"):
+    with pytest.raises(RuntimeError, match="lacks the declared arms"):
         provider.arms(by_name("flagship-alt-k4"))
 
 

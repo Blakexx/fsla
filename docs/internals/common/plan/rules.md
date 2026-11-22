@@ -8,8 +8,6 @@ the contract's ranges and the run time will evaluate it over a device's points w
   passes, No when none does and Maybe when the range straddles; `has` asks a set (one value, so Yes or No).
 - `all(tests...)` is No when any test is No, Yes when every test is Yes, else Maybe; `any(tests...)` is Yes when any is Yes, No when every
   one is No, else Maybe.
-- `ArmSet<Arm, Cap>`: the arms a matcher returns, each once; empty is NONE.
-
 - `Reach<Arm, Cap>`: what a walk reached: its arms, `gap` (the NONE leaf was visited) and the count of leaves visited. `fork(test, then, otherwise)` runs `then` when the
   test is not No and `otherwise` when it is not Yes: both on Maybe. `ladder(x, first, upto, n, hole, leaf)` is the one-fact tree decode's matcher is built of:
   `leaf(i)` for the values up to `upto[i]` (from `first`, then from the rung before), `hole()` below `first` or above the last rung.

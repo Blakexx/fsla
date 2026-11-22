@@ -180,7 +180,7 @@ _arm_set = rule(
     implementation = _arm_set_impl,
     attrs = {
         "family": attr.string(mandatory = True),
-        "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each unit, and its arm and architecture (JSON)"),
+        "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each unit, and its architecture (JSON)"),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
     },
     doc = "The arm units the build's architectures name: an architecture the build does not want is a unit it never compiles.",
@@ -262,5 +262,5 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
                 host_cc = unit["host_cc"],
                 deps = unit["deps"],
             )
-            units[":" + target] = json.encode({"arm": i, "arch": arch})
+            units[":" + target] = json.encode({"arch": arch})
     _arm_set(name = name + "_arm_set", family = name, units = units)

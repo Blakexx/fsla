@@ -136,8 +136,8 @@ NINE = [("cc", 900), ("regs_per_sm", 65536), ("smem_per_sm", 233472), ("smem_per
         ("sm_count", 114)]
 
 
-def test_a_context_with_more_than_eight_ranged_facts_is_checked_exactly_and_fast(tmp_path):
-    """All nine integer facts ranges (the old corner check refused above eight): the gap is found, at the cc the contract does not serve."""
+def test_a_context_with_nine_ranged_facts_is_checked_exactly_and_fast(tmp_path):
+    """All nine integer facts ranged: the walk is exact at any number of ranged facts and fast, and finds the gap at the cc the contract does not serve."""
     ranged = {name: {"lo": value - 1, "hi": value + 1} for name, value in NINE}
     contract = _contract_with(tmp_path, parts={"device/hopper_sm90a": ranged}, d_v={"lo": 2, "hi": 64}, levels={"lo": 1, "hi": 2},
                               decay={"lo": 0, "hi": 1})
