@@ -27,11 +27,11 @@ measured in the lab before it is written into the library.
 | piece | state |
 |---|---|
 | fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
-| decode (the `T = 1` step, over the paged fixed-size state) | **built**, but it continues a state that a prefill made, and the prefill is not built: no public call binds a fresh state for decode today, so the step is exercised only in the tests, on states they seed through the state's internal entries |
+| decode (the `T = 1` step, over the paged fixed-size state) | **built** |
 | entmax / softmax row solves, the paged state | built |
 | prefill: the carry, the gather pass, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla_op` refuses every prefill call by name until the carry exists |
 | backward | **not built.** `fsla_op` refuses any call that carries a gradient; there is no training path yet |
-| decay (the layer's and the op's `decay` slot is a facade today), depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
+| depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
 
 [`docs/open-work.md`](docs/open-work.md) is the full list of what is owed, with where each item's contract lives.
 Nothing here is a speed claim: no end-to-end performance number is stated for the built decode kernel. The measured
@@ -49,7 +49,7 @@ values and masks, and a static plan. Masks are data in each consumer's layout, a
 ([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans are frozen static
 objects chosen from the declaration, never a runtime configuration. The op is agnostic to activations: no activation
 reaches it. The producer implements a set of them and a layer's configuration selects one. Anything outside the built
-envelope is refused by name rather than routed to a slower path: there is no fallback. Decay is not supported yet.
+envelope is refused by name rather than routed to a slower path: there is no fallback.
 
 The first-class configuration is the alternating scheme: at each level one duty (read or write) is entmax and the
 other is softmax, alternating by level (`fsla.split_routing`).
@@ -66,10 +66,6 @@ cont = fsla.LayerContinuation(state=fsla.state())
 y, cont = layer(prompt, continuation=cont)   # prompt: [B, T, 1024]; the prefill (refused by name until the carry is built)
 y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode step against the fixed-size state
 ```
-
-This is the interface's shape, not a call that runs end to end today: the prefill line is refused, and a one-token call
-on a fresh, unbound state is a degenerate prefill, not a decode step, so the decode line has no state to continue until
-the prefill is built.
 
 `fsla.union_routing(width, alpha)` is the alternative level: one shared entmax solve split across the two duties.
 
@@ -96,8 +92,7 @@ routes, values, masks = produce(x, plan, weights)
 state = fsla.state()
 y, state = fsla.fsla_op(routes, values, masks, plan=prefill_plan(routing.topology, d_v), state=state)
 
-# decode: the same producer, the masks in the decode layout, and the decode plan; it continues the prefill's state,
-# so like the layer's decode line it waits on the prefill
+# decode: the same producer, the masks in the decode layout, and the decode plan
 step_plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v, consumer=DECODE)
 routes, values, masks = produce(x_token, step_plan, weights)       # x_token: [B, 1, hidden]
 y, state = decode_step_gated(routes, values, masks, state,
