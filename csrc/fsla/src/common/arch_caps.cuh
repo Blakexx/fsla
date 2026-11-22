@@ -22,7 +22,7 @@ static_assert(tabulated(kArch),
               "than letting an operation guess which implementation it has");
 
 //: THE ONE FAMILY BUILT: every other family is refused by name, here and nowhere else
-static_assert(traits_of(Build{kArch, 0}).family == Family::kHopper,
+static_assert(traits_of(Build{kArch}).family == Family::kHopper,
               "only the hopper family is built: build for sm_90a (--//:archs)");
 
 constexpr Caps kCaps = caps_of(kArch);

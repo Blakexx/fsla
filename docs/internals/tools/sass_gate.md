@@ -84,7 +84,7 @@ re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that ke
 A kernel states what it keeps beside the unit that compiles it, in Starlark (`bazel/cuda.bzl`'s `declaration(kernel, rule, allow, reason)`, the checker's form, on
 `cuda_unit(declarations = [...])`), and a family states its arms' beside the arms: `csrc/fsla/src/<family>/arms.bzl` holds `<FAMILY>_KERNEL`, the arm's kernel name up to its parameter
 list as the toolkit demangles it with `@<field>@` for each template argument of the key and `@cc@` for the architecture (`decode`'s is
-`fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
+`fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
 `<FAMILY>_DECLARATIONS`, `arm_declaration(rule, allow, reason, where = {field: [values]})`s over the arms they select. `arm_family(kernel =, declarations =)` generates each arm's EXACT pattern
 (`bazel/cuda.bzl`'s `kernel_pattern` escapes the template and anchors it at `^void` and the `(` of the parameter list, once; `bazel/arm_emit.py`'s `kernel_pattern` fills each `@<field>@`) for each arm the build carries (`--//:<family>_arms`) and
 each architecture it carries (`--//:archs`), and the declarations on the arms they select; nobody writes a kernel regex by hand for an arm.

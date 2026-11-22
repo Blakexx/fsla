@@ -27,6 +27,11 @@ nobody checked. `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`, ca
 every family's launching entry, carry included) checks every row against the driver at run
 time, so a wrong number is caught — but it is caught by a user unless you check it first.
 
+Then PROBE THE DEVICE, which admits it to the contract: run `//measure/lab:device_probe` on the card (`bazel run //tools:lab -- run device_probe --record`, then
+`bazel run //tools:lab -- page device_probe --instance LABEL`), read the candidate part it writes (`hardware/parts/device/<id>.candidate.json`), complete what
+it names in `unestablished`, and commit it renamed to `<id>.json` with a descriptor composing it. The registry refuses a candidate file, so only a reviewed part
+counts; the build's contract check then covers it ([`internals/hardware/registry.md#probe`](internals/hardware/registry.md#probe)).
+
 ## 2. Choose the window, and read the census
 
 An architecture is BUILT when its row's build chooses a window (`measure.hardware.built`,

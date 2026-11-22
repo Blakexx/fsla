@@ -21,9 +21,9 @@ never run on another's image (an sm_100 card is not run on the sm_90a image).
 <a id="carried"></a>
 ## The builds a binary carries
 
-`build/generated/builds.inc` (`FSLA_BUILDS(F)`, one `F(cc, variant)` a build) is written before every compile by
-the graph's header action from the build's architectures (`measure/hardware.py`'s `builds_header`): every
-variant of every architecture the binary compiles.
+`build/generated/builds.inc` (`FSLA_BUILDS(F)`, one `F(cc)` a build) is written before every compile by
+the graph's header action from the build's architectures (`measure/hardware.py`'s `builds_header`): one
+build of every architecture the binary compiles.
 
 <a id="in-image"></a>
 ## `in_image(b)`

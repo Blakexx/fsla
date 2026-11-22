@@ -17,6 +17,8 @@ ROOT = Path(__file__).absolute().parent
 #: declaration that makes it the contract
 PROVENANCE = ("measured_by", "validated_by", "documented_by", "declared_by")
 READS = ("DEVICE", "CALL")
+#: the suffix of a part the device probe wrote (`hardware/parts/device/<id>.candidate.json`): a candidate is never a part
+CANDIDATE = ".candidate"
 TYPES = ("int", "set<enum>")
 
 
@@ -113,6 +115,9 @@ def _normalize(fact: Fact, value, where: str):
 def part(name: str, root: Path = ROOT) -> dict:
     """A part by its name (`device/hopper_sm90a`), refused when malformed; the facts it states are checked against the schema by `expand`."""
     path = root / "parts" / f"{name}.json"
+    if name.endswith(CANDIDATE):
+        raise RegistryError(f"{path}: a CANDIDATE part, written by the device probe (`//measure/lab:device_probe`): a reviewer reads it and renames it "
+                            f"to {name[:-len(CANDIDATE)]}.json, which admits it; until then the registry refuses it")
     if not path.is_file():
         raise RegistryError(f"no part {name!r}: {path} does not exist")
     data = _read(path)
@@ -178,6 +183,9 @@ def expand(descriptor: dict, facts: dict[str, Fact], root: Path = ROOT) -> list[
 def contexts(root: Path = ROOT) -> list[Context]:
     """The contract: every context of every descriptor, refused when two are identical in every fact."""
     facts = schema(root)
+    refused = [n for n in parts(root) if n.endswith(CANDIDATE)]
+    if refused:
+        part(refused[0], root)
     out: list[Context] = []
     seen: dict[tuple, Context] = {}
     for descriptor in descriptors(root).values():

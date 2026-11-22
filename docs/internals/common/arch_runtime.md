@@ -23,21 +23,14 @@ computation over a hardware fact; the working-set model and the budget are the l
 <a id="check-arch-table"></a>
 ## `check_arch_table()`
 
-The current device's card admitted: `(void)current_card()` ([`select.md#card-of`](select.md#card-of)). The admission
-is keyed on `denseref::arch::tabulated(cc)` and `denseref::arch::caps_of(cc)`, the same rows `common/hardware.cuh`
-generates from `common/hardware.json` -- there is no second table to drift from the first -- and runs once a device a
-process (the card is kept).
+The current device's card admitted: `(void)current_card()` ([`select.md#card-of`](select.md#card-of)). The admission runs once a device a
+process (the card is kept) and checks two things, in order:
 
-Three things are asserted, in order:
-
-1. `tabulated(cc)` — the table carries a row for this compute capability at all.
-2. The row's `smem_per_sm`, `smem_per_cta_max`, `regs_per_sm` and
-   `max_threads_per_sm` equal what `cudaGetDeviceProperties`/`cudaDeviceGetAttribute`
-   read off the actual device — every launch shape compiled into the binary was
-   derived from the table's numbers, so a disagreement means those shapes are wrong
-   for the card that is about to run them, independent of whether the compute
-   capability itself is tabulated.
-3. The binary carries the card's build (its product's variant on its architecture): a tabulated architecture this
+1. The planner's read of the device (`plan::device_facts`, [`plan/environment.md`](plan/environment.md)) holds the contract: the driver's
+   own numbers (`cc`, `regs_per_sm`, the two shared-memory sizes, `max_threads_per_sm`, the SM count) are in a context of the planner's contract
+   ([`plan/planner.md`](plan/planner.md)), and a device outside it is refused there, by name, with the model key beside the facts.
+   There is no second table of the driver's numbers to drift from the contract's.
+2. The binary carries the card's build (its architecture's): a tabulated architecture this
    binary was not built for is refused by name, never run on another architecture's image.
 
 ## Where it is called

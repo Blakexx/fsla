@@ -15,8 +15,10 @@ name, an unknown type or read, no unit, or a set without members. `emit.py` writ
 per fact (an `Interval`, an `EnumSet`), so the arm half of a launch function is written over the same names the registry states
 ([`../common/plan/rules.md`](../common/plan/rules.md)).
 
-`sm_count` is a DEVICE fact of the Hopper context as a range (114 to 132, the H100 PCIe and SXM parts' counts); `l2_bytes` is not a fact yet: no probe
-has measured it, and a context states a value for every fact.
+`sm_count` is a DEVICE fact of the Hopper context as a range (114 to 132, the H100 PCIe and SXM parts' counts, from NVIDIA's
+documentation); the first reviewed device-probe part ([below](#probe)) restates it as measured. `l2_bytes` is not a fact of the schema
+yet: a context states a value for every fact and the contract must build at every commit, so the schema gains it in the same commit as
+that reviewed part. The probe reads both already and a candidate part carries them.
 
 <a id="parts"></a>
 
@@ -37,6 +39,25 @@ admitted against (`common/plan/environment.cu`).
 
 MIG and MPS register no context: neither is documented to report a slice's own SM count, L2 share or shared memory, so a context for them waits
 for a measurement on a real slice and until then the run time refuses them.
+
+<a id="probe"></a>
+
+## Onboarding a device: the probe
+
+A device enters the contract by a MEASURED part, in four steps:
+
+1. RUN THE PROBE on the device: `bazel run //tools:lab -- pack device_probe --arch sm_90a --into DIR`, then `bazel run //tools:lab -- run device_probe --record`, then
+   `bazel run //tools:lab -- page device_probe --instance LABEL` ([`device_probe`](../../lab/device_probe.md)). The probe reads every DEVICE fact of the schema
+   (the schema's DEVICE facts, and `sm_count` and `l2_bytes` for the schema's coming entries) through the properties and the attributes, checks the two routes
+   and the device's own registers agree, and the page step writes `hardware/parts/device/<id>.candidate.json` from the record. The `<id>` is the compute capability and the
+   driver's name (`cc900_nvidia_h100_80gb_hbm3`); the PCI slot the driver reports (`pciDeviceID` is the slot, not the product id) is the machine's, so it is not in the key.
+2. REVIEW THE CANDIDATE. Each value cites its row of the record (`measured_by`); `tensor` and `instructions` are the architecture table's row of the same compute capability
+   (`documented_by`), and are left out, named in `unestablished`, when the table has none: the reviewer supplies them from a lab experiment or a document. MIG and MPS
+   slices are not probed (see above).
+3. COMMIT THE PART: rename `<id>.candidate.json` to `<id>.json` (`hardware/parts/device/`), add a descriptor composing it with a calls part, and commit. THE REGISTRY REFUSES
+   A CANDIDATE FILE (`registry.CANDIDATE`): `registry.check()` and `registry.contexts()` fail naming it, so a candidate never reaches the contract unreviewed.
+4. THE BUILD'S CONTRACT CHECK THEN COVERS IT: the part's contexts are in `//hardware:contexts`, every family's matcher is evaluated over them, and a context mapped to no arm
+   fails the build ([`arms_gen.md`](../decode/arms_gen.md)).
 
 <a id="outputs"></a>
 

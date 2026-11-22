@@ -19,5 +19,5 @@ against the contract and refuses a descriptor read on another device than the on
 decay=)` builds the validated, hashable `Descriptor` (cached by device and call), `fsla.workspace_bytes(descriptor)` the scratch a call needs,
 and a caller's own `workspace=` is checked for type, size, alignment and device before a launch.
 
-`select.cu`'s admission of a card takes this read of the device (`device_facts`) and checks that the binary carries its build: the table of the
-driver's numbers it once compared against is the contract's.
+`select.cu`'s admission of a card takes this read of the device (`device_facts`) and checks that the binary carries its build; the contract
+is the one table of the driver's numbers.

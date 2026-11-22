@@ -133,14 +133,13 @@ def read_map(path: str) -> dict[str, str]:
 #: THE SOURCE STAMP's body is the csrc content hash (docs/ratification.md#the-device-stamp): it moves with every
 #: source edit by design, so a comparison reports it and never fails on it.
 STAMP_KERNELS = ("fsla::stampdet::csrc_stamp_kernel(long*)",)
-#: A BUILD ARGUMENT (docs/internals/common/hardware.md#build-tag): `BuildTag<Build{cc, variant}>` as c++filt
-#: prints it (a zero variant may be omitted, as the ABI allows for trailing zero members)
-_BUILD_ARG = re.compile(r"denseref::arch::BuildTag<denseref::arch::Build\{(\d+)(?:, (\d+))?\}>(, )?")
+#: A BUILD ARGUMENT (docs/internals/common/hardware.md#build-tag): `BuildTag<Build{cc}>` as c++filt prints it
+_BUILD_ARG = re.compile(r"denseref::arch::BuildTag<denseref::arch::Build\{(\d+)\}>(, )?")
 _EMPTY_ARGS = re.compile(r"<\s*>")
 
 
 def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, str]:
-    """The map keyed `sm_XX:<demangled signature>`, a kernel's `BuildTag<Build{cc, v}>` argument dropped when `drop_builds` --
+    """The map keyed `sm_XX:<demangled signature>`, a kernel's `BuildTag<Build{cc}>` argument dropped when `drop_builds` --
     the rename rule of a kernel templated on its build: the dropped argument must be its own image's (cc == XX),
     since a build's kernels are compiled in its image alone (docs/internals/common/hardware.md#builds-renamed)."""
     keys = sorted(bodies_by_key)
@@ -152,7 +151,7 @@ def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, 
         if drop_builds:
             for m in _BUILD_ARG.finditer(sig):
                 if hardware.arch_of(int(m.group(1))) != arch:
-                    raise SystemExit(f"{key}: a Build{{{m.group(1)}, {m.group(2) or 0}}} kernel in the {arch} image")
+                    raise SystemExit(f"{key}: a Build{{{m.group(1)}}} kernel in the {arch} image")
             sig = _BUILD_ARG.sub("", sig)
             #: a kernel whose one template argument was its build is the untemplated kernel: its emptied list goes,
             #: and with it the return type the ABI spells only for a template

@@ -7,11 +7,10 @@ numbers rather than holding them (the constitution's R8; [`../KERNEL_STANDARDS.m
 ## Products, builds and families
 
 A PRODUCT is a card (its row in [`hardware.json`](../internals/common/hardware.md#families), found by the slug of its
-device name). It runs a BUILD -- `Build{cc, variant}`, its architecture and, where a product's build traits differ from
-its architecture's, a variant -- and a build belongs to a FAMILY: `hopper` (sm_90, the one built: master is Hopper only, the `ampere` branch the
+device name). It runs a BUILD -- `Build{cc}`, its architecture's -- and a build belongs to a FAMILY: `hopper` (sm_90, the one built: master is Hopper only, the `ampere` branch the
 frozen reference),
 `blackwell` (sm_100). The family is declared on the architecture's row, never derived from capability flags; products
-equal in build traits share their kernels.
+of one architecture share its kernels.
 
 | what differs | where it lives | selected by |
 |---|---|---|

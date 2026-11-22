@@ -34,12 +34,9 @@ named as it is compiled, with the architecture's own features; its compute capab
 differences stay at the atom, read at the compiling architecture.
 
 <a id="builds"></a>
-A BUILD is the key a kernel compiles at: `Build{cc, variant}`. Variant 0 is the architecture's own `build` block; a
-product whose `build` block overrides a trait (`hardware.BUILD_TRAITS`) runs the next variant, and products whose
-overrides agree share one (`hardware.builds()`), so a kernel is compiled once a distinct set of traits, never once a
-product. Every kernel that reads a build trait compiles at each carried build, and an image carries every variant of
-its architecture. A variant is NOT GATED yet: the oracle set and the SASS gate run one build an architecture, so the
-check refuses a product override until the first product that needs one brings its variant under both.
+A BUILD is the key a kernel compiles at: `Build{cc}`, the architecture's own `build` block (`hardware.builds()`); a device runs its
+architecture's build, so a kernel is compiled once an architecture, never once a product. Every kernel that reads a build trait
+compiles at each carried build. A product row holds no build of its own: the check refuses one.
 
 <a id="builds-renamed"></a>
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
@@ -61,7 +58,7 @@ chosen per architecture) and the architecture's `Caps`. An architecture is BUILT
 architecture that is not built leaves it unchosen. sm_90a's is 1,024, provisional until the sm_90 carry's design
 picks it (Blake, 2026-11-09). The check
 (`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
-the family and `BUILD_TRAITS`, and a product overriding a trait outside `BUILD_TRAITS`.
+the family and `BUILD_TRAITS`, and a product holding a `build`.
 
 <a id="consumers"></a>
 

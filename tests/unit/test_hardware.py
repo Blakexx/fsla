@@ -45,23 +45,14 @@ def test_a_built_architecture_must_resolve_its_pipes_rates():
     assert any("sm_90a is built but its defaults lack schedulers" in f for f in hardware.check(cfg))
 
 
-def test_products_equal_in_build_traits_share_a_variant_and_an_override_is_the_next():
+def test_a_device_runs_its_architectures_one_build():
     cfg = hardware.load()
-    assert {p: hardware.variant_of(p, cfg) for p in cfg["product"]} == {"h10080gbhbm3": 0}
-    cfg["product"]["h10080gbhbm3"]["build"] = {"window": 512}
-    cfg["product"]["other90"] = {"arch": "sm_90a", "device": "NVIDIA other90", "build": {"window": 512}}
-    assert hardware.variant_of("h10080gbhbm3", cfg) == hardware.variant_of("other90", cfg) == 1
-    assert [(a, v) for a, v, _ in hardware.builds(cfg) if a == "sm_90a"] == [("sm_90a", 0), ("sm_90a", 1)]
-    assert "if (b.cc == 900 && b.variant == 1)" in hardware.header(cfg)
+    assert [(a, t["family"]) for a, t in hardware.builds(cfg)] == [("sm_90a", "hopper"), ("sm_100a", "blackwell")]
+    assert "if (b.cc == 900)" in hardware.header(cfg)
+    assert "int variant" not in hardware.header(cfg)
 
 
-def test_a_product_build_override_outside_the_traits_is_a_finding():
-    cfg = hardware.load()
-    cfg["product"]["h10080gbhbm3"]["build"] = {"family": "blackwell"}
-    assert any("overrides a trait outside window" in f for f in hardware.check(cfg))
-
-
-def test_a_product_build_override_is_refused_until_a_variant_is_gated():
+def test_a_product_holds_no_build_of_its_own():
     cfg = hardware.load()
     cfg["product"]["h10080gbhbm3"]["build"] = {"window": 512}
-    assert any("a build variant is not gated yet" in f for f in hardware.check(cfg))
+    assert any("a product holds no build" in f for f in hardware.check(cfg))

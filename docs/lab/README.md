@@ -21,6 +21,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`wgmma_rate`](wgmma_rate.md) | experiment |
 | [`stamp_cost`](stamp_cost.md) | experiment |
 | [`clock_time`](clock_time.md) | experiment |
+| [`device_probe`](device_probe.md) | experiment |
 | [`byte_expand`](byte_expand.md) | experiment |
 | [`cluster_sum`](cluster_sum.md) | experiment |
 | [`state_move`](state_move.md) | experiment |

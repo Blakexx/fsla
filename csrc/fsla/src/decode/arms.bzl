@@ -11,7 +11,7 @@ DECODE_KEY = ("d_v", "levels", "decay")
 #: the arm's kernel, as the toolkit demangles its name up to the parameter list, with its template arguments the key's fields (`@field@`) and the
 #: architecture's compute capability (`@cc@`): bazel/arms.bzl generates each arm's exact pattern from it, which the SASS gate holds the binary to
 #: (every arm carried once) and every declaration below is stated over
-DECODE_KERNEL = "fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>"
+DECODE_KERNEL = "fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@}>, (int)@d_v@, (int)@levels@, (bool)@decay@>"
 
 #: the arms' declarations (`arm_declaration`: a rule, the count its kernels may keep, why; over the arms `where` selects): the findings of
 #: the two checker rules the gate applies to every function, which every arm predates. Each arm keeps what its SASS shows on sm_90a today, a

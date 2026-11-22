@@ -37,10 +37,10 @@ constexpr bool in_image(Build b) {
 //: ONE HOST BRANCH TO THE CARD'S BUILD -- see docs/internals/common/select.md#build-switch
 template <class Body>
 inline void build_switch(const Card& c, Body&& body) {
-#define FSLA_BUILD_CASE(CC_, V_)                                    \
-  if (c.build.cc == (CC_) && c.build.variant == (V_)) {             \
-    body(BuildTag<Build{CC_, V_}>{});                               \
-    return;                                                         \
+#define FSLA_BUILD_CASE(CC_)                      \
+  if (c.build.cc == (CC_)) {                      \
+    body(BuildTag<Build{CC_}>{});                 \
+    return;                                       \
   }
   FSLA_BUILDS(FSLA_BUILD_CASE)
 #undef FSLA_BUILD_CASE

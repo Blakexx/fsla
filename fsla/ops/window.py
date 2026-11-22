@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE DEVICE'S CARD as the binary selects it (``csrc/fsla/src/common/select.cuh``) -- its compute capability,
-build variant, family and window W -- for the readers that need a hardware fact the kernel path cannot serve:
+family and window W -- for the readers that need a hardware fact the kernel path cannot serve:
 the fp64 oracle building its reference windows, the gates and the measurement tools. No kernel call is shaped by it:
 every entry reads its own card (docs/architecture/families.md#the-entry-and-the-card).
 """
@@ -21,18 +21,17 @@ FAMILIES = ("ampere", "hopper", "blackwell")
 @dataclasses.dataclass(frozen=True)
 class Card:
     """A device's card: its compute capability (x10),
-    the build variant it runs, its family and its window W."""
+    its family and its window W."""
 
     cc: int
-    variant: int
     family: str
     window: int
 
 
 @functools.cache
 def _card_of(index: int) -> Card:
-    cc, variant, family, window = (int(x) for x in extension().device_card(index))
-    return Card(cc, variant, FAMILIES[family], window)
+    cc, family, window = (int(x) for x in extension().device_card(index))
+    return Card(cc, FAMILIES[family], window)
 
 
 def card_of() -> Card:

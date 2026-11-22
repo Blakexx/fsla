@@ -2,11 +2,11 @@
   "name": "device/hopper_sm90a",
   "doc": "the Hopper device of compute capability 9.0 (the build's sm_90a); its values are csrc/fsla/src/common/hardware.json's arch.sm_90a, which tests/unit/test_hardware_registry.py holds equal",
   "facts": {
-    "cc": {"value": 900, "validated_by": "csrc/fsla/src/common/select.cu admit: the driver's compute capability must be a tabulated one at the first call on a device"},
-    "regs_per_sm": {"value": 65536, "validated_by": "csrc/fsla/src/common/select.cu admit: the table's value must equal prop.regsPerMultiprocessor at the first call on a device"},
-    "smem_per_sm": {"value": 233472, "validated_by": "csrc/fsla/src/common/select.cu admit: the table's value must equal cudaDevAttrMaxSharedMemoryPerMultiprocessor at the first call on a device"},
-    "smem_per_cta_optin": {"value": 232448, "validated_by": "csrc/fsla/src/common/select.cu admit: the table's value must equal cudaDevAttrMaxSharedMemoryPerBlockOptin at the first call on a device"},
-    "max_threads_per_sm": {"value": 2048, "validated_by": "csrc/fsla/src/common/select.cu admit: the table's value must equal prop.maxThreadsPerMultiProcessor at the first call on a device"},
+    "cc": {"value": 900, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's compute capability must be in a context of the contract at the first read of a device"},
+    "regs_per_sm": {"value": 65536, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's prop.regsPerMultiprocessor must be in a context of the contract at the first read of a device"},
+    "smem_per_sm": {"value": 233472, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's cudaDevAttrMaxSharedMemoryPerMultiprocessor must be in a context of the contract at the first read of a device"},
+    "smem_per_cta_optin": {"value": 232448, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's cudaDevAttrMaxSharedMemoryPerBlockOptin must be in a context of the contract at the first read of a device"},
+    "max_threads_per_sm": {"value": 2048, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's prop.maxThreadsPerMultiProcessor must be in a context of the contract at the first read of a device"},
     "sm_count": {"value": {"lo": 114, "hi": 132}, "documented_by": "the H100 datasheet: 132 streaming multiprocessors on the SXM5 part and 114 on the PCIe part; the contract admits both and every count between"},
     "tensor": {"value": {"set": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"]}, "documented_by": "csrc/fsla/src/common/hardware.json arch.sm_90a.rates.mma: the H100 whitepaper's tensor-core rates"},
     "instructions": {"value": {"set": ["bf16_cvt_packed", "reg_transpose_b16", "bf16_simd_arith", "bf16_simd_fma"]}, "documented_by": "csrc/fsla/src/common/hardware.json arch.sm_90a.caps, each cap's page in docs/internals/common/arch_caps.md"}

@@ -147,3 +147,34 @@ def test_ranges_and_sets_expand_without_crossing(tree):
     contexts = registry.contexts(tree)
     assert len(contexts) == 2 and contexts[0].facts["d_v"] == (65, 128)
     assert contexts[0].id == "hopper_decode decay=0"
+
+
+def test_a_part_lacking_a_schema_fact_is_refused_by_name(tree):
+    """The schema gains `l2_bytes` with the first reviewed probe part, never before; the refusal is tested on a schema with an extra device fact the parts do not state."""
+    data = json.loads((tree / "schema.json").read_text())
+    data["facts"].append({"name": "l2_bytes", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "a test"})
+    _write(tree / "schema.json", data)
+    with pytest.raises(registry.RegistryError, match=r"states no value for \['l2_bytes'\]"):
+        registry.contexts(tree)
+
+
+def test_a_candidate_file_is_refused_until_it_is_renamed_to_a_part(tree):
+    """A candidate part the probe wrote is no part: the registry refuses it by name (in `check` and in `contexts`), and accepts the same file renamed."""
+    admitted = tree
+    candidate = {"name": "device/cc900_x", "model": {"cc": 900, "name": "X"}, "unestablished": [],
+                 "facts": {"cc": {"value": 900, "measured_by": "a record"}}}
+    _write(admitted / "parts" / "device" / "cc900_x.candidate.json", candidate)
+    for call in (registry.check, registry.contexts):
+        with pytest.raises(registry.RegistryError, match=r"CANDIDATE part.*renames it to device/cc900_x\.json"):
+            call(admitted)
+    (admitted / "parts" / "device" / "cc900_x.candidate.json").rename(admitted / "parts" / "device" / "cc900_x.json")
+    registry.check(admitted)
+    assert registry.part("device/cc900_x", admitted)["facts"]["cc"]["value"] == 900
+
+
+def test_a_descriptor_composing_a_candidate_is_refused(tree):
+    _write(tree / "parts" / "device" / "cc900_x.candidate.json", {"name": "device/cc900_x", "facts": {"cc": {"value": 900, "measured_by": "a record"}}})
+    _write(tree / "descriptors" / "hopper_decode.json", {"name": "hopper_decode", "gpus": "H100", "arch": "sm_90a",
+                                                           "compose": ["device/cc900_x.candidate", "calls/decode"]})
+    with pytest.raises(registry.RegistryError, match="CANDIDATE part"):
+        registry.contexts(tree)

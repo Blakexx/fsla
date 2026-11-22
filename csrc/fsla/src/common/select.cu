@@ -16,15 +16,14 @@ namespace fsla {
 namespace {
 
 constexpr bool carried(Build b) {
-#define FSLA_BUILD_CARRIED(CC_, V_) (b.cc == (CC_) && b.variant == (V_)) ||
+#define FSLA_BUILD_CARRIED(CC_) (b.cc == (CC_)) ||
   return FSLA_BUILDS(FSLA_BUILD_CARRIED) false;
 #undef FSLA_BUILD_CARRIED
 }
 
 std::string carried_list() {
   std::string out;
-#define FSLA_BUILD_NAME(CC_, V_) out += (out.empty() ? "" : ", ") + std::string("sm_") + std::to_string((CC_) / 10) \
-                                        + (V_ ? " variant " + std::to_string(V_) : "");
+#define FSLA_BUILD_NAME(CC_) out += (out.empty() ? "" : ", ") + std::string("sm_") + std::to_string((CC_) / 10);
   FSLA_BUILDS(FSLA_BUILD_NAME)
 #undef FSLA_BUILD_NAME
   return out;
@@ -33,7 +32,7 @@ std::string carried_list() {
 //: THE ADMISSION of one device: the planner's read of it (outside the contract, it is refused there), its build carried.
 Card admit(int device) {
   const plan::DeviceFacts& facts = plan::device_facts(device);
-  const Build build{facts.cc, 0};
+  const Build build{facts.cc};
   STD_TORCH_CHECK(carried(build), "this binary carries no build for ", facts.model, " (sm_",
                   facts.cc / 10, "); it carries ", carried_list(),
                   ". Build it with its architecture in --//:archs.");

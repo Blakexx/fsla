@@ -243,7 +243,7 @@ _FINDINGS = [
 
 def _kernel(row):
     flag = "" if row[3] < 0 else ", (bool)%d" % row[3]
-    return "fsla::entmax::detail::%s<denseref::arch::BuildTag<denseref::arch::Build{(int)900, (int)0}>, (int)%d, (int)%d%s, %s, %s>" % (
+    return "fsla::entmax::detail::%s<denseref::arch::BuildTag<denseref::arch::Build{(int)900}>, (int)%d, (int)%d%s, %s, %s>" % (
         row[0], row[1], row[2], flag, _TYPES[row[4]], _TYPES[row[5]])
 
 ENTMAX_DECLARATIONS = [

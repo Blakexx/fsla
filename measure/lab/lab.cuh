@@ -28,7 +28,7 @@ namespace lab {
 
 //: THE BUILD an experiment compiles at: its one architecture's own, the same in both passes (`tools/lab.py` passes
 //: `FSLA_LAB_CC`; docs/internals/tools/lab.md#build)
-constexpr denseref::arch::Build kLabBuild{FSLA_LAB_CC, 0};
+constexpr denseref::arch::Build kLabBuild{FSLA_LAB_CC};
 
 // ------------------------------------------------------------------------------------------------- device
 

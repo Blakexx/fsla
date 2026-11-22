@@ -176,7 +176,6 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 
 size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
                               int olist_total, int dlist_total);
-void launch_decode_step(const plan::DecodeLaunch& launch, const DecodeParams& p);
 
 namespace detail {
 //: THE STEP'S WARPS at a card's build, for the host (`DecodePlan`).

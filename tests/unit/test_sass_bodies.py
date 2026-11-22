@@ -13,9 +13,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import sass_bodies  # noqa: E402
 
-#: `fsla::k<Arm<3>>(int)` and `fsla::k<BuildTag<Build{900, 0}>, Arm<3>>(int)`, as nvcc 13.0 mangles them
+#: `fsla::k<Arm<3>>(int)` and `fsla::k<BuildTag<Build{900}>, Arm<3>>(int)`, as nvcc 13.0 mangles them
 OLD = "sm_90a:_ZN4fsla1kINS_3ArmILi3EEEEEvi"
-NEW = "sm_90a:_ZN4fsla1kIN8denseref4arch8BuildTagIXtlNS2_5BuildELi900ELi0EEEEENS_3ArmILi3EEEEEvi"
+NEW = "sm_90a:_ZN4fsla1kIN8denseref4arch8BuildTagIXtlNS2_5BuildELi900EEEEENS_3ArmILi3EEEEEvi"
 STAMP = "sm_90a:_ZN4fsla8stampdet17csrc_stamp_kernelEPl"
 
 
