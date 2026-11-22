@@ -20,7 +20,7 @@ or, without the layer, from levels you computed yourself -- the format's own uti
 
 ```python
 factors = fsla.RouteFactors.from_levels(topology, read_levels, write_levels)
-y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, plan=plan)
+y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, descriptor, workspace=workspace)
 ```
 
 ---
@@ -28,16 +28,26 @@ y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, plan=plan)
 ## 1. The op
 
 ```python
-fsla_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay | None = None, *,
-        plan: PrefillPlan, state=None) -> (y, state)
+fsla_op(routes: RouteFactors, values: Values, masks: Masks, descriptor: Descriptor, *,
+        workspace=None, state=None, decay: LeafMassDecay | None = None) -> (y, state)
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
 `masks` is the data beside the rows, like attention's mask (§2.6): the op computes with `r * m`.
-`decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
-what to do, never what you are giving, and it changes at most rounding within the oracle's tolerance, never the
-mathematical output -- the data does.
+`decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`.
+
+An operator is `op(data..., descriptor, workspace=None)`. The DATA is what the caller gives at the boundary and what changes the
+mathematics: the rows, the values, the masks, the state and the decay dials. The `descriptor` (`fsla.Descriptor`) is the validated
+run-time context of the call -- every device fact and every call fact, checked against the contract before any launch -- built from the
+declaration by the producer's rule (`fsla.ops.produce.prefill_descriptor`, §5). The `workspace` is everything derived during the call, one
+buffer laid out by the planner (`csrc/fsla/src/common/plan/`) whose first region is the device plan; a caller builds it with the public
+builder `fsla.build_workspace(routes, values, masks, descriptor)` and sizes it with `fsla.workspace_bytes(descriptor)`, which dispatches on
+the descriptor's `prefill` fact. The op runs no derivation pass of its own. The state is not part of the workspace: it is its own
+argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
+
+<a id="batch-heads"></a>A decode step serves B times H from 1 to 536870911 (`2^29 - 1`: the largest the step's work queue of `4 B H + 2` int32
+counters indexes); the descriptor states it as the `batch_heads` fact and a step outside it is refused when the descriptor is made.
 
 `state` is `None` (a stateless call, returning `(y, None)`) or a `fsla.state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
@@ -56,10 +66,11 @@ thinnest batch-head still has) and `refill_pool(state)` (restock what the device
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
 [`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
 
-The plan is a frozen, hashable `PrefillPlan` -- what to do (the carve and the state's backing mapping) and
-nothing else, built once from the declaration by the producer's plan rule (`fsla.expert.prefill_plan`); the layer
-holds its own. There is no configuration argument and no statistics argument: those are not model facts -- they are
-how the op RUNS. The plan type lives behind [`fsla.expert`](#5-the-expert-surface).
+There is no plan object. There is no configuration argument and no statistics argument: those are not model facts -- they are
+how the op RUNS. The descriptor and the workspace live behind [`fsla.expert`](#5-the-expert-surface) and the top level
+(`fsla.Descriptor`, `fsla.workspace_bytes`, `fsla.build_workspace`). The prefill kernel is not built, so the descriptor of a prefill the
+contract holds as OWED is refused when it is made, as `KernelNotBuilt` naming `prefill`
+([`internals/hardware/registry.md`](internals/hardware/registry.md#the-owed-folder)).
 
 **Any level width, any `d_v`.** A `Routing` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's
@@ -430,7 +441,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, plan=None, memory_budget=None)
+FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, memory_budget=None)
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -495,11 +506,11 @@ stretch's routes and values, runs `fsla_op` on it and carries the state to the n
 are bounded along with the op -- which an op-level split cannot do once the whole call's bundle exists.
 The op runs one segment and knows nothing of segmentation.
 
-`T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
-whole number of the device's windows whose working set (the per-token bytes of the prefill launch builder's own
-allocation, `fsla.ops.prefill.launch_bytes_per_token`, which refuses by name until the prefill kernel exists) fits beside the state
-(`FSLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
-`memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
+`T` is DERIVED, never a knob, and it is an OUTPUT of the prefill launch function (`common/plan/`), not of the layer: the caller declares
+`memory_budget` (bytes), which the layer states as the descriptor's `memory_budget` fact (`None` is no budget: one segment, the fact 0).
+The launch function, which derives the carve, the window, the grid and the segment length, is not written yet (`docs/open-work.md` row
+A-f), so a budgeted call is refused by name (`KernelNotBuilt`, kernel `prefill`) at the place every prefill is: when its descriptor is made.
+The window grid is global, so a boundary on a window boundary moves
 no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
 `tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
 state and hands none back.
@@ -511,15 +522,15 @@ the pins over axes the op otherwise decides, and the fine-grained gain layout be
 the layer's one public flag:
 
 ```python
-from fsla.expert import PrefillPlan, prefill_plan, envelope_refusal
-layer = fsla.FSLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
+from fsla.expert import envelope_refusal
+from fsla.ops.produce import prefill_descriptor
+descriptor = prefill_descriptor(routes.topology, d_v=d_v, decay=False, tokens=T, batch_heads=B * H, stateful=False)
 ```
 
 | name | what it is |
 |---|---|
-| `PrefillPlan` | the frozen static prefill plan -- what to do only: `PrefillPlan(carve, paging)` |
-| `prefill_plan(topology, d_v, ...)` | the producer-owned plan rule: it chooses from the declaration alone (the levels each side walks by lists) |
-| `decode_descriptor(topology, *, d_v, decay, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and `write_dense` (deposit whole atoms) -- which the decode step takes beside its data: `decode_step_gated(routes, values, masks, state, descriptor)`. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
+| `prefill_descriptor(topology, *, d_v, decay, tokens, batch_heads, stateful, dense_plane=False, memory_budget=None, device=None)` | the producer-owned prefill rule: the validated descriptor of a prefill call, its facts stated from the declaration (each level's padded width as its log2 and each side's walk of each level) and from the caller (`tokens`, `batch_heads`, `stateful`, `dense_plane` -- which pins the state's dense plane, the bit-identity gate's backing -- and `memory_budget`). A prefill is OWED, so it is refused as `KernelNotBuilt` naming `prefill` |
+| `decode_descriptor(topology, *, d_v, decay, batch_heads, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and each side's walk of each level (`read_listed_k`, `write_listed_k`; the launch function derives whole-atom deposit from the innermost level's) and `batch_heads`, B times H -- which the decode step takes beside its data: `decode_step_gated(routes, values, masks, state, descriptor)`. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
 | `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | why a call has no arm, asked before making it — the refusing clause in its own words (it always refuses on this line). `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
@@ -527,19 +538,14 @@ layer = fsla.FSLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
 The contract for everything there is **stable construction, advisory contents**:
 build these objects and pass them; do not assert on their fields.
 
-**Every pin is a declared restriction rather than a dial, and each refuses by name
-rather than being ignored.** `PrefillPlan` carries two fields. `paging` is the state's
-BACKING, never a launch shape: `None` is the paged default, `False` pins the dense plane
-the bit-identity gate compares against, and `True` is refused because paging is on by
-default and bitwise invisible. `carve` pins the carry's box and operation plans; the rule
-checks a pinned carve against the declaration exactly as it checks its own
-([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)).
+**A walk is an action.** `read_listed_k` and `write_listed_k` state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a caller may state any valid walk, and a wrong one costs time and never the result.
 
-**A plan is static and reads no operand.** The carry's launch geometry is the carve -- the rule's, or a pinned one checked
-the same way -- and the plan is what to do, hashable, the arm and the cache key. Decode has no plan: its op takes the descriptor. Inside, one launch bundle per kernel
-family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the `plan` (prefill's) or the `descriptor` (decode's), the `operands` (the data, masks included)
-and the `workspace` (scratch, pool) -- built at a DAG's terminal node and never public. A conformance family drives the
-envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
+**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
+is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
+hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
+`descriptor`, the `operands` (the data, masks included) and the `workspace` -- built at a DAG's terminal node and never public. The
+`dense_plane` fact is the state's BACKING, never a launch shape: 0 is the paged default and 1 pins the dense plane the bit-identity gate
+compares against. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and `envelope_refusal` answers the same question before a call.
 
 ## 6. What is deliberately not here

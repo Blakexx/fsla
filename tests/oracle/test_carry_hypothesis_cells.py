@@ -9,7 +9,7 @@ whichever fixed point someone named. Opt-in (the `hypothesis_cells` marker, dese
 
 The strategy draws only over shapes the registry declares (widths, tokens and value width together) and over
 properties of the DRAW the kernel is never told (``k_tok``, ``seed``, ``cohort``). RED BY PLAN with the rest of the
-tier where the carry has no arm for a drawn carve.
+tier while the carry is not built.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from hypothesis import strategies as st
 
 from measure.cells import CarryCell
 from measure.cells import carry_cells as registry_cells
-from measure.subjects import bundle_of
 from tests.oracle.test_carry_vs_oracle import check, run
 
 pytestmark = [
@@ -56,14 +55,3 @@ def test_the_inter_numerator_is_the_fp64_reference_on_a_drawn_cell(spec):
     """The tier's own comparison over a drawn cell: the same `run` and `check`, per slot against the same envelopes --
     only the cell is drawn, never the assertion."""
     check(spec, *run(spec))
-
-
-@settings(deadline=None, max_examples=25)
-@given(spec=drawn_cells())
-def test_a_drawn_cell_is_a_lawful_shape(spec):
-    """The strategy draws only declarations the carve rule admits: a drawn cell the planner refused would exercise
-    the rule's refusals, not the carry."""
-    from measure.cells import realize
-
-    #: the bundle builder plans the cell's carve and refuses one the rule does not admit
-    bundle_of(spec, realize(spec))

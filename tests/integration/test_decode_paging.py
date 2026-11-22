@@ -154,8 +154,8 @@ def _bundles(fixture):
     return fixture["bundles"]
 
 
-def _descriptor(widths):
-    return decode_descriptor(_topology(widths), d_v=_DV, decay=False)
+def _descriptor(widths, batch_heads):
+    return decode_descriptor(_topology(widths), d_v=_DV, decay=False, batch_heads=batch_heads)
 
 
 def _bitmap(write, descriptor):
@@ -264,8 +264,8 @@ def test_the_step_write_atom_set_is_exact(arm, support):
 def test_the_paged_backing_matches_the_dense_one(arm, support):
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 97 + BC, support=_SUPPORTS[support])
-    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
+    descriptor = _descriptor(widths, BH)
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")
 
@@ -312,8 +312,8 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 13 + 5, support=0.25)
-    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
+    descriptor = _descriptor(widths, BH)
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")
 
@@ -359,8 +359,8 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     what makes this a planned-exact claim rather than a "grew somehow" one.
     """
     widths, BC = arm
-    descriptor = _descriptor(widths)
     BH = 2 * 3
+    descriptor = _descriptor(widths, BH)
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
 
@@ -424,8 +424,8 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     indistinguishable from an atom `plan_exact` admitted.
     """
     widths, BC = arm
-    descriptor = _descriptor(widths)
     BH = 2 * 3
+    descriptor = _descriptor(widths, BH)
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
     bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), widths, lattice_of(widths)) for step in (first, second)]

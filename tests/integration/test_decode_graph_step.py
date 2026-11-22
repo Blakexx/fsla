@@ -314,11 +314,12 @@ def _copy_tensors(static, fresh):
                 buffer.copy_(level)
 
 
-def _step_descriptor(layer):
-    """The descriptor the layer's one-token step runs under (`fsla.ops.produce.decode_descriptor`)."""
+def _step_descriptor(layer, batch):
+    """The descriptor the layer's one-token step runs under at ``batch`` sequences (`fsla.ops.produce.decode_descriptor`)."""
     from fsla.ops.produce import decode_descriptor
 
-    return decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, device=layer.route_W.device)
+    return decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, batch_heads=batch * layer.num_heads,
+                             device=layer.route_W.device)
 
 
 def _static(routes, v, masks):
@@ -352,7 +353,7 @@ def test_the_captured_step_is_the_eager_step():
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
     routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
-    descriptor = _step_descriptor(layer)
+    descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
     graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)
@@ -410,7 +411,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
     routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
-    descriptor = _step_descriptor(layer)
+    descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
     graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)

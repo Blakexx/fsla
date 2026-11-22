@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.interface.fsla_op`).
 
-The paged arena is the default backing and `PrefillPlan(paging=False)` pins the dense plane (docs/api.md section 5):
+The paged arena is the default backing and the descriptor's `dense_plane` fact pins the dense plane (docs/api.md section 5):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
 hands no state back. A call whose writes reach a strict subset of the leaves a previous call wrote leaves every other
 leaf exactly as it found it -- an idle resident page is neither loaded nor stored.
@@ -17,10 +17,9 @@ import pytest
 import torch
 
 import fsla
-from fsla.expert import PrefillPlan
 from fsla.interface import fsla_op
 from measure.cells import by_name, realize
-from measure.subjects import bundle_of
+from measure.subjects import bundle_of, prefill_descriptor_of
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -30,14 +29,15 @@ DENSE = False
 
 
 def operands(spec, tokens: slice = slice(None)):
-    routes, values, masks, plan = bundle_of(spec, realize(spec), tokens)
-    return routes, values, masks, plan
+    return bundle_of(spec, realize(spec), tokens)
 
 
 def run(operands_, state, paging=None):
-    """The op over one call's operands, the plan's mapping pinned to ``paging`` (``False``: the dense plane)."""
-    routes, values, masks, plan = operands_
-    return fsla_op(routes, values, masks, plan=PrefillPlan(carve=plan.carve, paging=paging), state=state)
+    """The op over one call's operands, the descriptor's `dense_plane` fact pinned when ``paging`` is ``False`` (the dense plane)."""
+    routes, values, masks = operands_
+    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None, dense_plane=paging is False)
+    workspace = fsla.build_workspace(routes, values, masks, descriptor)
+    return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state)
 
 
 def calls(spec, parts, paging=None):

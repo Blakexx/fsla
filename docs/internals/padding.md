@@ -70,12 +70,10 @@ contract bounds it (`hardware/parts/calls/decode.json`), so no literal tuple her
 value width, `fsla.ops.intra.VALUE_WIDTH`.
 
 The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as
-runtime addressing over the carve's channel extent
-([`engine/rules.md#carve`](engine/rules.md#carve)), and the envelope refuses a carve no
-built arm carries. The stateful band's `box` node still reads `carry_ops.SHIPPED_DV`, which
-`fsla.ops.carry` does not define; the envelope refuses a stateful call before
-that node runs, and the node is re-pointed when a carry kernel is built
-([`docs/open-work.md`](../open-work.md) C-e).
+runtime addressing over the carve's channel extent, which the prefill launch function derives
+([`engine/rules.md#carve`](engine/rules.md#carve)); the prefill is refused by name until it is built. The prefill graph has no
+`box` node any more: the arena's allocation extent returns with the launch function
+([`docs/open-work.md`](../open-work.md) A-c and A-f).
 
 ## What this does not do
 

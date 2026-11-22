@@ -100,10 +100,8 @@ std::tuple<int64_t, std::string, int64_t> device_card_op(int64_t device) {
 }  // namespace
 
 STABLE_TORCH_LIBRARY(fsla, m) {
-  // ---- the device's card, the segment law and the stamps -------------------
+  // ---- the device's card and the stamps -------------------
   m.def("device_card(int device) -> (int, str, int)");
-  m.def(
-      "segment_tokens(int budget, int state, int per_token, int batch, int length, int device) -> int");
   m.def("csrc_build_stamp() -> int");
   m.def("sm_clock_ghz(int spin_cycles=20000000) -> float");
 
@@ -148,6 +146,7 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
   m.def("fsla_call_facts() -> str");
   m.def("fsla_descriptor(int device, int[] call) -> int[]");
+  m.def("fsla_owed_kernels(int device, int[] call) -> str");
   m.def("fsla_decode_build_stamp() -> int");
   m.def("fsla_decode_launch(int[] descriptor, int device) -> int[]");
   m.def("fsla_decode_arms() -> int[][]");
@@ -172,9 +171,9 @@ STABLE_TORCH_LIBRARY(fsla, m) {
 
 STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("device_card", TORCH_BOX(&device_card_op));
-  m.impl("segment_tokens", TORCH_BOX(&fsla::segment_tokens));
   m.impl("fsla_call_facts", TORCH_BOX(&fsla::plan::fsla_call_facts));
   m.impl("fsla_descriptor", TORCH_BOX(&fsla::plan::fsla_descriptor));
+  m.impl("fsla_owed_kernels", TORCH_BOX(&fsla::plan::fsla_owed_kernels));
   m.impl("fsla_decode_launch", TORCH_BOX(&fsla::decode::fsla_decode_launch));
 
   m.impl("csrc_build_stamp", TORCH_BOX(&fsla::csrc_build_stamp));

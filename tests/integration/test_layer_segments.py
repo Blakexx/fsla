@@ -1,10 +1,10 @@
 """THE OP ON ONE SEGMENT, AND THE LAYER'S SEGMENTS.
 
-`fsla_op` runs the prefill DAG over the segment it is handed and continues the state it is handed; the layer
-splits a sequence into segments by a declared memory budget, so its projections are bounded with the op.
+`fsla_op` runs the prefill DAG over the segment it is handed, under the descriptor and the workspace its caller built, and continues
+the state it is handed; the layer splits a sequence into segments by a declared memory budget, so its projections are bounded with the op.
 Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
-readout to fp32 ULPs, the layer's through its bf16 output projection), the budget's derivation and refusal, and
-the per-token working-set bound against the measured peak (docs/api.md section 4.2).
+readout to fp32 ULPs, the layer's through its bf16 output projection), and the budget's refusal by name while the prefill launch function
+that derives the segment length is not built (docs/api.md section 4.2).
 """
 from __future__ import annotations
 
@@ -45,7 +45,20 @@ def _bundles(tokens: int, heads: int = 2):
     with torch.no_grad():
         routes, _values, masks = reference_produce(layer, torch.randn(1, tokens, 64, device="cuda"))
         values = fsla.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
-    return routes, values, masks, layer.prefill_plan
+    return routes, values, masks
+
+
+def _descriptor(routes, values, *, stateful=False, dense_plane=False, memory_budget=None):
+    """The prefill's descriptor of a bundle, by the producer's rule: owed while the prefill kernel is not built, so it is refused here, by name."""
+    from fsla.ops.produce import prefill_descriptor
+
+    return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
+                              stateful=stateful, dense_plane=dense_plane, memory_budget=memory_budget, device=routes.device)
+
+
+def _op(routes, values, masks, descriptor, **kwargs):
+    """`fsla_op` over a call whose workspace its caller built (`fsla.build_workspace`)."""
+    return fsla.fsla_op(routes, values, masks, descriptor, workspace=fsla.build_workspace(routes, values, masks, descriptor), **kwargs)
 
 
 def _cut_masks(masks, span: slice):
@@ -70,9 +83,9 @@ def _cut(bundle, span: slice):
 
 @_OP_PREFILL
 def test_the_op_matches_the_fp64_oracle_per_slot():
-    routes, values, masks, plan = _bundles(2 * window_of())
+    routes, values, masks = _bundles(2 * window_of())
     with torch.no_grad():
-        y, state = fsla.fsla_op(routes, values, masks, plan=plan)
+        y, state = _op(routes, values, masks, _descriptor(routes, values))
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
     ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
@@ -84,17 +97,15 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
 def test_segments_carried_through_a_state_are_the_whole_call(paging):
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
     one state are the whole call to fp32 ULPs, in either backing."""
-    from fsla.engine import PrefillPlan
-
-    routes, values, masks, plan = _bundles(4 * window_of())
-    plan = plan if paging else PrefillPlan(carve=plan.carve, paging=False)
+    routes, values, masks = _bundles(4 * window_of())
     with torch.no_grad():
-        whole, _ = fsla.fsla_op(routes, values, masks, plan=plan)
+        whole, _ = _op(routes, values, masks, _descriptor(routes, values, dense_plane=not paging))
         state = fsla.state()
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
-            y, state = fsla.fsla_op(_cut(routes, span), _cut(values, span), _cut_masks(masks, span), plan=plan,
-                                    state=state)
+            cut_routes, cut_values, cut_masks = _cut(routes, span), _cut(values, span), _cut_masks(masks, span)
+            y, state = _op(cut_routes, cut_values, cut_masks, _descriptor(cut_routes, cut_values, stateful=True, dense_plane=not paging),
+                           state=state)
             parts.append(y)
     assert state.paged is paging
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
@@ -107,8 +118,7 @@ def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     with torch.no_grad():
         whole, whole_cont = layer(x)
     assert whole_cont.state is None
-    layer.memory_budget = layer.state_bytes(1) + 2 * window_of() * 4096
-    assert layer.segment_tokens(1, 4 * window_of()) == 2 * window_of()
+    layer.memory_budget = 2 * window_of() * 4096
     with torch.no_grad():
         segmented, cont = layer(x)
     assert cont.state is None, "a stateless call hands no state back, however many segments it ran"
@@ -122,21 +132,20 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
         _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
-        layer.memory_budget = layer.state_bytes(1) + window_of() * 4096
+        layer.memory_budget = window_of() * 4096
         _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 
 
-def test_the_budget_takes_its_per_token_bytes_from_the_launch_builder_and_refuses_by_name():
-    """No budget: one segment. A budget asks the prefill launch builder's own allocation for the per-token bytes, which
-    refuses by name until the prefill kernel exists."""
+def test_a_budgeted_call_is_refused_by_name_where_every_prefill_is_and_not_as_a_call_outside_the_contract():
+    """A budget is the `memory_budget` fact of the call's descriptor; the segment length is an output of the prefill launch function, which is not built.
+    So a budgeted call -- like every prefill -- is refused as `KernelNotBuilt` naming the prefill kernel when its descriptor is made, with or without a
+    budget, and never as a call the contract does not hold."""
     from fsla.ops._ext import KernelNotBuilt
 
-    layer = _layer()
-    assert layer.segment_tokens(2, 3 * window_of()) == 3 * window_of(), "no budget: one segment"
-    layer.memory_budget = layer.state_bytes(2) + 10 ** 9
-    with pytest.raises(KernelNotBuilt, match="prefill launch builder"):
-        layer.segment_tokens(2, 8 * window_of())
-    with pytest.raises(ValueError, match="memory_budget"):
-        _layer(memory_budget=0)
+    for budget in (None, 10 ** 9):
+        layer = _layer(memory_budget=budget).cuda().eval()
+        with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b") as refused:
+            layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
+        assert "outside FSLA's contract" not in str(refused.value)

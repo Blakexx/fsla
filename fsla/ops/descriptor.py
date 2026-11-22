@@ -12,7 +12,7 @@ from functools import cache
 
 import torch
 
-from fsla.ops._ext import device_index, extension
+from fsla.ops._ext import device_index, extension, not_built
 
 __all__ = ["Descriptor", "check_workspace", "descriptor", "workspace_bytes"]
 
@@ -40,35 +40,50 @@ def _descriptor(device: int, call: tuple[tuple[str, int], ...]) -> Descriptor:
     given = dict(call)
     if set(given) != set(names):
         raise TypeError(f"a call supplies the facts {list(names)}; this one gives {sorted(given)}")
-    words = ext.fsla_descriptor(device, [given[name] for name in names])
+    values = [given[name] for name in names]
+    owed = ext.fsla_owed_kernels(device, values)
+    if owed:
+        not_built(*owed.split(","))
+    words = ext.fsla_descriptor(device, values)
     return Descriptor(device=device, call=tuple((name, given[name]) for name in names), words=tuple(int(w) for w in words))
 
 
 def descriptor(*, device=None, **call) -> Descriptor:
     """THE VALIDATED DESCRIPTOR of a call on ``device`` (the current device when ``None``): the device's facts, read once by the
-    planner, and the call's (decode's: ``d_v``, ``levels``, ``decay``, ``write_dense`` and ``width_bits_1`` .. ``width_bits_4``, which
-    :func:`fsla.ops.produce.decode_descriptor` states from a declaration). A context outside the contract is refused here, before any
-    launch, naming the facts."""
+    planner, and the call's (every call fact of the schema: the call's kind ``prefill``, its extents, its value width and decay, each level's
+    ``width_bits_k``, ``read_listed_k`` and ``write_listed_k``, which :func:`fsla.ops.produce.decode_descriptor` and
+    :func:`fsla.ops.produce.prefill_descriptor` state from a declaration). A context outside the contract is refused here, before any
+    launch, naming the facts; one the contract holds as OWED (its kernels are not built) is refused as :class:`~fsla.ops._ext.KernelNotBuilt`
+    naming each kernel it waits on."""
     return _descriptor(device_index(device), tuple(sorted((name, int(value)) for name, value in call.items())))
 
 
-def workspace_bytes(descriptor: Descriptor) -> int:
-    """The scratch a call of ``descriptor`` needs beside its operands, in bytes: the planner's layout. Decode needs none."""
-    from fsla.ops.decode import decode_launch
+def _need(descriptor: Descriptor) -> tuple[int, int]:
+    """The call's workspace ``(bytes, alignment)``: the planner's layout of its call kind (``prefill``)."""
+    if descriptor["prefill"]:
+        from fsla.ops.prefill import prefill_workspace
 
-    return decode_launch(descriptor).workspace_bytes
-
-
-def check_workspace(workspace: torch.Tensor | None, descriptor: Descriptor) -> None:
-    """A caller's own workspace, refused by name when it is not a CUDA byte tensor, is too small or is misaligned for ``descriptor``."""
-    if workspace is None:
-        return
+        return prefill_workspace(descriptor)
     from fsla.ops.decode import decode_launch
 
     launch = decode_launch(descriptor)
-    size, alignment = launch.workspace_bytes, launch.workspace_alignment
+    return launch.workspace_bytes, launch.workspace_alignment
+
+
+def workspace_bytes(descriptor: Descriptor) -> int:
+    """The workspace a call of ``descriptor`` needs beside its operands, in bytes: the planner's layout of its kind (the ``prefill`` fact
+    chooses). Decode needs none; a prefill's layout is the prefill launch function's, which is not built, so asking for one is refused by name."""
+    return _need(descriptor)[0]
+
+
+def check_workspace(workspace: torch.Tensor | None, descriptor: Descriptor) -> None:
+    """A caller's own workspace, refused by name when it is not a CUDA byte tensor, is too small or is misaligned for ``descriptor``. ``None`` is a
+    call that needs none (decode's): a prefill's layout is the prefill launch function's, and asking for it is refused by name."""
+    if workspace is None and not descriptor["prefill"]:
+        return
+    size, alignment = _need(descriptor)
     if not isinstance(workspace, torch.Tensor) or workspace.dtype != torch.uint8 or workspace.dim() != 1 or not workspace.is_cuda:
-        raise TypeError("workspace is a contiguous 1-D CUDA uint8 tensor (or None, for the op to allocate)")
+        raise TypeError("workspace is a contiguous 1-D CUDA uint8 tensor (or None, for a call that needs none)")
     if not workspace.is_contiguous():
         raise ValueError("workspace must be contiguous")
     if workspace.numel() < size:

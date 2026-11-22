@@ -23,7 +23,7 @@ import fsla
 from fsla.interface import fsla_op
 from fsla.ops.window import window_of
 from measure.cells import by_name, carry_cells, realize
-from measure.subjects import bundle_of
+from measure.subjects import bundle_of, prefill_descriptor_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT, PREFILL_STATE
@@ -36,15 +36,15 @@ IDS = [c.name for c in CELLS]
 
 
 def operands(spec, tokens: slice = slice(None)):
-    """``(routes, values, masks, plan)``: the cell's draw over ``tokens`` in the format the kernels read."""
-    routes, values, masks, plan = bundle_of(spec, realize(spec), tokens)
-    return routes, values, masks, plan
+    """``(routes, values, masks)``: the cell's draw over ``tokens`` in the format the kernels read."""
+    return bundle_of(spec, realize(spec), tokens)
 
 
-def call(operands_, *args, **kwargs):
-    """The op over one call's operands (``routes, values, masks, plan``)."""
-    routes, values, masks, plan = operands_
-    return fsla_op(routes, values, masks, *args, plan=plan, **kwargs)
+def call(operands_, state=None):
+    """The op over one call's operands (``routes, values, masks``): its descriptor by the producer's rule, its workspace by the public builder."""
+    routes, values, masks = operands_
+    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None)
+    return fsla_op(routes, values, masks, descriptor, workspace=fsla.build_workspace(routes, values, masks, descriptor), state=state)
 
 
 def oracle(routes, values, entry=None):
@@ -57,8 +57,8 @@ def oracle(routes, values, entry=None):
 @pytest.mark.requires_kernel("prefill")
 def test_the_op_matches_the_fp64_oracle(spec):
     """``y`` of a stateless call, every token and channel, against the recurrence's readout and its envelope."""
-    routes, values, masks, plan = operands(spec)
-    y, state = fsla_op(routes, values, masks, plan=plan)
+    routes, values, _masks = operands_ = operands(spec)
+    y, state = call(operands_)
     assert state is None
     want = oracle(routes, values)
     assert_slots_close(y, want.y, output=PREFILL_READOUT, envelope=want.y_envelope, what=f"{spec.name} y")
@@ -69,9 +69,9 @@ def test_the_op_matches_the_fp64_oracle(spec):
 def test_the_op_hands_back_the_fp64_state(spec):
     """A stateful call binds the state and hands back the recurrence's final state, leaf by leaf in canonical order
     (`FSLAState.materialize`), against the oracle's and its envelope."""
-    routes, values, masks, plan = operands(spec)
+    routes, values, _masks = operands_ = operands(spec)
     state = fsla.state()
-    fsla_op(routes, values, masks, plan=plan, state=state)
+    call(operands_, state=state)
     want = oracle(routes, values)
     assert_slots_close(state.materialize(), want.state, output=PREFILL_STATE, envelope=want.state_envelope,
                        what=f"{spec.name} state")
@@ -85,7 +85,7 @@ def test_a_chained_call_equals_one_long_call():
     half = spec.tokens // 2
     state = fsla.state()
     ys = [call(operands(spec, part), state=state)[0] for part in (slice(0, half), slice(half, spec.tokens))]
-    routes, values, _masks, _plan = operands(spec)
+    routes, values, _masks = operands(spec)
     want = oracle(routes, values)
     assert_slots_close(torch.cat(ys, dim=1), want.y, output=PREFILL_READOUT, envelope=want.y_envelope,
                        what="chained y")
@@ -97,7 +97,7 @@ def test_a_chained_call_equals_one_long_call():
 def test_the_per_slot_rule_fails_what_a_global_max_passes():
     """The rule the cells are graded in can fail (docs/testing.md): a small slot moved by a hundredth of the readout's
     largest magnitude passes a global max-relative test at 2% and fails per slot."""
-    routes, values, masks, plan = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks = operands(by_name("flagship-alt-k4"))
     want = oracle(routes, values)
     planted = want.y.clone()
     i = int(torch.argmin(want.y.abs().flatten()))
@@ -111,7 +111,7 @@ def test_the_per_slot_rule_fails_what_a_global_max_passes():
 def test_the_intra_term_is_actually_present():
     """NON-VACUITY: the inter term alone fails the op's gate on a multi-window cell, so a call that dropped the intra
     (or the carry) could not pass. Runs no kernel."""
-    routes, values, masks, plan = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks = operands(by_name("flagship-alt-k4"))
     read, write = routes.dequantized()
     num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.dequantized().double(), routes.topology.widths, window_of())
     want = oracle(routes, values)
@@ -123,9 +123,13 @@ def test_the_intra_term_is_actually_present():
 def test_the_op_refuses_what_it_has_no_kernel_for():
     """THE REFUSAL IS STRUCTURAL: a decay, which the prefill envelope does not carry, is refused by name before any
     kernel runs."""
+    from conftest import hand_descriptor
+
     from fsla.routing.types import LeafMassDecay
 
-    routes, values, masks, plan = operands(by_name("flagship-alt-k4"))
+    routes, values, masks = operands(by_name("flagship-alt-k4"))
     dials = tuple(torch.full((routes.write_heads, w), 0.5, device="cuda") for w in routes.topology.widths)
+    decay = LeafMassDecay(dials=dials)
+    #: the prefill's descriptor is owed (refused when made), so the op's own refusal is reached through one made by hand
     with pytest.raises((NotImplementedError, ValueError), match="decay"):
-        fsla_op(routes, values, masks, LeafMassDecay(dials=dials), plan=plan)
+        fsla_op(routes, values, masks, hand_descriptor(routes, values, decay=decay), decay=decay)

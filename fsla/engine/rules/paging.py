@@ -15,15 +15,14 @@ from typing import Any
 from fsla.engine import rule
 
 
-@rule(gives=("paging",), needs=("plan",))
-def paging_preference(plan: Any) -> bool:
+@rule(gives=("paging",), needs=("descriptor",))
+def paging_preference(descriptor: Any) -> bool:
     """Whether a state bound by this call gets a PAGED backing. Default: yes.
 
-    The plan may set ``paging=False`` and only False -- ``paging=True`` is refused by
-    :class:`fsla.engine.plan.PrefillPlan` itself, because there is nothing to turn on. That is the "the plan overrides
-    the MAPPING only" ruling, made mechanical.
+    The call's ``dense_plane`` fact may pin the dense plane and nothing may pin the paged one: a stateful call pages by
+    default and paging is bitwise invisible, so there is nothing to turn on. The fact overrides the MAPPING only.
     """
-    return plan.paging is not False
+    return not descriptor["dense_plane"]
 
 
 @rule(gives=("first_slot",), needs=("allocated", "capacity", "extent_atoms", "count"))

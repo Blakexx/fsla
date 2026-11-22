@@ -2,35 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE CARRY, as a caller reaches it. No carry kernel is built on this line: :func:`carry` raises
 :class:`fsla.ops._ext.KernelNotBuilt`.
-
-What stands is the carve's vocabulary the planner and the envelope read: the carve
-(:class:`fsla.engine.types.Carve`) names the box -- an extent a level and the channel extent -- and each side's list
-levels and operand levels.
 """
 from __future__ import annotations
 
-from fsla.engine.types import Carve
 from fsla.ops._ext import extension, not_built
 
-__all__ = ["carry", "same_split", "sm_clock_ghz"]
-
-
-def _outer(plan) -> set[int]:
-    """A side's levels outside its dense rows: its lists, or a side with none its coefficient levels."""
-    return set(plan.lists if plan.lists else plan.operand[1:])
-
-
-def same_split(carve: Carve) -> int:
-    """Whether the fold's lists are the readout's digits (1: both sides list the same levels) or its K (0);
-    a box whose sides share part of a level set has neither."""
-    read = carve.readout
-    fold, read_rows = _outer(carve.fold), set(read.operand if read.lists else read.operand[:1])
-    if fold == _outer(read):
-        return 1
-    if fold == read_rows:
-        return 0
-    raise ValueError(f"the fold's lists {sorted(fold)} are neither the readout's digits nor its K "
-                     f"{sorted(read_rows)}: no hand-off form carries them")
+__all__ = ["carry", "sm_clock_ghz"]
 
 
 def carry(launch, *args, **kwargs):

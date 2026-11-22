@@ -192,8 +192,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 ## 4. The carve, and the grains
 
 **The carry's work is partitioned by ONE descriptor, the carve**
-([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve),
-[`internals/engine/carve.md`](internals/engine/carve.md)):
+([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the carve is re-derived by the prefill launch function, `open-work.md` row A-f):
 a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
 (their live digits a window, listed by the carry CTA itself, from the token list the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
@@ -389,7 +388,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the state contract, descriptor, backings | [`internals/state.md`](internals/state.md) |
 | the page's planes and its codec | [`internals/common/state_page.md`](internals/common/state_page.md) |
 | the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |
-| the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve), [`internals/engine/carve.md`](internals/engine/carve.md) |
+| the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve) |
 | the host order of a call | [`internals/engine/prefill_dag.md`](internals/engine/prefill_dag.md), [`internals/engine/decode_dag.md`](internals/engine/decode_dag.md) |
 | the digits, the row alignment law and the atom byte | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |

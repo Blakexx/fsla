@@ -186,8 +186,10 @@ def captured(monkeypatch):
     seen = []
     monkeypatch.setattr(produce, "descriptor", lambda **call: seen.append(call) or call)
     produce._decode_descriptor.cache_clear()
+    produce._prefill_descriptor.cache_clear()
     yield seen
     produce._decode_descriptor.cache_clear()
+    produce._prefill_descriptor.cache_clear()
 
 
 @pytest.mark.parametrize("widths, bits", [((64, 64), (6, 6, 0, 0)), ((16, 16, 16), (4, 4, 4, 0)), ((16, 32, 64, 256), (4, 5, 6, 8)),
@@ -197,20 +199,25 @@ def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_
     below the floor (8) is stated as it is: the contract refuses it, naming `width_bits_k` (`tests/unit/test_planner.py`)."""
     from fsla.ops.produce import decode_descriptor
 
-    decode_descriptor(_widths_topology(widths), d_v=48, decay=True, device=0)
+    decode_descriptor(_widths_topology(widths), d_v=48, decay=True, batch_heads=4, device=0)
     (call,) = captured
     assert (call["width_bits_1"], call["width_bits_2"], call["width_bits_3"], call["width_bits_4"]) == bits
-    assert (call["device"], call["d_v"], call["levels"], call["decay"]) == (0, 48, len(widths), 1)
+    assert (call["device"], call["d_v"], call["levels"], call["decay"], call["batch_heads"]) == (0, 48, len(widths), 1, 4)
+    assert (call["prefill"], call["tokens"], call["stateful"], call["dense_plane"], call["memory_budget"]) == (0, 1, 1, 0, 0)
 
 
-def test_decode_descriptor_takes_write_dense_from_the_producers_rule_over_the_declaration(captured):
-    """THE PRODUCER'S RULE: whole atoms are deposited (1) when the innermost level's write activation has no exact zeros; an opaque level may have them (0)."""
+def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_producers_rule_over_the_declaration(captured):
+    """THE PRODUCER'S RULE: a level a side walks by lists (`read_listed_k`, `write_listed_k` 1) is one whose activation has exact zeros -- an opaque level
+    may have them; a softmax has none. A level beyond the depth is 0. The planner's launch function derives the whole-atom deposit from the innermost
+    level's write flag."""
     from fsla.ops.produce import decode_descriptor
     from fsla.routing.types import SoftmaxActivation
 
-    decode_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, device=0)
-    decode_descriptor(_widths_topology((16, 16), write=SoftmaxActivation()), d_v=64, decay=False, device=0)
-    assert [call["write_dense"] for call in captured] == [0, 1]
+    decode_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, batch_heads=1, device=0)
+    decode_descriptor(_widths_topology((16, 16), write=SoftmaxActivation()), d_v=64, decay=False, batch_heads=1, device=0)
+    opaque, softmax = captured
+    assert [opaque[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [opaque[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
+    assert [softmax[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [0, 0, 0, 0] and [softmax[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [0, 0, 0, 0]
 
 
 @pytest.mark.parametrize("widths, level, width", [((24, 16), 1, 24), ((16, 31), 2, 31)])
@@ -219,5 +226,29 @@ def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_le
     from fsla.ops.produce import decode_descriptor
 
     with pytest.raises(ValueError, match=rf"level {level}'s width is {width}: a level's width is a power of two .*width_bits_{level}"):
-        decode_descriptor(_widths_topology(widths), d_v=64, decay=False, device=0)
+        decode_descriptor(_widths_topology(widths), d_v=64, decay=False, batch_heads=1, device=0)
+    assert not captured
+
+
+def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declarations_walks_and_padded_widths(captured):
+    """THE PREFILL'S DESCRIPTOR, `fsla.ops.produce.prefill_descriptor`: the kind (`prefill` 1), the caller's extents and declarations, and from the declaration
+    each level's PADDED width as its log2 and each side's walk; a declared budget of `None` is the fact 0."""
+    from fsla.ops.produce import prefill_descriptor
+
+    prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, dense_plane=True, memory_budget=10 ** 9, device=0)
+    prefill_descriptor(_widths_topology((64, 64)), d_v=48, decay=True, tokens=1, batch_heads=1, stateful=False, device=0)
+    first, second = captured
+    assert (first["prefill"], first["tokens"], first["batch_heads"], first["stateful"], first["dense_plane"], first["memory_budget"]) == (
+        1, 4096, 16, 1, 1, 10 ** 9)
+    assert (first["levels"], first["width_bits_1"], first["width_bits_2"], first["width_bits_3"]) == (2, 5, 4, 0), "24 pads to 32"
+    assert [first[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [first[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
+    assert (second["decay"], second["stateful"], second["dense_plane"], second["memory_budget"], second["d_v"]) == (1, 0, 0, 0, 48)
+
+
+@pytest.mark.parametrize("budget", [0, -1, 1.5, True])
+def test_prefill_descriptor_refuses_a_budget_that_is_not_a_positive_exact_int_or_none(captured, budget):
+    from fsla.ops.produce import prefill_descriptor
+
+    with pytest.raises(ValueError, match="memory_budget is a positive exact int of bytes, or None"):
+        prefill_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, tokens=8, batch_heads=1, stateful=False, memory_budget=budget, device=0)
     assert not captured

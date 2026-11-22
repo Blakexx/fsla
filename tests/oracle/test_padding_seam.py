@@ -148,7 +148,7 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
     v_logical = torch.randn(B, 1, H, d_v_logical, device=device, dtype=torch.float64,
                             generator=generator)
 
-    descriptor = decode_descriptor(topology, d_v=d_v_logical, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v_logical, decay=False, batch_heads=B * H)
     launch = decode_launch(descriptor)
     assert launch.d_v == DV, "d_v=48 must pad up to the shipped DV=64, not run at 48 directly"
 

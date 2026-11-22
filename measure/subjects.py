@@ -41,6 +41,9 @@ class Launch:
     outside_allocator: Callable[[], int] | None = None
 
 
+#: the arena's allocation extent in leaves the seed binds with: allocator policy a decode step is blind to (tests/integration/test_decode_bc_blindness.py)
+ARENA_EXTENT = 64
+
 #: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). The layer subject is one stateless segment: a
 #: call the layer splits into segments carries a state between them, which the prefill refuses until the carry's segment
 #: boundary is built (`docs/open-work.md` C-e). The op-level paths are the stateless prefill and decode's step.
@@ -82,43 +85,43 @@ class Subject:
 
 # ------------------------------------------------------------------ carry cells
 
-def cell_carve(spec):
-    """The carve the planner picks for a cell's declared sparsity and value width, from the record alone (no draw)."""
-    from fsla.engine.carve import plan_carve
-
-    declared = spec.declared_sparsity()
-    return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
-
-
 def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `fsla.interface.fsla_op` over the cell's bundle, stateless -- the validation, the
     carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
+    from fsla import build_workspace
     from fsla.interface import fsla_op
     from measure.cells import realize
 
     spec = fx["cell"]
-    routes, values, masks, plan = bundle_of(spec, realize(spec))
+    routes, values, masks = bundle_of(spec, realize(spec))
+    descriptor = prefill_descriptor_of(routes, values)
+    workspace = build_workspace(routes, values, masks, descriptor)
 
     def run():
-        return fsla_op(routes, values, masks, plan=plan)
+        return fsla_op(routes, values, masks, descriptor, workspace=workspace)
 
     run()
     return Launch(name=f"prefill|{spec.name}", call=run)
 
 
+def prefill_descriptor_of(routes, values, *, stateful: bool = False,  #: reserved: set by the prefill tests that carry a state
+                          dense_plane: bool = False):  #: reserved: set by the dense-plane bit-identity test
+    """The prefill's descriptor of a bundle: the call the bundle is, stated by the producer's rule over its topology."""
+    from fsla.ops.produce import prefill_descriptor
+
+    return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
+                              stateful=stateful, dense_plane=dense_plane, device=routes.device)
+
+
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
-    """``(routes, values, masks, plan)``: the cell's draw over ``tokens`` in the format the kernels read, the
-    masks the draw's own nonzero digits (the producer knows what it gives), and the plan the cell's declared sparsity
-    names: the levels each side walks by lists."""
-    from fsla.engine import PrefillPlan
-    from fsla.engine.carve import plan_carve
+    """``(routes, values, masks)``: the cell's draw over ``tokens`` in the format the kernels read, the
+    masks the draw's own nonzero digits (the producer knows what it gives)."""
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import PREFILL, Masks, pack_tokens
     from fsla.routing.types import OpaqueRouting, Topology
     from fsla.values import Values
 
-    declared = spec.declared_sparsity()
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
     #: the cell's drawn write gain folded into write level 0, as a producer folds its own (docs/CONSTITUTION.md#r23)
     read = [x[:, tokens] for x in drawn.read]
@@ -128,9 +131,7 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     masks = Masks(PREFILL, tuple(pack_tokens(level != 0) for level in read),
                   tuple(pack_tokens(level != 0) for level in write))
     values = Values.from_projection(drawn.v[:, tokens])
-    walks = tuple(tuple(sparse[side] for sparse in declared) for side in (0, 1))
-    plan = PrefillPlan(carve=plan_carve(tuple(topology.padded_widths), *walks, values.v.shape[-1]))
-    return routes, values, masks, plan
+    return routes, values, masks
 
 
 # ------------------------------------------------------------------ layer cells
@@ -171,24 +172,27 @@ def layer_prefill(fx) -> Launch:
 
 
 def _one_segment(spec, layer) -> None:
-    if layer.segment_tokens(spec.B, spec.tokens) < spec.tokens:
-        raise ValueError(f"{spec.name}: the layer splits {spec.tokens} tokens into segments, and a segment boundary "
-                         "carries a state the prefill does not take yet")
+    if layer.memory_budget is not None:
+        raise ValueError(f"{spec.name}: the layer declares a memory budget, so it would split {spec.tokens} tokens into segments, and a "
+                         "segment boundary carries a state the prefill does not take yet")
 
 
 def layer_op(fx) -> Launch:
     """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `fsla.interface.fsla_op`, stateless --
     the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
     layer into the producer and the op; beside the stage subjects, the op into its launches and its glue."""
+    from fsla import build_workspace
     from fsla.interface import fsla_op
 
     spec, layer = fx["cell"], fx["layer"]
     _one_segment(spec, layer)
     with torch.no_grad():
         routes, values, masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())
+    descriptor = prefill_descriptor_of(routes, values)
+    workspace = build_workspace(routes, values, masks, descriptor)
 
     def run():
-        return fsla_op(routes, values, masks, plan=layer.prefill_plan)[0]
+        return fsla_op(routes, values, masks, descriptor, workspace=workspace)[0]
 
     run()
     return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)
@@ -202,7 +206,6 @@ def decode_step(fx) -> Launch:
     step, at the same context position, over the same residency.
     """
     import fsla
-    from fsla.engine.constants import box_leaves
     from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
     from fsla.engine.facts import planes
     from fsla.ops.produce import decode_descriptor
@@ -214,8 +217,9 @@ def decode_step(fx) -> Launch:
     #: routing writes -- a decode step's cost is a function of residency and routing,
     #: not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
-    descriptor = decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, device=fx["x"].device)
     routes = fx["routes"]
+    descriptor = decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, batch_heads=routes.batch * routes.heads,
+                                   device=fx["x"].device)
     #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
     with torch.no_grad():
         masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
@@ -226,7 +230,7 @@ def decode_step(fx) -> Launch:
         seeded.clear()
         state = fsla.state()
         with torch.no_grad():
-            _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, paging=True, BC=box_leaves(spec.dv, 8))
+            _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, paging=True, BC=ARENA_EXTENT)
             arena.wait()
         seeded.update(state=state, arena=arena)
 

@@ -24,7 +24,6 @@ import pytest
 import torch
 
 import fsla.engine.rules as rules_pkg
-from fsla.engine.plan import PrefillPlan
 from fsla.engine.rules import (
     admission,
     decode_variant,
@@ -35,8 +34,14 @@ from fsla.engine.rules import (
 )
 from fsla.engine.runner import Node
 from fsla.engine.types import CallClass, Variant
+from fsla.ops.descriptor import Descriptor
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _descriptor(**facts) -> Descriptor:
+    """A descriptor holding the call facts a rule reads (the planner is a device read; a rule reads the facts alone)."""
+    return Descriptor(device=0, call=tuple(sorted(facts.items())), words=())
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +100,10 @@ def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
 def test_a_rule_runs_as_a_node_over_a_fact_bag():
     """Rules are NODES, not a phase: the same fold a caller invokes with values is
     what the walk runs, and `.node` is the one it walks."""
-    from fsla.engine.carve import plan_carve
     from fsla.engine.runner import run
 
-    plan = PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64))
     facts = run((variant.node, paging_preference.node), {"call_class": CallClass(False, False, False, False),
-                                                      "plan": plan})
+                                                      "descriptor": _descriptor(dense_plane=0)})
     assert facts["variant"] is Variant.PREFILL_STATELESS
     assert facts["paging"] is True
 
@@ -153,12 +156,9 @@ def test_the_operand_envelope_names_the_device_and_no_activation():
 # PagingPreferenceRule
 # ---------------------------------------------------------------------------
 
-def test_paging_is_the_default_and_the_plan_may_only_turn_it_off():
-    from fsla.engine.carve import plan_carve
-
-    carve = plan_carve((256, 256), (False, True), (True, False), 64)
-    assert paging_preference(PrefillPlan(carve=carve)) is True
-    assert paging_preference(PrefillPlan(carve=carve, paging=False)) is False
+def test_paging_is_the_default_and_the_calls_dense_plane_fact_may_only_turn_it_off():
+    assert paging_preference(_descriptor(dense_plane=0)) is True
+    assert paging_preference(_descriptor(dense_plane=1)) is False
 
 
 # ---------------------------------------------------------------------------

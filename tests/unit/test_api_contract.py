@@ -53,17 +53,17 @@ def _validate(routes, v) -> None:
 
 
 def _context(routes, values):
-    """The call's context: the bundle's own bits as the PREFILL-layout masks and a valid plan (validation reads neither's contents) (a
-    non-bundle is the type refusal's, which speaks before either is read)."""
-    from fsla.engine import PrefillPlan
-    from fsla.engine.carve import plan_carve
+    """The call's context: the bundle's own bits as the PREFILL-layout masks and the prefill descriptor of the call, made by hand (validation reads the
+    masks' shapes and the descriptor's facts) (a non-bundle is the type refusal's, which speaks before either is read)."""
+    from conftest import hand_descriptor
+
     from fsla.engine.dags.prefill_dag import PrefillContext
     from tests.oracle.fixtures import masks_of
 
-    if not isinstance(routes, RouteFactors):
-        return PrefillContext(routes=routes, values=values, masks=None, plan=None)
+    if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
+        return PrefillContext(routes=routes, values=values, masks=None, descriptor=None)
     return PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
-                          plan=PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64)))
+                          descriptor=hand_descriptor(routes, values))
 
 
 def _admitted(routes, v) -> None:
@@ -215,9 +215,8 @@ def test_a_zero_digit_is_a_zero_at_every_level():
 
 
 def test_rows_are_u8_at_every_depth():
-    """The producer writes u8 rows at every depth, each against its own max (a side with no dense level is the plan's
-    refusal, `fsla.engine.carve.plan_carve`; the bundle carries no flag); a row of any other type is refused, and a deep bundle dequantizes to its levels within
-    half a digit a row."""
+    """The producer writes u8 rows at every depth, each against its own max (the bundle carries no flag); a row of any other type is refused,
+    and a deep bundle dequantizes to its levels within half a digit a row."""
     from fsla.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
@@ -416,14 +415,13 @@ def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
 
 
 def test_no_launch_geometry_is_reachable_from_the_top_level():
-    """The plan family is HOW the op runs, not what the model is. It was exported at
-    the top level, one shelf below the model types, and the tier label on it was a
-    warning sign at eye level. It now lives behind a marked door.
+    """The planner's own answers are HOW the op runs, not what the model is: the producer's descriptor rules and the envelope's
+    sentence live behind a marked door, never one shelf below the model types.
     """
     #: The set names what is BEHIND the door today; the RULE is what this row states
     #: and it does not move when the set does: launch geometry is behind the marked
     #: door, never at the top level.
-    quarantined = {"PrefillPlan", "requires_backward", "envelope_refusal"}
+    quarantined = {"decode_descriptor", "prefill_descriptor", "requires_backward", "envelope_refusal"}
     import fsla.expert as expert
 
     assert quarantined.isdisjoint(fsla.__all__)
@@ -437,8 +435,8 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
     signature = inspect.signature(fsla.FSLA.__init__)
     assert list(signature.parameters) == [
         "self", "routing", "hidden_size", "num_heads",
-        "d_v", "decay", "layer_idx", "plan", "memory_budget"]
-    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "plan", "memory_budget"):
+        "d_v", "decay", "layer_idx", "memory_budget"]
+    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "memory_budget"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
@@ -452,11 +450,27 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 #: `tests/integration/test_layer_dispatch.py` holds that refusal.
 
 
-def test_the_plan_argument_refuses_a_lookalike():
-    """PLANTED VIOLATION: a dict that happens to have the right keys."""
-    producer = _routes()
-    with pytest.raises(TypeError, match="PrefillPlan"):
-        fsla.FSLA(producer.routing, hidden_size=32, num_heads=2, plan={"state_block": 16})
+def test_the_op_and_its_planner_arguments_are_a_descriptor_and_a_workspace_and_no_plan_object_exists():
+    """An operator is `op(data..., descriptor, workspace=None)`: the pinned parameter lists of the op, the descriptor's producer rule and the workspace's
+    builder are the surface, and no plan object is reachable from the layer, the expert door or the engine."""
+    import inspect
+
+    import fsla.engine as engine
+    import fsla.expert as expert
+    from fsla.ops.produce import prefill_descriptor
+
+    op = inspect.signature(fsla.fsla_op).parameters
+    assert list(op) == ["routes", "values", "masks", "descriptor", "workspace", "state", "decay"]
+    assert all(op[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("workspace", "state", "decay"))
+    assert op["workspace"].default is None and op["state"].default is None and op["decay"].default is None
+    assert list(inspect.signature(fsla.build_workspace).parameters) == ["routes", "values", "masks", "descriptor", "workspace"]
+    assert list(inspect.signature(prefill_descriptor).parameters) == [
+        "topology", "d_v", "decay", "tokens", "batch_heads", "stateful", "dense_plane", "memory_budget", "device"]
+    assert fsla.workspace_bytes is not None
+    for gone in ("PrefillPlan", "prefill_plan", "Carve", "SidePlan"):
+        assert not hasattr(expert, gone) and not hasattr(engine, gone) and gone not in fsla.__all__
+    for gone in ("prefill_plan", "segment_tokens", "state_bytes"):
+        assert not hasattr(fsla.FSLA, gone)
 
 
 # ---------------------------------------------------------------------------

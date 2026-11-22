@@ -33,12 +33,18 @@ covers (`gpus`, the README's label). `registry.contexts()` expands every descrip
 parts, a fact the schema does not name, a schema fact no part states: refused), the alternatives crossed. A matcher and the run time see
 contexts only. Two contexts identical in every fact are refused, whatever descriptors made them.
 
-THE DECODE CALL'S FACTS are `d_v`, `levels`, `decay`, `write_dense` and the log2 of each level's width, `width_bits_1` .. `width_bits_4` (a level's width is a power of two,
-`fsla/_state.py`'s `StateFormat`, so a range of the log2 states every width exactly; 0 for a level the call does not have). The depth and the widths are correlated and a part's lists
-are crossed, so the correlation is stated by composition: `calls/decode` holds what does not depend on the depth (`d_v`, `decay`, `write_dense`), and `calls/depth1` .. `calls/depth4` each state `levels`
-as a point and the four `width_bits` (a range from the width floor, `MIN_LEVEL_WIDTH`, up to the widest level the decode path holds, `kDecodeMaxLevelWidth`, for a level it has, the point 0 beyond). The
-contract is four descriptors, `hopper_decode_d1` .. `hopper_decode_d4`, each composing the device part, `calls/decode` and its depth part. A call whose width is outside its range is refused when the
+THE CALL'S FACTS (all ints; the schema holds each one's unit and doc). The call's KIND is `prefill` (0 a decode step, 1 a prefill). Its extents are `d_v`,
+`tokens` (the sequence length T; decode's point 1), `batch_heads` (B times H) and `levels`; its dials are `decay`, `stateful` (a state in or out), `dense_plane` (pins the dense state
+plane, the bit-identity gate's backing) and `memory_budget` (bytes, 0 for none). Its per-level facts are the log2 of each level's width, `width_bits_1` .. `width_bits_4` (a level's width is a
+power of two, `fsla/_state.py`'s `StateFormat`, so a range of the log2 states every width exactly; 0 for a level the call does not have) and each side's walk of each level,
+`read_listed_1..4` and `write_listed_1..4` (1 when that side of that level is WALKED BY ITS LISTS, 0 when every digit is walked: an action, chosen by the producer's rule `fsla.ops.produce.activation_walks` from the declaration -- a side whose activation has exact zeros is listed -- and any valid walk is lawful, a wrong one costing time and never the result). There is no `write_dense` fact: decode's launch
+function derives it (the innermost level's `write_listed` is 0). The depth and the per-level facts are correlated and a part's lists
+are crossed, so the correlation is stated by composition: `calls/decode` holds what does not depend on the depth, and `calls/depth1` .. `calls/depth4` each state `levels`
+as a point, the four `width_bits` (a range from the width floor, `MIN_LEVEL_WIDTH`, up to the widest level the decode path holds, `kDecodeMaxLevelWidth`, for a level it has, the point 0 beyond) and the
+sparse facts (a range 0..1 for a level the depth has, the point 0 beyond). The
+contract is four descriptors, `hopper_decode_d1` .. `hopper_decode_d4`, each composing the device part, `calls/decode` and its depth part. A call whose fact is outside its range is refused when the
 descriptor is made, naming the fact (`width_bits_1=3 (the contract: 4..8)`), by the same check as every other fact ([`../common/plan/planner.md`](../common/plan/planner.md#the-contract-check)).
+A decode step serves `batch_heads` from 1 to 536870911 (`docs/api.md#batch-heads`); the planner test holds both ends.
 
 The hopper device part holds the hardware table's sm_90a values for the facts the table names, and
 `tests/unit/test_hardware_registry.py` holds them equal: the table is what `hardware.cuh` is generated from, the contract is what a device is
@@ -80,6 +86,21 @@ holding the narrowed contract, refuses a call outside it, naming it (`kContractN
 the full one, never more. A narrowed descriptor is never part of the full contract (`descriptors/*.json` alone are), so the README's table and the
 duplicate check read the full one. The full contract is enforced by `//:gate` (its `full_contract` test fails, naming the contract, under any other
 setting) and by releases (the build record says `iteration: True`, which `bazel run //:wheels` refuses). `tests/unit/test_narrowed_contract.py` holds all of it.
+
+<a id="the-owed-folder"></a>
+
+## The owed folder: a descriptor that exists before its arm
+
+`hardware/descriptors/owed/<name>.json` is a THIRD folder beside the full contract (`descriptors/*.json`) and the narrowed ones (`descriptors/dev/`). A descriptor there composes parts exactly as any
+other (`calls/prefill` and a depth part: `hopper_prefill_d1` .. `hopper_prefill_d4`) and `registry.check` validates it against the schema, but it is NEVER in the full contract, the README's support table,
+a narrowed contract or the arms the build compiles. It has one more field, `"owed": ["<kernel>", ...]`: the kernels its call waits on, the names `fsla.ops._ext.not_built` and the tests'
+`requires_kernel` use. The registry refuses an owed descriptor reachable from the full contract (a context in both), so an owed call cannot be promised and owed at once.
+
+At run time `//hardware:owed` generates `plan/owed.h` from the registry (no hand-typed copy) and the planner, finding a context outside the contract but inside an owed descriptor, refuses it
+naming each owed kernel instead of saying it lies outside the contract; `fsla.ops.descriptor.descriptor` turns that into `KernelNotBuilt` (through the host op `fsla_owed_kernels`), so a test marked
+`requires_kernel("prefill")` is a strict xfail through the surface. A context in neither is refused as every call is, naming the facts. The build's contract check fails, naming the context,
+on a full-contract context whose `prefill` fact reaches 1, rather than evaluating it against decode's launch function. A prefill descriptor leaves the owed folder when the prefill launch
+function and its arm are built (`docs/open-work.md` rows A-f and A-h).
 
 <a id="outputs"></a>
 

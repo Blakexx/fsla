@@ -49,8 +49,8 @@ inputs are the entry-state plane, the exit-state plane and the page table, and i
 reads exactly whether each is there.
 
 What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
-the import graph: `paging_preference`'s `plan` is a `PrefillPlan` from `plan.py`,
-imported from `fsla.engine` like every other core name, so no module here names
+the import graph: `paging_preference` reads the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its `dense_plane` fact),
+which the engine handles as an opaque value, so no module here names
 `fsla.expert` or `fsla.interface` ([`engine.md` §8](engine.md#refusals)). The
 alternative shape — a rule reaching up into the facade for the type of a value it was
 handed — survives an import-graph check only while the import hides in a function body.
@@ -111,53 +111,16 @@ launch, a new variant and a new byte cost, separately. There is no third path in
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
 
-## <a id="carve"></a>The carve: the carry's box and operation plans, one descriptor
+## <a id="carve"></a>The carve: the carry's box, owed to the prefill launch function
 
-The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs
-two operations on it: the fold over the write side's lists and the readout over the read
-side's. The box and both sides' operation plans are one value, `Carve` (`types.py`), and
-every kernel that depends on the geometry takes it: the gather pass (designed, not built) would group its unions and
-lists by the box's list levels, and the carry addresses by it. A kernel
-validates the carve it is handed and refuses one it was not built for; it never decides
-a carve. So the planner can change -- a cost model in place of fixed rules -- and every
-kernel keeps working for whatever it returns.
-
-The carve is no rule of the engine: it is the PRODUCER's plan rule (`fsla.ops.produce.prefill_plan`: the pinned carve after the same
-check the planner's own passes, else the planner's (`fsla/engine/carve.py`, [`carve.md`](carve.md))). It reads the declaration's
-widths and which levels each side walks by lists, never an operand. That is the standing rule for every launch-static axis: it is a function of
-launch-static facts (shapes, declared flags, the binary's arms) and never of a routing
-statistic, because the routing distribution moves step to step and a layout chosen from it
-would make the state's shape depend on the data.
-
-**A side's sparse levels are its lists; its dense levels are its operand.** A level's tag
-is its two flags, read then write: `SD`, `DS`, `DD`, `SS`. The fold's lists are the
-write-sparse levels and its operand rows the write-dense ones (formed in level order, the
-canonical product); the readout's lists are the read-sparse levels and its operand the
-read-dense ones. Every side has a dense level, so every side has an operand.
-
-**Producer v1's rules,** each from a priced trade:
-
-* `DD` levels take as much of the box as fits, spread evenly: their rows' bytes ADD while
-  their extent MULTIPLIES, so a token's row feeds the most dense leaves per byte.
-* `DS` and `SD` levels share what is left by turns, `DS` first: each is one side's lists and
-  the other side's operand, so they trade against each other, and the readout's operand (its
-  K) goes first because the readout is the costlier phase. Within its tag the extent goes to
-  the widest level, whole, so a token's live digits there arrive in one copy.
-* `SS` levels take only what nothing else can.
-* No level takes more than the cap, 32 -- the square root of the box's 1,024 leaves. When the
-  box cannot be filled under it, the cap lifts to the widths.
-* The channel extent is chosen first, toward `d_v` (at most 128): a token's output then
-  leaves a CTA as whole lines, and each readout warp owns its channels -- halved until every
-  listed level spans one of the gather pass's list groups (16 or 32 digits, or its whole width)
-  and each side's rows fill an MMA tile, and a box with a listed side holds at most 64 channels
-  (`carve.md#producer-v1`).
-
-**The fold's warp tile** is its lists x its operand rows, `box leaves / 8` leaves a warp, the
-rows whole while they fit. **The readout's warps** each hold every leaf for their channels --
-8-channel groups by token groups (`carve.md#sides`) -- so the state reaches the readout
-through the image, never in place. Whether the fold's lists are the readout's digits (both
-sides list the same level) or its K fixes how the hand-off reads the state into the image:
-the arm key's `same_split`.
+The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
+side's lists and the readout over the read side's. There is NO CARVE OBJECT on this line: the Python carve rule (`plan_carve`, `check_carve`,
+`Carve`, `SidePlan`, its tables and its tests) is deleted ([`../DELETIONS.md`](../DELETIONS.md), recover from `b6465d84`), and the carve is
+re-derived for the two-box Hopper CTA by the prefill's launch function in `common/plan/` (`docs/open-work.md` row A-f), from the call's
+facts -- each side's walk of each level (`read_listed_k`, `write_listed_k`) and the level widths -- and never an operand. That is the
+standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared flags, the binary's arms) and never
+of a routing statistic, because the routing distribution moves step to step and a layout chosen from it would make the state's shape
+depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

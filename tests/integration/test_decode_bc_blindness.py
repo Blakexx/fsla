@@ -91,9 +91,9 @@ def test_decode_is_blind_to_prefill_bc(widths):
         # not host-selectable, so the loop varies the number a prefill COULD have
         # run at and asserts there is no channel through which it could reach the
         # descriptor. `decode_descriptor` is called inside the loop because
-        # it must be a pure function of the topology, `d_v`, `decay` and the device.
+        # it must be a pure function of the topology, `d_v`, `decay`, `batch_heads` and the device.
         assert BC in _BCS
-        descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+        descriptor = decode_descriptor(topology, d_v=d_v, decay=False, batch_heads=B * H)
         descriptors.append(descriptor)
         state = m0.clone()
         y, state, _ = _decode_step(routes, values, masks_of(routes), descriptor, state)

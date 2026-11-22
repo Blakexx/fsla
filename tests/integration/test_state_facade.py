@@ -51,17 +51,19 @@ def test_a_raw_tensor_is_not_a_state():
     Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `fsla_op` itself is
     the deletion refusal and speaks before it reads its arguments.
     """
+    from conftest import hand_descriptor
+
     from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
-    from fsla.ops.produce import prefill_plan
     from fsla.routing.masks import PREFILL
     from fsla.values import Values
     from tests.oracle.fixtures import masks_of
 
     producer, (x, v) = _producer(), _inputs()
     routes = producer(x)
+    values = Values.from_projection(v)
     with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
-        validate_context(PrefillContext(routes=routes, values=Values.from_projection(v),
-                                        masks=masks_of(routes, PREFILL), plan=prefill_plan(routes.topology, _DV),
+        validate_context(PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
+                                        descriptor=hand_descriptor(routes, values, stateful=True),
                                         state=torch.zeros(1), want_state=True))
 
 

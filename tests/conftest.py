@@ -339,7 +339,7 @@ def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bia
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                 decay=None, decay_rate=2.0 ** -8, gain=True,
-                bias=False, plan=None, layer_idx=None, **kwargs):
+                bias=False, layer_idx=None, **kwargs):
     """A :class:`fsla.FSLA` over :func:`build_routing`.
 
     ``decay`` takes ``None`` (no decay), ``'learned'`` or ``'constant'`` -- the two
@@ -354,7 +354,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
     source = None if decay is None else sources[decay](
         decay_rate, widths=declared.widths, num_heads=num_heads)
     return FSLA(declared, hidden_size=hidden_size, num_heads=num_heads, d_v=d_v, decay=source,
-                layer_idx=layer_idx, plan=plan)
+                layer_idx=layer_idx)
 
 
 # -----------------------------------------------------------------------------
@@ -436,3 +436,15 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     routes, _values, _masks = produce(x, plan, weights)
     read_levels, write_levels = routes.dequantized()
     return SimpleNamespace(read_levels=read_levels, write_levels=write_levels)
+
+
+def hand_descriptor(routes, values, *, stateful=False, decay=None, dense_plane=False, memory_budget=0, device=0, **facts):
+    """A PREFILL descriptor of the call the bundles are, made by hand (a `Descriptor` holding the call's facts): the planner is a device read, and the
+    prefill's descriptor is owed on this line, so a test of the surface's own checks, which read the facts alone, builds one. `facts` override."""
+    from fsla.ops.descriptor import Descriptor
+    from fsla.ops.produce import level_facts
+
+    stated = {"d_v": values.d_v, "decay": int(decay is not None), "prefill": 1, "tokens": routes.tokens, "batch_heads": routes.batch * routes.heads,
+              "stateful": int(stateful), "dense_plane": int(dense_plane), "memory_budget": memory_budget,
+              **level_facts(routes.topology, tuple(routes.topology.padded_widths)), **facts}
+    return Descriptor(device=device, call=tuple(sorted(stated.items())), words=())

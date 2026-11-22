@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op.
 
-    fsla_op(routes, values, masks, decay, plan=plan)
+    fsla_op(routes, values, masks, descriptor, *, workspace=None, state=None, decay=None)
 
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 :class:`~fsla.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
 the internal format -- a :class:`~fsla.values.Values` bundle -- ``masks`` is the DATA beside the rows, like attention's
-mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; the op computes with ``r * m``) and
-``decay`` is the recurrence dial. ``plan`` is a static :class:`~fsla.engine.plan.PrefillPlan`: what to do, never what
-you are giving, and never changing the mathematical output -- the data does.
+mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; the op computes with ``r * m``), the
+``state`` is its own argument, in and out, and ``decay`` is the recurrence dial: the data changes the mathematics.
+``descriptor`` is the call's validated run-time context (:func:`fsla.ops.produce.prefill_descriptor`): every device fact and every call fact.
+``workspace`` is everything derived during the call, one buffer a caller lays out with :func:`fsla.build_workspace`: the op runs no derivation
+pass of its own.
 
 ONE SEGMENT a call: the op runs the prefill DAG (:mod:`fsla.engine.dags.prefill_dag`)
 over the segment it is handed and continues the state it is handed. Splitting a long
@@ -31,7 +33,7 @@ from fsla.engine import BackwardNotImplemented
 from fsla.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
-    from fsla.engine import PrefillPlan
+    from fsla.ops.descriptor import Descriptor
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import Masks
     from fsla.routing.types import DecayConfig
@@ -49,20 +51,23 @@ def fsla_op(
     routes: RouteFactors,
     values: Values,
     masks: Masks,
-    decay: DecayConfig = None,
+    descriptor: Descriptor,
     *,
-    plan: PrefillPlan,
+    workspace: torch.Tensor | None = None,
     state: FSLAState | None = None,
+    decay: DecayConfig = None,
 ) -> tuple[torch.Tensor, FSLAState | None]:
     """Run FSLA over one segment: ``(y, state)``.
 
     ``routes``: a :class:`~fsla.routing.factors.RouteFactors`; ``values``: a :class:`~fsla.values.Values` with
     the same ``[B, T, H]``; ``masks``: the PREFILL-layout :class:`~fsla.routing.masks.Masks` the producer emitted beside
-    them (validated for shape and dtype, never values); ``decay``: the recurrence dial, or ``None``; ``plan``: the
-    static :class:`~fsla.engine.plan.PrefillPlan` (:func:`fsla.ops.produce.prefill_plan`). ``state``: ``None`` for a stateless
+    them (validated for shape and dtype, never values); ``descriptor``: the prefill's validated
+    :class:`~fsla.ops.descriptor.Descriptor` (:func:`fsla.ops.produce.prefill_descriptor`), checked against the bundles
+    (:func:`fsla.ops.prefill.check_descriptor`); ``workspace``: the buffer :func:`fsla.build_workspace` laid out for this call.
+    ``state``: ``None`` for a stateless
     call, or a :class:`~fsla.FSLAState` from :func:`fsla.state` -- an unbound one binds from this call, a bound
-    one is continued. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object, mutated in place (``None``
-    when the call was stateless).
+    one is continued; ``decay``: the recurrence dial, or ``None``. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object,
+    mutated in place (``None`` when the call was stateless).
 
     A call outside the built envelope -- a CPU operand, decay, a topology or value
     width no built arm carries, ``T`` off the window -- RAISES, naming the clause. A gradient raises too, until
@@ -70,7 +75,7 @@ def fsla_op(
     """
     from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
 
-    ctx = PrefillContext(routes=routes, values=values, masks=masks, plan=plan, decay=decay, state=state,
+    ctx = PrefillContext(routes=routes, values=values, masks=masks, descriptor=descriptor, workspace=workspace, decay=decay, state=state,
                          want_state=state is not None)
     #: in the CALLER's grad mode: inside the node's forward autograd has turned it off, and the gradient
     #: clause would never speak.

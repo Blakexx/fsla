@@ -16,7 +16,7 @@ parts are composed from two functions and stay structurally separate:
   48 KB every launch has), the padding of the call's `d_v` to the arm's (`arm.d_v - d_v`: the value width is a contract range and the arm
   holds it, so the padding is the launch function's, not a second law beside it), the device's SMs, and what the call states of its levels:
   each level's width (`widths`, `1 << width_bits_k` for a level the call has, 0 beyond its `levels`), its offset into the flattened per-level rows
-  (`row_offsets`, the prefix sums of the widths) and `write_dense` (whether the step deposits whole atoms).
+  (`row_offsets`, the prefix sums of the widths) and `write_dense` (whether the step deposits whole atoms: DERIVED here, 1 when the innermost level's `write_listed_k` fact is 0).
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)).
@@ -25,9 +25,9 @@ parts are composed from two functions and stay structurally separate:
 
 THERE IS NO DECODE PLAN. The op takes data and the descriptor (`op(data..., descriptor, workspace=None)`): the descriptor is every device fact and every call fact,
 immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the grid) is computed by this one launch
-function right before the launch and never stored. The level widths and `write_dense` are CALL FACTS because the caller's declaration decides them
+function right before the launch and never stored. The level widths and each side's walk of each level are CALL FACTS because the caller's declaration decides them
 (`fsla.ops.produce.decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and
-`write_dense` from the producer's rule over the declaration); a width the contract does not hold is refused when the descriptor is made, naming the fact
+the `read_listed_k` and `write_listed_k` of the producer's rule over the declaration; `write_dense` is derived from the innermost level's); a width the contract does not hold is refused when the descriptor is made, naming the fact
 ([`../../hardware/registry.md`](../../hardware/registry.md#parts)). The state plane's leaf order (`lattice_k`, `lattice_m`) is no fact of the call: it travels with the
 state plane, which `fsla.ops.decode` derives from the state's format (`fsla.ops.lattice.derive_lattice`, the one authority) and passes with the state operand; the
 readout's `eps` is data, and the grid is the launch function's own (a gate's forced count is a private keyword of the internal step).

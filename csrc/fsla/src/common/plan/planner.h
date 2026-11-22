@@ -15,6 +15,7 @@
 
 #include "plan/contract.h"
 #include "plan/facts.h"
+#include "plan/owed.h"
 #include "plan/rules.h"
 
 namespace fsla::plan {
@@ -24,10 +25,12 @@ using Descriptor = Facts;
 //: integer facts by name, the form a device's read and a call's facts arrive in
 using Named = std::vector<std::pair<std::string_view, std::int64_t>>;
 
-//: a descriptor, or the refusal that names why there is none
+//: a descriptor, or the refusal that names why there is none; `owed` names the kernels the call waits on when the refusal is that the call
+//: lies inside an owed descriptor (empty for any other refusal)
 struct Planned {
   Descriptor descriptor;
   std::string refusal;
+  std::vector<std::string> owed;
 
   bool ok() const { return refusal.empty(); }
 };
@@ -90,6 +93,7 @@ inline Planned settle(const Descriptor& d, Scope scope, std::string_view what,
                       std::string_view model) {
   const ContractContext* nearest = nullptr;
   std::vector<std::string> nearest_outside;
+
   for (const ContractContext& context : contract()) {
     std::vector<std::string> out = outside(d, context.facts, scope);
     if (out.empty()) {
@@ -107,6 +111,30 @@ inline Planned settle(const Descriptor& d, Scope scope, std::string_view what,
       nearest_outside = out;
     }
   }
+
+  if (scope == Scope::Whole) {
+    std::vector<std::string> kernels;
+    std::string ids;
+    for (const OwedContext& context : owed()) {
+      if (!outside(d, context.facts, scope).empty()) continue;
+      ids += (ids.empty() ? "'" : ", '") + std::string(context.id) + "'";
+      for (const char* kernel : context.kernels) {
+        bool listed = false;
+        for (const std::string& k : kernels) listed |= k == kernel;
+        if (!listed) kernels.push_back(kernel);
+      }
+    }
+    if (!kernels.empty()) {
+      std::string names;
+      for (const std::string& k : kernels) names += (names.empty() ? "" : ", ") + k;
+      return {d,
+              std::string(what) + " lies inside the contract's OWED descriptors (" + ids
+                  + "): the kernels it waits on are not built: " + names
+                  + ". Nothing guarantees it until they are",
+              kernels};
+    }
+  }
+
   std::string text = std::string(what) + " lies outside FSLA's ";
   if (kContractNarrowed) {
     text += "NARROWED contract '" + std::string(kContractName)

@@ -174,11 +174,13 @@ class KernelNotBuilt(NotImplementedError):
     """An op this line has no kernel for: its fp64 definition stands (`fsla.ops.naive`), its launch raises this."""
 
 
-def not_built(kernel: str):
-    """Raise :class:`KernelNotBuilt` for ``kernel``, by name."""
+def not_built(*kernels: str):
+    """Raise :class:`KernelNotBuilt` naming each of ``kernels``."""
+    names = " and ".join(kernels)
     raise KernelNotBuilt(
-        f"the {kernel} kernel is not built on this line: no hopper or blackwell schedule of it is written yet, and the "
-        "ampere family's is the branch `ampere`'s. The op's fp64 definition is fsla.ops.naive.naive_fsla.")
+        f"the {names} {'kernel is' if len(kernels) == 1 else 'kernels are'} not built on this line: no hopper or blackwell schedule of "
+        f"{'it is' if len(kernels) == 1 else 'them is'} written yet, and the ampere family's is the branch `ampere`'s. The op's fp64 definition is "
+        "fsla.ops.naive.naive_fsla.")
 
 
 __all__ = ["KernelNotBuilt", "device_index", "extension", "is_available", "not_built"]

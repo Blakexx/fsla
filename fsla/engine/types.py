@@ -1,7 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The facts engine's value types: the call class, the variant it selects, the arm, the
-carry's carve, and the refusal every
+"""The facts engine's value types: the call class, the variant it selects, and the refusal every
 no-backward clause raises.
 
 Every fact is an immutable value. Tensor-valued facts are held by REFERENCE and
@@ -64,50 +63,6 @@ class CallClass:
     state_out: bool
     paged: bool
     grad: bool
-
-
-@dataclass(frozen=True, slots=True)
-class SidePlan:
-    """One side's operation plan in the carry's box: the side's SPARSE levels index its lists and
-    its DENSE levels its operand rows (formed in level order, the canonical product), and a warp
-    covers ``tile_lists`` lists x ``tile_rows`` rows of the box -- the fold's warps a share of its
-    leaves, the readout's every leaf for their channels (docs/internals/engine/rules.md#carve).
-    """
-
-    lists: tuple[int, ...]
-    operand: tuple[int, ...]
-    tile_lists: int
-    tile_rows: int
-
-
-@dataclass(frozen=True, slots=True)
-class Carve:
-    """The carry's carve: a CTA's box (an extent a level of the shipped ``widths``, and a channel
-    extent) and each side's operation plan -- the fold the write side's, the readout the read
-    side's. Every kernel that depends on the geometry takes this one descriptor
-    (docs/internals/engine/rules.md#carve).
-    """
-
-    widths: tuple[int, ...]
-    extents: tuple[int, ...]
-    channels: int
-    fold: SidePlan
-    readout: SidePlan
-
-    @property
-    def leaves(self) -> int:
-        """The box's leaves."""
-        n = 1
-        for e in self.extents:
-            n *= e
-        return n
-
-    def ctas(self, d_v: int) -> int:
-        """The CTAs a head: one a box position, a channel group."""
-        n = d_v // self.channels
-        for w, e in zip(self.widths, self.extents):
-            n *= w // e
-        return n
 
 
 #: THE SUPPLIABLE SET IS CLOSED. A caller may substitute production -- the routing

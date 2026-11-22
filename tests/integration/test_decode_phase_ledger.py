@@ -8,7 +8,6 @@ from conftest import reference_produce
 
 import fsla
 from fsla.ops import decode as decode_ops
-from fsla.ops.produce import prefill_plan
 from tests.oracle.fixtures import assert_reordered_close, state_pages
 
 pytestmark = [pytest.mark.cuda,
@@ -32,8 +31,7 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     torch.manual_seed(0)
     routing = fsla.Routing([fsla.split_routing(64, sparse_duty="write"), fsla.split_routing(64, sparse_duty="read")])
-    dense = prefill_plan(routing.topology, 64, paging=False)
-    layer = fsla.FSLA(routing, hidden_size=64, num_heads=2, d_v=64, plan=dense).cuda().eval()
+    layer = fsla.FSLA(routing, hidden_size=64, num_heads=2, d_v=64).cuda().eval()
     x = torch.randn(1, 1, 64, device="cuda")
     plain_state = _carrying_state(layer, x)
     booked_state = plain_state.clone()

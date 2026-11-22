@@ -19,6 +19,7 @@ filegroup(
         "parts/**/*.json",
         "descriptors/*.json",
         "descriptors/dev/*.json",
+        "descriptors/owed/*.json",
     ]),
 )
 
@@ -40,6 +41,25 @@ cc_library(
     name = "facts",
     hdrs = [":facts_header"],
     includes = ["."],
+)
+
+genrule(
+    name = "owed_header",
+    srcs = [":registry"],
+    outs = ["plan/owed.h"],
+    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --owed-header $@",
+    tools = [
+        "emit.py",
+        "@fsla_env//:python",
+    ],
+)
+
+#: `plan/owed.h`, the contexts the contract OWES (`descriptors/owed`) as a table the run time holds: `owed()`, a context each with the kernels it waits on
+cc_library(
+    name = "owed",
+    hdrs = [":owed_header"],
+    includes = ["."],
+    deps = [":facts"],
 )
 
 #: THE CONTRACT: every context the build's contract holds, a line each (`registry.contexts_text`); `--//:contract` names a narrowed one

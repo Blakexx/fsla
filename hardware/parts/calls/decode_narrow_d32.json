@@ -16,12 +16,38 @@
       ],
       "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
     },
-    "write_dense": {
+    "prefill": {
+      "value": 0,
+      "declared_by": "docs/internals/common/plan/decode_launch.md: this part is the decode step's call: the prefill fact is 0 (a prefill's parts are the owed descriptors', hardware/descriptors/owed)"
+    },
+    "tokens": {
+      "value": 1,
+      "declared_by": "a decode step consumes exactly one token (fsla/ops/decode.py `_fold`)"
+    },
+    "batch_heads": {
+      "value": {
+        "lo": 1,
+        "hi": 536870911
+      },
+      "declared_by": "docs/api.md#batch-heads: a decode step serves B times H from 1 to 536870911, the largest the step's work queue indexes (csrc/fsla/src/decode/decode.cu: `int BH` and the queue of 4 B H + 2 int32 counters)"
+    },
+    "stateful": {
+      "value": 1,
+      "declared_by": "a decode step continues a sequence: a state is handed in and out (fsla/_state.py `_require_carrying`)"
+    },
+    "dense_plane": {
       "value": {
         "lo": 0,
         "hi": 1
       },
-      "declared_by": "fsla/ops/produce.py decode_descriptor: the producer's rule from the declaration chooses it (docs/internals/decode/decode.md#whole-atoms); either value is a lawful call"
+      "declared_by": "fsla/ops/produce.py decode_descriptor: the decode step takes its backing from the state it is handed, so the pin is not read; either value is a lawful call"
+    },
+    "memory_budget": {
+      "value": {
+        "lo": 0,
+        "hi": 4611686018427387904
+      },
+      "declared_by": "fsla/ops/produce.py decode_descriptor: a decode step allocates no working set beyond its sequence's scratch, so a declared budget is not read; any value is a lawful call"
     }
   }
 }

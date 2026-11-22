@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The engine: ONE structure carries every kernel family from raw inputs to a launch.
 
-    Context -> DAG -> Plan -> execute(plan)
+    Context -> DAG -> Launch -> execute(launch)
 
 This ROOT holds the shared CORE and nothing family-specific: the DAG framework
 (:mod:`fsla.engine.runner`), the value types (:mod:`fsla.engine.types`) and
-prefill's plan with the launch bundles (:mod:`fsla.engine.plan`). The DOMAINS are its subpackages --
+the launch bundles (:mod:`fsla.engine.plan`). The DOMAINS are its subpackages --
 :mod:`fsla.engine.facts` (the fact primitives and their bodies),
 :mod:`fsla.engine.rules` (the band-2 folds) and :mod:`fsla.engine.dags` (the
 per-family compositions).
@@ -23,7 +23,6 @@ from fsla.engine.plan import (
     DecodeWorkspace,
     PrefillLaunch,
     PrefillOperands,
-    PrefillPlan,
     PrefillWorkspace,
 )
 from fsla.engine.runner import (
@@ -39,8 +38,6 @@ from fsla.engine.types import (
     SUPPLIABLE,
     BackwardNotImplemented,
     CallClass,
-    Carve,
-    SidePlan,
     Variant,
 )
 
@@ -49,16 +46,13 @@ __all__ = [
     "SUPPLIABLE",
     "BackwardNotImplemented",
     "CallClass",
-    "Carve",
     "DecodeLaunch",
     "DecodeOperands",
     "DecodeWorkspace",
     "Node",
     "PrefillLaunch",
     "PrefillOperands",
-    "PrefillPlan",
     "PrefillWorkspace",
-    "SidePlan",
     "Variant",
     "node",
     "rule",

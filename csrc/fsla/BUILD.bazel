@@ -141,7 +141,7 @@ cuda_unit(
     unit = unit.rsplit("/", 1)[-1].removesuffix(".cu"),
 ) for unit in glob(["src/**/*.cu"])]
 
-#: THE PLANNER'S HEADERS: the rule language, the launch functions and the host half of the planner (`common/plan/`), with the `Facts` struct and the contract generated from the registry (`//hardware:facts`, `//hardware:contract`)
+#: THE PLANNER'S HEADERS: the rule language, the launch functions and the host half of the planner (`common/plan/`), with the `Facts` struct, the contract and the owed contexts generated from the registry (`//hardware:facts`, `//hardware:contract`, `//hardware:owed`)
 cc_library(
     name = "plan_headers",
     hdrs = glob(["src/common/plan/*.h"]),
@@ -149,6 +149,7 @@ cc_library(
     deps = [
         "//hardware:contract",
         "//hardware:facts",
+        "//hardware:owed",
     ],
 )
 

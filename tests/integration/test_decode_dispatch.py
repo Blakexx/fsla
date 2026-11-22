@@ -38,7 +38,6 @@ import fsla
 from fsla import LayerContinuation
 from fsla.interface import BackwardNotImplemented
 from fsla.ops._ext import KernelNotBuilt
-from fsla.ops.produce import prefill_plan
 from tests.oracle.fixtures import masks_of, with_gain
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
@@ -252,7 +251,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in widths))
-    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False, batch_heads=1)
     launch = decode_launch(descriptor)
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
@@ -266,25 +265,16 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 @pytest.mark.cuda
 @_CUDA
 @_PRODUCE
-def test_a_dense_pinned_layer_still_reaches_decode():
-    """REPOINTED: paging is not a layer configuration any more.
+def test_a_layer_over_a_dense_state_still_reaches_decode():
+    """REPOINTED: paging is not a layer configuration.
 
-    This cell used to assert that a PAGED layer kept the tiled path at ``T = 1``,
-    because decode had no page table and would have dropped the layer's cap. There is
-    no cap and no layer-level paging flag: the backing is the state's, chosen at bind,
+    There is no cap and no layer-level paging flag: the backing is the state's, chosen at bind,
     and decode crosses it through `materialize`/`adopt_dense_contents` at its branch
-    (docs/internals/state.md §5). What is still worth asserting is that the expert's
-    surviving backing pin does not perturb the DISPATCH: a dense-pinned layer takes
-    the decode fork at ``T = 1`` exactly as the default one does. Aligning decode with
-    the paged backing proper is P67 S4.
+    (docs/internals/state.md §5). What is worth asserting is that the dense backing does not perturb the
+    DISPATCH: a layer over a dense-backed state takes the decode fork at ``T = 1`` exactly as over a paged one.
     """
     device = "cuda"
-    declared = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES, layer_idx=0)
-    layer = build_layer(
-        hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        plan=prefill_plan(declared.topology, _DV, paging=False),
-        layer_idx=0,
-    ).to(device, torch.float32)
+    layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES, layer_idx=0).to(device, torch.float32)
     layer.eval()
     with torch.no_grad():
         cache = _prime(layer, device, paged=False)

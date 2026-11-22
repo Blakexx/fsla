@@ -25,7 +25,7 @@ from fsla.ops import carry as carry_ops
 from fsla.ops.prefill import reader_factor
 from fsla.ops.window import window_of
 from measure.cells import carry_cells, realize
-from measure.subjects import bundle_of, cell_carve
+from measure.subjects import bundle_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative, with_gain
 from tests.oracle.tolerances import CARRY_DEN, CARRY_NUM
@@ -43,9 +43,9 @@ def _entry(spec, routes):
 
 
 def run(spec):
-    """``(routes, values, num, den)``: one carry launch over the cell, from its bundle and its carve."""
-    routes, values, _masks, _plan = bundle_of(spec, realize(spec))
-    num, den = carry_ops.carry(routes, values, cell_carve(spec))[:2]
+    """``(routes, values, num, den)``: one carry launch over the cell, from its bundle."""
+    routes, values, _masks = bundle_of(spec, realize(spec))
+    num, den = carry_ops.carry(routes, values)[:2]
     torch.cuda.synchronize()
     return routes, values, num, den
 

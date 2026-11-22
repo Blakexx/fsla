@@ -15,9 +15,10 @@ against the contract and refuses a descriptor read on another device than the on
 
 `plan_api.cuh` declares what `fsla_api.cpp` binds: `fsla_call_facts` (the call's fact names, comma-separated, in the order the values go) and
 `fsla_descriptor(device, call)` (the descriptor's words). `fsla_decode_launch(descriptor, device)` is decode's
-([`../../decode/decode_api.md`](../../decode/decode_api.md)). `fsla/ops/descriptor.py` is their Python face: `fsla.descriptor(d_v=, levels=,
-decay=, write_dense=, width_bits_1= .. width_bits_4=)` (decode's call facts; `fsla.ops.produce.decode_descriptor` states them from a declaration) builds the validated, hashable `Descriptor` (cached by device and call), `fsla.workspace_bytes(descriptor)` the scratch a call needs,
-and a caller's own `workspace=` is checked for type, size, alignment and device before a launch.
+([`../../decode/decode_api.md`](../../decode/decode_api.md)). `fsla/ops/descriptor.py` is their Python face: `fsla.descriptor(prefill=, d_v=, levels=, decay=, tokens=, batch_heads=, stateful=, dense_plane=, memory_budget=, read_listed_1= .. write_listed_4=, width_bits_1= .. width_bits_4=)`
+(the call facts of `hardware/schema.json`; `fsla.ops.produce.decode_descriptor` and `prefill_descriptor` state them from a declaration) builds the validated, hashable `Descriptor` (cached by device and call; a context
+the contract holds only as OWED is refused as `KernelNotBuilt` naming its kernels, [`../../hardware/registry.md`](../../hardware/registry.md#the-owed-folder)), `fsla.workspace_bytes(descriptor)` the workspace a call needs
+(dispatching on the `prefill` fact), and a caller's own `workspace=` is checked for type, size, alignment and device before a launch.
 
 `select.cu`'s admission of a card takes this read of the device (`device_facts`) and checks that the binary carries its build; the contract
 is the one table of the driver's numbers.

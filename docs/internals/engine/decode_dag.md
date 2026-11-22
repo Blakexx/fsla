@@ -90,7 +90,7 @@ the declaration is TRUE of a real capture.
 ## <a id="host-carrier"></a>5. The descriptor and the scratch, and why the scratch is memoized the way it is
 
 THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; a seed of the DAG and the
-memo key of the scratch), and what the old plan held is the descriptor's or the launch function's: the widths, `write_dense` and `d_v` are call facts the descriptor states and
+memo key of the scratch), and what the old plan held is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
 `plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
 lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;
 `eps` is data and `ctas` a private keyword of the internal `step`. None of that is a derived axis. `BC` is deliberately NOT a

@@ -1,0 +1,13 @@
+{
+  "name": "hopper_prefill_d3",
+  "owed": [
+    "prefill"
+  ],
+  "gpus": "H100",
+  "arch": "sm_90a",
+  "compose": [
+    "device/hopper_sm90a",
+    "calls/prefill",
+    "calls/depth3"
+  ]
+}

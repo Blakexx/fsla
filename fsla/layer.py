@@ -46,22 +46,21 @@ import torch
 import torch.nn as nn
 
 from fsla._inference_copy import InferenceCopy, reads_copy
-from fsla._state import state as fsla_state
-from fsla.engine import PrefillPlan
 from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+from fsla.engine.facts.call import require_envelope
 from fsla.interface import (
     BackwardNotImplemented,
     fsla_op,
     operands_of,
     requires_backward,
 )
-from fsla.ops.prefill import launch_bytes_per_token
+from fsla.ops.prefill import build_workspace
 from fsla.ops.produce import (
     ProducerPlan,
     ProducerWeights,
     decode_descriptor,
     hidden_contiguous,
-    prefill_plan,
+    prefill_descriptor,
     produce,
     projection_dtype,
 )
@@ -126,10 +125,9 @@ class FSLA(nn.Module):
         decay: a decay source (:mod:`fsla.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
-        plan: a :class:`fsla.engine.plan.PrefillPlan` (``fsla.expert``) pinning the prefill's carve or paging mapping,
-            checked against the declaration; ``None`` takes the producer's plan rule (:func:`fsla.ops.produce.prefill_plan`).
-            Everything it pins is a choice of how the op runs, never of what it computes; it is quarantined because a
-            caller pinning one is not describing a model.
+        memory_budget: the caller's declared working-set budget in bytes, or ``None`` for none (one segment). It is stated to
+            the planner as the call's ``memory_budget`` fact (:func:`fsla.ops.produce.prefill_descriptor`); the segment length is
+            an output of the prefill launch function, which is not built, so a budgeted call is refused by name.
     """
 
     def __init__(
@@ -141,8 +139,7 @@ class FSLA(nn.Module):
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
-        plan: PrefillPlan | None = None,
-        memory_budget: int | None = None,  #: reserved: the caller's declaration (docs/api.md section 4.2)
+        memory_budget: int | None = None,  #: reserved: the segment length, once the prefill launch function (open-work A-f) is written
     ) -> None:
         super().__init__()
         if not isinstance(routing, Routing):
@@ -161,13 +158,6 @@ class FSLA(nn.Module):
                                       consumer=DECODE)
         if decay is not None:
             validate_decay_source(decay, routing.topology, num_heads)
-
-        if plan is not None and type(plan) is not PrefillPlan:
-            raise TypeError(f"plan is a fsla.expert.PrefillPlan or None, got {type(plan).__name__}")
-        #: THE STATIC PLAN, compiled once from the declaration at its first use: a declaration no carve admits is
-        #: refused there
-        self._pinned = plan
-        self._prefill_plan = None
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -212,42 +202,6 @@ class FSLA(nn.Module):
     @property
     def head_v_dim(self) -> int:
         return self.d_v
-
-    @property
-    def prefill_plan(self) -> PrefillPlan:
-        """The static prefill plan: the producer's rule over the declaration, or the pinned plan checked against it."""
-        if self._prefill_plan is None:
-            pinned = self._pinned
-            self._prefill_plan = (prefill_plan(self.topology, self.d_v) if pinned is None else
-                                  prefill_plan(self.topology, self.d_v, paging=pinned.paging, carve=pinned.carve))
-        return self._prefill_plan
-
-    # --- segmentation (docs/api.md section 4.2) -------------------------------
-
-    def state_bytes(self, batch: int) -> int:
-        """The carried state at full residency, in bytes: the fixed part of a segmented call's footprint."""
-        return batch * self.num_heads * self.topology.N * (self.d_v + 1) * 4
-
-    def segment_tokens(self, batch: int, length: int, device=None) -> int:
-        """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
-        windows whose working set fits beside the state, capped at ``length``. The working set's per-token bytes are the
-        prefill launch builder's own allocation (:func:`fsla.ops.prefill.launch_bytes_per_token`), which refuses by name
-        until the prefill kernel exists. No budget: one segment. A
-        budget below one window beside the state is refused. The window is ``device``'s card's (the current device's for
-        ``None``): the binary answers (docs/internals/common/arch_runtime.md#segment-tokens)."""
-        from fsla.ops._ext import device_index, extension
-
-        if self.memory_budget is None:
-            return length
-        per_token = launch_bytes_per_token(self.prefill_plan, self.topology, self.num_heads, self.d_v,
-                                           self.hidden_size)
-        tokens = int(extension().segment_tokens(self.memory_budget, self.state_bytes(batch), per_token, batch, length,
-                                                device_index(device)))
-        if tokens < 1:
-            raise ValueError(
-                f"memory_budget={self.memory_budget} bytes cannot hold one window of {per_token} bytes a batch-token "
-                f"at batch {batch} beside the state ({self.state_bytes(batch)} bytes)")
-        return tokens
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
@@ -335,7 +289,8 @@ class FSLA(nn.Module):
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
-        descriptor = decode_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, device=x.device)
+        descriptor = decode_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None,
+                                       batch_heads=x.shape[0] * self.num_heads, device=x.device)
         out, _state = decode_step_gated(routes, values, masks, state, descriptor, decay=decay)
         return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
 
@@ -361,18 +316,19 @@ class FSLA(nn.Module):
         return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
-        """THE SEGMENT LOOP (docs/api.md section 4.2): each segment is projected, run and its state carried to
-        the next, so the projections are bounded with the op. A stateless call that spans segments carries an
-        internal state and hands none back."""
+        """THE PREFILL, one segment (docs/api.md section 4.2): the descriptor of the call (:func:`fsla.ops.produce.prefill_descriptor`,
+        memoized process-wide: nothing is cached on the layer), the producer's one call, the workspace the public builder lays out and the op.
+        The declared ``memory_budget`` is a fact of the descriptor: the segment length is an output of the prefill launch function, which is
+        not built, so a budgeted call -- like every prefill -- is refused by name when the descriptor is made."""
         B, L, _ = x.shape
-        T = self.segment_tokens(B, L, x.device)
-        carried = state if state is not None or T >= L else fsla_state()
-        outs = []
-        for start in range(0, L, T):
-            routes, values, masks = self._produce(x[:, start:start + T], self.plan)
-            y, carried = fsla_op(routes, values, masks, decay, plan=self.prefill_plan, state=carried)
-            outs.append(y)
-        return torch.cat(outs, dim=1) if len(outs) > 1 else outs[0], state if state is None else carried
+        routes, values, masks = self._produce(x, self.plan)
+        if routes.device.type != "cuda":
+            require_envelope(routes, values, decay, state)  #: a descriptor is made for a CUDA device: operands elsewhere meet the envelope's own refusal
+        descriptor = prefill_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, tokens=L,
+                                        batch_heads=B * self.num_heads, stateful=state is not None,
+                                        memory_budget=self.memory_budget, device=x.device)
+        workspace = build_workspace(routes, values, masks, descriptor)
+        return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state, decay=decay)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

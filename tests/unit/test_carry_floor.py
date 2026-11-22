@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import carry_floor  # noqa: E402
 
-ALT = dict(widths=(256, 256), read_sparse=(0, 1), write_sparse=(1, 0), k=4, box=(16, 16), dv=64, tokens=65536)
+ALT = dict(widths=(256, 256), read_listed=(0, 1), write_listed=(1, 0), k=4, box=(16, 16), dv=64, tokens=65536)
 
 
 def test_a_sides_counts_are_the_expected_ones():
@@ -98,7 +98,7 @@ def test_a_pair_drains_one_line_for_two_boxes_and_stores_its_image_a_window():
 def test_a_pair_is_priced_only_where_it_was_measured():
     #: sparse on the same level: the image lies along a sparse digit's dense digits, which this tool has no term for
     with pytest.raises(SystemExit, match="has no term for"):
-        carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "write_sparse": (0, 1)})
+        carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "write_listed": (0, 1)})
     #: a box the whole read-dense level has no neighbour to pair with
     with pytest.raises(SystemExit, match="a pair is two boxes"):
         carry_floor.floor(cluster=(1, 1), pair="f16", **{**ALT, "box": (256, 1)})

@@ -170,13 +170,13 @@ def side(widths, sparse, k: int, box, cluster) -> Side:
     return Side(leaves, boxes, clusters, (leaves / boxes) / along)
 
 
-def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, tokens: int, form: str = "none",
+def floor(widths, read_listed, write_listed, k: int, box, cluster, dv: int, tokens: int, form: str = "none",
           round_partials: int = 64, pair: str = "none", window: int = 1024) -> dict:
     """The report: each term's SM-cycles a token as `(low, high)`, with the rate it used."""
     rates = measured()
     est = {name: value for name, (value, _) in ESTIMATES.items()}
-    read = side(widths, read_sparse, k, box, cluster)
-    write = side(widths, write_sparse, k, box, cluster)
+    read = side(widths, read_listed, k, box, cluster)
+    write = side(widths, write_listed, k, box, cluster)
     rows = max(dv, MMA_ROWS)
     clustered = math.prod(cluster) > 1
     if clustered and form == "none":
@@ -201,10 +201,10 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     #: images, so only that width and only a divergent carve are priced
     paired = pair != "none"
     if paired:
-        if clustered or not any(not flag and width // b >= 2 for width, flag, b in zip(widths, read_sparse, box)):
+        if clustered or not any(not flag and width // b >= 2 for width, flag, b in zip(widths, read_listed, box)):
             raise SystemExit("carry_floor: a pair is two boxes along a level the read side is dense on, with no "
                              "cluster")
-        if tuple(read_sparse) == tuple(write_sparse):
+        if tuple(read_listed) == tuple(write_listed):
             raise SystemExit("carry_floor: a pair's readout reads both boxes' images; where the two sides are sparse "
                              "on the same levels the image is laid along a sparse digit's dense digits, which "
                              "the lab `carry_window` measures and this tool has no term for")
@@ -260,7 +260,7 @@ def floor(widths, read_sparse, write_sparse, k: int, box, cluster, dv: int, toke
     state = math.prod(widths) * (dv + 1) * 3 * 2
     flash = tokens / 2 * dv * 2 / products
     return {
-        "shape": {"widths": list(widths), "read_sparse": list(read_sparse), "write_sparse": list(write_sparse), "k": k,
+        "shape": {"widths": list(widths), "read_listed": list(read_listed), "write_listed": list(write_listed), "k": k,
                   "box": list(box), "cluster": list(cluster), "dv": dv, "tokens": tokens, "sum": form},
         "counts": {"read": vars(read), "write": vars(write)},
         "terms": {name: {"cycles": list(cycles), "rate": rate} for name, (cycles, rate) in terms.items()},
@@ -296,14 +296,14 @@ def main(argv: list[str]) -> int:
     a = ap.parse_args(argv)
 
     depth = len(a.widths)
-    for name in ("read_sparse", "write_sparse", "box", "cluster"):
+    for name in ("read_listed", "write_listed", "box", "cluster"):
         if len(getattr(a, name)) != depth:
             raise SystemExit(f"carry_floor: --{name.replace('_', '-')} takes one value a level ({depth})")
     for width, b, c in zip(a.widths, a.box, a.cluster):
         if width % b or (width // b) % c:
             raise SystemExit(f"carry_floor: a level of {width} digits is not whole boxes of {b} in whole clusters of {c}")
 
-    report = floor(a.widths, a.read_sparse, a.write_sparse, a.k, a.box, a.cluster, a.dv, a.tokens, a.sum, a.round,
+    report = floor(a.widths, a.read_listed, a.write_listed, a.k, a.box, a.cluster, a.dv, a.tokens, a.sum, a.round,
                    a.pair, a.window)
     read, write = report["counts"]["read"], report["counts"]["write"]
     print(f"a token reads {read['leaves']:.0f} leaves in {read['boxes']:.1f} boxes of {read['clusters']:.2f} clusters; "

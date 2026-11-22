@@ -1,6 +1,6 @@
 {
   "name": "calls/depth4",
-  "doc": "the decode call's depth 4: `levels` and the log2 of each level's width, correlated (a level beyond `levels` has width_bits 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside calls/decode",
+  "doc": "a call's depth 4, the decode step's and the prefill's: `levels`, the log2 of each level's width and each side's per-level sparse flag, correlated (a level beyond `levels` has width_bits 0 and sparse flags 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside a call part (calls/decode, calls/prefill)",
   "facts": {
     "levels": {
       "value": 4,
@@ -33,6 +33,62 @@
         "hi": 8
       },
       "declared_by": "the log2 of level 4's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "read_listed_1": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "read_listed_2": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "read_listed_3": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 3 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "read_listed_4": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 4 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_1": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_2": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_3": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 3 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_4": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 4 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
     }
   }
 }

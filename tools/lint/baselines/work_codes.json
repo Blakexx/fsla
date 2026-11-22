@@ -980,18 +980,6 @@
    "count": 1
   },
   {
-   "path": "tests/integration/test_decode_dispatch.py",
-   "message": "names the work code 'P67'",
-   "line_sha256": "335d3a1ed7975f7d",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_dispatch.py",
-   "message": "names the work code 'S4'",
-   "line_sha256": "335d3a1ed7975f7d",
-   "count": 1
-  },
-  {
    "path": "tests/integration/test_decode_graph_step.py",
    "message": "names the work code 'K31'",
    "line_sha256": "a87bd18ff004a3d8",

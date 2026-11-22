@@ -17,6 +17,9 @@ sys.path.insert(0, str(ROOT))
 from hardware import registry  # noqa: E402
 from measure import hardware as table  # noqa: E402
 
+#: the largest B times H a decode step serves (docs/api.md#batch-heads)
+BATCH_HEADS_MAX = 536870911
+
 
 @pytest.fixture()
 def tree(tmp_path):
@@ -49,7 +52,11 @@ def test_the_decode_contract_is_the_value_widths_two_to_sixty_four_at_each_depth
         assert set(c.facts) == set(registry.schema())
         assert c.alternatives == ("decay",)
         assert c.facts["sm_count"] == (114, 132)
-        assert c.facts["write_dense"] == (0, 1)
+        assert c.facts["prefill"] == (0, 0) and c.facts["tokens"] == (1, 1) and c.facts["stateful"] == (1, 1)
+        assert c.facts["batch_heads"] == (1, BATCH_HEADS_MAX) and c.facts["dense_plane"] == (0, 1)
+        levels = c.facts["levels"][0]
+        for side in ("read", "write"):
+            assert [c.facts[f"{side}_listed_{k}"] for k in (1, 2, 3, 4)] == [(0, 1)] * levels + [(0, 0)] * (4 - levels)
     assert len({c.id for c in contexts}) == 8
     assert {c.descriptor for c in contexts} == {f"hopper_decode_d{lv}" for lv in (1, 2, 3, 4)}
 
@@ -98,8 +105,9 @@ def test_the_contract_header_holds_each_context_and_the_call_facts_in_the_schema
     assert text.count("out.push_back({\"hopper_decode_d") == 8
     assert "f.assign(\"d_v\", Interval{2, 64});" in text and "f.assign(\"sm_count\", Interval{114, 132});" in text
     assert "f.assign(\"tensor\", EnumSet{7});" in text
-    assert ("kCallFactNames[] = {\"d_v\", \"levels\", \"decay\", \"write_dense\", \"width_bits_1\", \"width_bits_2\", \"width_bits_3\", "
-            "\"width_bits_4\"}") in registry.facts_header(registry.schema())
+    names = ["d_v", "levels", "decay", "prefill", "tokens", "batch_heads", "stateful", "dense_plane", "memory_budget", "width_bits_1", "width_bits_2",
+             "width_bits_3", "width_bits_4", *(f"{side}_listed_{k}" for side in ("read", "write") for k in (1, 2, 3, 4))]
+    assert "kCallFactNames[] = {" + ", ".join(f'"{n}"' for n in names) + "}" in registry.facts_header(registry.schema())
 
 
 def test_two_contexts_identical_in_every_fact_are_refused(tree):
@@ -157,10 +165,9 @@ def test_a_malformed_schema_is_refused(tree, edit, match):
 
 
 def test_ranges_and_sets_expand_without_crossing(tree):
-    _write(tree / "parts" / "calls" / "decode.json", {"name": "calls/decode", "facts": {
-        "d_v": {"value": {"lo": 65, "hi": 128}, "declared_by": "a test"},
-        "decay": {"value": [0, 1], "declared_by": "a test"},
-        "write_dense": {"value": {"lo": 0, "hi": 1}, "declared_by": "a test"}}})
+    data = json.loads((tree / "parts" / "calls" / "decode.json").read_text())
+    data["facts"]["d_v"] = {"value": {"lo": 65, "hi": 128}, "declared_by": "a test"}
+    _write(tree / "parts" / "calls" / "decode.json", data)
     contexts = registry.contexts(tree)
     assert len(contexts) == 8 and contexts[0].facts["d_v"] == (65, 128)
     assert contexts[0].id == "hopper_decode_d1 decay=0"
@@ -195,3 +202,61 @@ def test_a_descriptor_composing_a_candidate_is_refused(tree):
                                                               "compose": ["device/cc900_x.candidate", "calls/decode"]})
     with pytest.raises(registry.RegistryError, match="CANDIDATE part"):
         registry.contexts(tree)
+
+
+def test_the_owed_descriptors_are_the_prefills_calls_and_none_of_them_is_in_the_contract():
+    """`descriptors/owed` holds the prefill's four depths, each waiting on the prefill kernel: their contexts are held apart from the contract, the contexts file
+    the matchers read and the narrowed contracts."""
+    owed = registry.owed()
+    assert len(owed) == 8
+    assert {c.descriptor for c, _ in owed} == {f"hopper_prefill_d{lv}" for lv in (1, 2, 3, 4)}
+    assert all(kernels == ("prefill",) and c.facts["prefill"] == (1, 1) for c, kernels in owed)
+    assert all(c.facts["stateful"] == (0, 1) and c.facts["tokens"][0] == 1 for c, _ in owed)
+    assert all(c.facts["prefill"] == (0, 0) for c in registry.contexts())
+    assert "prefill=1:1" not in registry.contexts_text(registry.contexts())
+    assert not any(name.startswith("hopper_prefill") for name in registry.descriptors())
+    assert not any(name.startswith("hopper_prefill") for name in registry.descriptors(folder="descriptors/dev"))
+
+
+def test_the_owed_header_holds_each_owed_context_and_the_kernels_it_waits_on():
+    text = registry.owed_header(registry.owed(), registry.schema())
+    assert text.count("out.push_back({\"hopper_prefill_d") == 8 and text.count("{\"prefill\"}}") == 8
+    assert "f.assign(\"prefill\", Interval{1, 1});" in text and "struct OwedContext" in text
+
+
+def test_an_owed_descriptor_reachable_from_the_full_contract_is_refused(tree):
+    """A call is guaranteed or owed, never both: an owed descriptor composing the decode call (a context the contract holds) is refused naming both."""
+    _write(tree / "descriptors" / "owed" / "hopper_decode_d1_again.json",
+           {"name": "hopper_decode_d1_again", "owed": ["decode"], "gpus": "H100", "arch": "sm_90a",
+            "compose": ["device/hopper_sm90a", "calls/decode", "calls/depth1"]})
+    with pytest.raises(registry.RegistryError, match=r"owed descriptor hopper_decode_d1_again: .*reachable from the full contract's 'hopper_decode_d1"):
+        registry.check(tree)
+    with pytest.raises(registry.RegistryError, match="reachable from the full contract"):
+        registry.owed(tree)
+
+
+@pytest.mark.parametrize("owed", [None, [], "prefill", ["prefill", "prefill"], ["not a name"], [3]])
+def test_an_owed_descriptor_names_the_kernels_it_waits_on(tree, owed):
+    path = tree / "descriptors" / "owed" / "hopper_prefill_d1.json"
+    data = json.loads(path.read_text())
+    data.pop("owed")
+    if owed is not None:
+        data["owed"] = owed
+    _write(path, data)
+    with pytest.raises(registry.RegistryError, match="names the kernels its call waits on"):
+        registry.check(tree)
+
+
+def test_check_validates_the_owed_parts_and_descriptors_as_any_others(tree):
+    """An owed part is held to the schema as every part is, and an owed descriptor leaving a fact out is refused."""
+    path = tree / "parts" / "calls" / "prefill.json"
+    data = json.loads(path.read_text())
+    data["facts"]["warps"] = {"value": 4, "declared_by": "a test"}
+    _write(path, data)
+    with pytest.raises(registry.RegistryError, match="is no fact of the schema"):
+        registry.check(tree)
+    del data["facts"]["warps"]
+    del data["facts"]["tokens"]
+    _write(path, data)
+    with pytest.raises(registry.RegistryError, match=r"states no value for \['tokens'\]"):
+        registry.check(tree)

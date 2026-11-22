@@ -12,9 +12,8 @@ import pytest
 import torch
 from conftest import build_layer
 
-from fsla.engine.carve import walks
 from fsla.ops.naive import naive_fsla
-from fsla.ops.produce import ProducerPlan, activation_walks, prefill_plan, produce
+from fsla.ops.produce import ProducerPlan, activation_walks, produce
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
 from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
@@ -111,15 +110,14 @@ def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():
         wrong_dtype.check(routes)
 
 
-def test_the_plan_rule_reads_the_declaration_alone():
-    """The producer-owned rule chooses from the DECLARATION: the levels each side walks by lists, and the carve that
-    carries them; no operand is read, and the plan is hashable (the arm and cache key)."""
+def test_the_walk_rule_reads_the_declaration_alone():
+    """The producer-owned rule chooses from the DECLARATION: the levels each side walks by lists, which the descriptor states as its
+    ``read_listed_k`` and ``write_listed_k`` facts; no operand is read, and the declaration is hashable (the rule's cache key)."""
     layer, _x = _layer_and_x(1)
     assert activation_walks(layer.topology) == ((False, False), (False, False))
-    plan = prefill_plan(Topology(levels=(
-        IndependentRouting(width=256, read=SoftmaxActivation(), write=SoftmaxActivation()),) * 2), 64)
-    assert walks(plan.carve) == ((False, False), (False, False))
-    assert hash(plan) == hash(plan)
+    topology = Topology(levels=(IndependentRouting(width=256, read=SoftmaxActivation(), write=SoftmaxActivation()),) * 2)
+    assert activation_walks(topology) == ((False, False), (False, False))
+    assert hash(topology) == hash(topology)
 
 
 # --------------------------------------------------------------- the oracle: r * m, planted

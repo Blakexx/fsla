@@ -2,9 +2,9 @@
 
 `fsla/engine/dags/prefill_dag.py`: one SEGMENT of a prefill -- its routes and values -- into its readout,
 against the state the call is handed. `fsla.fsla_op` validates the context in the caller's grad mode
-(`validate_context`), then walks this DAG inside an autograd node whose backward refuses; the layer
-(`fsla.FSLA`) splits a sequence into segments by its declared memory budget and calls the op once a segment
-(`docs/api.md` section 4.2).
+(`validate_context`), then walks this DAG inside an autograd node whose backward refuses. It runs over the descriptor of the call and the workspace
+its caller built (`fsla.build_workspace`) and derives nothing of its own. The layer (`fsla.FSLA`) calls the op once a segment; the segment
+length is an output of the prefill launch function (`docs/api.md` section 4.2, `docs/open-work.md` row A-f).
 
 ## The nodes, in order
 
@@ -14,13 +14,13 @@ against the state the call is handed. `fsla.fsla_op` validates the context in th
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.variant` | `variant` | the variant: stateless or stateful |
-| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, the host fold of the masks: the state's write set (`fsla.engine.facts.planes.atom_bits`) |
-| `box` (stateful) | `bc` | the carry's box, the arena's allocation extent |
-| `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
-| `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
 | `nodes.backing` | `page_table`, `state_out` | the planes the launch is handed; a continuation's are one |
 | `launch` | `num`, `den` | the carry at its bytes (`num` and the v+1 channel `den`) and the intra into the same planes, each over the reader factor (`fsla.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
 | `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`fsla.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
+
+The prefill graph keeps only what runs. It has no `activity`, `residency`, `join` or `box` node: the state's entry (`FSLAState._kernel_entry`)
+needs the arena's allocation extent, the carry's box leaves, which only the prefill launch function's carve gives, so the state's entry on the
+prefill path returns with that function (`docs/open-work.md` rows A-c and A-f); a prefill is refused before any of it could run.
 
 ## The seam
 

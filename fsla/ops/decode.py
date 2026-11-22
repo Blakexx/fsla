@@ -203,11 +203,18 @@ def fold_levels(levels) -> list[torch.Tensor]:
     return [_fold(rows).float() for rows in levels]
 
 
-def check_descriptor(descriptor: Descriptor, topology, device: torch.device) -> None:
-    """The descriptor against the call it is handed: the level widths it states are the bundle's, and its device is the values'."""
-    widths = tuple(topology.widths)
+def check_descriptor(descriptor: Descriptor, routes, device: torch.device) -> None:
+    """The descriptor against the call it is handed: a decode step's (its ``prefill`` fact 0), the level widths it states are the bundle's, its
+    ``batch_heads`` is the bundle's B times H, and its device is the values'."""
+    widths = tuple(routes.topology.widths)
+    if descriptor["prefill"]:
+        raise ValueError("the descriptor is a prefill's (its `prefill` fact is 1); fsla.ops.produce.decode_descriptor builds a decode step's")
     if widths != decode_launch(descriptor).widths:
         raise ValueError(f"the descriptor is for widths {decode_launch(descriptor).widths}, the bundle's are {widths}")
+    if descriptor["batch_heads"] != routes.batch * routes.heads:
+        raise ValueError(f"the descriptor states batch_heads={descriptor['batch_heads']}; the bundle's B times H is "
+                         f"{routes.batch} * {routes.heads} = {routes.batch * routes.heads}: build the descriptor from this call "
+                         "(fsla.ops.produce.decode_descriptor)")
     if descriptor.device != device.index:
         raise ValueError(f"the descriptor was made for device {descriptor.device}; the values are on {device}")
 
@@ -393,7 +400,7 @@ def _decode_step(
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
-    check_descriptor(descriptor, routes.topology, values.v.device)
+    check_descriptor(descriptor, routes, values.v.device)
     widths = tuple(routes.topology.widths)
     logical_d_v = values.d_v
     launch = decode_launch(descriptor)

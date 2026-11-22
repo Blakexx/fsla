@@ -79,12 +79,28 @@ std::string fsla_call_facts() {
   return out;
 }
 
-std::vector<int64_t> fsla_descriptor(int64_t device, std::vector<int64_t> call) {
+namespace {
+
+Named named_call(const std::vector<int64_t>& call) {
   STD_TORCH_CHECK(call.size() == std::size(kCallFactNames), "a call supplies ",
                   std::size(kCallFactNames), " facts (", fsla_call_facts(), "), got ", call.size());
   Named named;
   for (std::size_t i = 0; i < call.size(); ++i) named.emplace_back(kCallFactNames[i], call[i]);
-  return words(descriptor_of(static_cast<int>(device), named));
+  return named;
+}
+
+}  // namespace
+
+std::vector<int64_t> fsla_descriptor(int64_t device, std::vector<int64_t> call) {
+  return words(descriptor_of(static_cast<int>(device), named_call(call)));
+}
+
+std::string fsla_owed_kernels(int64_t device, std::vector<int64_t> call) {
+  const DeviceFacts& facts = device_facts(static_cast<int>(device));
+  const Planned planned = describe(facts.descriptor, named_call(call), facts.model);
+  std::string out;
+  for (const std::string& kernel : planned.owed) out += (out.empty() ? "" : ",") + kernel;
+  return out;
 }
 
 }  // namespace fsla::plan

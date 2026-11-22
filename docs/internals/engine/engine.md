@@ -24,10 +24,9 @@ Context  ->  DAG  ->  launch
   launch and may allocate, and produce FACTS: what is true about this call. Band 2
   nodes are RULES — pure host folds from facts to decisions, which launch nothing and
   allocate nothing ([`rules.md`](rules.md)). They are interleaved, not phased.
-* a **Plan** is band 3 where a family has one: the rules' verdicts plus references to
-  the terminal tensor facts, and no third kind of field (`plan.py`'s `PrefillPlan`; decode has none: its DAG's `step` node launches from the
-  descriptor).
-* the launch node reads its plan or its facts and decides nothing. A launch site that
+* there is NO PLAN OBJECT: a family's launch node launches from the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its validated
+  context) and its workspace, everything derived from the facts being the family's one launch function's in `common/plan/`.
+* the launch node reads its descriptor and its facts and decides nothing. A launch site that
   decides anything is the condition this engine exists to remove.
 
 The engine puts under one declaration what would otherwise be five conventions agreeing
@@ -44,10 +43,9 @@ it at all:
 
 * `fsla/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
-  `validate_capturable`), the value types, the pins a caller may set over axes the op
-  decides — the carry's carve — `Carve`, `SidePlan` — and the
+  `validate_capturable`), the value types, the
   refusal every no-backward clause raises —
-  `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan` or `descriptor`, `operands`, `workspace`).
+  `BackwardNotImplemented` — (`types.py`), and the per-family launches (`plan.py`: the internal `PrefillLaunch`/`DecodeLaunch` bundles of `descriptor`, `operands`, `workspace`).
 * `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing, the write-atom
   bitmap and the atom fold of the masks (`planes.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
@@ -185,18 +183,17 @@ same composition without the raise, which is what lets a caller ask before calli
 `fsla.expert` re-exports it as the public address (`docs/api.md` §5), and that
 re-export is the only direction the dependency runs.
 
-`PrefillPlan` is the same statement from the other end. A plan field is a VALUE a rule
-folds — `rules/paging.py` reads it and returns a bool — so it is engine vocabulary and
-`plan.py` is where it is defined; `fsla.expert` re-exports it as the marked door
-(`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
+The descriptor is the same statement from the other end. A descriptor fact is a VALUE a rule
+folds — `rules/paging.py` reads the `dense_plane` fact and returns a bool — and the engine handles the descriptor as an opaque value; the
+type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
 `fsla.expert`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds
 none.
 
-## <a id="the-plan"></a>9. What a plan may hold
+## <a id="the-plan"></a>9. What a launch bundle may hold
 
 A host field is some rule's verdict; a tensor field is a reference to a terminal
-fact. **No plan field may be `O(N * L)`**: a plan is held for as long as its call is,
+fact. **No bundle field may be `O(N * L)`**: a launch bundle is held for as long as its call is,
 so a field added for one launch's convenience is retained with it.
 
 A fact can also be an OPERAND, and the engine does not pretend otherwise: the

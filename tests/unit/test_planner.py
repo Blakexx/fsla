@@ -20,10 +20,14 @@ HOPPER = dict(cc=900, regs_per_sm=65536, smem_per_sm=233472, smem_per_cta_optin=
 
 
 def _full(call: str) -> str:
-    """The call with the facts it does not name given a lawful value: `write_dense` 1 and 16-wide levels (`width_bits_k` 4) for the levels it has."""
+    """The call with the facts it does not name given a lawful value: a decode step of one token over one batch-head with a state and no budget, 16-wide levels
+    (`width_bits_k` 4) for the levels it has, every level read by lists and no level written by lists (a dense innermost write)."""
     named = dict(cell.split("=") for cell in call.split(",") if "=" in cell)
     levels = int(named.get("levels", 0))
-    rest = {"write_dense": 1, **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)}}
+    rest = {"prefill": 0, "tokens": 1, "batch_heads": 1, "stateful": 1, "dense_plane": 0, "memory_budget": 0,
+            **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)},
+            **{f"read_listed_{k}": int(k <= levels) for k in (1, 2, 3, 4)},
+            **{f"write_listed_{k}": 0 for k in (1, 2, 3, 4)}}
     return ",".join([call, *(f"{k}={v}" for k, v in rest.items() if k not in named)])
 
 
@@ -48,10 +52,11 @@ def test_a_device_of_other_facts_in_the_ranges_plans_with_its_own_numbers():
 
 @pytest.mark.parametrize("call, widths, offsets, dense", [
     ("d_v=64,levels=1,decay=0,width_bits_1=8", "256", "0", 1),
-    ("d_v=64,levels=2,decay=1,width_bits_1=5,width_bits_2=4,write_dense=0", "32,16", "0,32", 0),
+    ("d_v=64,levels=2,decay=1,width_bits_1=5,width_bits_2=4,write_listed_2=1", "32,16", "0,32", 0),
+    ("d_v=64,levels=2,decay=1,width_bits_1=5,width_bits_2=4,write_listed_1=1", "32,16", "0,32", 1),
     ("d_v=64,levels=4,decay=0,width_bits_1=4,width_bits_2=5,width_bits_3=6,width_bits_4=7", "16,32,64,128", "0,16,48,112", 1),
 ])
-def test_the_launch_function_takes_each_levels_width_and_its_row_offset_from_the_calls_facts(call, widths, offsets, dense):
+def test_the_launch_function_derives_the_whole_atom_deposit_and_takes_each_levels_width_and_row_offset_from_the_calls_facts(call, widths, offsets, dense):
     out = _lines(_plan(None, call))
     assert out["levels"] == f"widths={widths} row_offsets={offsets} write_dense={dense}"
 
@@ -60,7 +65,10 @@ def test_the_launch_function_takes_each_levels_width_and_its_row_offset_from_the
     ("d_v=64,levels=2,decay=1,width_bits_1=3", "width_bits_1=3 (the contract: 4..8)"),
     ("d_v=64,levels=2,decay=1,width_bits_2=9", "width_bits_2=9 (the contract: 4..8)"),
     ("d_v=64,levels=2,decay=1,width_bits_3=4", "width_bits_3=4 (the contract: 0)"),
-    ("d_v=64,levels=2,decay=1,write_dense=2", "write_dense=2 (the contract: 0..1)"),
+    ("d_v=64,levels=2,decay=1,write_listed_1=2", "write_listed_1=2 (the contract: 0..1)"),
+    ("d_v=64,levels=2,decay=1,read_listed_3=1", "read_listed_3=1 (the contract: 0)"),
+    ("d_v=64,levels=2,decay=1,tokens=2", "tokens=2 (the contract: 1)"),
+    ("d_v=64,levels=2,decay=1,stateful=2", "stateful=2 (the contract: 1)"),
 ])
 def test_a_width_or_an_action_outside_the_contract_is_refused_naming_the_fact(call, named):
     run = _plan(None, call)
@@ -164,3 +172,45 @@ def test_the_depth_is_one_number_the_launch_header_and_the_width_facts_agree_on(
     deepest = _lines(_plan(None, f"d_v=64,levels={constant},decay=0"))
     assert deepest["levels"].startswith(f"widths={','.join(['16'] * constant)} ")
     assert _plan(None, f"d_v=64,levels={constant + 1},decay=0").returncode == 1
+
+
+#: the supported B times H of a decode step (docs/api.md#batch-heads): the largest its work queue of 4 B H + 2 int32 counters indexes
+BATCH_HEADS_MAX = 536870911
+
+
+def test_the_batch_heads_the_contract_states_plan_at_both_ends_and_one_beyond_either_is_refused():
+    """`batch_heads` is a range of the contract: its two ends plan, the point below and the point above are refused naming the fact and the range."""
+    for bh in (1, BATCH_HEADS_MAX):
+        out = _lines(_plan(None, f"d_v=64,levels=2,decay=1,batch_heads={bh}"))
+        assert out["arm"] == "d_v=64 levels=2 decay=1"
+    for bh in (0, BATCH_HEADS_MAX + 1):
+        run = _plan(None, f"d_v=64,levels=2,decay=1,batch_heads={bh}")
+        assert run.returncode == 1 and f"batch_heads={bh} (the contract: 1..{BATCH_HEADS_MAX})" in run.stderr
+        assert run.stdout == ""
+
+
+def test_the_documented_batch_heads_bound_is_the_contracts():
+    """The sentence of docs/api.md#batch-heads states the bound the contract's range holds."""
+    text = (ROOT / "docs" / "api.md").read_text()
+    assert f"{BATCH_HEADS_MAX}" in text[text.index('<a id="batch-heads">'):][:1200]
+
+
+PREFILL = "d_v=64,levels=2,decay=0,prefill=1,tokens=4096,batch_heads=8,stateful=0,dense_plane=0,memory_budget=0,write_listed_1=1"
+
+
+def test_a_prefill_call_inside_an_owed_descriptor_is_refused_naming_each_owed_kernel_and_is_no_decode_arm():
+    """The prefill's descriptors are OWED (hardware/descriptors/owed): a call inside one is held by no context of the contract, and the planner says
+    which kernels it waits on rather than that it lies outside the contract."""
+    run = _plan(None, PREFILL)
+    assert run.returncode == 1 and run.stdout == ""
+    assert "OWED descriptors ('hopper_prefill_d2" in run.stderr and "not built: prefill." in run.stderr
+    assert "lies outside FSLA's contract" not in run.stderr
+
+
+@pytest.mark.parametrize("call, named", [
+    ("d_v=1,levels=2,decay=0,prefill=1,tokens=4096,batch_heads=8,stateful=0", "d_v=1 (the contract: "),
+    ("d_v=64,levels=2,decay=0,prefill=1,tokens=0,batch_heads=8,stateful=0", "tokens=0 (the contract: "),
+])
+def test_a_prefill_call_in_no_owed_descriptor_is_outside_the_contract_naming_the_fact(call, named):
+    run = _plan(None, call)
+    assert run.returncode == 1 and "the call lies outside FSLA's contract" in run.stderr and named in run.stderr

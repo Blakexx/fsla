@@ -16,8 +16,8 @@ constants are per-card configuration).
 W is a build's trait, chosen in `hardware.json`'s `build` block ([`hardware.md#traits`](hardware.md#traits)): each
 kernel's plan reads its build's, and each entry sizes its outputs and grid from its card's (`card_of(device).traits.window`,
 [`select.md`](select.md)) -- one value both ways, so a host shape and the kernel it launches cannot disagree. Python
-reads no window to shape a call: the layer's segment length is the binary's answer too
-([`arch_runtime.md#segment-tokens`](arch_runtime.md#segment-tokens)).
+reads no window to shape a call: the layer's segment length is an output of the prefill launch function, which is not written yet
+(`docs/open-work.md` row A-f).
 
 The hopper (sm_90a) is 1,024, provisional until the sm_90 carry's design picks it. A call is a whole number of the device's
 windows (the intra's check), so a call is a multiple of 1,024 tokens until the intra takes a partial last window.

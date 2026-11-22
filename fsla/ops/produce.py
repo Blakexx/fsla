@@ -24,8 +24,6 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-from fsla.engine import PrefillPlan
-from fsla.engine.carve import check_carve, plan_carve
 from fsla.engine.facts.operands import requires_backward
 from fsla.ops._ext import device_index, extension, not_built
 from fsla.ops.descriptor import Descriptor, descriptor
@@ -38,8 +36,8 @@ from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
 from fsla.values import Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "prefill_plan", "produce",
-           "projection_dtype", "route_logits"]
+__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "level_facts", "prefill_descriptor",
+           "produce", "projection_dtype", "route_logits"]
 
 
 @dataclass(frozen=True)
@@ -187,44 +185,66 @@ def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: i
 
 @cache
 def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
-    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side walks by lists -- those whose
-    activation has exact zeros (an opaque level, which may have zeros, included). A choice made once from the
-    declaration's activation metadata, and carried by the plan; no consumer asks the activations again."""
+    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side WALKS BY ITS LISTS (the rest are walked digit by digit) -- the
+    levels whose activation has exact zeros (an opaque level, which may have zeros, included). An action chosen once from the
+    declaration's activation metadata and stated as the call's ``read_listed_k`` and ``write_listed_k`` facts; no consumer
+    asks the activations again."""
     return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
                  for side in ("read", "write"))
 
 
-def prefill_plan(topology, d_v: int, *, paging: bool | None = None, carve=None) -> PrefillPlan:
-    """THE PRODUCER-OWNED PREFILL PLAN RULE: the carve from the declaration (the walk rule, then
-    :func:`fsla.engine.carve.plan_carve`), or a pinned ``carve`` checked against the same declaration; ``paging`` the
-    state's mapping pin (:class:`fsla.engine.plan.PrefillPlan`)."""
-    widths = tuple(topology.padded_widths)
-    read_sparse, write_sparse = activation_walks(topology)
-    if carve is None:
-        carve = plan_carve(widths, read_sparse, write_sparse, d_v)
-    else:
-        check_carve(carve, widths, read_sparse, write_sparse, d_v)
-    return PrefillPlan(carve=carve, paging=paging)
-
-
-def decode_descriptor(topology, *, d_v: int, decay: bool, device=None) -> Descriptor:
-    """THE PRODUCER-OWNED DECODE RULE: the step's validated descriptor on ``device`` (the current device for ``None``), the call's
-    facts stated from the declaration -- ``write_dense``, deposit whole atoms, chosen when the innermost level's write activation
-    has no exact zeros, and each level's width as its log2 (a level's width is a power of two, ``fsla._state.StateFormat``'s law).
-    A width outside the contract is refused when the descriptor is made, naming the fact. Memoized by the call and the device: a
-    dictionary lookup, no device read after the first."""
-    return _decode_descriptor(topology, int(d_v), bool(decay), device_index(device))
-
-
-@cache
-def _decode_descriptor(topology, d_v: int, decay: bool, device: int) -> Descriptor:
-    widths = tuple(topology.widths)
+def level_facts(topology, widths: tuple[int, ...]) -> dict[str, int]:
+    """The facts the call states per level: each width as its log2 (a level's width is a power of two,
+    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`), and ``levels``; a level beyond the call's
+    depth is 0. The planner's own call facts name how many levels the contract holds."""
     for level, width in enumerate(widths):
         if width < 1 or width & (width - 1):
             raise ValueError(f"level {level + 1}'s width is {width}: a level's width is a power of two (the contract states it as "
                              f"width_bits_{level + 1}, its log2)")
     depth = sum(name.startswith("width_bits_") for name in extension().fsla_call_facts().split(","))  #: the planner's own call facts name the levels
-    bits = [width.bit_length() - 1 for width in widths[:depth]]
-    bits += [0] * (depth - len(bits))
-    return descriptor(device=device, d_v=d_v, levels=len(widths), decay=int(decay), write_dense=int(not activation_walks(topology)[1][-1]),
-                      **{f"width_bits_{level + 1}": value for level, value in enumerate(bits)})
+    read, write = activation_walks(topology)
+    facts = {"levels": len(widths)}
+    for level in range(depth):
+        have = level < len(widths)
+        facts[f"width_bits_{level + 1}"] = widths[level].bit_length() - 1 if have else 0
+        facts[f"read_listed_{level + 1}"] = int(read[level]) if have else 0
+        facts[f"write_listed_{level + 1}"] = int(write[level]) if have else 0
+    return facts
+
+
+def decode_descriptor(topology, *, d_v: int, decay: bool, batch_heads: int, device=None) -> Descriptor:
+    """THE PRODUCER-OWNED DECODE RULE: the step's validated descriptor on ``device`` (the current device for ``None``), the call's
+    facts stated from the declaration -- each side's walk of each level (``read_listed_k``, ``write_listed_k``: the planner's launch function
+    derives the whole-atom deposit from the innermost level's) and each level's width as its log2 -- and from the caller: ``batch_heads``,
+    B times H. A width or an extent outside the contract is refused when the descriptor is made, naming the fact. Memoized by the call
+    and the device: a dictionary lookup, no device read after the first."""
+    return _decode_descriptor(topology, int(d_v), bool(decay), int(batch_heads), device_index(device))
+
+
+@cache
+def _decode_descriptor(topology, d_v: int, decay: bool, batch_heads: int, device: int) -> Descriptor:
+    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=0, tokens=1, batch_heads=batch_heads, stateful=1, dense_plane=0,
+                      memory_budget=0, **level_facts(topology, tuple(topology.widths)))
+
+
+def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, dense_plane: bool = False,
+                       memory_budget: int | None = None, device=None) -> Descriptor:
+    """THE PRODUCER-OWNED PREFILL RULE: the prefill's validated descriptor on ``device`` (the current device for ``None``), the call's facts stated
+    from the declaration (each side's walk of each level, each level's padded width as its log2) and from the caller: ``tokens``, the call's length;
+    ``batch_heads``, B times H; ``stateful``, whether a state is handed in or out; ``dense_plane``, which pins the state's dense plane (the
+    bit-identity gate's backing); ``memory_budget``, the declared budget in bytes (``None``: no budget, one segment).
+
+    A call the contract holds only as OWED -- the prefill kernel is not built -- is refused here as :class:`fsla.ops._ext.KernelNotBuilt`
+    naming each kernel it waits on; a call in neither the contract nor an owed descriptor is refused naming the facts, as every call is.
+    Memoized by the call and the device."""
+    if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
+        raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
+    return _prefill_descriptor(topology, int(d_v), bool(decay), int(tokens), int(batch_heads), bool(stateful), bool(dense_plane),
+                               0 if memory_budget is None else memory_budget, device_index(device))
+
+
+@cache
+def _prefill_descriptor(topology, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, dense_plane: bool, memory_budget: int,
+                        device: int) -> Descriptor:
+    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=1, tokens=tokens, batch_heads=batch_heads, stateful=int(stateful),
+                      dense_plane=int(dense_plane), memory_budget=memory_budget, **level_facts(topology, tuple(topology.padded_widths)))

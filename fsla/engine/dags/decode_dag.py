@@ -174,7 +174,7 @@ def validate_context(ctx: DecodeContext) -> None:
     if type(ctx.descriptor) is not Descriptor:
         raise TypeError(f"the decode step takes a fsla.Descriptor, got {type(ctx.descriptor).__name__}; "
                         "fsla.ops.produce.decode_descriptor builds one from the declaration")
-    bodies.check_descriptor(ctx.descriptor, ctx.routes.topology, ctx.values.device)
+    bodies.check_descriptor(ctx.descriptor, ctx.routes, ctx.values.device)
     check_workspace(ctx.workspace, ctx.descriptor)
     bodies.check_decode_masks(ctx.masks, ctx.routes)
     bodies.guard_no_grad((*ctx.values.tensors(), *ctx.routes.tensors(),

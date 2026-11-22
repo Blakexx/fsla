@@ -11,15 +11,6 @@ runs on the first launch, reads the device the process is actually holding, and
 refuses if that architecture was never tabulated or if the driver's own numbers
 disagree with the row a compiled derivation was closed over.
 
-<a id="segment-tokens"></a>
-## `segment_tokens(budget, state, per_token, batch, length, device)`
-
-THE LAYER'S SEGMENT LENGTH on `device`'s card: the most whole windows whose working set (`per_token` bytes a
-batch-token at `batch`) fits in `budget` beside `state`, at most the call's `length`; 0 where not one window fits,
-which the layer refuses by name. Segments are whole windows because the window grid is global: a boundary on a window
-boundary moves no pair. The window is the card's, so the length is the binary's answer rather than a Python
-computation over a hardware fact; the working-set model and the budget are the layer's (`docs/api.md` section 4.2).
-
 <a id="check-arch-table"></a>
 ## `check_arch_table()`
 
@@ -41,8 +32,7 @@ routing forward/backward families, and the T=1 decode step —
 calls `check_arch_table()` as the first statement of its body.
 `tests/unit/test_closed_world_arch_gate.py` scans the registration translation unit's own
 operator list and asserts this for every entry that is not named as launch-less (an arm
-census, a build stamp, a host-only derivation over the descriptor, a host query of the card it is asked about -- whose
-`card_of` admits that card -- a ledger binding, or a VMM driver operation).
+census, a build stamp, a host-only derivation over the descriptor, a ledger binding, or a VMM driver operation).
 
 ## Why its own translation unit
 

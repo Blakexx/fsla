@@ -178,9 +178,11 @@ constexpr fsla::plan::Descriptor exact() {
   d.assign("d_v", Interval{48, 48});
   d.assign("levels", Interval{2, 2});
   d.assign("decay", Interval{1, 1});
-  d.assign("write_dense", Interval{1, 1});
+  d.assign("prefill", Interval{0, 0});
   d.assign("width_bits_1", Interval{4, 4});
   d.assign("width_bits_2", Interval{5, 5});
+  d.assign("write_listed_1", Interval{1, 1});
+  d.assign("write_listed_2", Interval{0, 0});
   return d;
 }
 
@@ -236,6 +238,16 @@ int main(int argc, char** argv) {
   std::mt19937_64 rng(seed);
   int failures = 0;
   for (const Context& c : contexts) {
+    if (!fsla::plan::is_decode_call(c.facts)) {
+      std::fprintf(
+          stderr,
+          "arms_gen: the contract holds context '%s', which holds a prefill call: no family's "
+          "launch function serves one yet, so the contract cannot guarantee it (a call owed to a "
+          "kernel not built is a descriptor of hardware/descriptors/owed)\n",
+          c.id.c_str());
+      ++failures;
+      continue;
+    }
     fsla::plan::DecodeReach set = fsla::plan::decode_reach(c.facts);
     if (set.gap || set.arms.none()) {
       std::string maps = "it";

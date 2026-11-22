@@ -4,8 +4,8 @@
 
 A DAG is a literal ordered tuple of band-1 fact nodes (:mod:`fsla.engine.facts.nodes`) and
 band-2 rules (:mod:`fsla.engine.rules`), walked once by :func:`fsla.engine.runner.run`; its
-terminal node folds what the walk produced into the family's PLAN, and the kernels
-read only the plan (docs/internals/engine/engine.md).
+terminal node folds what the walk produced into the family's LAUNCH bundle (descriptor, operands, workspace), and the kernels
+read only it (docs/internals/engine/engine.md).
 """
 
 from fsla.engine.dags.decode_dag import (

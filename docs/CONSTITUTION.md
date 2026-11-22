@@ -279,8 +279,21 @@ The producer knows what it gives, its sparsity too, and owns the rules that turn
 them, and any other caller supplies whatever valid plan it wants. The op refuses a plan the data's shape cannot
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
-nothing else. NOT YET SO: [`open-work.md`](open-work.md#the-surface) row A-c lists what is still owed: the plan
-fields R24 names beyond the carve (the plan and the masks are what the op reads now).
+nothing else. THE PLAN IS A ROLE, NOT AN OBJECT (Blake, 2026-11-22: "data chagnes the mathematics, plan changes the execution of those
+mathematics. thats the exact spec we want"). No operator takes a plan object: it takes its data, a DESCRIPTOR and an
+optional WORKSPACE -- `op(data..., descriptor, workspace=None)` -- and the state is its own argument, in and out, never
+part of the workspace. The plan's host half is the descriptor: the validated context of the call, every device fact and
+every call fact, reusable and hashable; a call fact that states a choice names an action as above (a side of a level
+walked by its lists), and everything derived from the facts -- the carve, the window, the grid, the segment -- is computed
+by the family's one launch function right before the launch and stored nowhere. The plan's device half is the DEVICE
+PLAN, the first region of the workspace: decisions made during the call from its own data (a box's counts, its
+step-shape word), which never change the result -- forcing any of them on the same data matches the oracle. The op runs
+no derivation pass of its own: a caller builds the workspace with the public builder ("id rather they call a public
+method to build the workspace and hand it to us") and is trusted with it as with the masks; the layer takes only model
+inputs and builds both.
+NOT YET SO: decode is on this surface, and so is the prefill's op; what a prefill launches is owed -- its launch function
+(row A-f), the workspace's layout and builder (A-g) and the contract ranges they fix (A-h) of
+[`open-work.md`](open-work.md#the-surface).
 
 <a id="r25"></a>
 ## R25. A group is a layout; its steps are shaped to it, never wider than 64 columns

@@ -94,7 +94,8 @@ class Node:
 
 def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
          stream: str = "host", variants: tuple[Variant, ...] = (Variant.PREFILL_STATELESS, Variant.PREFILL_STATEFUL),
-         waits: tuple[str, ...] = (), host_sync: bool = False,
+         waits: tuple[str, ...] = (),  #: reserved: the prefill's arena join, which returns with the prefill launch function (open-work A-f)
+         host_sync: bool = False,  #: reserved: the prefill's state entry (a host read), which returns with the prefill launch function (open-work A-f)
          pure_of: tuple[str, ...] = (), per_state: bool = False,
          capturable: bool = False, reference_only: bool = False,
          ) -> Callable[[Callable], Node]:

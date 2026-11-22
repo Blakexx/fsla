@@ -23,8 +23,8 @@ made mechanical.
 
 ```python
 s = fsla.state()                        # unbound
-y, s = fsla.fsla_op(routes, values, masks, plan=plan, state=s) # bound to this call's shape; s is mutated
-y, _ = fsla.fsla_op(routes, values, masks, plan=plan)  # stateless: (y, None)
+y, s = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace, state=s) # bound to this call's shape; s is mutated
+y, _ = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace)  # stateless: (y, None)
 ```
 
 `fsla.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
@@ -146,7 +146,7 @@ The backing is chosen at BIND time and is not a per-call flag:
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
 * **dense** — one `[BH, N/16, 16, cols]` plane: the SAME page sequence with every page
-  resident. Selected by `plan=PrefillPlan(carve, paging=False)`, and it is what the
+  resident. Selected by the call's `dense_plane` fact (`prefill_descriptor(..., dense_plane=True)`), and it is what the
   bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED: the exit sweep stores the atoms a call WRITES and no others, so the atoms it
   skips must already hold the zero an absent paged atom reads as.
 

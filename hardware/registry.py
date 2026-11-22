@@ -20,6 +20,9 @@ READS = ("DEVICE", "CALL")
 #: the contract a build compiles against when it names none: every descriptor of `descriptors/`. A development build names a NARROWED contract
 #: instead (`descriptors/dev/<name>.json`, marked `"narrowed": true`)
 FULL = "full"
+#: the folder of the OWED descriptors (`descriptors/owed/<name>.json`): a call the contract does not guarantee yet because the kernels it waits on are not built.
+#: It composes parts and is validated as any descriptor is, and is never in the full contract, a narrowed one, the README's table or the arms a build compiles
+OWED = "descriptors/owed"
 #: the suffix of a part the device probe wrote (`hardware/parts/device/<id>.candidate.json`): a candidate is never a part
 CANDIDATE = ".candidate"
 TYPES = ("int", "set<enum>")
@@ -159,6 +162,19 @@ def descriptors(root: Path = ROOT, folder: str = "descriptors") -> dict[str, dic
     return out
 
 
+def owed_descriptors(root: Path = ROOT) -> dict[str, dict]:
+    """The OWED descriptors by name (`descriptors/owed/<name>.json`), each naming the kernels its call waits on (`"owed": ["<kernel>", ...]`, the names
+    `fsla.ops._ext.not_built` and the tests' `requires_kernel` use), or a RegistryError."""
+    found = descriptors(root, OWED)
+    for name, data in found.items():
+        kernels = data.get("owed")
+        if (not isinstance(kernels, list) or not kernels or len(set(kernels)) != len(kernels)
+                or not all(isinstance(k, str) and k.isidentifier() for k in kernels)):
+            raise RegistryError(f"{root / OWED / (name + '.json')}: an owed descriptor names the kernels its call waits on (`\"owed\": [\"prefill\", ...]`, "
+                                "distinct identifiers)")
+    return found
+
+
 def expand(descriptor: dict, facts: dict[str, Fact], root: Path = ROOT) -> list[Context]:
     """A descriptor's full contexts: its parts' facts merged (a fact stated twice, a schema fact left out, or a fact the schema does not name is
     refused), a list of alternatives crossed into one context each, in the order the facts are listed."""
@@ -214,6 +230,34 @@ def _inside(context: Context, whole: Context, facts: dict[str, Fact]) -> bool:
     return True
 
 
+def _reaches(a: Context, b: Context, facts: dict[str, Fact]) -> bool:
+    """Whether some call lies in both contexts: every int fact's ranges meet, every set equal."""
+    for name, fact in facts.items():
+        x, y = a.facts[name], b.facts[name]
+        if fact.type == "int":
+            if x[1] < y[0] or y[1] < x[0]:
+                return False
+        elif x != y:
+            return False
+    return True
+
+
+def owed(root: Path = ROOT) -> list[tuple[Context, tuple[str, ...]]]:
+    """Every context of every OWED descriptor with the kernels it waits on, refused when a call of it is also in the full contract (a call is held by
+    the contract or owed, never both: the run time refuses an owed call naming its kernels, which a guaranteed call must not meet)."""
+    facts = schema(root)
+    held = contexts(root)
+    out: list[tuple[Context, tuple[str, ...]]] = []
+    for name, descriptor in owed_descriptors(root).items():
+        for context in expand(descriptor, facts, root):
+            twin = next((whole for whole in held if _reaches(context, whole, facts)), None)
+            if twin is not None:
+                raise RegistryError(f"owed descriptor {name}: its context '{context.id}' is reachable from the full contract's '{twin.id}': a call is "
+                                    "guaranteed or owed, never both")
+            out.append((context, tuple(descriptor["owed"])))
+    return out
+
+
 def contexts(root: Path = ROOT, contract: str = FULL) -> list[Context]:
     """The contract a build compiles against: every context of every descriptor (`contract` the full one), or of the one narrowed contract it
     names; refused when two are identical in every fact."""
@@ -239,7 +283,8 @@ def contexts(root: Path = ROOT, contract: str = FULL) -> list[Context]:
 
 
 def check(root: Path = ROOT) -> None:
-    """The schema, every part (composed or not) and every descriptor, and the contract's duplicates, or a RegistryError."""
+    """The schema, every part (composed or not) and every descriptor (the full contract's, the narrowed ones and the owed ones), the contract's duplicates and
+    the owed contexts' overlap with the contract, or a RegistryError."""
     facts = schema(root)
     for name in parts(root):
         for fname in part(name, root)["facts"]:
@@ -248,6 +293,7 @@ def check(root: Path = ROOT) -> None:
     contexts(root)
     for name in descriptors(root, "descriptors/dev"):
         narrowed(name, root)
+    owed(root)
 
 
 def contexts_text(contexts_: list[Context], contract: str = FULL) -> str:
@@ -335,6 +381,27 @@ def contract_header(contexts_: list[Context], facts: dict[str, Fact], contract: 
                 bits = sum(1 << facts[name].members.index(m) for m in value)
                 out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
         out.append(f"      out.push_back({{\"{c.id}\", f}});\n    }}\n")
+    out.append("    return out;\n  }();\n  return rows;\n}\n\n}  // namespace fsla::plan\n")
+    return "".join(out)
+
+
+def owed_header(owed_: list[tuple[Context, tuple[str, ...]]], facts: dict[str, Fact]) -> str:
+    """`plan/owed.h`: the OWED contexts as the run time holds them, `owed()` a context each (its id, its facts and the kernels it waits on). The planner
+    refuses a call inside one, naming the kernels; no launch function reads it."""
+    out = ["// GENERATED from hardware/descriptors/owed by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
+           "#pragma once\n\n#include <vector>\n\n#include \"plan/facts.h\"\n\nnamespace fsla::plan {\n\n",
+           "struct OwedContext {\n  const char* id;\n  Facts facts;\n  std::vector<const char*> kernels;\n};\n\n",
+           "//: every context the contract owes: the call's kernels are not built\ninline const std::vector<OwedContext>& owed() {\n  static const std::vector<OwedContext> rows = [] {\n    std::vector<OwedContext> out;\n"]
+    for c, kernels in owed_:
+        out.append("    {\n      Facts f;\n")
+        for name, value in c.facts.items():
+            if facts[name].type == "int":
+                out.append(f"      f.assign(\"{name}\", Interval{{{value[0]}, {value[1]}}});\n")
+            else:
+                bits = sum(1 << facts[name].members.index(m) for m in value)
+                out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
+        listed = ", ".join(f'"{k}"' for k in kernels)
+        out.append(f"      out.push_back({{\"{c.id}\", f, {{{listed}}}}});\n    }}\n")
     out.append("    return out;\n  }();\n  return rows;\n}\n\n}  // namespace fsla::plan\n")
     return "".join(out)
 

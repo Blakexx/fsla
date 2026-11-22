@@ -35,7 +35,8 @@ inline constexpr int kDecodeMaxLevels = 4;
 //: what the launch takes besides the arm: the compute capability of the build to launch, the CTA's threads, the shared
 //: memory a CTA may opt in to, the zero columns the call's value width is padded by, the device's SMs, each level's width
 //: (0 beyond the call's `levels`) and its offset into the flattened per-level rows (the prefix sums of the widths), and
-//: whether the step deposits whole atoms (0 or 1)
+//: whether the step deposits whole atoms (0 or 1): THE LAUNCH FUNCTION'S OWN DERIVATION, 1 when the innermost level's write side is
+//: not listed (`write_listed` of the call's last level is 0)
 struct DecodeArgs {
   int cc;
   int threads;
@@ -85,6 +86,10 @@ constexpr void decode_levels(DecodeReach& r, const Descriptor& d, int d_v) {
   ladder(Reader::levels(d), 1, kDecodeLevelsUpto, 4, hole, leaf);
 }
 
+//: whether every call of the descriptor is a decode step (`prefill` 0): the contract check refuses a context any prefill call lies in, for no family
+//: evaluates one yet
+constexpr bool is_decode_call(const Descriptor& d) { return Reader::prefill(d).hi == 0; }
+
 //: THE ARM HALF, a decision tree on Truth, exact over ranges (docs/internals/common/plan/rules.md#exact)
 constexpr DecodeReach decode_reach(const Descriptor& d) {
   DecodeReach r;
@@ -93,7 +98,7 @@ constexpr DecodeReach decode_reach(const Descriptor& d) {
   const auto widths = [&] {
     ladder(Reader::d_v(d), 1, kDecodeArmWidths, std::size(kDecodeArmWidths), hole, leaf);
   };
-  fork(eq(Reader::cc(d), 900), widths, hole);
+  fork(all(eq(Reader::cc(d), 900), eq(Reader::prefill(d), 0)), widths, hole);
   return r;
 }
 
@@ -114,14 +119,32 @@ constexpr Interval decode_width_bits(const Descriptor& d, int l) {
   }
 }
 
+//: the call's write-side sparse flag of level `l` (0-based): 1 when that level has exact zeros
+constexpr Interval decode_write_listed(const Descriptor& d, int l) {
+  switch (l) {
+    case 0:
+      return Reader::write_listed_1(d);
+    case 1:
+      return Reader::write_listed_2(d);
+    case 2:
+      return Reader::write_listed_3(d);
+    default:
+      return Reader::write_listed_4(d);
+  }
+}
+
 //: exact values only: a range aborts
 constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
   bool exact = Reader::cc(d).point() && Reader::regs_per_sm(d).point()
                && Reader::smem_per_cta_optin(d).point() && Reader::sm_count(d).point()
-               && Reader::d_v(d).point() && Reader::levels(d).point()
-               && Reader::write_dense(d).point();
-  for (int l = 0; l < kDecodeMaxLevels; ++l) exact = exact && decode_width_bits(d, l).point();
+               && Reader::d_v(d).point() && Reader::levels(d).point() && Reader::prefill(d).point()
+               && Reader::prefill(d).lo == 0;
+  for (int l = 0; l < kDecodeMaxLevels; ++l) {
+    exact = exact && decode_width_bits(d, l).point() && decode_write_listed(d, l).point();
+  }
   if (!exact) std::abort();
+  const bool innermost_dense =
+      decode_write_listed(d, static_cast<int>(Reader::levels(d).lo) - 1).lo == 0;
   DecodeArgs args{static_cast<int>(Reader::cc(d).lo),
                   static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
                   static_cast<int>(Reader::smem_per_cta_optin(d).lo),
@@ -129,7 +152,7 @@ constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
                   static_cast<int>(Reader::sm_count(d).lo),
                   {},
                   {},
-                  static_cast<int>(Reader::write_dense(d).lo)};
+                  static_cast<int>(innermost_dense)};
   int offset = 0;
   for (int l = 0; l < arm.levels; ++l) {
     const auto bits = decode_width_bits(d, l).lo;

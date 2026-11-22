@@ -93,8 +93,8 @@ the write set the walk enumerates is the set the residency test reads, so the te
 over shared memory. The verdict (`growth`, `done`, and the `growth_any` reduction the host
 reads) sits beside the write-atom set it was reached from (`atom_bits`, what a host
 admission plans from), and under a slack pool a growth step admits itself.
-`write_dense` is the call's fact that the innermost level's write side is dense
-(`fsla.ops.produce.decode_descriptor` states it from the declaration), which the launch function hands the entry and which lets the write term walk whole atoms (`decode.md#whole-atoms`); the level widths and their row offsets come from it too, so the entry takes neither. Its operands are the
+`write_dense` is the launch function's derived fact that the innermost level's write side is not listed (every digit of it is walked:
+the descriptor's innermost `write_listed_k` is 0, which `fsla.ops.produce.decode_descriptor` states from the declaration), which the launch function hands the entry and which lets the write term walk whole atoms (`decode.md#whole-atoms`); the level widths and their row offsets come from it too, so the entry takes neither. Its operands are the
 caller's RAW
 `[B, 1, H, *]` views — `read`, `write` and their scales, `v` — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own

@@ -162,7 +162,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     """
     topology = _topology(widths)
     N = math.prod(widths)
-    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False, batch_heads=B * H)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
@@ -216,7 +216,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         ref = ref._replace(state=state_rounded(ref.state))
 
     # ---- decode ---------------------------------------------------------------
-    descriptor = decode_descriptor(topology, d_v=d_v, decay=decay is not None)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=decay is not None, batch_heads=B * H)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
     #: THE STORED FORM IS THE INT8 STATE PAGE: the seam packs after the lattice
     #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
@@ -326,7 +326,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False, batch_heads=B * H)
     launch = decode_launch(descriptor)
     m0 = state_pages(0.1 * torch.randn(B, H, launch.N, launch.cols, device=device, dtype=torch.float32))
     state = m0.clone()
@@ -538,7 +538,7 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    descriptor = decode_descriptor(pre["topology"], d_v=d_v, decay=False)
+    descriptor = decode_descriptor(pre["topology"], d_v=d_v, decay=False, batch_heads=B * H)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
     entry = state_pages(to_lattice(pre["state"], widths, *lattice_of(widths)))

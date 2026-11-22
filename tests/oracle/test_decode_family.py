@@ -163,7 +163,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
     ref = ref._replace(state=state_rounded(ref.state))
 
-    descriptor = decode_descriptor(topology, d_v=_DV, decay=decay_on)
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=decay_on, batch_heads=_B * _H)
     #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
     state = state_pages(to_lattice(ref.state.float(), _WIDTHS, *lattice_of(_WIDTHS)))
     workspace, cold_seen = None, False
@@ -213,7 +213,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     m0[..., _DV] = m0[..., _DV].abs()
     m0 = state_rounded(m0)
 
-    descriptor = decode_descriptor(topology, d_v=_DV, decay=True)
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=True, batch_heads=_B * _H)
     state = state_pages(to_lattice(m0.float(), _WIDTHS, *lattice_of(_WIDTHS)))
     ref = m0
     workspace = None
@@ -248,7 +248,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = _topology(_WIDTHS)
-    descriptor = decode_descriptor(topology, d_v=_DV, decay=False)
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=False, batch_heads=_B * _H)
     grids = {f"ctas={n}": n for n in (1, 3, 8)}
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,

@@ -8,12 +8,13 @@ decides which sub-states each token reads and writes. That reduction IS this API
 user who knows linear attention meets exactly ONE new concept here, the feature map,
 and everything else is linear attention's own contract.
 
-    fsla_op(routes, values, masks, decay, plan=plan)
+    fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state, decay=decay)
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
 -- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; the op computes with ``r * m``),
-``decay`` is the recurrence dial and ``plan`` is the static what-to-do (``fsla.expert``). The layer DECLARES its routing -- the levels, each carrying its own
+the ``state`` is its own argument, in and out, ``decay`` is the recurrence dial, ``descriptor`` is the call's validated run-time context
+(``fsla.ops.produce.prefill_descriptor``) and ``workspace`` is what the call derives, which ``build_workspace`` lays out. The layer DECLARES its routing -- the levels, each carrying its own
 width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
 bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
@@ -32,7 +33,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `fsla_op` | STABLE, semver-major to break |
-| planner arguments | `descriptor`, `Descriptor`, `workspace_bytes` | STABLE |
+| planner arguments | `descriptor`, `Descriptor`, `workspace_bytes`, `build_workspace` | STABLE |
 | feature map | `RouteFactors`, `Masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
@@ -52,6 +53,7 @@ from fsla.interface import fsla_op
 from fsla.layer import FSLA, LayerContinuation
 from fsla.ops.descriptor import Descriptor, descriptor, workspace_bytes
 from fsla.ops.naive import naive_fsla
+from fsla.ops.prefill import build_workspace
 from fsla.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import Masks
@@ -79,10 +81,12 @@ from fsla.values import Values
 __all__ = [
     # the op — the single autograd boundary (fsla/interface.py)
     "fsla_op",
-    # the op's planner arguments: the validated context of a call, and the scratch it needs (fsla/ops/descriptor.py)
+    # the op's planner arguments: the validated context of a call, the workspace it needs and the builder that lays it out
+    # (fsla/ops/descriptor.py, fsla/ops/prefill.py)
     "Descriptor",
     "descriptor",
     "workspace_bytes",
+    "build_workspace",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Masks",
