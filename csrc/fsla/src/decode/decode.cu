@@ -979,7 +979,7 @@ Tensor fsla_decode_forward(
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
   }
   //: THE MASKS: int32 words, DIGIT-packed, one token, `[B, H, ceil(width_l / 32)]` a side a level -- bit `d % 32` of word
-  //: `d // 32` is digit `d` live. The pointers are `DecodeParams`' liveness operands; `fold_digits` builds its masks from the row bytes (docs/open-work.md A-e).
+  //: `d // 32` is digit `d` live, contiguous: `fold_digits` reads them; a digit whose bit is off contributes nothing.
   STD_TORCH_CHECK(
       read_mask.size() == static_cast<size_t>(D) && write_mask.size() == static_cast<size_t>(D),
       "one digit mask a level a side");

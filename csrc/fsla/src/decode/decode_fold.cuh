@@ -35,6 +35,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
   const int slots = p.mask_total << 5;
   float x[kSlots];
   float scale[kSlots];
+  uint32_t live[kSlots];
 #pragma unroll
   for (int j = 0; j < kSlots; ++j) {
     const int s = threadIdx.x + j * Dp::kThreads;
@@ -45,11 +46,24 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     for (int q = 1; q < D; ++q) {
       if (word >= p.mask_off[q]) l = q;
     }
-    const int digit = ((word - p.mask_off[l]) << 5) + lane;
+    const int level_word = word - p.mask_off[l];
+    const int digit = (level_word << 5) + lane;
     const bool valid = s < 2 * slots && digit < p.level_width[l];
     const Span& rows = write_side ? p.write[l] : p.read[l];
-    //: on the byte scale: a u8 digit, at every level
-    x[j] = valid ? static_cast<float>(row_of<uint8_t>(rows, b, h)[digit * rows.sw]) : 0.0f;
+    //: THE SUPPLIED MASK's word: digit-packed, one warp-uniform load; the op computes with the coefficient times its bit
+    const int words = (p.level_width[l] + 31) >> 5;
+    const int32_t* m = write_side ? p.write_mask[l] : p.read_mask[l];
+    //: the word's bits past the level's width are outside the mask's shape, never live
+    const int rem = p.level_width[l] - (level_word << 5);
+    const uint32_t shape_bits = rem >= 32 ? 0xffffffffu : ((1u << rem) - 1u);
+    //: branch-free: a slot past both sides reads its level's first word and keeps no bit of it
+    const bool in_sides = s < 2 * slots;
+    const int at = (b * p.H + h) * words + (in_sides ? level_word : 0);
+    const uint32_t word_bits = static_cast<uint32_t>(m[at]);
+    live[j] = word_bits & (in_sides ? shape_bits : 0u);
+    const bool on = valid && ((live[j] >> lane) & 1u);
+    //: on the byte scale: a u8 digit, at every level, zero where its bit is off
+    x[j] = on ? static_cast<float>(row_of<uint8_t>(rows, b, h)[digit * rows.sw]) : 0.0f;
     scale[j] = valid ? scale_of(write_side ? p.write_scale[l] : p.read_scale[l], b, h) : 0.0f;
   }
 
@@ -65,8 +79,8 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
       if (word >= p.mask_off[q]) l = q;
     }
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
-    const uint32_t live = __ballot_sync(0xffffffffu, x[j] != 0.0f);
-    if (lane == 0) (write_side ? mask_w : mask_r)[word] = live;
+    //: every lane stores the same word: no lane guard, so no divergence in the step's loop
+    (write_side ? mask_w : mask_r)[word] = live[j];
     if (digit < p.level_width[l])
       (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x[j] * (scale[j] / kRowMaxDigit);
   }
