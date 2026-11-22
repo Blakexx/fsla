@@ -27,7 +27,7 @@ from einops import rearrange
 from fsla.engine import PrefillPlan
 from fsla.engine.carve import check_carve, plan_carve
 from fsla.engine.facts.operands import requires_backward
-from fsla.ops._ext import device_index, not_built
+from fsla.ops._ext import device_index, extension, not_built
 from fsla.ops.descriptor import Descriptor, descriptor
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.factors import RouteFactors
@@ -40,10 +40,6 @@ from fsla.values import Values
 
 __all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "prefill_plan", "produce",
            "projection_dtype", "route_logits"]
-
-
-#: the levels the decode contract's width facts name (``width_bits_1`` .. ``width_bits_4``)
-_DECODE_LEVELS = 4
 
 
 @dataclass(frozen=True)
@@ -227,7 +223,8 @@ def _decode_descriptor(topology, d_v: int, decay: bool, device: int) -> Descript
         if width < 1 or width & (width - 1):
             raise ValueError(f"level {level + 1}'s width is {width}: a level's width is a power of two (the contract states it as "
                              f"width_bits_{level + 1}, its log2)")
-    bits = [width.bit_length() - 1 for width in widths[:_DECODE_LEVELS]]
-    bits += [0] * (_DECODE_LEVELS - len(bits))
+    depth = sum(name.startswith("width_bits_") for name in extension().fsla_call_facts().split(","))  #: the planner's own call facts name the levels
+    bits = [width.bit_length() - 1 for width in widths[:depth]]
+    bits += [0] * (depth - len(bits))
     return descriptor(device=device, d_v=d_v, levels=len(widths), decay=int(decay), write_dense=int(not activation_walks(topology)[1][-1]),
                       **{f"width_bits_{level + 1}": value for level, value in enumerate(bits)})

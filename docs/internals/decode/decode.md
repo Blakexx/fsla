@@ -375,7 +375,7 @@ the lattice's fields as scalars under the lattice's own names (§9).
 
 The CEILING below is the producer's; the FLOOR is the contract's: a level's width is a call fact of the descriptor (`width_bits_k`, its log2), whose range runs from
 `fsla._state.MIN_LEVEL_WIDTH` (the one admission law's floor, the same one prefill's seam runs) to this capacity (the depth parts of `hardware/parts/calls`), so a width
-outside it is refused when the descriptor is made, naming the fact, before a call reaches this capacity check at all.
+outside it is refused when the descriptor is made, naming the fact: the entry takes its widths from the launch function and keeps no capacity check of its own.
 
 `fsla/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the
 PRODUCER will emit. A decode path whose capacity were narrower would accept a

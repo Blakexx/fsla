@@ -174,12 +174,7 @@ def validate_context(ctx: DecodeContext) -> None:
     if type(ctx.descriptor) is not Descriptor:
         raise TypeError(f"the decode step takes a fsla.Descriptor, got {type(ctx.descriptor).__name__}; "
                         "fsla.ops.produce.decode_descriptor builds one from the declaration")
-    launch = bodies.decode_launch(ctx.descriptor)
-    widths = tuple(ctx.routes.topology.widths)
-    if widths != launch.widths:
-        raise ValueError(f"the descriptor is for widths {launch.widths}, the bundle's are {widths}")
-    if ctx.descriptor.device != ctx.values.device.index:
-        raise ValueError(f"the descriptor was made for device {ctx.descriptor.device}; the values are on {ctx.values.device}")
+    bodies.check_descriptor(ctx.descriptor, ctx.routes.topology, ctx.values.device)
     check_workspace(ctx.workspace, ctx.descriptor)
     bodies.check_decode_masks(ctx.masks, ctx.routes)
     bodies.guard_no_grad((*ctx.values.tensors(), *ctx.routes.tensors(),

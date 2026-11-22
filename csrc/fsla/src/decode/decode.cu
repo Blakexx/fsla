@@ -850,9 +850,6 @@ int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
   int64_t expect_n = 1;
   for (int l = 0; l < p.D; ++l) {
     const int width = static_cast<int>(level_widths[l]);
-    STD_TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth, "level ", l, " width ", width,
-                    " exceeds the decode path's capacity ", kDecodeMaxLevelWidth,
-                    " (see kProducerMaxBranchWidth)");
     p.write[l] = span_of(levels[l], B, H, width, "write[l]");
     p.level_width[l] = width;
     p.level_amp_offset[l] = total_rows;
@@ -953,13 +950,6 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                     "a dense state is [BH, N / ", kAtomLeaves, ", ", page_bytes, "] bytes");
     N = 1;
     for (auto w : level_widths) N *= w;
-    STD_TORCH_CHECK(N % kAtomLeaves == 0,
-                    "THERE IS NO RAGGED STATE: N = prod_l B_l must be a whole number of ",
-                    kAtomLeaves,
-                    "-leaf pages, and a lawful routing makes it one (every B_l a "
-                    "power of two at or above 16). PREFILL AND DECODE SHARE ONE ADMISSION "
-                    "LAW; got N = ",
-                    N);
     atoms_per_bh = static_cast<int>(N / kAtomLeaves);
     STD_TORCH_CHECK(state.size(1) == atoms_per_bh, "a dense state holds N / ", kAtomLeaves, " = ",
                     atoms_per_bh, " pages a batch-head; got ", state.size(1));

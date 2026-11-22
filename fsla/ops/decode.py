@@ -104,9 +104,6 @@ class DecodeLaunchFacts:
         return self.d_v + 1  # the mass column is unconditional (raw is dead)
 
 
-_MAX_LEVELS = 4
-
-
 @cache
 def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
     """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``."""
@@ -204,6 +201,15 @@ def fold_levels(levels) -> list[torch.Tensor]:
     (docs/internals/decode/decode_fold.md#the-gate).
     """
     return [_fold(rows).float() for rows in levels]
+
+
+def check_descriptor(descriptor: Descriptor, topology, device: torch.device) -> None:
+    """The descriptor against the call it is handed: the level widths it states are the bundle's, and its device is the values'."""
+    widths = tuple(topology.widths)
+    if widths != decode_launch(descriptor).widths:
+        raise ValueError(f"the descriptor is for widths {decode_launch(descriptor).widths}, the bundle's are {widths}")
+    if descriptor.device != device.index:
+        raise ValueError(f"the descriptor was made for device {descriptor.device}; the values are on {device}")
 
 
 def check_decode_masks(masks, routes) -> None:
@@ -387,13 +393,10 @@ def _decode_step(
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
-    launch = decode_launch(descriptor)
+    check_descriptor(descriptor, routes.topology, values.v.device)
     widths = tuple(routes.topology.widths)
-    if widths != launch.widths:
-        raise ValueError(f"the descriptor is for widths {launch.widths}, the bundle's are {widths}")
-    if descriptor.device != values.v.device.index:
-        raise ValueError(f"the descriptor was made for device {descriptor.device}; the values are on {values.v.device}")
     logical_d_v = values.d_v
+    launch = decode_launch(descriptor)
     v = pad_v(values.v, launch.d_v)
     plane = step_plane(v, descriptor, decay, state, page_table)
     BH = values.batch * values.heads

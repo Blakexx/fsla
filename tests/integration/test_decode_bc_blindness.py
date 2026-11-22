@@ -33,10 +33,10 @@ import math
 import pytest
 import torch
 
+from fsla.ops._ext import extension
 from fsla.ops.decode import _decode_step
 from fsla.ops.paging import bytes_equal
 from fsla.ops.produce import decode_descriptor
-from hardware import registry
 from tests.oracle.fixtures import assert_reordered_close, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
@@ -53,12 +53,12 @@ _BCS = [32, 64, 128, 256, 1024]
 def test_no_fact_of_the_decode_descriptor_names_bc():
     """The structural half: ``BC`` is not a fact, and cannot become one by accident.
 
-    A schema-level check rather than a comment, because the descriptor is the one object
+    A fact-name check rather than a comment, because the descriptor is the one object
     that could plausibly acquire a ``BC`` (it states the call to a planner that serves
     prefill too), and a fact added there would be invisible to the numeric gate below
     until something started reading it.
     """
-    names = {name.lower() for name in registry.schema()}
+    names = {name.lower() for name in extension().fsla_call_facts().split(",")}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
         f"the contract has acquired a BC-shaped fact: {sorted(names)}")
 

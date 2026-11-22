@@ -15,7 +15,7 @@ namespace decode {
 
 using fsla::carry::kAtomLeaves;  // page granule from the addressing block; see decode.md#kmaxlevels
 
-constexpr int kMaxLevels = 4;  // 1 <= D <= 4; see decode.md#kmaxlevels-2
+constexpr int kMaxLevels = plan::kDecodeMaxLevels;  // 1 <= D <= 4; see decode.md#kmaxlevels-2
 
 constexpr int kProducerMaxBranchWidth = 256;  // a GATE; see decode.md#kproducermaxbranchwidth
 constexpr int kDecodeMaxLevelWidth = 256;
