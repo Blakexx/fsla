@@ -377,8 +377,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           const unsigned long long starts = *reinterpret_cast<const unsigned long long*>(table + kOneTiles * 16);
           const uint32_t counts = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
           //: A COUNT IS A CHOICE BETWEEN STRAIGHT BLOCKS, made outside them: one step or two, each block its own fence and
-          //: commit group, the group's accumulators held across the choice (a loop on a loaded count is a branch a thread
-          //: decides for itself inside the steps: the toolkit serializes it, C7519). Any other count traps
+          //: commit group, the group's accumulators held across the choice; any other count traps
+          //: -- see docs/lab/carry_token.md (the form)
 #pragma unroll
           for (int q = 0; q < 4; ++q) {
             //: a group's steps take its own two places of the tiles' room and of the header's starts: every operand a constant

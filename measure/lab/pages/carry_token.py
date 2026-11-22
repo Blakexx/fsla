@@ -40,11 +40,17 @@ SHARED = ", lists overlapping on shared tokens"
 GROUP4 = ", groups of four digits"
 TOKEN4 = ", a token on all four digits of its group, groups of four"
 TOKEN4_LIST = ", a token on all four digits of its group, a list a digit"
+TOKEN4_TILES = ", a token on all four digits of its group, groups of four in a group's two tile places"
+TOKEN2 = ", a token on two digits of its group, groups of four"
+CLEARED = ", its tiles cleared"
+COUNTED = ", a group's steps counted at run time"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
     (TOKEN4_LIST, "a token on all four digits of its group, a list a digit"),
+    (TOKEN4_TILES, "a token on all four digits of its group, groups of four in a group's two tile places"),
     (TOKEN4, "a token on all four digits of its group, groups of four"),
+    (TOKEN2, "a token on two digits of its group, groups of four"),
     (TOKEN16, "a token on all 16 digits of its box, groups of four on one run of value lines"),
     (GROUP4, "groups of four digits"),
 )
@@ -111,17 +117,18 @@ def card(inst: str, device: str, sms: int) -> str:
 def short(name: str) -> str:
     """A row's name as the table words it: the name after its prefix, the layout and the probe, and the trace's suffix."""
     rest = name.removeprefix(PREFIX)
-    layout, probe, kind = "", "", "plain"
+    layout, probes, kind = "", [], "plain"
     for suffix, words in LAYOUTS:
         if suffix in rest:
             layout, rest = words, rest.replace(suffix, "")
             break
-    if COLUMN in rest:
-        probe, rest = "the box's width word choosing its fold", rest.replace(COLUMN, "")
-    if SPLIT in rest:
-        probe, rest = "registers 176 / 112 / 48", rest.replace(SPLIT, "")
-    if IDLE in rest:
-        probe, rest = "the read side idle (not checked)", rest.replace(IDLE, "")
+    for suffix, words in ((COLUMN, "the box's width word choosing its fold"), (CLEARED, "its tiles cleared"),
+                          (COUNTED, "a group's steps counted at run time"), (SPLIT, "registers 176 / 112 / 48"),
+                          (IDLE, "the read side idle (not checked)")):
+        if suffix in rest:
+            probes.append(words)
+            rest = rest.replace(suffix, "")
+    probe = ", ".join(probes)
     for suffix, words in DETAILS:
         if suffix in rest:
             kind, rest = f"coarse, {words}", rest.replace(COARSE_SUF, "").replace(suffix, "")
@@ -369,8 +376,37 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"alone are {g(t4gi)} against {g(t4li)} a list a digit ({vs(t4gi, t4li)}), and the composed window {g(t4g)} against {g(t4l)} ({vs(t4g, t4l)}): "
         "the fold's gain is paid in the composed window."
     )
-    run_time = (
-        "(d) NOT MEASURED: a run-time count of steps a group -- every grouped fold of the record issues a fixed number of steps a window."
+    run_time = "(d) THE PADDED FORM IS NO ROW HERE: a fold that always issues a group's two steps with the absent one on zeros is not measured (see (f))."
+
+    # ---- a fold's issue work: the cleared four-digit fold against the same fold without the clear
+    cleared = TOKEN4 + CLEARED
+    clr = {n: (cycles_of(n, cleared), cycles_of(n, cleared, idle=True), w(n, group4), cycles_of(n, TOKEN4, idle=True)) for n in (1, 132)}
+    diff = {n: (c[0] - c[2], c[1] - c[3]) for n, c in clr.items()}
+    pair_text = (
+        f"(e) A FOLD'S ISSUE WORK, A PAIR OF ROWS: the four-digit grouped fold with its tiles' room cleared and the clear's barrier ({g(clr[132][0])} composed, "
+        f"{g(clr[132][1])} with the read side idle) against the same fold without them ({g(clr[132][2])} and {g(clr[132][3])}) is "
+        f"{g(diff[132][0])} cycles more composed and {g(diff[132][1])} more with the read side idle, {diff[132][0] / diff[132][1]:.2f} times; at one CTA "
+        f"{g(diff[1][0])} and {g(diff[1][1])}, {diff[1][0] / diff[1][1]:.2f} times. The clear is shared-memory stores and a warpgroup barrier, which every "
+        "entry of that fold's tiles makes needless: they cost more composed than alone. The record names no cause (it holds no counter)."
+    )
+    step1, step2 = TOKEN4_TILES + CLEARED + COUNTED, TOKEN2 + CLEARED + COUNTED
+    cnt = {n: (cycles_of(n, step1), cycles_of(n, step1, idle=True), cycles_of(n, step2), cycles_of(n, step2, idle=True)) for n in (1, 132)}
+    choice = {n: (c[0] - clr[n][0], c[1] - clr[n][1]) for n, c in cnt.items()}
+    second = {n: (c[2] - c[0], c[3] - c[1]) for n, c in cnt.items()}
+    exact_counted = exact(PREFIX + step1) and exact(PREFIX + step2) and exact(PREFIX + cleared)
+    counted_text = (
+        "(f) A GROUP'S STEPS COUNTED AT RUN TIME: the count is a byte a group in the packet's header, and a group's steps are a choice between two "
+        "straight blocks (one step or two, each its own fence and commit group, the group's accumulators held across the choice) made outside them, "
+        "in the group's own two places of the tiles' room and of the header's starts; any other count traps. (A loop on the loaded count is serialized "
+        "by ptxas 13.5, C7519 \"serialized due to program dependence on compiler-inserted WG.AR in divergent path\", which the lab's checks refuse: a "
+        f"compile fact of this kernel.) At one step a group the counted fold is {g(cnt[132][0])} composed and {g(cnt[132][1])} with the read side idle "
+        f"against the cleared fixed-block fold's {g(clr[132][0])} and {g(clr[132][1])}: {g(choice[132][0])} more composed and {g(choice[132][1])} more alone, "
+        f"{choice[132][0] / choice[132][1]:.2f} times (at one CTA {g(choice[1][0])} and {g(choice[1][1])}, {choice[1][0] / choice[1][1]:.2f} times): "
+        f"not the clear's {diff[132][0] / diff[132][1]:.2f}, so the two kinds of issue work are not one price. At two steps a group (a token on two digits of its group) "
+        f"it is {g(cnt[132][2])} and {g(cnt[132][3])}, {g(second[132][0])} more composed and {g(second[132][1])} more alone than the one-step rows (at one CTA "
+        f"{g(second[1][0])} and {g(second[1][1])}); the rows are {'exact' if exact_counted else 'NOT exact'}. What follows from those two differences alone: "
+        "for a count of one or two, the choice costs about what a second step does. NOT MEASURED: a fold that always issues two steps a group with the "
+        "absent one on zeros; counts over two a group."
     )
 
     # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants
@@ -403,7 +439,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     grouping = (
         "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
-        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}"
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}"
     )
 
     # ---- rows of the experiment the record does not hold yet
