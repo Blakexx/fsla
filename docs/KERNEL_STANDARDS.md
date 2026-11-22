@@ -44,7 +44,7 @@ schedules. These land with the first of them, each red or an owed entry until th
 2. the family's part harness, phase ledger, composer and calibrations (§19, §22);
 3. hopper's rows of the hardware table and of the price list, from its labs (§26, §29.11, §29.14);
 4. every `[COMPILER]` rule's re-check and every `[MACHINE]` rule's run on sm_90a;
-5. the sm_90a arms declared in the carry's `arms.bzl` and built (§7);
+5. the sm_90a arms declared in the carry's `arms.bzl` (a family registered in `ARM_FAMILIES`) and built (§7);
 6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
    that reproduces it -- until it exists, work on the composition stops at it.
 
@@ -276,7 +276,7 @@ graph rule):
   "I'd rather re-scope than build something wrong and fix it later." A re-scoped stage restarts its
   cycle budget from the amended spec. Amendments that do not change the design (count formats, report
   shape, housekeeping) go in the NEXT brief instead.
-- Every kernel family carries an arm-subset knob (the carry's `--//:carry_arms`); a family without one gets it
+- Every kernel family carries an arm-subset knob (`--//:<family>_arms` for each family of `ARM_FAMILIES`); a family without one gets it
   before its next build.
 <a id="s15-addendum"></a>§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
 extension header and ~0.33 GB in a torch-free arm unit (docs/build.md#compile-ledger), on a 16-CPU / 24 GB machine.

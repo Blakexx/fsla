@@ -5,14 +5,14 @@
 
 What stands is the carve's vocabulary the planner and the envelope read: the carve
 (:class:`rola.engine.types.Carve`) names the box -- an extent a level and the channel extent -- and each side's list
-levels and operand levels, and its arm key (:func:`arm_key`) is what a compiled body is selected by.
+levels and operand levels.
 """
 from __future__ import annotations
 
 from rola.engine.types import Carve
 from rola.ops._ext import extension, not_built
 
-__all__ = ["arm_key", "carry", "same_split", "sm_clock_ghz"]
+__all__ = ["carry", "same_split", "sm_clock_ghz"]
 
 
 def _outer(plan) -> set[int]:
@@ -31,14 +31,6 @@ def same_split(carve: Carve) -> int:
         return 0
     raise ValueError(f"the fold's lists {sorted(fold)} are neither the readout's digits nor its K "
                      f"{sorted(read_rows)}: no hand-off form carries them")
-
-
-def arm_key(carve: Carve) -> tuple[int, ...]:
-    """The compiled body a carve selects: ``(fold_rows, fold_factors, read_rows, read_factors, channels,
-    same_split)`` -- each side's dense rows (the fold's warp tile, the readout's K) and its operand's level count, the
-    channel extent and the hand-off's form (:func:`same_split`)."""
-    return (carve.fold.tile_rows, len(carve.fold.operand), carve.readout.tile_rows, len(carve.readout.operand),
-            carve.channels, same_split(carve))
 
 
 def carry(routes, values, facts, carve: Carve, *args, **kwargs):

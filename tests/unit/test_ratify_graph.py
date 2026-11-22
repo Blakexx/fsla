@@ -22,7 +22,7 @@ ptxas info    : Function properties for _Z1kPi
 ptxas info    : Used 8 registers, used 0 barriers, 360 bytes cmem[0]
 """
 
-PARAMETERS = {"archs": "90a", "carry_arms": "", "decode_arms": ""}
+PARAMETERS = {"archs": "90a", "decode_arms": ""}
 
 
 @pytest.fixture()

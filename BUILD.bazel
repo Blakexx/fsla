@@ -11,7 +11,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "lock_update", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -77,6 +77,10 @@ rola_extension(
     ("get", "get"),
     ("worktree", "worktree"),
 ]]
+
+#: THE ENVIRONMENT'S LOCK (docs/build-graph.md#environment): `bazel run //:lock_update` compiles requirements.in into
+#: requirements.lock with the pinned uv
+lock_update(name = "lock_update")
 
 #: THE CHECKOUT'S VENV over the graph's environment, which its commit hooks then run from (docs/build-graph.md#use)
 dev_run(
@@ -316,8 +320,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-#: THE EDITOR'S COMPILE DATABASE: `bazel run //:compile_commands` writes compile_commands.json, each unit's clang
-#: command for the first ratified architecture (docs/build-graph.md#checks)
+#: THE EDITOR'S COMPILE DATABASE: `bazel build //:compile_commands` is .bazel/bin/compile_commands.json, each unit's clang
+#: command for the first ratified architecture, which the tracked `.clangd` names (docs/build-graph.md#checks)
 compile_database(
     name = "compile_commands",
     units = [":library"],

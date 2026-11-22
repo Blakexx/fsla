@@ -82,8 +82,8 @@ The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, nev
 `.so` is asserted to contain zero PTX images. Naming an architecture that is not built
 (`--//:archs`) fails the build.
 
-The carry family's arms are compiled as **translation units, one an arm and a built architecture**
-(declared in `csrc/rola/src/carry/arms.bzl`, instantiated by the graph), so the matrix parallelizes
+A family's arms are compiled as **translation units, one an arm and a built architecture**
+(declared in the family's `arms.bzl`, registered in `ARM_FAMILIES`, instantiated by the graph), so the matrix parallelizes
 across the build's jobs instead of serializing inside one compiler process. Every build runs under the machine's host budget, its jobs the slots it
 holds ([`docs/build-graph.md`](docs/build-graph.md#front-door)).
 

@@ -82,3 +82,12 @@ def test_the_declared_arms_are_the_graphs_generated_table_and_its_absence_names_
     generated.mkdir(parents=True)
     (generated / "decode_arms.py").write_text('KEY = ("a", "b")\nARMS = (\n    (1, 2),\n)\n')
     assert provider._declared("decode") == ((1, 2),)
+
+
+def test_the_declared_families_are_the_registry_not_a_directory(tmp_path, monkeypatch):
+    (tmp_path / "bazel").mkdir()
+    (tmp_path / "bazel" / "arms.bzl").write_text('ARM_FAMILIES = ["decode"]\n')
+    (tmp_path / "build" / "generated").mkdir(parents=True)
+    (tmp_path / "build" / "generated" / "stale_arms.py").write_text("ARMS = ()\n")
+    monkeypatch.setattr(provider, "CHECKOUT", tmp_path)
+    assert provider._declared_families() == ["decode"]

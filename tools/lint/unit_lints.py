@@ -8,7 +8,7 @@ the build graph (`bazel/defs.bzl`'s `unit_lints` aspect), and the editor's compi
     unit_lints.py tidy --command C.json --clang-tidy BIN --config F --package csrc/rola --out V.json
     unit_lints.py warnings --argv A.json --arch 90a --package csrc/rola --out V.json   # the host compile, warnings on
     unit_lints.py verdicts [--expect PATTERN...] V.json...             # red on any finding, or a fixture's mismatch
-    unit_lints.py database --checkout DIR --out F C.json...            # compile_commands.json, from the run's execroot
+    unit_lints.py database --anchor MODULE.bazel --out F C.json...     # compile_commands.json, from the action's execroot
 
 A unit's compile is the graph's own (its argv, the action's inputs), so the lint reads exactly what the build compiled,
 for one architecture a configuration. Standard library only: the graph's base interpreter runs it.
@@ -160,11 +160,12 @@ def verdicts(paths: list[str], expect: list[str]) -> int:
     return 1 if red else 0
 
 
-def database(commands: list[str], checkout: str) -> list[dict]:
-    """Each unit's clang command, every path absolute: the tree's under the checkout, the build's outputs under the
-    execution root this run reads (`bazel-out/`), the repositories under the output base (`external/`)."""
-    cwd = os.getcwd()
-    execroot = cwd[:cwd.index("/bazel-out/")]
+def database(commands: list[str], anchor: str) -> list[dict]:
+    """Each unit's clang command, every path absolute: the tree's under the checkout (the directory the unsandboxed
+    action's link to `anchor`, the tree's `MODULE.bazel`, resolves to), the build's outputs under the execution root the
+    action runs in (`bazel-out/`), the repositories under the output base (`external/`)."""
+    checkout = str(Path(anchor).resolve().parent)
+    execroot = os.getcwd()
     output_base = execroot[:execroot.rindex("/execroot/")]
 
     def absolute(path: str) -> str:
@@ -214,7 +215,7 @@ def main() -> int:
     v.add_argument("--expect", action="append", default=[], help="a fixture's expected finding (a pattern)")
     v.add_argument("paths", nargs="*")
     d = sub.add_parser("database")
-    d.add_argument("--checkout", required=True)
+    d.add_argument("--anchor", required=True, help="the tree's MODULE.bazel, as the action sees it")
     d.add_argument("--out", type=Path, required=True)
     d.add_argument("commands", nargs="+")
 
@@ -229,7 +230,7 @@ def main() -> int:
     elif a.mode == "verdicts":
         return verdicts(a.paths, a.expect)
     else:
-        entries = database(a.commands, a.checkout)
+        entries = database(a.commands, a.anchor)
         a.out.write_text(json.dumps(entries, indent=1) + "\n")
         print(f"compile database: {len(entries)} unit(s) -> {a.out}")
     return 0

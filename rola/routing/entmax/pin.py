@@ -5,7 +5,7 @@ VENDORED codegen input with a tag, a commit and a tree digest, and refuses a bui
 whose vendored subtree does not match (`tools/build_record.py::vendored_pin`, the graph's record action,
 and `tools/lint/lint_standards.py::check_vendored_pin`). `entmax` is the same class of input by a
 different route -- not vendored, because a pure-python test dependency has nothing to
-vendor, but pip-installed and unpinned in `pyproject.toml` before this module existed.
+vendor, but pip-installed at the version `requirements.in` pins.
 
 WHY THE PIN IS THE ONLY GUARD. The cross-checkout diff (`declare.py`'s `SURFACES`, run by
 rola-bench) runs the OLD side as a real prior checkout of THIS repository and the NEW side as the tip -- but both

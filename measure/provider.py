@@ -83,9 +83,14 @@ def _declared(family: str) -> tuple:
 
 
 def _declared_families() -> list[str]:
-    """The families this tree declares: one generated table each (`bazel/arms.bzl`'s `ARM_FAMILIES`), whose op module
-    (`rola.ops.<family>`) answers what the binary carries."""
-    return sorted(path.name.removesuffix("_arms.py") for path in (CHECKOUT / "build" / "generated").glob("*_arms.py"))
+    """The families this tree declares: `ARM_FAMILIES` in `bazel/arms.bzl`, the one registry (a literal read by AST), each
+    answering what the binary carries through its op module (`rola.ops.<family>`)."""
+    import ast
+
+    for node in ast.parse((CHECKOUT / "bazel" / "arms.bzl").read_text()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "ARM_FAMILIES" for t in node.targets):
+            return sorted(ast.literal_eval(node.value))
+    raise RuntimeError("bazel/arms.bzl declares no `ARM_FAMILIES`")
 
 
 def _refuse_a_partial_binary() -> None:

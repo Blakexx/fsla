@@ -93,6 +93,7 @@ class _Whitelist:
     # `shlex.shlex` READS `whitespace_split` and `commenters` when it tokenizes: `tools/lint/graph_only.py` sets them on its lexer.
     whitespace_split = None
     commenters = None
+    dont_write_bytecode = None  # sys's flag, set by the front door (bazel/front_door.py): a store vulture reads as unused
 
 
 _ = _Whitelist()
@@ -102,4 +103,4 @@ _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,  # ruff B01
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.Activation, _.state_size, _.sequence_length,
                _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary, _.pytest_tier,
-               _.build_wheel, _.build_sdist, _.build_editable)
+               _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode)

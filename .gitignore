@@ -1,16 +1,14 @@
 __pycache__/
 *.py[cod]
 *.so
-*.egg-info/
 /build/
 dist/
 .pytest_cache/
 .ruff_cache/
 rola_cu13/_build_config.py
 
-# K38: the derived measurements index -- rebuilt from benchmarks/results/, never committed.
-.rola/
-compile_commands.json
+# Bazel's output links (`.bazelrc`'s `--symlink_prefix=.bazel/`); `.clangd` reads the compile database through `.bazel/bin`
+/.bazel/
 
 # the dev container's host mounts, written by `python3 tools/dev.py container compose` (host paths, never committed)
 .devcontainer/compose.local.yaml

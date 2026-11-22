@@ -45,20 +45,16 @@ by index: `--//:decode_arms=5` compiles arm 5 and nothing else, through the gene
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
 resource, so this is what makes iterating on one arm cost one arm.
 
-**THE LAUNCH IS STILL WRITTEN ONCE.** [`dispatch_switch.md`](../dispatch_switch.md) refuses
-the MACRO LADDER — a `#define` per axis whose BODY restates the `<<<...>>>`, so an
-`N`-axis dispatch spells the launch `2^N` times inside an expansion the compiler cannot
-type-check. This is not one: the macro carries an arm's three CONSTANTS and its
-comparison, the launch itself is a single generic lambda taking three `integral_constant`s,
-and no `<<<...>>>` is spelled twice. What replaces the nested `int_switch`/`bool_switch` is
-only the SOURCE of the candidate set — a list the build can cut, instead of three sets
-written into the call — and `matched` is `int_switch`'s own refusal mechanism, kept.
+**THE LAUNCH IS WRITTEN ONCE.** [`dispatch_switch.md`](../dispatch_switch.md) refuses
+the MACRO LADDER -- a `#define` per axis whose BODY restates the `<<<...>>>`. Decode selects through
+`arm_switch<DecodeArmSet>` ([`../common/arm_switch.md`](../common/arm_switch.md)): the body receives an arm whose three
+fields are constants, the launch is a single generic lambda taking three `integral_constant`s, and no `<<<...>>>` is
+spelled twice.
 
-**THE BUILT SET IS READ BACK OFF THE SAME LIST.** `rola_decode_arms()` expands
-`ROLA_DECODE_ARM_SET_X` a second time to push `[d_v, D, decay]` rows into a vector, so
-`rola.ops.decode.arms()` cannot disagree with what was compiled — there is one list and
-both readings expand it. An arm the binary does not carry is a `STD_TORCH_CHECK` refusal
-naming the shape, never a silent miss.
+**THE BUILT SET IS READ BACK OFF THE SAME SET.** `rola_decode_arms()` returns `DecodeArmSet::rows()`, the `[d_v, D, decay]`
+rows of the arms the build selected, so `rola.ops.decode.arms()` cannot disagree with what was compiled -- one set, and the
+dispatch and the readback both read it. An arm the binary does not carry is the switch's refusal, naming the field that
+misses and the built set, never a silent miss.
 
 **A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: it carries fewer instantiations than the
 declaration by construction, so an iteration build is never a wheel ([`build.md#iteration`](../../build.md#iteration)).

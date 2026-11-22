@@ -209,8 +209,8 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   action -- its command line and its inputs -- so a lint reads what the build compiled
   ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
   its deps), read in one configuration a built architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
-  cached on its unit's compile, and states the seconds it took. `bazel run //:compile_commands` writes the editor's
-  compile database from the same commands, for the first built architecture.
+  cached on its unit's compile, and states the seconds it took. `bazel build //:compile_commands` makes the editor's
+  compile database (`.bazel/bin/compile_commands.json`, which `.clangd` names) from the same commands, for the first built architecture.
 - THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all five, with `//tests:lab`; `bazel/defs.bzl`'s
   `pytest_tier`; `//tests:lab`, the lab's and the dev config's unit tests on their own, is in the gate, its checker the
   `@warpline` module's): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
@@ -321,7 +321,7 @@ names one).
     bazel run //:init                                               # the machine's dev config and hooks
     bazel run //:dev_env                                            # this checkout's venv, which its hooks run from
     bazel test //:gate                                              # every check the graph holds
-    bazel run //:compile_commands                                   # the editor's compile_commands.json
+    bazel build //:compile_commands                                 # the editor's .bazel/bin/compile_commands.json
     bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, into rola_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3           # an iteration build
@@ -337,4 +337,4 @@ names one).
 Never pass `--jobs` or a cache path: the front door sets both. Nothing the graph builds lands in the checkout but what a
 run target writes there -- the library `bazel run //:library` copies in, with the build's generated headers into
 `build/generated` (where the tools that compile the tree's units read them: `tools/life_ranges.py`;
-a header only when its text changed), and the database `bazel run //:compile_commands` writes: Bazel's output links are off (`--experimental_convenience_symlinks=clean`).
+a header only when its text changed), and nothing else: the editor's compile database is a build output (`bazel build //:compile_commands`, `.bazel/bin/compile_commands.json`), reached through Bazel's output links, all under one ignored directory (`--symlink_prefix=.bazel/`: `.bazel/bin`, `.bazel/out`, `.bazel/testlogs`; `/.bazel/` ignored), so the root holds no `bazel-*`; a committed generated file is a `committed_file()`. The tools' caches (`.ruff_cache`, `.pytest_cache`, `.hypothesis`, `__pycache__`) are never written there either: `.bazelrc` sets `PYTHONDONTWRITEBYTECODE` and `RUFF_NO_CACHE` for every run and test, pyproject's `addopts` turns pytest's cache provider off, and the tests' conftest turns hypothesis's example database off.

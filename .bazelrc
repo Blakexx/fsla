@@ -4,11 +4,18 @@
 # the server exits after 15 idle minutes, above the disk cache collector's 5-minute idle delay
 startup --max_idle_secs=900
 
-# no output links in the checkout: `bazel run //:library` copies the library in (docs/build-graph.md#use)
-build --experimental_convenience_symlinks=clean
+# the output links (`.bazel/bin`, `.bazel/out`, `.bazel/testlogs`) all under one ignored directory, so the checkout's root holds
+# none of them: the editor's `.clangd` reads the compile database through `.bazel/bin` (docs/build-graph.md#use);
+# `bazel run //:library` still copies the library in
+build --symlink_prefix=.bazel/
 
 # the hermetic toolkit is chosen for the build's platform
 build --platforms=//bazel:linux_x86_64
+
+# THE TOOLS' CACHES NEVER LAND IN A CHECKOUT: a target that runs a tool in the source tree (a `bazel run`, a test outside the
+# sandbox) writes no bytecode and no ruff cache there; the other two caches are off in the tools' own config
+run  --run_env=PYTHONDONTWRITEBYTECODE=1 --run_env=RUFF_NO_CACHE=true
+test --test_env=PYTHONDONTWRITEBYTECODE=1 --test_env=RUFF_NO_CACHE=true
 
 # the shared disk cache's bound (docs/build-graph.md#rules, the space budget)
 common --experimental_disk_cache_gc_max_size=5G

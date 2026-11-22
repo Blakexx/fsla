@@ -221,9 +221,10 @@ out-of-repo journal by path, a real worktree path or a session's scratch path, w
 excluded by name, because its patterns spell what they catch). Every finding prints its section, `file:line` and the
 incident.
 
-<a id="compile-commands"></a>**The compile database.** `bazel run //:compile_commands` writes `compile_commands.json`
-into the checkout for an editor: each unit's clang command, as the unit lints run it, for the first built
-architecture, every path absolute.
+<a id="compile-commands"></a>**The compile database.** `bazel build //:compile_commands` makes `compile_commands.json`
+under `.bazel/bin` for an editor, which the tracked `.clangd` names (`CompilationDatabase: .bazel/bin`): each unit's
+clang command, as the unit lints run it, for the first built architecture, every path absolute (an unsandboxed,
+uncached action: the paths are the editor's own).
 
 <a id="device-profile"></a>The device profile runs clang's CUDA frontend `--cuda-host-only` on the compile's own include roots (the
 toolkit's `include/cccl` among them, which nvcc's profile adds and clang does not), and a compiler error anywhere

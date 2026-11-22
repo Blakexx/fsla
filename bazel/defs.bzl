@@ -373,7 +373,7 @@ unit_sass = rule(
         "unit": attr.string(mandatory = True, doc = "the unit's source, by its name without `.cu`"),
     },
     doc = "One unit's SASS as text, by the graph's own disassembler, for every architecture the build carries: `bazel build //csrc/rola:<unit>_sass`, " +
-          "so a SASS diff never needs a disassembler typed by hand (the file is `_objs/<target>/<unit>.sass` under `bazel-bin`).",
+          "so a SASS diff never needs a disassembler typed by hand (the file is `_objs/<target>/<unit>.sass` under `.bazel/bin`).",
 )
 
 def _census_impl(ctx):
@@ -494,6 +494,32 @@ rola_wheels = rule(
     },
     doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
           "clean commit, the record a shippable build's.",
+)
+
+_LOCK_UPDATE = """\
+#!/bin/bash
+# requirements.lock from requirements.in, by the graph's pinned uv (bazel/defs.bzl's lock_update): in the checkout, never
+# cached, since the compile reads the package indexes
+set -euo pipefail
+uv="$(readlink -f {uv})"
+cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec "$uv" pip compile requirements.in --python-version 3.11 --generate-hashes \\
+  --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match \\
+  --custom-compile-command "bazel run //:lock_update" -o requirements.lock "$@"
+"""
+
+def _lock_update_impl(ctx):
+    uv = ctx.file._uv
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _LOCK_UPDATE.format(uv = shell.quote(uv.short_path)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [uv]))]
+
+lock_update = rule(
+    implementation = _lock_update_impl,
+    executable = True,
+    attrs = {"_uv": attr.label(default = "@uv//:uv", allow_single_file = True, cfg = "exec")},
+    doc = "`bazel run` writes requirements.lock from requirements.in with the pinned uv (the environment's lock, " +
+          "docs/build-graph.md#environment); a compile reads the package indexes, so it is never a test.",
 )
 
 _COMMITTED_UPDATE = """\
@@ -827,34 +853,34 @@ unit_lint_test = rule(
           "(a fixture's: on any verdict that does not hold exactly the expected findings).",
 )
 
-_DATABASE = """\
-#!/bin/bash
-# writes the editor's compile database into the checkout (bazel/defs.bzl's compile_database)
-set -euo pipefail
-checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-exec {python} {tool} database --checkout "$checkout" --out "$checkout/compile_commands.json" {commands}
-"""
-
 def _compile_database_impl(ctx):
     infos = [unit[UnitLintInfo] for unit in ctx.attr.units]
     commands = depset(transitive = [info.commands for info in infos]).to_list()
-    script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    words = [shell.quote(c.short_path) for c in commands]
-    ctx.actions.write(script, _DATABASE.format(python = shell.quote(ctx.file._python.short_path), tool = shell.quote(ctx.file._tool.short_path), commands = " ".join(words)), is_executable = True)
-    #: the build makes what the commands name: the generated headers and the CUDA root
-    built = depset(ctx.files._cuda_root, transitive = [info.inputs for info in infos])
-    return [DefaultInfo(executable = script, files = built, runfiles = ctx.runfiles(files = commands + [ctx.file._python, ctx.file._tool]))]
+    out = ctx.actions.declare_file("compile_commands.json")
+    #: the build makes what the commands name (the generated headers and the CUDA root), and the action reads them where
+    #: they are: outside the sandbox, so the paths it writes are the editor's -- which is why its output is never cached
+    built = depset(ctx.files._cuda_root + [ctx.file._anchor], transitive = [info.inputs for info in infos])
+    ctx.actions.run(
+        executable = ctx.file._python,
+        arguments = [ctx.file._tool.path, "database", "--anchor", ctx.file._anchor.path, "--out", out.path] + [c.path for c in commands],
+        inputs = depset(commands + [ctx.file._tool], transitive = [built]),
+        outputs = [out],
+        mnemonic = "RolaCompileDatabase",
+        execution_requirements = {"no-sandbox": "1", "no-cache": "1", "no-remote": "1"},
+    )
+    return [DefaultInfo(files = depset([out]))]
 
 compile_database = rule(
     implementation = _compile_database_impl,
-    executable = True,
     attrs = {
         "units": attr.label_list(mandatory = True, cfg = _first_built_arch, aspects = [unit_lints]),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
+        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
+        "_anchor": attr.label(default = "//:MODULE.bazel", allow_single_file = True),
         "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_built_arch, allow_single_file = True),
     },
-    doc = "`bazel run` writes compile_commands.json into the checkout: each unit's clang command, the lints' own.",
+    doc = "`bazel build` writes compile_commands.json under .bazel/bin: each unit's clang command, the lints' own, " +
+          "every path absolute (the checkout's, the execution root's, the output base's).",
 )
 
 #: THE TEST TIERS (docs/testing.md#running-it): each tier one target, as pytest runs it, on the environment with the

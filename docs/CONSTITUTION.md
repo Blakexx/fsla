@@ -161,8 +161,7 @@ is from the target.
 <a id="r16"></a>
 ## R16. Ship without arm registration
 
-A Python-package user never registers an arm. The shipped set is the carve plans `csrc/rola/src/carry/arms.bzl`
-declares per architecture; an unknown declaration is admitted by a refusal-checked derivation, never by enumeration.
+A Python-package user never registers an arm. The shipped set is the arms each family's `arms.bzl` declares (the families of `ARM_FAMILIES`); an unknown declaration is admitted by a refusal-checked derivation, never by enumeration.
 
 <a id="r17"></a>
 ## R17. One family, one form a component

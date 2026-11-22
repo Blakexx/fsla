@@ -17,14 +17,14 @@ from rola.engine import rule
 
 
 @rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "intra_reads", "intra_dv", "carry_arm", "stateful"))
+      needs=("widths", "d_v", "decay", "intra_reads", "intra_dv", "stateful"))
 def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads: bool, intra_dv: int,
-                     carry_arm: tuple[int, ...] | None, stateful: bool) -> str | None:
+                     stateful: bool) -> str | None:
     """Why the prefill has no kernel for this segment, or None if it runs.
 
     ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
-    the value width it reads; ``carry_arm`` the arm key of the carve the planner picks when the binary carries it,
-    else ``None``; ``stateful`` whether the call hands a state in or out.
+    the value width it reads; ``stateful`` whether the call hands a state in or out. No carry kernel is built on this
+    line, so a segment that passes the clauses before it is refused for want of a carry arm.
     """
     if decay is not None:
         return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "
@@ -34,12 +34,10 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads:
                 f"to 256")
     if d_v != intra_dv:
         return f"d_v={d_v}; the intra reads value width {intra_dv}"
-    if carry_arm is None:
-        return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
     if stateful:
         return ("a state handed in or out: the carry takes no entry state yet (its segment boundary is not built); "
                 "call statelessly")
-    return None
+    return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
 
 
 @rule(gives=("envelope",), needs=("unratified", "device"))

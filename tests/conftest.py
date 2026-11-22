@@ -10,6 +10,11 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import pytest
 import torch
+from hypothesis import settings
+
+# no `.hypothesis` example database in the tree the tests run in
+settings.register_profile("rola", database=None)
+settings.load_profile("rola")
 
 # `measure/` on the path, so the bench PACKAGES import by their own names -- the
 # repository's existing convention (`measure/bench_regression.py` inserts the same

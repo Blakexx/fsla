@@ -58,8 +58,8 @@ second `ArmSet`, not a second switch.
 
 ## Users
 
-- No shipped family dispatches through it yet: the decode step selects with its own generated `ROLA_DECODE_ARM_SET_X`
-  (`decode/decode.cu`), and no carry kernel is built on this line. A family that dispatches on its host joins by
+- The decode step (`decode/decode.cu`): `ROLA_DEFINE_ARM_SET(DecodeArmSet, DECODE)` over its selection header, `arm_switch`
+  at its launch and `DecodeArmSet::rows()` for the built set. A family that dispatches on its host joins by
   `ROLA_DEFINE_ARM_SET` over its selection header.
 - `tests/unit/test_arm_switch.py` compiles a probe against the shipped header with a
   synthetic three-arm selection header — rendered by the same rule a build uses (`bazel/arms.bzl`'s `arm_selection`) —

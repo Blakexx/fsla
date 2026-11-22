@@ -1,0 +1,3 @@
+# the compile database is a build output (docs/internals/tools/lint.md#compile-commands): `bazel build //:compile_commands`
+CompileFlags:
+  CompilationDatabase: .bazel/bin

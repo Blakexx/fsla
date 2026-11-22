@@ -5,6 +5,7 @@
 # measurement). Reads the code list from THAT table rather than hardcoding
 # "E3" a second time, so the two stay in one place.
 set -euo pipefail
+export RUFF_NO_CACHE=true  # no .ruff_cache in the tree this runs in (.bazelrc)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

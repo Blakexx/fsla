@@ -117,5 +117,5 @@ config's toolkit and scratch, and its own cache.
 ## <a id="sass-text"></a>A unit's SASS as text
 
 `bazel build //csrc/rola:<unit>_sass` (a unit by its source's name: `decode_sass`) gives that unit's SASS, every architecture the build carries, as text by the graph's own
-`cuobjdump -sass` (`bazel/defs.bzl`'s `unit_sass` over the library's units; the file is `_objs/<target>/<unit>.sass` under `bazel-bin`; `cuda_unit`'s output group `sass` holds
+`cuobjdump -sass` (`bazel/defs.bzl`'s `unit_sass` over the library's units; the file is `_objs/<target>/<unit>.sass` under `.bazel/bin`; `cuda_unit`'s output group `sass` holds
 them all, `bazel build //:library --output_groups=sass`), so a SASS diff of two commits is two builds and `diff`, never a disassembler typed by hand.

@@ -5,10 +5,10 @@ from runtime values. This header is the mechanism for that selection in a hand-w
 launcher: `entmax.cu`'s forward and backward launchers (`factor.cu`'s four launchers use
 it the same way).
 
-The decode family selects from a GENERATED ARM LIST instead: `ROLA_DECODE_ARM_SET_X`, an X-macro over the declared
-`(DV, D, decay)` rows (`decode_selection.inc`, which `bazel/arms.bzl` emits from `csrc/rola/src/decode/arms.bzl`), tried in
-order and refused by name if none matches. The enumeration exists once and is single-sourced with the declaration
-(the graph's, `docs/build-graph.md#arms`); a family that wants the host dispatch as a type uses
+The decode family selects from a GENERATED ARM SET instead: `ROLA_DEFINE_ARM_SET(DecodeArmSet, DECODE)` over the declared
+`(d_v, levels, decay)` rows (`decode_selection.inc`, which `bazel/arms.bzl` emits from `csrc/rola/src/decode/arms.bzl`),
+dispatched by `arm_switch<DecodeArmSet>` and refused by name if no built arm matches. The enumeration exists once and is
+single-sourced with the declaration (the graph's, `docs/build-graph.md#arms`); every arm family's host dispatch is
 `common/arm_switch.cuh` ([`common/arm_switch.md`](common/arm_switch.md)).
 
 THE RULE BETWEEN THE TWO FORMS IS WHERE THE ENUMERATION LIVES. A launcher with a handful of

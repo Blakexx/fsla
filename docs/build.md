@@ -230,9 +230,8 @@ beside it, never a rebuild of `rola`.
 `rola` loads the plugin when a kernel is first called (`rola/ops/_ext.py`). It reads the plugin's build record BEFORE
 its library, and a record of another version refuses without registering an operator: the two are one version. With no
 plugin, or a mismatched one, the first kernel call raises, naming `pip install "rola[cu13]==<version>"`; the pure-Python
-parts (the oracle, the configuration objects) still import. The `cu13` extra is the wheels tool's, not
-`pyproject.toml`'s, because it pins `rola`'s own version; the other extras and every other field of the metadata are
-`pyproject.toml`'s `[project]`.
+parts (the oracle, the configuration objects) still import. The `cu13` extra, the wheel's only one, is the wheels tool's, not
+`pyproject.toml`'s, because it pins `rola`'s own version; every other field of the metadata is `pyproject.toml`'s `[project]`.
 
 A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `rola_cu13/_C.abi3.so`, so a
 checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.

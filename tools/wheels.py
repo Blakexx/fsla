@@ -105,10 +105,10 @@ def _licence_files() -> list[str]:
 
 def metadata(project: dict, version: str) -> tuple[str, list[str]]:
     """`rola`'s METADATA from `[project]` (core metadata 2.4, as setuptools writes it: the licence's text folded under
-    `License`, the README its body), with the `cu13` extra pinned to this version first; and the licence files it
+    `License`, the README its body), with its one extra, `cu13`, pinned to this version; and the licence files it
     names."""
     licences = _licence_files()
-    extras = {TOOLCHAIN: [f"{PLUGIN.replace('_', '-')}=={version}"], **project.get("optional-dependencies", {})}
+    extras = {TOOLCHAIN: [f"{PLUGIN.replace('_', '-')}=={version}"]}
     licence = (ROOT / project["license"]["file"]).read_text().replace("\n", "\n" + " " * 8)
     lines = ["Metadata-Version: 2.4", f"Name: {project['name']}", f"Version: {version}",
              f"Summary: {project['description']}", *(f"Author: {a['name']}" for a in project["authors"]),

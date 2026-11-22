@@ -13,10 +13,9 @@ sanitizer row, a budget line, a phase ledger, an overlap row — are declared in
 | **C-b** | **The native backward.** No reverse pass exists; `rola_op` refuses a gradient by name. | [`api.md` §1.1](api.md#11-the-built-envelope-is-the-surface) |
 | <a id="carry-components"></a>**C-c** | **No carry, intra or producer kernel is built.** The ampere family's are the branch `ampere`'s; each kernel's hopper schedule is a design of its own, written into its page before it is built, the carry's first. Until then `rola_op` refuses every prefill for want of a carry arm, the ops raise `rola.ops._ext.KernelNotBuilt`, and the tests and comparisons that reach them fail by that name. | [`ARCHITECTURE.md` §9](ARCHITECTURE.md#9-portability), [`KERNEL_STANDARDS.md`](KERNEL_STANDARDS.md) |
 | **C-e** | **The carry's state I/O.** A prefill that hands a state in or out is refused by the envelope; a carry's entry and exit sweeps owe the in-place contract. | [`internals/state.md#the-dense-continuation`](internals/state.md#the-dense-continuation) |
-| **C-f** | **The carry arm set is empty.** `csrc/rola/src/carry/arms.bzl` declares no row; its key stands as the carve's operation-plan pair until a hopper carry's design re-keys it. | [`build-graph.md#arms`](build-graph.md#arms) |
 | **C-g** | **Depth three and four.** The intra's shape law reads one or two levels (`rola.ops.intra.MAX_LEVELS`), so the prefill refuses deeper topologies by name. | `rola/ops/intra.py` |
 | **C-h** | **Decay in the prefill.** The prefill envelope refuses a decay; decode has it. | [`api.md` §3](api.md#3-the-decay-source-slot) |
-| **C-i** | **Whether the other families' instantiation axes join the carry's declaration.** `carry/arms.bzl` is the carry's; the producer's solves, the decode step and the intra key their own closed sets. Unruled; `tools/lint/drift_guards.py`'s `rule_arm_axes` reads carry kernels only until it is. | [`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-the-axis-law) |
+| **C-i** | **Whether the other families' instantiation axes join the carry's declaration.** `ARM_FAMILIES` registers the decode step alone; the producer's solves and the intra key their own closed sets. Unruled; `tools/lint/drift_guards.py`'s `rule_arm_axes` reads the registered families' kernels only until it is. | [`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-the-axis-law) |
 
 ## The state
 

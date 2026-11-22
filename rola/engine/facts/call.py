@@ -27,14 +27,12 @@ def widths_of(routes) -> tuple[int, ...]:
 
 def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> tuple:
     """The facts :func:`rola.engine.rules.envelope.prefill_envelope` folds, for this segment: the call's shape,
-    whether the intra reads its widths, the carve's arm where the binary carries it and whether a state rides the call."""
+    whether the intra reads its widths and whether a state rides the call."""
     from rola.ops import intra as intra_ops
 
     widths = widths_of(routes)
-    #: no carry kernel is built on this line (`rola.ops.carry`): the binary carries no arm for any carve
-    key = None
     return (widths, d_v, decay, intra_ops.admits(widths, intra_ops.VALUE_WIDTH),
-            intra_ops.VALUE_WIDTH, key, stateful)
+            intra_ops.VALUE_WIDTH, stateful)
 
 
 def arm_refusal(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> str | None:

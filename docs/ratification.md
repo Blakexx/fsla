@@ -33,8 +33,8 @@ whatever its spill count. Its disassemblers are the toolchain record's, checked 
 branch over a GENERATED arm set, with the same four layers
 ([`internals/common/arm_switch.md`](internals/common/arm_switch.md)). The set comes
 from the generated selection header, so the set the host dispatches over and the set
-the translation units compiled against are one enumeration; `ROLA_CARRY_ARM_COUNT`
-and `ROLA_CARRY_ARM_DECLARED` are both emitted, because the refusal has to tell *this
+the translation units compiled against are one enumeration; `ROLA_<FAMILY>_ARM_COUNT`
+and `ROLA_<FAMILY>_ARM_DECLARED` are both emitted, because the refusal has to tell *this
 wheel does not carry that arm* from *nothing builds that arm in any configuration*.
 
 `bazel/arms.py`'s `check_built_arm_table` and `sweep_binary` are where the layers become checked facts -- the library's

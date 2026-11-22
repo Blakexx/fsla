@@ -34,6 +34,7 @@
 #include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_selection.inc"
+#include "common/arm_switch.cuh"
 #include "decode_api.cuh"
 #include "decode_fold.cuh"
 #include "decode_lattice.cuh"
@@ -630,14 +631,11 @@ size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, in
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
-//: THE BUILT SET, READ BACK OFF THE SAME LIST: `[d_v, D, decay]` per arm, in the order -- see docs/internals/decode/decode.md#roladecodearms
-std::vector<std::vector<int64_t>> rola_decode_arms() {
-  std::vector<std::vector<int64_t>> out;
-#define ROLA_DECODE_ROW(I_, DV_, D_, DECAY_) out.push_back({DV_, D_, DECAY_});
-  ROLA_DECODE_ARM_SET_X(ROLA_DECODE_ROW)
-#undef ROLA_DECODE_ROW
-  return out;
-}
+//: THE DECODE ARM SET, defined over the generated selection header: the key `(d_v, levels, decay)` -- see docs/internals/common/arm_switch.md#arm-set
+ROLA_DEFINE_ARM_SET(DecodeArmSet, DECODE);
+
+//: THE BUILT SET, READ BACK OFF THE SAME SET: `[d_v, D, decay]` per arm, in the order -- see docs/internals/decode/decode.md#roladecodearms
+std::vector<std::vector<int64_t>> rola_decode_arms() { return DecodeArmSet::rows(); }
 
 //: THE BOUND PHASE LEDGER, or null: the next steps book into it; see decode.md#phase-ledger
 long long* g_phase_ledger = nullptr;
@@ -683,20 +681,12 @@ void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool d
             <<<dim3(p.ctas), DecodePlan<kB>::kThreads, smem, stream>>>(p);
     });
   };
-  bool matched = false;
-#define ROLA_DECODE_TRY(I_, DV_, D_, DECAY_)                                                  \
-  if (!matched && d_v == (DV_) && p.D == (D_) && decay == ((DECAY_) != 0)) {               \
-    matched = true;                                                                        \
-    launch(std::integral_constant<int, (DV_)>{}, std::integral_constant<int, (D_)>{},      \
-           std::integral_constant<bool, (DECAY_) != 0>{});                                 \
-  }
-  ROLA_DECODE_ARM_SET_X(ROLA_DECODE_TRY)
-#undef ROLA_DECODE_TRY
-  STD_TORCH_CHECK(matched, "this binary does not carry the decode arm (d_v = ", d_v, ", D = ", p.D,
-                  ", decay = ", decay,
-                  "). A full build carries every declared arm; an ITERATION build "
-                  "(--//:decode_arms) carries a subset and is not shippable -- "
-                  "rola.ops.decode.arms() lists what this one has.");
+  arm_switch<DecodeArmSet>({{d_v, static_cast<int>(p.D), decay ? 1 : 0}}, [&](auto arm) {
+    constexpr int kDvArm = decltype(arm)::values[0], kLevelsArm = decltype(arm)::values[1];
+    constexpr bool kDecayArm = decltype(arm)::values[2] != 0;
+    launch(std::integral_constant<int, kDvArm>{}, std::integral_constant<int, kLevelsArm>{},
+           std::integral_constant<bool, kDecayArm>{});
+  });
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
