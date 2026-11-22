@@ -35,8 +35,8 @@
 // read from global memory before its window loop choosing its fold, any other word a trap) on packets of each width,
 // the four-digit grouped fold with its tiles' room cleared (`kCleared`: issue work that fold does not need, a pair of rows
 // that prices it composed against alone) and with each group's steps a run-time count of the packet's (`kCounted`), on
-// the four-digit packets and on a token on two digits of its group,
-// and six ISOLATION rows (`kAlone`): a
+// the four-digit tokens laid in a group's two tile places and on a token on two digits of its group,
+// and seven ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
@@ -373,16 +373,16 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         tr.stamp(warpline::kPhaseBegin, kMarkSteps);
         const uint64_t lines = lab::wg_desc(base + pool, 8, 256);
         if constexpr ((PROBE & kCounted) != 0) {
-          //: A GROUP'S STEPS, A COUNT OF THE PACKET'S: a byte a group in the header; a step's tile and its A's start are the
-          //: window's next, in the order issued
+          //: A GROUP'S STEPS, A COUNT OF THE PACKET'S: a byte a group in the header
           const unsigned long long starts = *reinterpret_cast<const unsigned long long*>(table + kOneTiles * 16);
           const uint32_t counts = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
           //: A COUNT IS A CHOICE BETWEEN STRAIGHT BLOCKS, made outside them: one step or two, each block its own fence and
           //: commit group, the group's accumulators held across the choice (a loop on a loaded count is a branch a thread
           //: decides for itself inside the steps: the toolkit serializes it, C7519). Any other count traps
-          uint32_t step = 0;
 #pragma unroll
           for (int q = 0; q < 4; ++q) {
+            //: a group's steps take its own two places of the tiles' room and of the header's starts: every operand a constant
+            const int step = 2 * q;
             const uint32_t n = (counts >> (8 * q)) & 255u;
 #pragma unroll
             for (int a = 0; a < 4; ++a)
@@ -404,7 +404,6 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             } else {
               __trap();
             }
-            step += n;
           }
         } else {
           const uint32_t starts = *reinterpret_cast<const uint32_t*>(table + kOneTiles * 16);
@@ -803,7 +802,7 @@ inline long long image_host(long long v) {
 //: A CALL'S BUFFERS: the window views, the readers' dense table, the state and the output, each sized to the grid
 struct Buffers {
   //: the packets: every entry its own value lines, and lists overlapping on shared tokens
-  uint32_t *values[7], *dense, *out;
+  uint32_t *values[8], *dense, *out;
   float* state;
 };
 inline Buffers buffers(const lab::Bench& b) {
@@ -837,7 +836,7 @@ inline Buffers buffers(const lab::Bench& b) {
           start[j] = at, at += n[j];
         }
         //: THE BOX'S WIDTH WORD, the device plan's, held in every packet's header: the digits a step of its fold spans
-        const uint32_t width = layout == 2 || layout == 3 || layout == 5 || layout == 6 ? 4 : 1;
+        const uint32_t width = layout == 2 || layout == 3 || layout >= 5 ? 4 : 1;
         std::memcpy(packet + kOneWide * 16, &width, 4);
         //: GROUPS OF FOUR DIGITS (`layout` 2): a group's 64 entries are consecutive positions, its four steps 16 each;
         //: a pass is each group's two steps, 128 entries a thread each; an entry's word names its two lines of its
@@ -846,20 +845,22 @@ inline Buffers buffers(const lab::Bench& b) {
         //: columns, a token's value lines once; an entry is a (token, digit), its word its digit's two bricks of the tile
         //: A TOKEN ON ALL 16 DIGITS OF ITS BOX (`layout` 5): the box's 16 tokens' value lines once, every group's step on
         //: that one run -- the box as one group is four steps of 64 columns on one A
-        if (layout == 3 || layout == 5) {
+        if (layout == 3 || layout == 5 || layout == 7) {
           //: a step a group: the header's count of each group's steps
           const uint32_t counts = 0x01010101u;
           std::memcpy(packet + kOneLive * 16, &counts, 4);
           for (int q = 0; q < 4; ++q) {
-            packet[kOneTiles * 16 + q] = static_cast<uint8_t>(layout == 5 ? 0 : 16 * q);
+            //: a group's tile place: its own (`q`), or the first of its two (`layout` 7, the counted fold's)
+            const int place_of = layout == 7 ? 2 * q : q;
+            packet[kOneTiles * 16 + place_of] = static_cast<uint8_t>(layout == 5 ? 0 : 16 * q);
             for (int k = 0; k < 16; ++k) {
               const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + (layout == 5 ? k : 64 * q + k)));
               for (int br = 0; br < 8; ++br)
                 std::memcpy(packet + (kOneValues + br * 2 * kGroup + (layout == 5 ? k : 16 * q + k)) * 16, &host_values[static_cast<size_t>(t) * kRowWords + 4 * br], 16);
               for (int digit = 0; digit < 4; ++digit) {
                 const int entry = 64 * q + 16 * digit + k;
-                reinterpret_cast<uint32_t*>(packet)[entry] = static_cast<uint32_t>(kTileAt + 128 * q + 32 * digit + k)
-                                                             | static_cast<uint32_t>(kTileAt + 128 * q + 32 * digit + 16 + k) << 16;
+                reinterpret_cast<uint32_t*>(packet)[entry] = static_cast<uint32_t>(kTileAt + 128 * place_of + 32 * digit + k)
+                                                             | static_cast<uint32_t>(kTileAt + 128 * place_of + 32 * digit + 16 + k) << 16;
                 packet[kOneSparse * 16 + entry] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
                 for (int dd = 0; dd < 16; ++dd) packet[(kOneDense + entry) * 16 + dd] = static_cast<uint8_t>(dense_of(static_cast<int>(t), dd));
               }
@@ -963,6 +964,7 @@ inline Buffers buffers(const lab::Bench& b) {
   held.values[4] = build(4);
   held.values[5] = build(5);
   held.values[6] = build(6);
+  held.values[7] = build(7);
   LAB_CHECK(cudaMalloc(&held.dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(held.dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&held.state, sizeof(float) * b.sms * 2 * kGroup * (kLists * 8)));
@@ -975,7 +977,7 @@ template <int TRACE, int DETAIL = 0, int LAYOUT = 0, int PROBE = 0>
 void run(lab::Bench& b, const Buffers& held) {
   using namespace carry_token;
   constexpr int kTimed = 64;
-  const std::string name = std::string("the token-stream carry: both sides") + (LAYOUT == 1 ? ", lists overlapping on shared tokens" : LAYOUT == 2 ? ", groups of four digits" : LAYOUT == 3 ? ", a token on all four digits of its group, groups of four" : LAYOUT == 4 ? ", a token on all four digits of its group, a list a digit" : LAYOUT == 5 ? ", a token on all 16 digits of its box, groups of four on one run of value lines" : LAYOUT == 6 ? ", a token on two digits of its group, groups of four" : "")
+  const std::string name = std::string("the token-stream carry: both sides") + (LAYOUT == 1 ? ", lists overlapping on shared tokens" : LAYOUT == 2 ? ", groups of four digits" : LAYOUT == 3 ? ", a token on all four digits of its group, groups of four" : LAYOUT == 4 ? ", a token on all four digits of its group, a list a digit" : LAYOUT == 5 ? ", a token on all 16 digits of its box, groups of four on one run of value lines" : LAYOUT == 6 ? ", a token on two digits of its group, groups of four" : LAYOUT == 7 ? ", a token on all four digits of its group, groups of four in a group's two tile places" : "")
                            + (PROBE & kColumn ? ", the box's width word choosing its fold" : "") + (PROBE & kCleared ? ", its tiles cleared" : "")
                            + (PROBE & kCounted ? ", a group's steps counted at run time" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
@@ -1194,8 +1196,10 @@ int main(int argc, char** argv) {
   //: A FOLD'S ISSUE WORK: the four-digit grouped fold with its tiles' room cleared, plain and its folds alone
   run<0, 0, 3, kWide | kFull | kCleared>(b, held);
   run<2, 0, 3, kWide | kFull | kCleared | kAlone>(b, held);
-  //: A GROUP'S STEPS COUNTED AT RUN TIME: one step a group (the four-digit packets) and two (a token on two digits)
-  run<0, 0, 3, kWide | kFull | kCleared | kCounted>(b, held);
+  //: A GROUP'S STEPS COUNTED AT RUN TIME: one step a group (the four-digit tokens in a group's two tile places) and two (a
+  //: token on two digits)
+  run<0, 0, 7, kWide | kFull | kCleared | kCounted>(b, held);
+  run<2, 0, 7, kWide | kFull | kCleared | kCounted | kAlone>(b, held);
   run<0, 0, 6, kWide | kFull | kCleared | kCounted>(b, held);
   run<2, 0, 6, kWide | kFull | kCleared | kCounted | kAlone>(b, held);
   return 0;
