@@ -35,8 +35,9 @@
 // read from global memory before its window loop choosing its fold, any other word a trap) on packets of each width,
 // the four-digit grouped fold with its tiles' room cleared (`kCleared`: issue work that fold does not need, a pair of rows
 // that prices it composed against alone) and with each group's steps a run-time count of the packet's (`kCounted`), on
-// the four-digit tokens laid in a group's two tile places and on a token on two digits of its group,
-// and seven ISOLATION rows (`kAlone`): a
+// the four-digit tokens laid in a group's two tile places and on a token on two digits of its group, or a voted loop on
+// that count (`kLooped`: any count, on packets of one step a group, of two, and of four, two, one and one),
+// and nine ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
@@ -50,7 +51,8 @@
 // one commit group, the wait, the warpgroup's barrier -- two passes a window where a token is on one digit of its group;
 // where it is on all four, no clear: a thread's two entries expanded, the fence and the barrier, 4 steps one commit
 // group, the wait, the barrier -- under `kCleared` opening with the clear, its fence and the warpgroup's barrier, and under
-// `kCounted` a group's steps one straight block of one or two, chosen by its count, a byte of the header. THE PER-COLUMN kernel reads its box's width word once, before the first window, and runs
+// `kCounted` a group's steps one straight block of one or two, chosen by its count, a byte of the header; under `kLooped` a
+// loop a group on that count, its test a warp vote, a step's tile and start the window's next. THE PER-COLUMN kernel reads its box's width word once, before the first window, and runs
 // one of the two trips whole. The readout's trip is a pass: the waits on its two tile groups, a
 // thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded two passes before), the fence, the
 // warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
@@ -153,7 +155,9 @@ constexpr int source_entry(int layout, uint32_t column, uint32_t window, int e) 
   //: (layout 5: a token on all 16 digits of its box -- the box's 16 tokens)
   if (layout == 5) return e % 16;
   //: (layout 6: a token on two digits of its group -- a list's 16 entries are its group's two steps' tokens of its parity)
-  if (layout == 6) return 64 * (e / 64) + 16 * ((e % 16) / 8) + 2 * ((e % 16) % 8) + ((e / 16) & 1);
+  if (layout == 6 || (layout == 8 && e / 64 == 1)) return 64 * (e / 64) + 16 * ((e % 16) / 8) + 2 * ((e % 16) % 8) + ((e / 16) & 1);
+  //: (layout 8: its first group's lists are its four steps, a token on one digit)
+  if (layout == 8 && e / 64 == 0) return e;
   if (layout >= 3) return 64 * (e / 64) + e % 16;
   int a = 0, before = 0;
   while (before + packed_count(layout, column, window % kCallWindows, a) <= e) before += packed_count(layout, column, window % kCallWindows, a++);
@@ -196,7 +200,9 @@ enum Detail : int {
 //: not need, priced by this row against `kFull`'s, composed and alone; and what `kCounted` needs
 //: `kCounted` (with `kFull | kCleared`): a group's steps a run-time count of the packet's, one or two: a choice a group
 //: between two straight blocks
-enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 128, kCleared = 256, kCounted = 512 };
+//: `kLooped` (with `kFull | kCleared`): a group's steps a loop on the packet's count, whatever it is; the loop's test a warp
+//: vote, one answer a warp
+enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 128, kCleared = 256, kCounted = 512, kLooped = 1024 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -372,7 +378,29 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         lab::bar_sync(kPoolId + box, kGroup);
         tr.stamp(warpline::kPhaseBegin, kMarkSteps);
         const uint64_t lines = lab::wg_desc(base + pool, 8, 256);
-        if constexpr ((PROBE & kCounted) != 0) {
+        if constexpr ((PROBE & kLooped) != 0) {
+          //: A GROUP'S STEPS, A LOOP ON THE PACKET'S COUNT: the loop's test is a warp vote, one answer a warp; a step's tile
+          //: and its A's start are the window's next in the order issued
+          const unsigned long long starts = *reinterpret_cast<const unsigned long long*>(table + kOneTiles * 16);
+          const uint32_t counts = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
+          uint32_t step = 0;
+#pragma unroll
+          for (int q = 0; q < 4; ++q) {
+            const uint32_t n = (counts >> (8 * q)) & 255u;
+#pragma unroll
+            for (int a = 0; a < 4; ++a)
+#pragma unroll
+              for (int i = 0; i < 8; ++i) lab::wg_hold(d[4 * q + a][i]);
+            lab::wg_fence();
+#pragma unroll 1
+            for (uint32_t s = 0; __all_sync(0xffffffffu, s < n) != 0; ++s, ++step) {
+              const uint64_t a = lines + ((starts >> (8 * step)) & 255ull);
+              const uint64_t b = lab::wg_desc(base + pool + (kTileAt + 128 * step) * 16, 8, 16);
+              lab::wg_bf16_n64_ss_mn4(d[4 * q], d[4 * q + 1], d[4 * q + 2], d[4 * q + 3], a, b, w != 0 || s != 0);
+            }
+            lab::wg_commit();
+          }
+        } else if constexpr ((PROBE & kCounted) != 0) {
           //: A GROUP'S STEPS, A COUNT OF THE PACKET'S: a byte a group in the header
           const unsigned long long starts = *reinterpret_cast<const unsigned long long*>(table + kOneTiles * 16);
           const uint32_t counts = *reinterpret_cast<const uint32_t*>(table + kOneLive * 16);
@@ -413,9 +441,9 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             lab::wg_bf16_n64_ss_mn4(d[4 * q], d[4 * q + 1], d[4 * q + 2], d[4 * q + 3], lines + ((starts >> (8 * q)) & 255u),
                                     lab::wg_desc(base + pool + (kTileAt + 128 * q) * 16, 8, 16), w != 0);
         }
-        if constexpr ((PROBE & kCounted) == 0) lab::wg_commit();
+        if constexpr ((PROBE & (kCounted | kLooped)) == 0) lab::wg_commit();
         lab::wg_wait<0>();
-        if constexpr ((PROBE & kCounted) != 0) {
+        if constexpr ((PROBE & (kCounted | kLooped)) != 0) {
 #pragma unroll
           for (int a = 0; a < kLists; ++a)
 #pragma unroll
@@ -802,7 +830,7 @@ inline long long image_host(long long v) {
 //: A CALL'S BUFFERS: the window views, the readers' dense table, the state and the output, each sized to the grid
 struct Buffers {
   //: the packets: every entry its own value lines, and lists overlapping on shared tokens
-  uint32_t *values[8], *dense, *out;
+  uint32_t *values[9], *dense, *out;
   float* state;
 };
 inline Buffers buffers(const lab::Bench& b) {
@@ -892,6 +920,32 @@ inline Buffers buffers(const lab::Bench& b) {
             }
           continue;
         }
+        //: GROUPS TAKING FOUR, TWO, ONE AND ONE STEPS (`layout` 8): a token on one digit of the first group (a step a digit),
+        //: on two of the second, on all four of the third and of the fourth; a step's tile and start are the window's next
+        //: in that order, and the header counts each group's steps
+        if (layout == 8) {
+          const uint32_t counts = 0x01010204u;
+          std::memcpy(packet + kOneLive * 16, &counts, 4);
+          const auto lay = [&](int source, int pos, int tile, int digit, int entry, int place) {
+            const uint32_t t = listed_token(static_cast<uint32_t>(c), static_cast<uint32_t>(w * kWindow + source));
+            const int line = kTileAt + 128 * tile + 32 * digit + place;
+            for (int br = 0; br < 8; ++br)
+              std::memcpy(packet + (kOneValues + br * 2 * kGroup + pos) * 16, &host_values[static_cast<size_t>(t) * kRowWords + 4 * br], 16);
+            reinterpret_cast<uint32_t*>(packet)[entry] = static_cast<uint32_t>(line) | static_cast<uint32_t>(line + 16) << 16;
+            packet[kOneSparse * 16 + entry] = static_cast<uint8_t>(sparse_of(static_cast<int>(t)));
+            for (int dd = 0; dd < 16; ++dd) packet[(kOneDense + entry) * 16 + dd] = static_cast<uint8_t>(dense_of(static_cast<int>(t), dd));
+          };
+          for (int tile = 0; tile < 8; ++tile)
+            packet[kOneTiles * 16 + tile] = static_cast<uint8_t>(16 * tile);
+          for (int k = 0; k < 16; ++k) {
+            for (int s = 0; s < 4; ++s) lay(16 * s + k, 16 * s + k, s, s, 16 * s + k, k);
+            for (int s = 0; s < 2; ++s)
+              for (int j = 0; j < 2; ++j) lay(64 + 16 * s + k, 64 + 16 * s + k, 4 + s, 2 * j + (k & 1), 64 + 32 * s + 16 * j + k, k);
+            for (int q = 2; q < 4; ++q)
+              for (int digit = 0; digit < 4; ++digit) lay(64 * q + k, 96 + 16 * (q - 2) + k, 4 + q, digit, 64 * q + 16 * digit + k, k);
+          }
+          continue;
+        }
         if (layout == 2) {
           for (int j4 = 0; j4 < kLists; j4 += 4)
             if (first[j4] != 16 * j4) { std::fprintf(stderr, "lab: a group of four lists is not 64 entries\n"); std::exit(3); }
@@ -965,6 +1019,7 @@ inline Buffers buffers(const lab::Bench& b) {
   held.values[5] = build(5);
   held.values[6] = build(6);
   held.values[7] = build(7);
+  held.values[8] = build(8);
   LAB_CHECK(cudaMalloc(&held.dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(held.dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&held.state, sizeof(float) * b.sms * 2 * kGroup * (kLists * 8)));
@@ -977,9 +1032,9 @@ template <int TRACE, int DETAIL = 0, int LAYOUT = 0, int PROBE = 0>
 void run(lab::Bench& b, const Buffers& held) {
   using namespace carry_token;
   constexpr int kTimed = 64;
-  const std::string name = std::string("the token-stream carry: both sides") + (LAYOUT == 1 ? ", lists overlapping on shared tokens" : LAYOUT == 2 ? ", groups of four digits" : LAYOUT == 3 ? ", a token on all four digits of its group, groups of four" : LAYOUT == 4 ? ", a token on all four digits of its group, a list a digit" : LAYOUT == 5 ? ", a token on all 16 digits of its box, groups of four on one run of value lines" : LAYOUT == 6 ? ", a token on two digits of its group, groups of four" : LAYOUT == 7 ? ", a token on all four digits of its group, groups of four in a group's two tile places" : "")
+  const std::string name = std::string("the token-stream carry: both sides") + (LAYOUT == 1 ? ", lists overlapping on shared tokens" : LAYOUT == 2 ? ", groups of four digits" : LAYOUT == 3 ? ", a token on all four digits of its group, groups of four" : LAYOUT == 4 ? ", a token on all four digits of its group, a list a digit" : LAYOUT == 5 ? ", a token on all 16 digits of its box, groups of four on one run of value lines" : LAYOUT == 6 ? ", a token on two digits of its group, groups of four" : LAYOUT == 7 ? ", a token on all four digits of its group, groups of four in a group's two tile places" : LAYOUT == 8 ? ", groups of four taking four, two, one and one steps" : "")
                            + (PROBE & kColumn ? ", the box's width word choosing its fold" : "") + (PROBE & kCleared ? ", its tiles cleared" : "")
-                           + (PROBE & kCounted ? ", a group's steps counted at run time" : "")
+                           + (PROBE & kCounted ? ", a group's steps counted at run time" : "") + (PROBE & kLooped ? ", a group's steps a voted loop on its count" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
                                         : TRACE & 1 ? ", the launch's two edges stamped" : "")
@@ -1054,7 +1109,7 @@ void run(lab::Bench& b, const Buffers& held) {
         }
     }
   }
-  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
+  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
   else b.check(name, wrong_state == 0 && wrong_out == 0,
           std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
               + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ");
@@ -1122,13 +1177,14 @@ int main(int argc, char** argv) {
                            {2, kWaitPanelFreed, 0}, {2, kSplitSteps, 0}, {2, kSplitFill, 0}, {2, kWaitPacket, 0}, {3, 0, 0},
                            {2, 0, kAlone}, {0, 0, kWide}, {2, 0, kWide | kAlone}, {0, 0, kSplit}, {0, 0, kWide | kFull}, {2, 0, kWide | kFull | kAlone}, {0, 0, kColumn},
                            {0, 0, kWide | kFull | kCleared}, {2, 0, kWide | kFull | kCleared | kAlone}, {0, 0, kWide | kFull | kCleared | kCounted},
-                           {2, 0, kWide | kFull | kCleared | kCounted | kAlone}};
+                           {2, 0, kWide | kFull | kCleared | kCounted | kAlone}, {0, 0, kWide | kFull | kCleared | kLooped},
+                           {2, 0, kWide | kFull | kCleared | kLooped | kAlone}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
     //: unrolled, each two groups of 4 digits, each digit's two steps
     //: (the per-column kernel holds a fold of each width: 32 steps and 4)
-    const int fold_steps = row.probe & kColumn ? kLists * kBlockRounds + 4 : row.probe & kCounted ? 12 : row.probe & kFull ? 4 : row.probe & kWide ? 16 : kLists * kBlockRounds;
+    const int fold_steps = row.probe & kColumn ? kLists * kBlockRounds + 4 : row.probe & kLooped ? 8 : row.probe & kCounted ? 12 : row.probe & kFull ? 4 : row.probe & kWide ? 16 : kLists * kBlockRounds;
     b.expect(k, "HGMMA", "==", fold_steps + (row.probe & kAlone ? 0 : kChunks * 2 * kChunkDigits));
     //: a fold step's cost to its warpgroup (`lab steps`): the port bytes and instructions a step, bounded by the
     //: most of any row
@@ -1136,6 +1192,9 @@ int main(int argc, char** argv) {
     b.expect(k, "STEP_WORK", "<=", row.probe & (kFull | kColumn) ? 200 : row.probe & kWide ? 60 : 50);
     //: the fold's conversions are in its own trip, beside its steps: what the row measures
     b.expect(k, "STEP_XU", "<=", 40);
+    //: THE VOTED LOOP's steps are rolled on purpose: its rows price a step in a loop of a run-time count beside the straight
+    //: blocks (a loop a group; docs/lab/step_rolled.md prices one alone)
+    if (row.probe & kLooped) b.expect(k, "STEP_ROLLED", "<=", 4);
     //: the readout's panel is read by the drain warps' own loads, not by a step: its arrival needs no fence, and a
     //: chunk of 8 digits arrives at both panels, each behind its stores, and a window's two passes are unrolled
     b.expect(k, "STORE_UNFENCED", "<=", kChunks);
@@ -1202,5 +1261,11 @@ int main(int argc, char** argv) {
   run<2, 0, 7, kWide | kFull | kCleared | kCounted | kAlone>(b, held);
   run<0, 0, 6, kWide | kFull | kCleared | kCounted>(b, held);
   run<2, 0, 6, kWide | kFull | kCleared | kCounted | kAlone>(b, held);
+  //: A GROUP'S STEPS A VOTED LOOP ON ITS COUNT: one step a group, two, and four, two, one and one
+  run<0, 0, 3, kWide | kFull | kCleared | kLooped>(b, held);
+  run<2, 0, 3, kWide | kFull | kCleared | kLooped | kAlone>(b, held);
+  run<0, 0, 6, kWide | kFull | kCleared | kLooped>(b, held);
+  run<0, 0, 8, kWide | kFull | kCleared | kLooped>(b, held);
+  run<2, 0, 8, kWide | kFull | kCleared | kLooped | kAlone>(b, held);
   return 0;
 }
