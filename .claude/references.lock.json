@@ -1,12 +1,6 @@
 {
  "python": "3.11",
  "references": [
-  {"doc": "CLAUDE.md", "pinned_at": "803ab8986125", "reviewed": true, "sha256": "", "target": "docs/ARCHITECTURE.md"},
-  {"doc": "CLAUDE.md", "pinned_at": "803ab8986125", "reviewed": true, "sha256": "", "target": "docs/CONSTITUTION.md"},
-  {"doc": "CLAUDE.md", "pinned_at": "76abd24845d1", "reviewed": true, "sha256": "", "target": "docs/ESSENTIALS.md"},
-  {"doc": "CLAUDE.md", "pinned_at": "803ab8986125", "reviewed": true, "sha256": "", "target": "docs/KERNEL_STANDARDS.md"},
-  {"doc": "CLAUDE.md", "pinned_at": "803ab8986125", "reviewed": true, "sha256": "", "target": "docs/architecture"},
-  {"doc": "CLAUDE.md", "pinned_at": "803ab8986125", "reviewed": true, "sha256": "", "target": "docs/internals"},
-  {"doc": "CLAUDE.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "fsla/ops/naive.py"}
+
  ]
 }
