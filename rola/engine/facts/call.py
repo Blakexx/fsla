@@ -35,8 +35,8 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = Fal
             intra_ops.VALUE_WIDTH, stateful)
 
 
-def arm_refusal(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> str | None:
-    """Why the prefill kernels refuse this segment, or None if they run."""
+def arm_refusal(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> str:
+    """Why the prefill kernels refuse this segment (they always do while no carry is built)."""
     return rules.prefill_envelope(*prefill_clauses(routes, decay, d_v=d_v, stateful=stateful))
 
 

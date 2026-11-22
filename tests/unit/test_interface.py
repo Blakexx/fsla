@@ -139,10 +139,9 @@ def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
-    """The other side of the same decision, which a CPU-only run cannot see: with the
-    gradient off and the operands on the device, an in-matrix bundle must actually be
-    ADMITTED. Asserting only the refusals would let the arm rot behind them."""
+def test_the_envelope_refuses_a_no_grad_cuda_bundle_for_want_of_a_carry_arm():
+    """The prefill envelope always refuses while no carry is built: an in-matrix no-grad CUDA bundle is
+    refused BY NAME (no carry arm), and `require_envelope` raises that sentence."""
     torch.manual_seed(5)
     layer = rola.RoLA(rola.Routing([rola.split_routing(256, sparse_duty="write"),
                                     rola.split_routing(256, sparse_duty="read")]),
@@ -151,8 +150,9 @@ def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
     v = torch.randn(1, 512, 1, 64, device="cuda")
     with torch.no_grad():
         routes, _values = layer._produce(x)
-        assert envelope_refusal(routes, Values.from_projection(v)) is None
-        require_envelope(routes, Values.from_projection(v))
+        assert "no carry arm" in envelope_refusal(routes, Values.from_projection(v))
+        with pytest.raises(NotImplementedError, match="no carry arm"):
+            require_envelope(routes, Values.from_projection(v))
 
 
 # --- the O-3 name contract ---------------------------------------------------

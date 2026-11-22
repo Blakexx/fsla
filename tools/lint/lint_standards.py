@@ -73,7 +73,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CSRC_ROLA = ROOT / "csrc" / "rola"
-ARMS_BZL = ROOT / "bazel" / "arms.bzl"
 TORCH_RULE = ROOT / "tools" / "lint" / "rules" / "torch_include_in_arm_tu.yml"
 TESTS_ROOT = ROOT / "tests"
 
@@ -249,12 +248,11 @@ def check_unroll_discipline() -> list[str]:
 
 def arm_families() -> list[str]:
     """The families the build ships: `ARM_FAMILIES` in bazel/arms.bzl, the one registry, a literal read by AST."""
-    import ast
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from tools.arm_families import arm_families as read_arm_families
 
-    for node in ast.parse(ARMS_BZL.read_text()).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "ARM_FAMILIES" for t in node.targets):
-            return list(ast.literal_eval(node.value))
-    raise SystemExit(f"{ARMS_BZL.relative_to(ROOT)} declares no `ARM_FAMILIES`")
+    return read_arm_families(ROOT)
 
 
 def check_no_torch_in_arm_tus() -> list[str]:

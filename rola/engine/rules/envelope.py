@@ -19,12 +19,12 @@ from rola.engine import rule
 @rule(gives=("prefill_envelope",),
       needs=("widths", "d_v", "decay", "intra_reads", "intra_dv", "stateful"))
 def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads: bool, intra_dv: int,
-                     stateful: bool) -> str | None:
-    """Why the prefill has no kernel for this segment, or None if it runs.
+                     stateful: bool) -> str:
+    """Why the prefill has no kernel for this segment. It always refuses, by name: no carry kernel is built on this line.
 
     ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
-    the value width it reads; ``stateful`` whether the call hands a state in or out. No carry kernel is built on this
-    line, so a segment that passes the clauses before it is refused for want of a carry arm.
+    the value width it reads; ``stateful`` whether the call hands a state in or out. A segment that passes the clauses
+    before it is refused for want of a carry arm.
     """
     if decay is not None:
         return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "

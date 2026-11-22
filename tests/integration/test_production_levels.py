@@ -862,7 +862,7 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
 
 def test_production_imports_nothing_from_the_reference_package():
     """The STRONGER, STATIC claim, checked directly rather than inferred from a
-    monkeypatch. `pyproject.toml` and this module's own docstring say production
+    monkeypatch. `rola/routing/entmax/reference.py` and this module's own docstring say production
     "imports nothing" from the reference package -- a claim about the IMPORT GRAPH,
     stronger than and independent of `test_the_solve_never_reaches_the_reference_*`
     above (those prove the three entry points are never CALLED at runtime; a module
@@ -890,7 +890,7 @@ def test_production_imports_nothing_from_the_reference_package():
             offending.append(node.module)
     assert not offending, (
         f"production.py imports from the reference package: {offending} -- the "
-        "producer's own contract (module docstring, pyproject.toml) is that it "
+        "producer's own contract (module docstring, rola/routing/entmax/reference.py) is that it "
         "imports nothing from it")
 
 
