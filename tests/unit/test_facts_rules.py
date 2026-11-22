@@ -143,13 +143,10 @@ def test_the_four_variants_are_the_four_call_classes():
 # ---------------------------------------------------------------------------
 
 
-def test_the_operand_envelope_names_the_activation_before_the_device():
-    assert envelope((), torch.device("cuda")) is None
-    assert envelope((), torch.device("cpu")) == (
+def test_the_operand_envelope_names_the_device_and_no_activation():
+    assert envelope(torch.device("cuda")) is None
+    assert envelope(torch.device("cpu")) == (
         "the operands are on cpu; the arm is a CUDA kernel")
-    assert envelope(("entmax(1.7)",), torch.device("cpu")) == (
-        "unratified activations ('entmax(1.7)',); no kernel was measured for them "
-        "(docs/ratification.md)")
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ def fsla_op(
     one is continued. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object, mutated in place (``None``
     when the call was stateless).
 
-    A call outside the built envelope -- a CPU operand, an unratified activation, decay, a topology or value
+    A call outside the built envelope -- a CPU operand, decay, a topology or value
     width no built arm carries, ``T`` off the window -- RAISES, naming the clause. A gradient raises too, until
     the native backward is rebuilt.
     """

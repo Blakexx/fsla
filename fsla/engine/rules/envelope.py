@@ -40,20 +40,14 @@ def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads:
     return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
 
 
-@rule(gives=("envelope",), needs=("unratified", "device"))
-def envelope(unratified: tuple[str, ...], device) -> str | None:
-    """The operand-side clauses, which precede the prefill's own.
+@rule(gives=("envelope",), needs=("device",))
+def envelope(device) -> str | None:
+    """The operand-side clause, which precedes the prefill's own.
 
-    They are separate from :func:`prefill_envelope` because they are facts about the
-    operands rather than about the configuration, and because an unratified
-    activation or a CPU tensor must be named BEFORE a question about the built
-    matrix is asked of a device that may not have one.
+    It is separate from :func:`prefill_envelope` because it is a fact about the operands rather than about the
+    configuration, and because a CPU tensor must be named BEFORE a question about the built matrix is asked of a
+    device that may not have one. No activation is refused here: the op is agnostic to what produced its operands.
     """
-    if unratified:
-        return (f"unratified activations {unratified}; no kernel was measured for them "
-                "(docs/ratification.md)")
     if device.type != "cuda":
         return f"the operands are on {device}; the arm is a CUDA kernel"
     return None
-
-

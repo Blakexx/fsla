@@ -88,7 +88,10 @@ the no-fallback rule forbids.
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`fsla.ops.intra.admits`) | refused |
 | `T` | any (a partial last window runs inside the kernels; the layer's segments are whole windows, §4.2) | — |
 | `decay` | not implemented in the prefill (decode has it) | refused |
-| an unratified activation | — | refused |
+
+No activation reaches the op: it computes on the factors and the masks the producer made and is agnostic to what
+produced them, so there is no row for an activation here. What a producer supports is its own registry
+(`fsla/routing/activations.py`, the layer's configuration selecting one).
 
 Ask before calling: `fsla.expert.envelope_refusal(routes, v, decay)` returns the
 sentence the refusal will carry. IT ALWAYS REFUSES while no carry arm is built (it never returns `None`: the

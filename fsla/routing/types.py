@@ -699,26 +699,6 @@ class Topology:
         instead of over a hand-written pair of loops per rule."""
         return tuple((level, duty) for level in range(self.D) for duty in ("read", "write"))
 
-    @property
-    def unratified_activations(self) -> tuple[tuple[int, str, ActivationTag], ...]:
-        """The cells whose registry row says `kerneled=False`.
-
-        A config naming one of these is a LABELED RESEARCH SURFACE -- it runs
-        on the reference path carrying an explicit `not_kerneled` flag. It is not a
-        kernel fallback, because the kernel is never asked and never declines;
-        `launch_consumer` remains the single authority on supported shapes.
-        """
-        return tuple(
-            (level, duty, self.activation(level, duty).tag)
-            for level, duty in self.duty_cells()
-            if not self.activation_properties(level, duty).kerneled
-        )
-
-    @property
-    def kerneled(self) -> bool:
-        """Whether every configured activation has a ratified kernel row."""
-        return not self.unratified_activations
-
 
 @dataclass(frozen=True, slots=True)
 class LeafMassDecay:

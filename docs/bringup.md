@@ -54,7 +54,7 @@ not automatic:
 ```bash
 bazel test //:gate
 bazel run //:ratify -- --self-test
-bazel run //:readme_update                 # the README's generated blocks (the support table)
+bazel run //:readme_update                 # the README's generated block (the support table)
 ```
 
 `--self-test` must still fail on every mutant it is required to reject. The

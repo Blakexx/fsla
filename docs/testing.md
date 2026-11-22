@@ -242,10 +242,9 @@ A document nothing checks is a document that drifts. These run in the commit gat
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
   anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).
   A floor on the number of sources found keeps a broken glob from checking nothing.
-- **`//:readme`**: the README's generated blocks, the support table and the activation registry's capability table, are
-  what the graph writes (`tools/supported.py --readme`, which runs the registry, so the target is a test of the tree's
-  package and sits in the commit gate beside the lints); the committed README must equal it
-  ([`build-graph.md#committed-files`](build-graph.md#committed-files)). It is the one check of both blocks.
+- **`//:readme`**: the README's generated block, the support table, is
+  what the graph writes (`tools/supported.py --readme`); the committed README must equal it
+  ([`build-graph.md#committed-files`](build-graph.md#committed-files)).
 - **`tools/lint/portable_claude.py`**: the agent files name no machine path.
 
 ## The host-structure gates

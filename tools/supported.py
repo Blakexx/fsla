@@ -1,4 +1,4 @@
-"""Generate the README's generated blocks: the "Supported configurations" table and the capability table. **A REPORT, NOT A CLAIM.**
+"""Generate the README's generated blocks: the "Supported configurations" table. **A REPORT, NOT A CLAIM.**
 
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
@@ -40,13 +40,9 @@ import toolchains  # noqa: E402
 
 from measure import hardware  # noqa: E402 -- the architecture rows' own names
 
-#: The README's generated regions: `marker -> producer`. TWO of them, because two
-#: different artifacts decide two different tables and neither may be hand-edited.
-#: `capability_table()` is the activation registry's own generator -- this
-#: script only places it, so there is still exactly one table in the codebase.
+#: The README's generated regions: `marker -> producer`. One today: the support table, which no hand edit may touch.
 BLOCKS = {
     "tools/supported.py": lambda: table(),
-    "fsla.routing.activations.capability_table": lambda: _capability_table(),
 }
 
 
@@ -62,12 +58,6 @@ def block(text: str, marker: str) -> str | None:
     if begin not in text or end not in text:
         return None
     return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
-
-
-def _capability_table() -> str:
-    from fsla.routing.activations import capability_table
-
-    return capability_table().rstrip()
 
 
 #: Marketing names per compute capability. The ONLY hand-written column.

@@ -1,16 +1,18 @@
 # FSLA — Factored Sparse Linear Attention
 
-FSLA is linear attention whose recurrent state is a **set of addressable slots** (leaves), and whose routing decides,
-for every token, which slots it reads from and writes to. The routing is a *feature map*: each head's query and key are
-products of per-level routing rows, so the leaf address space is a product space (a mixed-radix tree of levels) and the
-routing's cost is the sum of the level widths, not the number of leaves. The state has a fixed capacity chosen by the
-topology; it is not a cache that grows with the sequence.
+FSLA is linear attention whose **feature map is a product of per-level coefficient vectors**. A head has levels
+`l = 1..D` of width `b_l`; a token's query and its key are each a vector of coefficients per level, and the feature
+a token reaches at a leaf is the product of one coefficient from every level. The recurrent state therefore has
+`N = prod(b_l)` features, tens of thousands for two levels of 256, while a token's features cost `sum(b_l)` numbers to
+carry. The levels can be sparse (entmax, sparsemax), which gives exact zeros that the producer declares as **masks**
+beside the coefficients; the kernel's work follows the live digits, not `N`. That is what makes a feature map this
+large usable, where dense linear-attention kernels hold the feature dimension to the hundreds. The state has a fixed
+capacity chosen by the topology; it is not a cache that grows with the sequence.
 
-Written out over all leaves, the recurrence is textbook gated linear attention, and a dense implementation pays for
-every leaf on every token. A **real kernel** is the point: the factored structure and the exact zeros the routing
-produces (entmax) only become speed if the kernel reads them, so this repository is the kernels, the layer around them,
-and the evidence for both. The executable definition is an fp64 oracle (`fsla.naive_fsla`); the kernels are
-optimizations of it, never a second definition ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
+The executable definition is an fp64 oracle (`fsla.naive_fsla`); the kernels are optimizations of it, never a second
+definition ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). This repository is the kernels, the layer around them,
+and the evidence for both. The API keeps the word "routing" in its names (`fsla.Routing`, `split_routing`); the
+construction is factored sparse linear attention, not a router.
 
 Paper: *(link on publication)* · Citation: [below](#citation)
 
@@ -25,11 +27,11 @@ measured in the lab before it is written into the library.
 | piece | state |
 |---|---|
 | fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
-| decode (the `T = 1` step, over the paged fixed-size state) | **built** |
+| decode (the `T = 1` step, over the paged fixed-size state) | **built**, but it continues a state that a prefill made, and the prefill is not built: no public call binds a fresh state for decode today, so the step is exercised only in the tests, on states they seed through the state's internal entries |
 | entmax / softmax row solves, the paged state | built |
 | prefill: the carry, the gather pass, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla_op` refuses every prefill call by name until the carry exists |
 | backward | **not built.** `fsla_op` refuses any call that carries a gradient; there is no training path yet |
-| decay in the prefill, depth three and four, state in and out of a prefill | not built (decode has decay) |
+| decay (the layer's and the op's `decay` slot is a facade today), depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
 
 [`docs/open-work.md`](docs/open-work.md) is the full list of what is owed, with where each item's contract lives.
 Nothing here is a speed claim: no end-to-end performance number is stated for the built decode kernel. The measured
@@ -41,27 +43,76 @@ H100, not of the library.
 
 ## What the interface looks like
 
-Masks are data. A routing row carries its liveness as a mask beside it, in the layout of the kernel that consumes it,
-and the op computes with the product `r * m`; sparsity is declared by the producer, never detected by the kernel
-([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans (the carve, the state's
-backing) are frozen static objects chosen from the declaration, never a runtime configuration. Anything outside the
-built envelope is refused by name rather than routed to a slower path: there is no fallback.
+Two levels. **The layer** declares its levels and does everything. **The op** takes what a producer made: factors,
+values and masks, and a static plan. Masks are data in each consumer's layout, and the op computes with the product
+`r * m`; sparsity is declared by the producer, never detected by the kernel
+([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans are frozen static
+objects chosen from the declaration, never a runtime configuration. The op is agnostic to activations: no activation
+reaches it. The producer implements a set of them and a layer's configuration selects one. Anything outside the built
+envelope is refused by name rather than routed to a slower path: there is no fallback. Decay is not supported yet.
+
+The first-class configuration is the alternating scheme: at each level one duty (read or write) is entmax and the
+other is softmax, alternating by level (`fsla.split_routing`).
 
 ```python
 import fsla
 
-routing = fsla.Routing(fsla.uniform(2, fsla.union_routing(64, alpha=1.5)))
-decay   = fsla.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
-layer   = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+# two levels of 256 digits: N = 65,536 features; level 0 sparse on the write side, level 1 on the read side
+routing = fsla.Routing([fsla.split_routing(256, alpha=1.5, sparse_duty="write"),
+                        fsla.split_routing(256, alpha=1.5, sparse_duty="read")])
+layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 
-# decode: one token of a carried sequence against the fixed-size state
 cont = fsla.LayerContinuation(state=fsla.state())
-y, cont = layer(token, continuation=cont)            # token: [B, 1, 1024]
+y, cont = layer(prompt, continuation=cont)   # prompt: [B, T, 1024]; the prefill (refused by name until the carry is built)
+y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode step against the fixed-size state
 ```
 
-`fsla.fsla_op(factors, values, masks, decay, plan=plan, state=state)` is the op under the layer; `fsla.naive_fsla` is the
-oracle, shipped in the wheel so a suspected numerical problem can be checked on your own shapes with no checkout. The
-contract in full is [`docs/api.md`](docs/api.md).
+This is the interface's shape, not a call that runs end to end today: the prefill line is refused, and a one-token call
+on a fresh, unbound state is a degenerate prefill, not a decode step, so the decode line has no state to continue until
+the prefill is built.
+
+`fsla.union_routing(width, alpha)` is the alternative level: one shared entmax solve split across the two duties.
+
+The same call through the op: the producer makes a call's factors, values and masks (`produce`), the plan is static
+(`prefill_plan`, `decode_plan`), and `fsla_op` or the decode step takes them.
+
+```python
+import torch
+from fsla.ops.produce import ProducerPlan, ProducerWeights, produce, prefill_plan, decode_plan, projection_dtype
+from fsla.routing.masks import DECODE          # PREFILL is the default consumer
+from fsla.engine.dags.decode_dag import decode_step_gated, growth_pending, admit_growth
+
+H, hidden, d_v = 8, 1024, 64
+x = ...                                        # [B, T, hidden], CUDA
+weights = ProducerWeights(
+    route_W=torch.randn(H, hidden, routing.columns, device="cuda", dtype=projection_dtype(x)) * hidden ** -0.5,
+    route_bias=None,                           # Routing(bias=False)
+    gain_bias=torch.zeros(H, routing.gain_columns, device="cuda", dtype=projection_dtype(x)),
+    v_W=torch.randn(H * d_v, hidden, device="cuda", dtype=torch.bfloat16))
+
+# prefill: the masks come in the prefill layout (refused by name until the carry is built, as in the layer)
+plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v)
+routes, values, masks = produce(x, plan, weights)
+state = fsla.state()
+y, state = fsla.fsla_op(routes, values, masks, plan=prefill_plan(routing.topology, d_v), state=state)
+
+# decode: the same producer, the masks in the decode layout, and the decode plan; it continues the prefill's state,
+# so like the layer's decode line it waits on the prefill
+step_plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v, consumer=DECODE)
+routes, values, masks = produce(x_token, step_plan, weights)       # x_token: [B, 1, hidden]
+y, state = decode_step_gated(routes, values, masks, state,
+                             plan=decode_plan(routing.topology, d_v=d_v, decay=False))
+if growth_pending(state):                       # a head whose state needed one more atom skipped itself
+    admit_growth(state)
+    y, state = decode_step_gated(routes, values, masks, state,
+                                 plan=decode_plan(routing.topology, d_v=d_v, decay=False))
+```
+
+The masks' layouts: **prefill**, int32 `[B, H, ceil(T / 32), width_l]` per level and side, token-packed (bit `t % 32` of
+word `t // 32` is token `t`'s liveness of that digit); **decode**, int32 `[B, H, ceil(width_l / 32)]`, digit-packed
+(bit `d % 32` of word `d // 32` is digit `d`). A level whose activation has no exact zeros carries an all-live mask.
+`fsla.naive_fsla` is the oracle, shipped in the wheel so a suspected numerical problem can be checked on your own
+shapes with no checkout. The contract in full is [`docs/api.md`](docs/api.md).
 
 ## Building and testing
 
@@ -105,20 +156,6 @@ produces; the gate fails if it drifts. Change the generator, not the table.
 An architecture that is not built refuses to load. Bringing one up is a measurement:
 [`docs/bringup.md`](docs/bringup.md).
 
-### Routing activations
-
-Also generated, from the registry every validator reads (`fsla/routing/activations.py`). `kerneled` decides dispatch: an
-unratified activation is refused by the kernel entry.
-
-<!-- BEGIN GENERATED: fsla.routing.activations.capability_table -->
-| activation | exact_zeros | kerneled |
-| --- | --- | --- |
-| entmax(alpha=1.5) | yes | yes |
-| entmax(alpha=2) | yes | yes |
-| opaque | yes | yes |
-| softmax | no | yes |
-<!-- END GENERATED: fsla.routing.activations.capability_table -->
-
 ## Repository layout
 
 | path | what lives there |
@@ -127,7 +164,7 @@ unratified activation is refused by the kernel entry.
 | `csrc/fsla/` | the CUDA kernels (decode, the entmax solves, paging) and the code they share |
 | `tests/` | `oracle/`, `integration/`, `unit/` |
 | `measure/` | the cells, the timing subjects, and the lab (`measure/lab/`: small CUDA experiments on the machine) |
-| `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's tables) |
+| `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's support table) |
 | `bazel/`, `BUILD.bazel`, `MODULE.bazel` | the build graph |
 | `docs/` | the documents, one owner per topic ([`docs/README.md`](docs/README.md)) |
 
@@ -144,7 +181,8 @@ starts from [`docs/KERNEL_STANDARDS.md`](docs/KERNEL_STANDARDS.md) and the lab (
 | [`warpline`](https://github.com/Blakexx/warpline) | the GPU lab's checker and recorder, and the stamp header the lab's experiments include |
 | [`fsla-bench`](https://github.com/Blakexx/fsla-bench) | the benchmarks and the measurement suite |
 | [`fsla-results`](https://github.com/Blakexx/fsla-results) | the measurement records every reported number is read from |
-| `chromatic-recall` | recall tasks whose difficulty is a certified number (the chromatic number of the contract's conflict graph); the research harness for what a state of a given size can recall |
+| [`chromatic-recall`](https://github.com/Blakexx/chromatic-recall) | recall tasks whose difficulty is a certified number (the chromatic number of the contract's conflict graph); the research harness for what a state of a given size can recall |
+| [`fsla-zoology`](https://github.com/Blakexx/fsla-zoology) | a fork of HazyResearch/zoology carrying our PR-ready fixes and the FSLA mixer |
 | [`flash-linear-attention`](https://github.com/Blakexx/flash-linear-attention) | a fork whose `fsla` branch holds the FSLA layer and HF model over this package |
 | [`fsla-paper`](https://github.com/Blakexx/fsla-paper) | the paper |
 

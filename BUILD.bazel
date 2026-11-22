@@ -112,8 +112,7 @@ committed_file(
     generated = "//tools:derivation_record",
 )
 
-#: the capability table is the activation registry's, which imports torch: the environment's interpreter by its store path
-#: (which carries the environment's key), which the sandbox does not hold
+#: the environment's interpreter by its store path (which carries the environment's key), which the sandbox does not hold
 genrule(
     name = "readme_generated",
     srcs = [
@@ -123,7 +122,7 @@ genrule(
         "//csrc/fsla:src/common/hardware.json",
         "//tools:toolchain_records",
         "//tools:toolchains.py",
-    ] + glob(["fsla/**/*.py"]),
+    ],
     outs = ["readme/README.md"],
     cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath README.md) --out $@",
     tags = ["no-sandbox"],

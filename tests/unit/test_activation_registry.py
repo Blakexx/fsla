@@ -6,7 +6,7 @@ The point of the registry is that activation properties live in ONE table and ev
 rule reads columns from it. So most of what is gated here is not "does softmax have
 the right flags" -- it is the *structural* claims: that the table is the only source,
 that an unknown tag cannot run, that rules are stated against columns rather than
-against activation names, and that the docs' matrix is generated rather than typed.
+against activation names.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from fsla.routing.activations import (
     ACTIVATION_REGISTRY,
     ActivationProperties,
     UnknownActivation,
-    capability_table,
     properties_for,
     ratified_entmax_alphas,
 )
@@ -53,7 +52,6 @@ def test_v0_1_ratifies_exactly_the_two_declared_activation_families():
     """
     assert set(ACTIVATION_REGISTRY) == {
         ("softmax", None), ("entmax", 1.5), ("entmax", 2.0), ("opaque", None)}
-    assert all(row.kerneled for row in ACTIVATION_REGISTRY.values())
 
 
 def test_every_row_declares_every_column():
@@ -106,11 +104,10 @@ def test_a_registry_row_added_at_runtime_is_immediately_constructible():
     exists everywhere. If this needed a second edit somewhere, the registry would not
     be the single source of truth."""
     tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True, kerneled=False)
+    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True)
     try:
         activation = EntmaxActivation(1.75)
         assert activation.properties.exact_zeros
-        assert not activation.properties.kerneled
         assert 1.75 in ratified_entmax_alphas()
     finally:
         del ACTIVATION_REGISTRY[tag]
@@ -160,7 +157,7 @@ def test_an_activation_with_a_row_is_configurable_without_widening_an_isinstance
     class _Future:
         tag = ("future_family", None)
 
-    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False, kerneled=False)
+    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False)
     try:
         routing = IndependentRouting(width=4, read=_Future(), write=_Future())
         assert routing.activation("read").tag == ("future_family", None)
@@ -181,7 +178,7 @@ def test_mass_decay_accepts_every_ratified_activation():
 
 def test_union_routing_demands_exact_zeros_for_the_intersection_guarantee():
     tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=False, kerneled=False)
+    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=False)
     try:
         with pytest.raises(ValueError, match="exact_zeros"):
             UnionRouting(width=4, alpha=1.75)
@@ -202,7 +199,7 @@ def test_tied_routing_admits_any_registered_activation_without_widening_an_isins
     class _Future:
         tag = ("future_family", None)
 
-    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False, kerneled=False)
+    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False)
     try:
         tied = TiedRouting(width=4, op=_Future())
         assert tied.activation("read").tag == tied.activation("write").tag == ("future_family", None)
@@ -213,54 +210,19 @@ def test_tied_routing_admits_any_registered_activation_without_widening_an_isins
         TiedRouting(width=4, op=_Future())
 
 
-# --- the not-kerneled surface ------------------------------------------------
+# --- the op refuses no activation ---------------------------------------------
 
-class _StubBundle:
-    def __init__(self, topology):
-        self.topology = topology
-        self.device = torch.device("cuda")
-
-
-def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
-    """Nobody measured a kernel for it, so there is no arm and the envelope says
-    so BY NAME. The flag is a property of the configuration, so the answer is
-    available before the call and without a device -- and it wins over every clause
-    that would otherwise admit the call."""
+def test_the_envelope_names_the_device_and_no_activation():
+    """The op is agnostic to activations: a registered-but-unsolved activation is nothing the envelope speaks of."""
     tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True, kerneled=False)
+    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True)
     try:
         topology = _topology(entmax(1.75), entmax(1.75))
-        assert not topology.kerneled
-        assert topology.unratified_activations == (
-            (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
-
-        refusal = fsla.expert.envelope_refusal(
-            _StubBundle(topology), fsla.Values.from_projection(torch.zeros(1, 1, 1, 64)))
-        assert "unratified activations" in refusal and "entmax" in refusal
+        bundle = type("Bundle", (), {"topology": topology, "device": torch.device("cuda")})()
+        refusal = fsla.expert.envelope_refusal(bundle, fsla.Values.from_projection(torch.zeros(1, 1, 1, 64)))
+        assert "activation" not in refusal
     finally:
         del ACTIVATION_REGISTRY[tag]
-
-
-#: RETIRED with the tiled consumer: `test_the_private_kernel_path_refuses_an_unratified_
-#: activation_rather_than_running_it`. Its subject was the retired tiled arm's own
-#: activation check -- a refusal at its private entry, so that a caller who
-#: bypassed the dispatch could not launch something nobody measured. The chunk arm
-#: has no such entry to bypass (`chunk.execute` has exactly one caller and it is inside
-#: the autograd node, asserted structurally in `tests/unit/test_interface.py`), and
-#: the path the check guarded is closed at BOTH ends by rows that already exist:
-#: the GATEWAY refuses to produce an unratified activation's routing at all
-#: (`fsla/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
-#: registering `("entmax", 1.75)` does not make the producer able to emit it), and
-#: `fsla_op` refuses any bundle the producer did not derive
-#: (`tests/unit/test_api_contract.py`), so no bundle carrying an unratified
-#: activation can reach any arm. The DISPATCH half -- an unratified activation goes
-#: to the reference arm and is named in `Dispatch.not_kerneled` -- is the row
-#: directly above this one.
-
-
-def test_every_shipped_configuration_is_kerneled():
-    for activation in (softmax(), entmax(1.5), entmax(2.0)):
-        assert _topology(activation, activation).kerneled
 
 
 # --- no case list may exist outside the registry -----------------------------
@@ -301,17 +263,3 @@ def test_no_module_outside_the_registry_branches_on_an_activation_type():
                 offenders.append(f"{relative}:{node.lineno}:{node.id}")
     assert not offenders, (
         "these modules name an activation class outside the registry: " + str(offenders))
-
-
-# --- the docs' matrix is generated -------------------------------------------
-
-def test_the_capability_matrix_is_generated_from_the_registry():
-    table = capability_table()
-    assert table.splitlines()[0] == "| activation | " + " | ".join(ACTIVATION_COLUMNS) + " |"
-    assert "| entmax(alpha=1.5) | yes | yes |" in table
-    assert "| softmax | no | yes |" in table
-    assert len(table.splitlines()) == len(ACTIVATION_REGISTRY) + 2
-
-
-def test_a_new_column_reaches_the_matrix_without_being_typed_anywhere():
-    assert tuple(ActivationProperties.__annotations__) == ACTIVATION_COLUMNS

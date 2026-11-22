@@ -50,7 +50,7 @@ def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None, *,
     the facts they fold. The clauses that exist only on the grad path are
     :func:`require_envelope`'s.
     """
-    reason = rules.envelope(tuple(routes.topology.unratified_activations), routes.device)
+    reason = rules.envelope(routes.device)
     if reason is not None:
         return reason
     return arm_refusal(routes, decay, d_v=values.d_v, stateful=stateful)
