@@ -5,7 +5,7 @@
 (KERNEL_STANDARDS section 30). Shared memory is 32 banks of 4 bytes and serves 128 bytes a wavefront; an instruction
 costs, for each 128-byte phase of its lanes, the most distinct bank-rows any one bank holds (lanes reading the same
 word share it). A design states its accesses in these terms before code, and a producer that picks addresses (the
-facts pass's slots) runs this on its output so a conflict is red before hardware. The model is checked against ncu's
+a kernel's slots) runs this on its output so a conflict is red before hardware. The model is checked against ncu's
 wavefront count once a layout (docs/internals/tools/bank_model.md).
 
     wavefronts(addresses, width)      a 4-, 8- or 16-byte load, store or atomic: one address a lane

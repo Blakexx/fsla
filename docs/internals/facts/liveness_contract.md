@@ -1,11 +1,12 @@
-# `csrc/rola/src/facts/liveness_contract.cuh` — the class-1 words' contract
+# `rola/engine/facts/liveness.py` — the class-1 words' contract
 
-Mirror doc for the contract header and for its Python twin
-`rola/engine/facts/liveness.py`. The PASS that writes the words is the facts pass
-([`facts.md`](facts.md)), which neither file owns; what is written down here is the
-shape of its output, the two folds over that output, and why each is the grain it is.
-The Python module carries a pure-torch MODEL of all three — the executable spec the
-kernel is graded against — and `tests/unit/test_liveness_contract.py` is its gate.
+Mirror doc for the Python module that states the class-1 words: their layout, the two folds over them and the pure-torch
+MODEL of both, which `tests/unit/test_liveness_contract.py` gates. THE PRESENT FORM: no kernel writes the words on this
+line -- the facts pass was deleted whole (Blake, 2026-11-21: "lets just delete facts"; 2026-11-13: "With the gather pass
+there is no separate facts pass on hopper"), its entry raises `rola.ops._ext.KernelNotBuilt`, and the Hopper design
+reads the digits in its gather pass. The layout stands as the model's definition, the engine's shape law and the
+reference a Hopper schedule is graded against; it carries no C++ twin. What is written down here is the shape of the
+words, the folds over them, and why each is the grain it is.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth;
 `B_l` = level `l`'s PADDED width (a power of two at or above 16 — the descriptor's,
@@ -40,29 +41,27 @@ of what the pass already holds when it holds it.
 ## <a id="max"></a>The digits: each against its row's max
 
 Python's statement of the digits is `rola.routing.quant` (`AMP_LEVELS`, the `ROWS` form);
-`tests/unit/test_api_contract.py` holds the two to the same constants.
+the decode fold's `kRowMaxDigit` (`csrc/rola/src/decode/decode_fold.cuh`) is the same 255, which `tests/unit/test_api_contract.py` holds.
 
-Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`kRowMaxDigit`), the row's max beside
+Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`rola.routing.quant.AMP_LEVELS`), the row's max beside
 it as an fp32 scale. A digit `b` is the amplitude `b / 255 × scale`. An all-zero row, its scale 0, is a dead token at
 that level.
 
 ## <a id="alignment"></a>The row alignment law
 
 Every level's rows start on 32 bytes and step batch, token and head by multiples of 32 bytes (a dimension of length one
-is free), in `RouteFactors`' check and the facts seam's; `quant.ROW_ALIGN` and the facts header's
-`kRowAlign` state it. The producer and `RouteFactors.from_levels` pack each side's levels in 32-byte slots
+is free), in `RouteFactors`' check; `quant.ROW_ALIGN` states it. The producer and `RouteFactors.from_levels` pack each side's levels in 32-byte slots
 (`rola.routing.quant.row_slot`: a level's width rounded up), the slot's tail zero — at power-of-two widths of 32 and up
 the slots are the widths, so the law costs nothing there. It is what lets a kernel move a token's run as 16-byte
-asynchronous quanta whose source is 16-byte aligned and whose 32-byte run is one sector: the facts pass's ring
-([`facts.md`](facts.md#load)). A level whose width is not a multiple of 16 is copied whole
+asynchronous quanta whose source is 16-byte aligned and whose 32-byte run is one sector. A level whose width is not a multiple of 16 is copied whole
 up to its last digit and no further (a partial quantum zero-fills the rest).
 
 ## <a id="digits"></a>The digits, dense or sparse
 
-Every level's rows are u8 against the row max (`kRowMaxDigit` = 255), on either side, and a zero digit is an exact
+Every level's rows are u8 against the row max (`AMP_LEVELS` = 255), on either side, and a zero digit is an exact
 zero: there is no floor under a row ([`docs/CONSTITUTION.md` R23](../../CONSTITUTION.md#r23)). A DENSE level is one
 whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax); it differs from a sparse
-one only in that its support is not worded -- the facts pass neither reads nor writes its rows, and its bits are its
+one only in that its support is not worded -- no pass reads or writes its rows, and its bits are its
 width mask over the live tokens. A dead row (scale 0) is zero everywhere, including where a consumer divides the row by
 its own sum (the decay's shares).
 
@@ -98,7 +97,7 @@ u8 digits and lets a drawn call state its support from its floating levels (`-0`
 ## Dense levels: the static width mask, and no logical width in the signature
 
 A dense level — an activation with no exact zeros (softmax), as the topology declares
-it — is NOT read by the pass, and its rows are NOT WRITTEN: they are the STATIC WIDTH MASK,
+it — is NOT read by a pass, and its rows are NOT WRITTEN: they are the STATIC WIDTH MASK,
 ones for digits below `b_l` over the live tokens, zeros for the pad, which every reader of
 the words — the folds (`box_activity`, `atom_activity`, `page_bits`, given the side's
 statics) and the kernels — takes from the statics, never from the table. The model
@@ -110,7 +109,7 @@ nothing but pad; the mask is a handful of words, not a read of `Σ_dense b_l` di
 token.
 
 The mask reaches the kernel as BITS, never as a width. `SideStatics` carries
-`dense_levels` (a bitmask over levels — a MODE fact, `level_is_dense` in the header)
+`dense_levels` (a bitmask over levels — a MODE fact)
 and `digit_mask` (one bit per row, `mask_bit`). The two contracts put the translation
 at the seam and keep logical-width fields out of every kernel entry signature (the review checks it; the lint is owed, CONSTITUTION R13);
 `rola.engine.facts.liveness.side_statics` is that translation, and it is the only place
@@ -127,9 +126,7 @@ A word per (side, 32-digit group of a level, 64-token tile): bit `i` set when th
 live at some token of the tile — the OR of the tile's two class-1 words, a row a bit. A
 level narrower than 32 digits is one group with its high bits clear; `groups = Σ_l
 ceil(B_l / 32)` a side, `tiles = ceil(L / 64)`, and a tile past `L`'s last word ORs only
-the words that exist. `union_address` in the header is the table's address from its
-extents, which `LivenessLayout::union_index` and a kernel with compile-time extents both
-call; `tile_unions` in the Python module is the model, gated against the per-token bits.
+the words that exist. `LivenessLayout.union_index` is the table's address from its extents; `tile_unions` in the Python module is the model, gated against the per-token bits.
 
 An intra's slab gate is the consumer: the table in place of a run of each of a window's rows'
 words, which lie `L / 8` bytes apart. No intra is built on this line, so what the table saves

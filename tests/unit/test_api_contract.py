@@ -158,13 +158,13 @@ def test_the_prefill_reads_groups_and_a_consumer_of_one_head_count_refuses_them_
     _grouped(2, 2).refuse_grouped("a consumer")
 
 
-def test_the_digit_header_mirrors_the_quantizer():
-    """`facts/liveness_contract.cuh` and `rola.routing.quant` state one format: the row max's digit."""
+def test_the_decode_digit_mirrors_the_quantizer():
+    """`decode_fold.cuh` and `rola.routing.quant` state one format: the row max's digit."""
     from pathlib import Path
 
     from rola.routing import quant
 
-    text = (Path(__file__).resolve().parents[2] / "csrc/rola/src/facts/liveness_contract.cuh").read_text()
+    text = (Path(__file__).resolve().parents[2] / "csrc/rola/src/decode/decode_fold.cuh").read_text()
     assert "constexpr float kRowMaxDigit = 255.0f;" in text and quant.AMP_LEVELS == 255.0
 
 

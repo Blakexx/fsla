@@ -301,8 +301,7 @@ a device tier runs alone (`exclusive`), and each shard of a sharded tier draws a
 
 **THE `cuda` MARKER IS NOT THE LOCK'S QUESTION.** The marker's job is *collection-time deselection* — it lets the first
 tier avoid initializing a CUDA context at all. It is **not** a device partition: `tests/integration` carries rows that
-launch kernels without being `cuda`-marked (e.g. `test_facts_pass.py::test_the_words_are_the_model_bit_for_bit`,
-skipped without a device), because in that tier a device is the premise rather than a property of a row. So the
+launch kernels without being `cuda`-marked, because in that tier a device is the premise rather than a property of a row. So the
 `tests/conftest.py` fixture keys on TIER (`tests/oracle/`, `tests/integration/`) OR the `cuda` marker. Every committed
 test is collected by one tier above. The `bench` marker is opt-in for the same reason in reverse: a latency measurement is not a correctness gate and
 must never be able to fail a merge.
@@ -360,7 +359,7 @@ publication read before its join, an inner join standing in for an outer one, a 
 
 `bazel test //tests:sanitizer` runs `tools/sanitize_oracle.py`, passing it the toolkit's own `compute-sanitizer`
 (`@cuda_tools`, the release the library is built by; the script refuses any whose `--version` is not the toolchain
-record's `sanitizer`, and takes none from PATH) over ONE named oracle cell per family (the facts pass, decode and the entmax solves), each pair in its own process;
+record's `sanitizer`, and takes none from PATH) over ONE named oracle cell per family (decode and the entmax solves), each pair in its own process;
 a family declared ABSENT (the carry over a whole call: no carry kernel is built) runs its cell bare and must still
 fail, so the row flips the day its kernel lands,
 with a timeout, under the GPU lock; `--test_arg=--tool --test_arg=racecheck` or `--family` narrows or widens it. It is

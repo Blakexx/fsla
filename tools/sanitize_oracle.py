@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The compute-sanitizer NAMED gate on the facts, decode and entmax oracle cells.
+"""The compute-sanitizer NAMED gate on the decode and entmax oracle cells.
 
 `docs/testing.md`'s "sanitizer lane" section records the shape (a SCHEDULED lane
 over a named subset, never a PR gate -- the tools cost one to two orders of
@@ -14,7 +14,7 @@ This is that measurement, promoted from an ad-hoc invocation (recorded once, by
 hand, in FINDINGS `## PROBE-K35` under "memcheck on paging") to a script anyone
 can run and CI can schedule: `racecheck`/`synccheck`/`initcheck` (memcheck already
 ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
-(facts, decode, entmax), each run as its own
+(decode, entmax), each run as its own
 `compute-sanitizer`-wrapped pytest process so a hang or an error in one tool
 cannot block another, under the GPU lock every campaign shares.
 
@@ -84,13 +84,6 @@ class Family:
 #: `-k`-free ids: each row names ONE parametrization so a pair is one launch, not a
 #: whole file serialized under the heaviest instrumentation this repo has.
 _FAMILIES = {
-    #: THE FACTS PASS is the one bit-exact device fact every consumer of the lists rests on: the vote's transposes, the
-    #: union's ranks and the passes' bounds, the lists' walks and their pads, on both sides' lists at two levels of
-    #: unequal width and a tail word.
-    "facts": Family(
-        test="tests/integration/test_facts_pass.py::"
-             "test_the_lists_are_the_model_bit_for_bit[list_groups1-alternating-widths3-33]",
-        kernel="rola::facts::rola_facts_forward", present=True),
     #: THE CARRY OVER A WHOLE CALL, absent: no carry kernel is built on this line, so the oracle's whole-call cell
     #: refuses by name, and the row flips when a schedule lands.
     "carry_call": Family(

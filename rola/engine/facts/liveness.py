@@ -2,12 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The class-1 liveness words' CONTRACT, and the two class-2 folds.
 
-The facts pass that writes the words is a CUDA kernel this module does not own
-(:mod:`rola.ops.facts`). What lives here is the contract that kernel writes and every
-consumer reads -- the word layout (:class:`LivenessLayout`, the mirror of
-``csrc/rola/src/facts/liveness_contract.cuh``), a reader that turns those words back into
-per-token bits, and a pure-torch MODEL of the words and of the folds that is the
-executable spec the kernel is graded against (docs/internals/facts/liveness_contract.md).
+No facts kernel is built on this line (:mod:`rola.ops.facts`). What lives here is the contract such a kernel writes and every
+consumer reads -- the word layout (:class:`LivenessLayout`), a reader that turns those words back into
+per-token bits, and a pure-torch MODEL of the words and of the folds, the definition a Hopper schedule is graded
+against (docs/internals/facts/liveness_contract.md).
 
 Vocabulary, defined here and used unqualified below: ``D`` = routing depth;
 ``B_l`` = the PADDED width of level ``l`` (a power of two at or above 16, the
@@ -322,7 +320,7 @@ def box_activity(words: torch.Tensor, layout: LivenessLayout, boxes, side: int, 
     the OR of that over the call's tokens. Nothing is kept per window: a window with
     nothing live for a box is a schedule fact, read off these rows while walking. A
     DENSE level's rows are its width mask over the live tokens, taken from the side's
-    ``statics`` and never read from ``words`` (the facts pass does not write them).
+    ``statics`` and never read from ``words`` (no pass writes them).
     """
     table = words[:, side]
     live = _live_token_words(layout, words.device)
@@ -394,20 +392,6 @@ def atom_spans(layout: LivenessLayout) -> tuple[int, ...]:
     if remaining != 1:
         raise ValueError(f"the topology holds {layout.N} leaves, fewer than one page atom")
     return tuple(spans)
-
-
-def atom_boxes(layout: LivenessLayout) -> list[Box]:
-    """Every atom as a :class:`Box`, in canonical PAGE order -- the finest box set.
-
-    The box->page map is a bijection here, so :func:`page_activity` over these boxes is
-    the exact per-page answer rather than a box-grain over-report.
-    """
-    spans = atom_spans(layout)
-    grid = [[]]
-    for level in range(layout.D):
-        grid = [row + [digit] for row in grid
-                for digit in range(0, layout.B[level], spans[level])]
-    return [Box(start=tuple(row), span=spans) for row in grid]
 
 
 def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int, statics: SideStatics) -> torch.Tensor:

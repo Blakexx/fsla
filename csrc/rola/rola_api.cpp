@@ -26,7 +26,6 @@
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
-#include "src/facts/facts_api.cuh"
 #include "src/paging/vmm_owner.cuh"
 
 using rola::check_arch_table;
@@ -113,13 +112,6 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv, int interleave, int atom_floor) -> int[]");
   m.def("carry_sub_boxes(int depth, int box_leaves, int workers, int atom_floor) -> int[][]");
 
-  // ---- the facts pass: the bundle's rows to the class-1 words and the lists --
-  m.def(
-      "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor v_scale, "
-      "int[] widths, int dense_read, int[] mask_read, int dense_write, int[] mask_write, int write_list_level, "
-      "int read_list_level, int read_list_group, int write_list_group) -> Tensor[]");
-  m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
-
   // ---- the producer's solves -----------------------------------------------
   m.def(
       "entmax_union_forward(Tensor read_logits, Tensor write_logits, Tensor(a!) midpoint_values, "
@@ -184,8 +176,6 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("sm_clock_ghz", TORCH_BOX(&rola::sm_clock_ghz));
   m.impl("carry_geometry", TORCH_BOX(&rola::carry::geometry));
   m.impl("carry_sub_boxes", TORCH_BOX(&rola::carry::sub_box_set));
-  m.impl("rola_facts_forward", TORCH_BOX(&rola::facts::rola_facts_forward));
-  m.impl("rola_facts_ledger_bind", TORCH_BOX(&rola::facts::rola_facts_ledger_bind));
   m.impl("entmax_union_forward", TORCH_BOX(&rola::entmax::union_forward));
   m.impl("entmax_union_backward", TORCH_BOX(&rola::entmax::union_backward));
   m.impl("entmax_factor_forward", TORCH_BOX(&rola::entmax::factor_forward));

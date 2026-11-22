@@ -7,9 +7,9 @@ point it concerns, never the allocation. The reads and writes are `nvdisasm --pr
 marks; the liveness is this tool's own, over the function's real control flow
 (docs/internals/tools/life_ranges.md#liveness).
 
-    bazel run //tools:life_ranges -- --cubin <cubin> --source csrc/rola/src/facts/facts.cu
-    bazel run //tools:life_ranges -- --so <extension .so> --member facts --kernel facts_pass \
-        --source csrc/rola/src/facts/facts.cu [--arch sm_90a] [--top N]
+    bazel run //tools:life_ranges -- --cubin <cubin> --source <kernel file>
+    bazel run //tools:life_ranges -- --so <extension .so> --member <member> --kernel <regex> \
+        --source <kernel file> [--arch sm_90a] [--top N]
     bazel run //tools:life_ranges -- --so <extension .so> --member <member> --kernel <regex> --source <kernel file> \
         --source <component files>... --budget tools/budgets/<kernel>.json   # the register budget
 

@@ -79,15 +79,6 @@
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
   },
-  "facts_pass": {
-   "oracle": "tests/integration/test_facts_pass.py::test_the_lists_are_the_model_bit_for_bit",
-   "sanitizer": "facts",
-   "budget": {
-    "owed": "the line is met and the per-component instructions measured at docs/internals/facts/facts.md#budget; tools/budgets/facts.json lands with an instrument row that runs the facts pass's region ledger (none is declared yet)"
-   },
-   "phases": "tests/integration/test_facts_pass.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
-   "overlap": "facts-alt-k4"
-  },
   "sm_clock_kernel": {
    "oracle": {
     "owed": "no test reads it; measure/executors.py records it with every measurement"

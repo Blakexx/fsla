@@ -4,7 +4,7 @@
 """THE OVERLAP GATE (KERNEL_STANDARDS §28): a kernel's time against the largest of its floors, on its perf cells.
 
     bazel run //tools:overlap_gate      # every row; exit 1 when any is red
-    bazel run //tools:overlap_gate -- --row facts-alt-k4
+    bazel run //tools:overlap_gate -- --row ROW
 
 A ROW is a kernel on a perf cell. One `ncu` launch of it (after warm-up launches of the same call) reads the
 elapsed time and clock, the instructions, the shared wavefronts, the tensor instructions and DRAM's share of its
@@ -52,29 +52,10 @@ class Row:
     warmup: int = 3
 
 
-#: THE ROWS: every kernel's gate row, named in `tools/coverage.json`'s `overlap` obligation
-ROWS = {
-    "facts-alt-k4": Row(kernel="facts_pass", launch="facts", cell="nl64k-alt-k4", heads=4),
-    "facts-dense": Row(kernel="facts_pass", launch="facts", cell="nl64k-dense", heads=4),
-}
-
-
-def _launch_facts(cell: str, heads: int, repeat: int) -> None:
-    import torch
-
-    from measure.cells import by_name, realize
-    from measure.subjects import bundle_of
-    from rola.ops import facts as facts_ops
-
-    spec = by_name(cell)
-    routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
-    form = facts_ops.WHOLE_GROUPS
-    for _ in range(repeat):
-        facts_ops.facts(routes, values, layout, *statics, form)
-    torch.cuda.synchronize()
-
-
-LAUNCHES = {"facts": _launch_facts}
+#: THE ROWS: every kernel's gate row, named in `tools/coverage.json`'s `overlap` obligation. None on this line: the one
+#: kernel that had rows (the facts pass) is deleted, and a kernel with a schedule adds its row and its launch with it
+ROWS: dict[str, Row] = {}
+LAUNCHES: dict = {}
 
 
 def counters(row: Row) -> dict[str, float]:
@@ -148,6 +129,9 @@ def main() -> int:
     ap.add_argument("--heads", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--repeat", type=int, help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if not ROWS:
+        print("RED  overlap_gate: no kernel has a row on this line, and a gate with no target does not pass")
+        return 1
     if a.launch:
         LAUNCHES[a.launch](a.cell, a.heads, a.repeat)
         return 0

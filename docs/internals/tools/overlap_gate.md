@@ -15,18 +15,13 @@ The ratio is elapsed / max(floors), red above `LINE` = 1.15. A kernel at its bin
 whose phases take turns, one idling a stream while another runs, reads near the sum of its floors over their max.
 
     bazel run //tools:overlap_gate                 # every row; exit 1 when any is red
-    bazel run //tools:overlap_gate -- --row facts-alt-k4
+    bazel run //tools:overlap_gate -- --row ROW
 
 THE INSTRUMENT'S CHECK is owed on an H100: the sm_86 probes (a pure read stream at 1.04x its DRAM floor; torch's cuBLAS fp16
 GEMM, priced by `mma.sync` shape) are the branch `ampere`'s, and the GEMM probe row and its shape-cost table are deleted --
 a Hopper GEMM issues `wgmma`, which no rate prices. Its Hopper probe rows land with the first measured `wgmma` rate.
 
-THE ROWS' READING (2026-11-10, sm_86 -- the branch's; an H100 reading is owed; ncu's locked clock; whole 32-digit list groups, `rola.ops.facts.WHOLE_GROUPS`):
-`facts-alt-k4` 337.5 us, 1.58x its DRAM floor (213.8 us; issue 193.8, shared 72.6) -- red against the 1.15 line, and
-what holds it over its floor is not attributed yet (owed: the stall census of the row); `facts-dense` 12.7 us, 3.52x its DRAM floor
-(3.6 us; issue 2.4, shared 0.4) -- red too. A call with no sparse level runs the pass's columns unit alone, so the row
-gates that unit; what holds it over its floor is not measured (owed: the same row at a second length, which separates
-a launch's fixed time from the unit's).
+THE ROWS: none on this line. The two rows it had (`facts-alt-k4`, `facts-dense`) were the facts pass's, which is deleted (`docs/internals/DELETIONS.md`); with no row the gate is red, never vacuously green, and a kernel with a schedule adds its row and its launch with it.
 
 `tools/lint/coverage.py` reads `ROWS` by AST: every kernel's `overlap` obligation in `tools/coverage.json` names a row
 gating it, or is exempt or owed with its reason.

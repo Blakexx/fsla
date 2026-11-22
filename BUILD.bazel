@@ -64,6 +64,7 @@ rola_extension(
     deps = [
         "//csrc/rola:carry_arm_set",
         "//csrc/rola:decode_declarations",
+        "//csrc/rola:entmax_units",
         "//csrc/rola:registration",
         "//csrc/rola:runtime",
         "//csrc/rola:stamp_unit",

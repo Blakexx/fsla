@@ -17,7 +17,7 @@ Mirrors `csrc/rola/src/common/atoms/copy.cuh`, a concern of the baseline operati
 
 - <a id="stage-tile-n"></a>`stage_tile_n`: the copy of a run's first `bytes` (0 to 16), the rest zero-filled and
   nothing past them read, so a row that ends inside a quantum (a level whose width is not a multiple of sixteen) never
-  reads the next level's digits (the facts pass's rows, `docs/internals/facts/facts.md#load`).
+  reads the next level's digits (the facts pass's rows; the pass is deleted, `docs/internals/DELETIONS.md`).
 
 - <a id="stage-run"></a>`stage_run`: the same copy at a narrower quantum. A run shorter than 16 bytes is still ONE
   asynchronous access, never a padded 16-byte one that would read a neighbour's bytes. The 4- and 8-byte forms are

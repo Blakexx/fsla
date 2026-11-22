@@ -4,6 +4,8 @@ is one hand unit (`decode.cu`) that dispatches over the selection header's arm s
 (bazel/arms.bzl's `arm_family`, without `unit`).
 """
 
+load("//bazel:arms.bzl", "arm_declaration")
+
 DECODE_KEY = ("d_v", "levels", "decay")
 
 DECODE_DOMAINS = {
@@ -17,10 +19,38 @@ DECODE_DOMAINS = {
 #: (every arm carried once) and every declaration below is stated over
 DECODE_KERNEL = "rola::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>"
 
-#: the arms' declarations (`arm_declaration`: a rule, the count its kernels may keep, why; over the arms `where` selects): none. Every decode
-#: arm is clean of what the SASS gate refuses and of the toolkit's notices (ptxas prints only its per-function summaries for them), so none
-#: keeps a finding and none is declared
-DECODE_DECLARATIONS = []
+#: the arms' declarations (`arm_declaration`: a rule, the count its kernels may keep, why; over the arms `where` selects): the findings of
+#: the two checker rules the gate applies to every function, which every arm predates. Each arm keeps what its SASS shows on sm_90a today, a
+#: cap and never more; the rows below are `[d_v, levels, decay, load_in_trip, loop_convergence]`, one arm each
+_PREDATES = "predates the rule; fixed at the family's Hopper rewrite: "
+_FOUND = {
+    "load_in_trip": "global loads whose value the same trip reads, in the step's loops",
+    "loop_convergence": "convergence instructions (BSSY, BSYNC, BRA.DIV) inside the step's loops",
+}
+_FINDINGS = [
+    [32, 1, 0, 19, 156],
+    [32, 1, 1, 20, 191],
+    [32, 2, 0, 19, 210],
+    [32, 2, 1, 20, 217],
+    [32, 3, 0, 19, 221],
+    [32, 3, 1, 20, 219],
+    [32, 4, 0, 19, 237],
+    [32, 4, 1, 20, 233],
+    [64, 1, 0, 27, 184],
+    [64, 1, 1, 28, 205],
+    [64, 2, 0, 27, 208],
+    [64, 2, 1, 28, 229],
+    [64, 3, 0, 27, 210],
+    [64, 3, 1, 28, 231],
+    [64, 4, 0, 27, 224],
+    [64, 4, 1, 28, 245],
+]
+
+DECODE_DECLARATIONS = [
+    arm_declaration(rule, row[3 + i], _PREDATES + _FOUND[rule], where = {"d_v": [row[0]], "levels": [row[1]], "decay": [row[2]]}, arch = "sm_90a")
+    for row in _FINDINGS
+    for i, rule in enumerate(["load_in_trip", "loop_convergence"])
+]
 
 DECODE_ARMS = [
     [32, 1, 0],

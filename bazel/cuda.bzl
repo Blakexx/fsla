@@ -40,6 +40,20 @@ def declaration(kernel, rule, allow, reason, arch = None):
         fail("declaration of %s on %r: arch is `sm_XX` (not %r)" % (rule, kernel, arch))
     return struct(kernel = kernel, rule = rule, allow = allow, reason = reason, arch = arch)
 
+def regex_escape(text):
+    """A regex that matches the text and nothing else."""
+    out = ""
+    for ch in text.elems():
+        if ch in "\\.^$*+?{}[]|()":
+            out += "\\"
+        out += ch
+    return out
+
+def kernel_pattern(text):
+    """The exact pattern of a kernel over its demangled name: `text` is the name up to its parameter list (the toolkit's `cu++filt`),
+    anchored at the return type and the parameter list, as `arm_kernel_pattern` anchors an arm's."""
+    return "^void " + regex_escape(text) + "\\("
+
 #: rules_cuda's own additions to nvcc's command line, off on every unit: its extended lambdas, its compilation-mode
 #: optimization and seed, the host toolchain's flags -- the command line is the unit's options alone
 _RULES_CUDA_ADDITIONS = [

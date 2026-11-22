@@ -19,7 +19,7 @@ writes).
 Registration is host-only. Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit, and every
 architecture added to the built set multiplies that cost. Every declaration it names is a host header
 (`src/decode/decode_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/common/geom_api.cuh`,
-`src/facts/facts_api.cuh`, `src/paging/vmm_owner.cuh`, `common/arm_switch.cuh`), so no device body is in scope.
+`src/paging/vmm_owner.cuh`, `common/arm_switch.cuh`), so no device body is in scope.
 
 ## <a id="one-library"></a>2. One library, registered here only
 
@@ -43,7 +43,6 @@ reaches into the module itself.
 | build, card and clock facts | `csrc_build_stamp`, `device_card`, `segment_tokens`, `sm_clock_ghz` |
 | the carry family's built arms (none on this line) | `carry_arms` |
 | the addressing block | `carry_geometry`, `carry_sub_boxes` |
-| the facts pass | `rola_facts_forward`, `rola_facts_ledger_bind` |
 | the producer's solves | `entmax_union_forward`, `entmax_union_backward`, `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the T=1 decode path | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_arms`, `rola_decode_ledger_bind`, `rola_decode_ledger_warps`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner, by handle | `vmm_probe`, `vmm_create`, `vmm_release`, `vmm_base`, `vmm_grow`, `vmm_rollback_to`, `vmm_reset`, `vmm_close`, `vmm_facts` |

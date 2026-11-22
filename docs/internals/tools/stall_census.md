@@ -9,7 +9,7 @@ the body the line table splices other call sites' frames in, so an outermost rul
 the read units to the readout); work no component owns is booked under its own function's name (`helper_of`), the
 kernel's own body (`glue`) only where no function below it is. `region_ledger.py --component NAME` lists one component's instructions by their innermost
 frame in any file, its helpers' and the headers' included. `--kernel FAMILY` names the family
-(`tools/kernel_targets.py`: the carry by default, the den, the intra, the facts pass); the units a total is divided by
+(`tools/kernel_targets.py`: each family with a row there; none on this line); the units a total is divided by
 are the family's.
 
     bazel run //tools:stall_census -- flagship-dense --json census.json

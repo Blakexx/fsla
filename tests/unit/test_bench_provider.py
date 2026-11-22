@@ -45,14 +45,14 @@ def binary(monkeypatch):
 
 
 def test_an_arm_is_named_by_its_subject_its_call_count_and_its_construction():
-    assert provider.arm_name("facts_pass") == "facts_pass"
+    assert provider.arm_name("prefill") == "prefill"
     assert provider.arm_name("prefill", calls=4) == "prefill@calls=4"
     assert provider.arm_name("decode_step", construction="chunk-decode-w16") == "decode_step@layer=chunk-decode-w16"
 
 
 def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert {"prefill", "facts_pass"} <= names
+    assert "prefill" in names
     assert all(name.split("@")[0] in SUBJECTS for name in names)
     #: a call shorter than a window is a call: the prefill is offered
     assert "prefill" in provider.arms(by_name("flat-small-alt-k16"))
@@ -71,7 +71,7 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monk
 
     monkeypatch.setattr(intra, "reads", lambda widths: False)
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert "facts_pass" in names and "prefill" not in names
+    assert "prefill" not in names
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
     with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:decode_arms"):

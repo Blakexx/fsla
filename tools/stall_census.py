@@ -2,11 +2,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE STALL CENSUS (KERNEL_STANDARDS §22 (7), (8)): every warp-stall sample of one launch of a kernel family on a
-cell (the facts pass by default), by source line's component and stall reason; the phase census and the wavefront census --
+cell by source line's component and stall reason; the phase census and the wavefront census --
 raw counts.
 
-    bazel run //tools:stall_census -- flagship-dense --json census.json
-    bazel run //tools:stall_census -- nl64k-alt-k4 --kernel facts --json census.json   # any family of kernel_targets.py
+    bazel run //tools:stall_census -- nl64k-alt-k4 --kernel FAMILY --json census.json   # any family of kernel_targets.py
 
 One oneshot launch through the probe worker under `ncu --section SourceCounters` with the stall-reason group and the
 kernel's source imported, exported per SASS line, then attributed by `tools/region_ledger.py` against the installed
@@ -76,7 +75,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
     ap.add_argument("--json", type=Path, required=True)
-    ap.add_argument("--kernel", default="facts", choices=sorted(kernel_targets.TARGETS),
+    ap.add_argument("--kernel", required=True, choices=sorted(kernel_targets.TARGETS),
                     help="the kernel family launched and attributed (tools/kernel_targets.py)")
     ap.add_argument("--csv", type=Path, default=None,
                     help="keep ncu's per-SASS-line export here (the warp timeline joins it); "

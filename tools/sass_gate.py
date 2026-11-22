@@ -47,13 +47,16 @@ import checked  # noqa: E402 -- path insert must precede these imports
 import kernels  # noqa: E402
 import sass  # noqa: E402
 
-#: the checker's rules the gate holds every function to: what it refuses, and the figures it shows
-REFUSED_RULES = ("stack_memory", "convergence_call", "step_predicated", "step_branches", "step_conversion", "step_global", "step_density")
-FIGURE_RULES = ("function_size", "step_gap")
-RULES = REFUSED_RULES + FIGURE_RULES
+#: THE GATE APPLIES EVERY RULE OF THE CHECKER'S REGISTRY to every function (`rules()`): there is no subset. A rule a kernel
+#: predates is declared beside the kernel with its count (`bazel/cuda.bzl`'s `declaration`), never left out of the gate
 #: the model rules' counts the report and the JSON carry, by the statistic's name
 COUNTED = {"pred_hmma": "step_predicated", "mma_loop_branches": "step_branches", "step_xu": "step_conversion", "step_global": "step_global",
            "instr": "function_size", "mma_gap": "step_gap"}
+
+
+def rules() -> tuple[str, ...]:
+    """Every model rule of the checker's registry, by name: the rules the gate holds every function to."""
+    return tuple(sorted(checked.checker().rules.registry()))
 
 
 def cubins_of(path: Path, member: str | None) -> list[Path]:
@@ -80,7 +83,7 @@ def read_notices(paths: list[Path]) -> list:
 
 
 def gate(cubin: Path, kernel: str | None, declarations: list[dict], notices: list = ()) -> tuple[bool, str]:
-    """One cubin's verdict: the checker's facts of its functions under `RULES`, and of the `notices` that name them, compared with
+    """One cubin's verdict: the checker's facts of its functions under every rule of its registry (`rules()`), and of the `notices` that name them, compared with
     `declarations` (this architecture's entries: `kernel` a regex over the demangled name, `rule`, `allow`, `reason`)."""
     global ARCH
     ARCH = sass.machine(cubin)
@@ -89,7 +92,7 @@ def gate(cubin: Path, kernel: str | None, declarations: list[dict], notices: lis
     modelled = checked.kernels_of(cubin)
     held = [k for k in modelled if not kernel or re.search(kernel, k.name)]
     mine = {k.name for k in held}
-    comparison, facts = checked.compare(held, RULES, checked.declarations(declarations), {}, notices=[n for n in notices if n.function in mine])
+    comparison, facts = checked.compare(held, rules(), checked.declarations(declarations), {}, notices=[n for n in notices if n.function in mine])
     refused: dict[str, list] = {}
     for r in comparison.refusals:
         refused.setdefault(r.kernel, []).append(r)
@@ -117,6 +120,8 @@ def gate(cubin: Path, kernel: str | None, declarations: list[dict], notices: lis
                       f"mma-loop-branches {s['mma_loop_branches']} mma-gap {s['mma_gap']} "
                       f"step-xu {s['step_xu']} step-global {s['step_global']}"
                       + (" :: " + "; ".join(reds) if reds else ""))
+        if reds:
+            report.append(f"       kernel: {k.demangled}")
         report.extend("       " + line for r in refused.get(k.demangled, []) for line in r.lines()[1:])
         if LOOPS:
             report.extend(f"       {rule}: {f.what}" for rule in ("step_branches", "step_conversion", "step_global")

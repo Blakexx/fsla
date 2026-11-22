@@ -8,7 +8,7 @@ attributes against, the budget, and the launch's units (the divisor that turns a
     bazel run //tools:kernel_targets -- nl64k-alt-k4      # every family's target on a cell: its arm and its units
 
 `tools/stall_census.py`, `tools/pipe_counters.py` and `tools/pipe_timeline.py` take `--kernel FAMILY` from this table.
-The facts pass is its one family on this line: a kernel with a schedule adds its row with the schedule.
+No kernel has a row on this line (the facts pass, its one family, is deleted): a kernel with a schedule adds its row with the schedule.
 Docs: docs/internals/tools/kernel_targets.md.
 """
 from __future__ import annotations
@@ -55,10 +55,7 @@ def launch(target: Target, name: str) -> tuple[str, str]:
     return name, arm_name(target.arm)
 
 
-TARGETS = {
-    "facts": Target("facts", "facts_pass", "facts_pass", "facts", ("csrc/rola/src/facts/facts.cu",), None,
-                    "windows"),
-}
+TARGETS: dict[str, Target] = {}
 
 
 def target(family: str) -> Target:

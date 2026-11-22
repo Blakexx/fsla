@@ -30,8 +30,8 @@ with a null table (the slot IS the atom), and paging ONE base translation rather
 second path. ``slot < 0`` -- an atom the plan committed nothing for -- is skipped at both
 ends, exactly and not defensively, because the plan's bitmap holds the whole write set:
 the write set itself where every write level is sparse, and a superset where a dense
-level's digit rounded to zero (the pass words a dense level by its width;
-``../facts/facts.md``). The decode step is today's reader
+level's digit rounded to zero (the deleted facts pass worded a dense level by its width,
+`../DELETIONS.md`). The decode step is today's reader
 ([`../decode/decode.md#paged-address`](../decode/decode.md#paged-address)); the rebuilt
 carry has no state I/O yet.
 
@@ -41,7 +41,7 @@ The pool is sized from the plan, not grown: the popcount of the atom condensatio
 number of atoms this call may touch, so the arena knows its own footprint before the
 kernel launches, and there is nothing to discover. The condensation comes from the
 call's own arm and never from a second derivation — the facts pass at `T > 1`
-([`../facts/facts.md`](../facts/facts.md)), the decode step's own published `atom_bits` at `T = 1`
+(deleted: `../DELETIONS.md`), the decode step's own published `atom_bits` at `T = 1`
 ([`decode/decode_api.md` §4](../decode/decode_api.md#the-verdict)) — and the step's
 is exact, as the pass's is where every write level is sparse: there `resident == realized`
 is a fact. A dense write level makes the pass's a bound: an atom reached only through a

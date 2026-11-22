@@ -40,7 +40,6 @@ import pytest
 import torch
 
 from measure import hardware
-from tests.oracle.fixtures import with_gain
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
@@ -81,7 +80,6 @@ _LAUNCHLESS = {
     "vmm_close": "releases a driver allocation",
     "vmm_facts": "reads a driver allocation's bookkeeping",
     "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
-    "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
     "device_card": "admits the device's card (the closed-world checks, common/select.cu) and reads it; no device work",
 }
 
@@ -174,23 +172,17 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
 
     A gate that only ever refuses is indistinguishable from a gate that is never
     reached, so the admitted case is asserted too -- and asserted through a real entry,
-    because the entry is where the call site is. The facts pass is that entry: its
+    because the entry is where the call site is. The routing softmax is that entry: its
     launch takes no arm and no state, so what this cell exercises is the gate and
     nothing else.
     """
     from measure import hardware
-    from rola.ops import facts as facts_ops
-    from rola.routing.factors import RouteFactors
-    from rola.routing.types import OpaqueRouting, Topology
-    from rola.values import Values
+    from rola.ops._ext import extension
 
     #: refuses by name where the capability table carries no row for this device: the row is then the one to add
     hardware.device_arch(*torch.cuda.get_device_capability())
-    widths, L = (16, 16), 32
-    levels = tuple(torch.ones(1, L, 1, width, device="cuda") for width in widths)
-    routes = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)), levels, with_gain(levels, torch.ones(1, L, 1, device="cuda")), sparse=((False, True), (True, False)))
-    layout = facts_ops.call_layout(routes)
-    words = facts_ops.facts(routes, Values.from_projection(torch.ones(1, L, 1, 8, device="cuda")), layout,
-                            *facts_ops.call_statics(routes, layout),
-                            facts_ops.WHOLE_GROUPS).words
-    assert words.shape[0] == 1
+    L, width = 32, 16
+    values = torch.zeros(1, L, width, device="cuda")
+    extension().routing_softmax_forward(torch.randn(1, L, width, device="cuda"), values, None, [0], [0], [width], 1)
+    torch.cuda.synchronize()
+    assert torch.allclose(values.sum(-1), torch.ones(1, L, device="cuda"))

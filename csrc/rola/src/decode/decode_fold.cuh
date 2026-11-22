@@ -8,11 +8,13 @@
 
 #include <cstdint>
 
-#include "facts/liveness_contract.cuh"
 #include "decode.cuh"
 
 namespace rola {
 namespace decode {
+
+//: THE DIGITS against the row max: a u8 digit is the row max at 255 (`rola.routing.quant.AMP_LEVELS`).
+constexpr float kRowMaxDigit = 255.0f;
 
 template <typename T>
 __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
@@ -66,8 +68,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     const uint32_t live = __ballot_sync(0xffffffffu, x[j] != 0.0f);
     if (lane == 0) (write_side ? mask_w : mask_r)[word] = live;
     if (digit < p.level_width[l])
-      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] =
-          x[j] * (scale[j] / facts::kRowMaxDigit);
+      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x[j] * (scale[j] / kRowMaxDigit);
   }
 }
 

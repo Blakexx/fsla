@@ -20,7 +20,7 @@ The Hopper carry fills its list; a family with no rows makes no unit and a selec
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
-load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration")
+load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration", "regex_escape")
 
 def _check(name, key, domains, arms):
     """The declaration, refused field by field: each way it could be wrong is a compile error in a generated file, or a
@@ -59,15 +59,6 @@ def arm_declaration(rule, allow, reason, where = {}, arch = None):
     declaration("^", rule, allow, reason, arch)
     return struct(rule = rule, allow = allow, reason = reason, where = where, arch = arch)
 
-def _escape(text):
-    """A regex that matches the text and nothing else."""
-    out = ""
-    for ch in text.elems():
-        if ch in "\\.^$*+?{}[]|()":
-            out += "\\"
-        out += ch
-    return out
-
 def arm_kernel_pattern(kernel, key, row, arch):
     """The exact pattern of an arm's kernel, over its demangled name (the toolkit's `cu++filt`): `kernel` is the name's text up to its parameter list,
     with `@<field>@` for a field of the key (its value, as the demangler prints an integer or a bool template argument: the number) and `@cc@` for the
@@ -80,7 +71,7 @@ def arm_kernel_pattern(kernel, key, row, arch):
     text = ""
     for i, part in enumerate(parts):
         if i % 2 == 0:
-            text += _escape(part)
+            text += regex_escape(part)
         elif part not in values:
             fail("%s: `@%s@` is no field of the key %s (nor `cc`)" % (kernel, part, list(key)))
         else:

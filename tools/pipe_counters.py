@@ -2,10 +2,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE PIPE COUNTERS (KERNEL_STANDARDS §22): the profiler's pipe and resource counters for one launch of a kernel
-family on a cell (the facts pass by default), as launch totals, raw.
+family on a cell as launch totals, raw.
 
-    bazel run //tools:pipe_counters -- flagship-dense --json counters.json
-    bazel run //tools:pipe_counters -- nl64k-alt-k4 --kernel facts --json counters.json
+    bazel run //tools:pipe_counters -- nl64k-alt-k4 --kernel FAMILY --json counters.json
 
 One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs, wgmmas and instructions
 executed, scheduler cycles elapsed and active, issue activity, warps active and eligible, shared loads and stores, ldsm
@@ -77,7 +76,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
     ap.add_argument("--json", type=Path, required=True)
-    ap.add_argument("--kernel", default="facts", choices=sorted(kernel_targets.TARGETS),
+    ap.add_argument("--kernel", required=True, choices=sorted(kernel_targets.TARGETS),
                     help="the kernel family launched (tools/kernel_targets.py)")
     a = ap.parse_args()
     doc = measure(a.cell, a.kernel)

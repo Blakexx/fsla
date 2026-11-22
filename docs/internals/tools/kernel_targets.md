@@ -8,9 +8,8 @@ budget's unit.
 
 | family | arm | unit |
 |---|---|---|
-| `facts` | `facts_pass` | windows |
 
-The facts pass is the table's one family on this line: a kernel with a schedule adds its row with the schedule.
+The table is empty on this line (the facts pass, its one family, is deleted, `docs/internals/DELETIONS.md`), so `stall_census` and `pipe_counters` take a `--kernel` of no family and no instrument of them is declared: a kernel with a schedule adds its row with the schedule.
 `units(target, cell)` is the launch's count of the unit from the cell's record alone (one batch row, the cell's write
 heads); `launch(target, name)` the cell and the provider arm an instrument launches.
 

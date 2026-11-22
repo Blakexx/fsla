@@ -17,7 +17,7 @@ the sequence enters with, which is what the carry family's oracle and probe run 
 (`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
 only way to price the producer's own solve or a decode step through the layer.
 
-**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the facts pass's lists, the carve:
+**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the carve:
 all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
 """
 from __future__ import annotations
@@ -92,7 +92,7 @@ def cell_carve(spec):
 
 def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `rola.interface.rola_op` over the cell's bundle, stateless -- the validation, the
-    facts pass, the carry, the intra, the glue between them and the readout. A cell the envelope refuses
+    carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
     from measure.cells import realize
     from rola.interface import rola_op
@@ -128,23 +128,6 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     statics = tuple(lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths)
                     for side in (0, 1))
     return routes, values, layout, statics
-
-
-def facts_pass(fx) -> Launch:
-    """Both sides' class-1 words and tile unions, each side's lists in whole list groups and the writers' factor
-    products, from the cell's draw in the bundle's format: the pass the prefill's facts node launches, a side dense
-    where the cell declares it so (its rows unread)."""
-    from measure.cells import realize
-    from rola.ops import facts as facts_ops
-
-    spec = fx["cell"]
-    routes, values, layout, statics = bundle_of(spec, realize(spec))
-    form = facts_ops.WHOLE_GROUPS
-
-    def run():
-        return facts_ops.facts(routes, values, layout, *statics, form)
-
-    return Launch(name=f"facts_pass|{spec.name}", call=run)
 
 
 # ------------------------------------------------------------------ layer cells
@@ -190,37 +173,9 @@ def _one_segment(spec, layer) -> None:
                          "carries a state the prefill does not take yet")
 
 
-def _layer_bundle(fx):
-    """``(routes, values, layout, statics, form)``: the layer's producer run once on the cell's prefill
-    tokens, untimed, and what a facts call takes of its bundle -- the layout, both sides' statics and the lists' form
-    (whole groups: no carry arm names another)."""
-    from rola.ops import facts as facts_ops
-
-    spec, layer = fx["cell"], fx["layer"]
-    _one_segment(spec, layer)
-    with torch.no_grad():
-        routes, values = layer._produce(fx["x"][:, :spec.tokens].contiguous())
-    layout = facts_ops.call_layout(routes)
-    statics = facts_ops.call_statics(routes, layout)
-    return routes, values, layout, statics, facts_ops.WHOLE_GROUPS
-
-
-def layer_facts(fx) -> Launch:
-    """THE OP'S FACTS PASS on the layer's own bundle (the producer run once, untimed)."""
-    from rola.ops import facts as facts_ops
-
-    spec = fx["cell"]
-    routes, values, layout, statics, form = _layer_bundle(fx)
-
-    def run():
-        return facts_ops.facts(routes, values, layout, *statics, form)
-
-    return Launch(name=f"layer_facts|{spec.name}|{fx['construction'].name}", call=run)
-
-
 def layer_op(fx) -> Launch:
     """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `rola.interface.rola_op`, stateless --
-    the facts pass, the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
+    the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
     layer into the producer and the op; beside the stage subjects, the op into its launches and its glue."""
     from rola.interface import rola_op
 
@@ -259,8 +214,8 @@ def decode_step(fx) -> Launch:
     routes = fx["routes"]
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics,
-                            facts_ops.WHOLE_GROUPS).words
+    #: THE WORDS BY THE MODEL (no facts kernel is built on this line): the seed needs the bits, which the model states bit for bit
+    words = lv.liveness_words(list(routes.amp_read), list(routes.amp_write), layout, *statics)
     bits = lv.page_bits(words, layout, *statics)
     seeded: dict = {}
 
@@ -291,14 +246,12 @@ def decode_step(fx) -> Launch:
                   outside_allocator=lambda: seeded["arena"].committed_bytes if seeded["arena"].backing == "vmm" else 0)
 
 
-#: THE ROSTER: one entry per kernel this line carries.
+#: THE ROSTER: one entry per kernel this line carries. The op-level subjects' `symbol` is the carry's, the first launch of the op
+#: once it is built: no kernel of the op is built on this line, so a capture of it finds nothing and a launch refuses by name.
 SUBJECTS = {
     "prefill": Subject("prefill", "carry", prefill_op,
-                       "the stateless prefill as rola_op runs it: facts, carry, intra, glue and readout",
-                       level="op", symbol="facts_pass", stamp="csrc_build_stamp"),
-    "facts_pass": Subject("facts_pass", "carry", facts_pass,
-                          "both sides' class-1 liveness words and the fold's window scales, from the bundle",
-                          level="kernel", symbol="facts_pass", stamp="csrc_build_stamp"),
+                       "the stateless prefill as rola_op runs it: carry, intra, glue and readout",
+                       level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
                             "the producer's batched multi-level solve",
                             level="kernel", symbol="(union|factor|softmax)_forward_kernel",
@@ -306,15 +259,12 @@ SUBJECTS = {
     "layer_prefill": Subject("layer_prefill", "layer", layer_prefill,
                              "the layer's stateless prefill, one segment: the producer and the op, the output "
                              "projection outside it as it is outside attention's",
-                             level="layer", symbol="facts_pass", stamp="csrc_build_stamp"),
-    "layer_facts": Subject("layer_facts", "layer", layer_facts,
-                           "the op's facts pass on the layer's own bundle",
-                           level="kernel", symbol="facts_pass", stamp="csrc_build_stamp"),
+                             level="layer", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "layer_op": Subject("layer_op", "layer", layer_op,
-                        "the op alone on the layer's own bundle: facts, den, carry, intra, glue and readout",
-                        level="op", symbol="facts_pass", stamp="csrc_build_stamp"),
+                        "the op alone on the layer's own bundle: den, carry, intra, glue and readout",
+                        level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "decode_step": Subject("decode_step", "layer", decode_step,
-                           "one carried single-token step through the engine: the facts pass, the pages it commits "
+                           "one carried single-token step through the engine: the pages it commits "
                            "and the kernels, as the op runs them",
                            level="op", symbol="decode_step_kernel", stamp="rola_decode_build_stamp"),
 }

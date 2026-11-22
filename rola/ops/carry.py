@@ -10,10 +10,9 @@ levels and operand levels, and its arm key (:func:`arm_key`) is what a compiled 
 from __future__ import annotations
 
 from rola.engine.types import Carve
-from rola.ops import facts as facts_ops
 from rola.ops._ext import extension, not_built
 
-__all__ = ["arm_key", "arms", "carry", "lists_form", "same_split", "sm_clock_ghz"]
+__all__ = ["arm_key", "arms", "carry", "same_split", "sm_clock_ghz"]
 
 
 def _outer(plan) -> set[int]:
@@ -50,12 +49,6 @@ def carry(routes, values, facts, carve: Carve, *args, **kwargs):
 def arms() -> list[tuple[int, ...]]:
     """The arms THIS binary carries, each its :func:`arm_key`: the binary's own answer, never the source tree's."""
     return [tuple(row) for row in extension().carry_arms()]
-
-
-def lists_form(key: tuple[int, ...]) -> facts_ops.ListsForm:
-    """The lists the built arm ``key`` reads, the facts pass's call: no arm is built on this line
-    (:func:`rola.ops._ext.not_built`)."""
-    not_built("carry")
 
 
 def sm_clock_ghz() -> float | None:

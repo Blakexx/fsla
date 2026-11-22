@@ -1,4 +1,7 @@
-"""The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the levels as the pass words
+"""RED BY PLAN: no facts kernel is built on this line, so every launch here fails by name
+(`rola.ops._ext.KernelNotBuilt`) until a hopper schedule of the words lands.
+
+The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the levels as the pass words
 them: a sparse level by its nonzero digits, a dense level whole (`_declared`). Against the stored digits the bitmap is
 the write set where every write level is sparse and a superset where a dense digit rounded to zero.
 
@@ -61,9 +64,6 @@ from rola.routing.types import (
 )
 from rola.values import Values
 from tests.oracle.fixtures import with_gain
-
-#: the lists' form the facts pass is called in; this file reads its words and unions only
-_LISTS = facts_ops.WHOLE_GROUPS
 
 pytestmark = [
     pytest.mark.cuda,
@@ -132,7 +132,7 @@ def _kernel_bitmap(routes, values):
     """The written atoms of the facts pass's words, every level voted from its rows."""
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics, _LISTS).words
+    words = facts_ops.facts(routes, values, layout, *statics).words
     return planes.written_atoms(lv.page_bits(words, layout, *statics))
 
 
@@ -214,7 +214,7 @@ def test_stats_through_the_host_seam():
     _, write = routes.dequantized()
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics, _LISTS).words
+    words = facts_ops.facts(routes, values, layout, *statics).words
     bits = lv.page_bits(words, layout, *statics)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(planes.written_atoms(bits), _oracle_bitmap(write, (16, 16)))

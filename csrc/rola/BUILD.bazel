@@ -8,6 +8,7 @@ load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "census_test", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass")
 load(":src/carry/arms.bzl", "CARRY_ARMS", "CARRY_DOMAINS", "CARRY_KEY")
 load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DECLARATIONS", "DECODE_DOMAINS", "DECODE_KERNEL", "DECODE_KEY")
+load(":src/entmax/declarations.bzl", "ENTMAX_DECLARATIONS")
 load(":units.bzl", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
@@ -111,9 +112,21 @@ cuda_unit(
     deps = _DEPS,
 )
 
+#: the producer's solves, whose kernels keep what they predate the checker's rules with (`src/entmax/declarations.bzl`), declared beside them
+_ENTMAX_UNITS = ["src/entmax/entmax.cu", "src/entmax/factor.cu"]
+
+cuda_unit(
+    name = "entmax_units",
+    srcs = _ENTMAX_UNITS,
+    copts = NVCC_FLAGS,
+    declarations = ENTMAX_DECLARATIONS,
+    host_cc = _HOST_CC,
+    deps = _DEPS,
+)
+
 cuda_unit(
     name = "units",
-    srcs = [unit for unit in glob(["src/**/*.cu"]) if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS],
+    srcs = [unit for unit in glob(["src/**/*.cu"]) if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS and unit not in _ENTMAX_UNITS],
     copts = NVCC_FLAGS,
     host_cc = _HOST_CC,
     deps = _DEPS,

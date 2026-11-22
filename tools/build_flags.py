@@ -12,7 +12,7 @@ own flags, and include directories that only one of the two callers can know (to
 own header locations are resolved by `include_paths` at the call site).
 
 `--ptxas-options=-v` is included and is MANDATORY: `tools/ratify.py`'s census parses exactly
-that report. It changes what the assembler PRINTS, not what it emits.
+that report. It changes what the assembler PRINTS, not what it emits (as `--warn-on-spills` does).
 
 REFUSED, each a codegen change that would arrive as a packaging change: the
 `-U__CUDA_NO_HALF_OPERATORS__` / `-U__CUDA_NO_HALF_CONVERSIONS__` /
@@ -74,6 +74,9 @@ def nvcc_flags(archs, nvcc_threads: int) -> list[str]:
     return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
             #: MANDATORY, not optional: `tools/ratify.py`'s census parses exactly this report.
             "--ptxas-options=-v",
+            #: WARN WHERE A FUNCTION SPILLS REGISTERS: ptxas prints a notice naming the function and its bytes, which the gate reads
+            #: against the ledger (`register_spill`) like every notice of the build; it changes what the assembler PRINTS only
+            "--ptxas-options=--warn-on-spills",
             #: COMPRESS EVERY IMAGE IN THE FATBIN, not just the PTX and debug ones
             #: `fatbinary --compress` covers by default. Without it the packer applies
             #: a SIZE HEURISTIC and leaves small cubins stored raw, which makes the

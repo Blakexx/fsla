@@ -89,8 +89,8 @@ kernels; a KERNEL runs its own launches and nothing around them. Every subject s
 A comparison between this library and another is therefore a LAYER comparison: RoLA's
 own layer against attention's, because RoLA's number includes the state its capacity buys.
 
-What this line can measure today: the KERNEL level (`carry_forward`, `intra_forward`, `facts_pass`, `entmax_solve`) and one OP-level path
-(`decode_step`, through the engine's decode DAG, which runs the facts pass and commits the pages it writes). There is no
+What this line can measure today: the KERNEL level (`entmax_solve`) and one OP-level path
+(`decode_step`, through the engine's decode DAG, which commits the pages the prefill's words write; its measurement seeds them from the liveness model, no facts kernel being built). There is no
 op-level prefill subject and no layer subject: `rola.interface.rola_op` walks the prefill DAG, whose carry leg is not
 yet
 wired to the rebuilt carry ([`open-work.md`](open-work.md)). The flash reference is a layer entry, and until a

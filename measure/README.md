@@ -17,7 +17,7 @@ libraries rola is compared against. A cell names nothing rola runs it with. `mea
 
 **`measure/executors.py` — WHAT ROLA'S DECLARATIONS RUN.** The repository root's `declare.py` declares this
 checkout's targets for rola-devtools' build system (`rola_devtools.build`): its build, the machine facts, its instruments
-(SASS, register walk, phase clock, pipe counters, stall census, timeline, the intra roofline), every bench subject as a
+(the SASS gate and the realized support; the register walk, phase clock, pipe counters, stall census and timeline are tools a kernel with a schedule takes a row of in `tools/kernel_targets.py`), every bench subject as a
 timing entry on the central cells it takes, and its clock reader. `executors.py` is what those targets run, in this
 checkout's venv. `bazel run //:measure -- run declare.py:all` measures this checkout by itself; rola-bench's root
 loads the same `declare.py` from every checkout it measures.
@@ -44,6 +44,6 @@ stopwatch and the GPU and clock locks (`rola_devtools.timing`, `docs/measurement
 samples; whether a stored difference is a regression is `bazel run //:results -- verdict`.
 
 ```bash
-bazel run //:measure -- run declare.py:all --only 'rola/counters' --only 'rola/sass'
+bazel run //:measure -- run declare.py:all --only 'rola/support' --only 'rola/sass'
 ```
 

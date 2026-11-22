@@ -1,8 +1,9 @@
 # `tools/sass_gate.py` -- the ptxas signatures, on every build
 
-The gate reads every function of every cubin a binary carries and is red on any of KERNEL_STANDARDS
-[§20](../../KERNEL_STANDARDS.md#s20)'s ptxas signatures (a stack frame, convergence calls a converged
-warp executes, predicated HMMAs, branches, the conversion unit and global memory in a step, instructions per HMMA over a declared ceiling), on the build's ptxas
+The gate reads every function of every cubin a binary carries and applies EVERY rule of the checker's registry to each (`sass_gate.rules()`; there is no subset): a stack frame,
+convergence calls a converged warp executes, predicated HMMAs, branches, the conversion unit and global memory in a step, instructions per HMMA over a declared ceiling, and
+the rules over loops and loads (`load_in_trip`, `loop_convergence`) and over steps (`step_work`, `step_port`, `step_rolled`, `store_reload`, `store_unfenced`, `wait_after_issue`, `clock_uniform`). It is red on any
+finding a declaration does not hold, on the build's ptxas
 notices its ledger refuses, and on what a declaration over them does not hold; it shows the figures of the bound rules (`function_size`, `step_gap`) without failing;
 guarded convergence fallbacks are counted, cold code, not red. Every build runs it after the link (the library's gate action, [below](#graph)); by hand,
 `bazel run //tools:sass_gate -- <.so | .cubin> [--kernel RE] [--member S] [--declare FILE] [--notices LOG]... [--loops] [--json PATH]`. Each function's line
@@ -38,8 +39,9 @@ The gate holds no refusal text of its own; a function's report line carries its 
 What stays the gate's own: (1) a PTX image in a binary (closed-world rule 2); (2) a source kernel no cubin carries (`tools/kernels.py`); (3) the narrowing that
 matches nothing is red; (4) the declarations' own check, which the checker does not make across cubins: a declaration that allows a count (not a bound, not a tightening) where
 no function it names has one on its architecture is red, and so is an arm whose exact kernel pattern does not match one function of the architecture's SASS
-(the pattern is generated from the arm's template arguments, [below](#declarations)); (5) the report and the JSON (`instr`, `mma_gap` are the rules' figures: the padding to
-the next 128-byte boundary is not counted, and `mma_gap` is the larger of the two gap figures the old gate kept apart). The notices are the units' ptxas
+(the pattern is generated from the arm's template arguments, [below](#declarations)); (5) the report and the JSON (`instr`, `mma_gap` are the rules' figures: `instr` leaves out the padding to the next
+128-byte boundary, and `mma_gap` is `step_gap`'s one figure, the longest run without a step in a loop of steps, inside a trip or around the back edge; the gate
+that kept the two apart is superseded, and what it compared is in `DELETIONS.md`). The notices are the units' ptxas
 reports (`--notices`, one a unit), read against the project's ledger; a notice naming a function of a cubin is judged with it, and what no cubin claims (a front end's
 warning, a function no cubin carries) once for the build. A warning of ptxas carries no architecture, so a build of several architectures counts each notice for each architecture's cubin.
 
@@ -89,7 +91,7 @@ each architecture it carries (`--//:archs`), and the declarations on the arms th
 The architecture is the attachment's: a declaration carries none, and `arch` on the Starlark struct says which build target it attaches to (none: every one the unit is built for); the
 library rule writes one file (`<label>_declarations.json`: per architecture, its declarations and its arms) and the gate reads each cubin's under its own architecture. A
 declaration may tighten (`allow` 0 where a ledger row accepts the notice by default) as well as allow; a rule is a rule of the checker or of the project's ledger
-(`docs/internals/tools/lab.md#ledger`). `decode`'s declarations are empty: its arms are clean of everything the gate refuses and the toolkit's notices of production (ptxas's per-function summaries) are the base ledger's accepted rows.
+(`docs/internals/tools/lab.md#ledger`). `decode`'s and the producer's solves' declarations (`csrc/rola/src/decode/arms.bzl`, `csrc/rola/src/entmax/declarations.bzl`, on the `entmax_units` target) are each kernel's exact count of `load_in_trip` and `loop_convergence`, the two rules the full set found on code that predates them ("predates the rule; fixed at the family's Hopper rewrite"), a cap and never more; the toolkit's notices of production (ptxas's per-function summaries, and `--warn-on-spills`, which finds none) are the base ledger's accepted rows.
 
 ## <a id="probes"></a>A library of probes
 

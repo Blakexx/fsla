@@ -68,7 +68,7 @@ decode step pad below the op, and the intra reads the rows at their own widths.
 
 ### 1.1 The built envelope IS the surface
 
-The prefill is the facts pass, the carry and the intra over a BUILT MATRIX
+The prefill is the carry and the intra (the facts pass is deleted: its node raises `KernelNotBuilt`) over a BUILT MATRIX
 (`rola.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
 fp64 oracle
 (`rola.ops.naive.naive_rola`) is the executable spec — what tests and measurements
@@ -188,8 +188,8 @@ GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
 `H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
 order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
-grouped run is the ungrouped run with each write head's side repeated for its query heads). The facts pass reads them,
-a write head's read side one union a window over its query heads' rows (`docs/internals/facts/facts.md#lists-out`), and
+grouped run is the ungrouped run with each write head's side repeated for its query heads). The deleted facts pass read them,
+a write head's read side one union a window over its query heads' rows (`DELETIONS.md`), and
 a carry reads them a CTA a write head, its query heads' rows with it, as does the intra, so the prefill reads them. The decode step and the carried state read one head count
 today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it

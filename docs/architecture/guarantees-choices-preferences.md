@@ -33,8 +33,8 @@ same week.
   straight-through estimator, no thresholded skip. A skip is exact by
   construction or it does not ship.
 - **Membership is decided by the realized support bits and by nothing else.**
-  A digit is live exactly when it is nonzero (`csrc/rola/src/facts/liveness_contract.cuh`'s
-  `digit_live`), and the facts pass's words carry that bit to every consumer
+  A digit is live exactly when it is nonzero (`rola.engine.facts.liveness`'s
+  rule), and the words carry that bit to every consumer
   ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). An
   amplitude comparison in a kernel is only ever a *performance* skip on a value where
   inclusion is a no-op, and none decides membership.

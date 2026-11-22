@@ -11,12 +11,11 @@ calls it per checkout with one shared timing server, and composes its own sessio
 one session and one memory pass over the cells, every result stored.
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
-machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; the
-facts pass's pipe counters and stall census on every carry cell, every run, holding the GPU), and with a timing server
-the timing registrations: `prefill` and `facts_pass` on the carry cells, `entmax_solve@layer=C`,
-`layer_prefill@layer=C`, `decode_step@layer=C` and the op's stages on the layer's own bundle (`layer_facts`,
-`layer_op`) for each RoLA construction on the layer cells declared for it (a decode step on the cells that take
-steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
+machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; no
+kernel has a pipe-counter or stall-census row on this line, so neither is declared), and with a timing server
+the timing registrations: `prefill` on the carry cells, `entmax_solve@layer=C`,
+`layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each RoLA
+construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
 reach one record its refusal. Every
 target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`rola_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
@@ -48,13 +47,11 @@ IMPORT_ROOTS = ["tools", "."]
 #: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
 INSTRUMENTS = {
     "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
-    "counters": ("tools/pipe_counters.py", ["{cell}"], True, {"gpu": "all"}, [], 900),
-    "census": ("tools/stall_census.py", ["{cell}"], True, {"gpu": "all"}, ["csrc/rola/src/facts/facts.cu"], 900),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
     "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
 }
-CARRY_ARMS = ("prefill", "facts_pass")
-LAYER_ARMS = ("entmax_solve", "layer_prefill", "decode_step", "layer_facts", "layer_op")
+CARRY_ARMS = ("prefill",)
+LAYER_ARMS = ("entmax_solve", "layer_prefill", "decode_step", "layer_op")
 #: seconds an instrument may run on one cell
 #: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
 #: cell (37 cells in 1.1 minutes, measured 2026-09-16), an ncu replay minutes. A hang then costs one timeout and lands

@@ -915,7 +915,7 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
    forces are priced against the saving; a part's wavefronts are a hypothesis until then. Measured 2026-10-13: on
    sm_86 the branch `ampere`'s carry ran as fast on rank slots as on the best residue coloring, its time following its lists' places,
    while the coloring was most of the facts pass's time, so the facts pass emits rank slots
-   ([`facts.md`](internals/facts/facts.md#ranks)).
+   (the deleted facts pass's ranks; its design is in `git`, `DELETIONS.md`).
 3. A PAD SITS WHERE A REAL ELEMENT WOULD: a free residue's row for a gather, a dummy row aligned to that residue for
    an add -- never a spare word that may share a bank with real traffic.
 4. WAVEFRONTS ARE BUDGETED LIKE INSTRUCTIONS: each §29 budget has a `wavefronts` line, the design's bytes a 128-byte

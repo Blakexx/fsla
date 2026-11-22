@@ -273,7 +273,7 @@ fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 ON HOPPER the carry is handed no list: RULED 2026-11-13 and 2026-11-15, the gather pass reads the masks and writes
 the carry's stream, a sparse block's live tokens in token order, from which a carry CTA lays its own lists -- RULED 2026-11-15, in its own CTAs beside the carry's, in one grid, the stream a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
 factor products and the tile unions then come from is OPEN ([`open-work.md`](open-work.md), row A-e). What follows
-is the pass this tree builds.
+is the pass as it was built and deleted whole (Blake, 2026-11-21: "lets just delete facts"; no facts kernel is built on this line, `rola.ops.facts.facts` raises `KernelNotBuilt`), kept as the design the hopper gather pass is read against.
 
 One pass over the bundle's rows emits what the downstream launches need instead of an amplitude scan: per side, per
 token, per sparse level, ONE BIT PER DIGIT in canonical order (a dense level's bits are its static width mask, read
@@ -282,15 +282,14 @@ from the statics and never written), the tile unions per 64 tokens, each token's
 their boundaries and totals. It is an indexer: nothing of a card is in what it emits, no exponent, no coefficient in
 an operand's format, no layout offset. The emitted size is a function of the sequence and the WIDTHS, never of `N`,
 and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
-the levels. Liveness is a VALUE test in the pass this tree builds, and a pad digit, whose amplitude is exactly zero, is
+the levels. Liveness is a VALUE test in the deleted pass, and a pad digit, whose amplitude is exactly zero, is
 never live. RULED AND NOT YET BUILT (Blake, 2026-11-13): SPARSITY IS DECLARED, NEVER DETECTED -- a side's sparse masks
 become an input OPERAND, data as the rows are and as the causal mask is -- A BIT A DIGIT A TOKEN, a side and a level
 (fixed in size, and a mask on the public surface as an attention mask is) -- which the op uses blindly: every list, union
 and skipped pair decided from the masks alone, no row read to find what is live and none checked against its mask.
 The result is the oracle's wherever a mask covers its rows' nonzero digits, which is its supplier's to give; the
 pass then reads masks, not rows ([`open-work.md`](open-work.md) row A-e names what changes)
-([`internals/facts/facts.md`](internals/facts/facts.md),
-[`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md)).
+([`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md), the words' contract, which stands as the Python model).
 
 WHAT BELONGS IN IT (Blake, 2026-09-28 and 2026-09-29): a fact the raw produced values determine -- a list word, a
 per-window aggregate, a per-token factor -- is computed here once rather than rescanned by every warp or CTA that needs
@@ -414,7 +413,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |
 | the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve), [`internals/engine/carve.md`](internals/engine/carve.md) |
 | the host order of a call | [`internals/engine/prefill_dag.md`](internals/engine/prefill_dag.md), [`internals/engine/decode_dag.md`](internals/engine/decode_dag.md) |
-| the facts pass and the liveness words | [`internals/facts/facts.md`](internals/facts/facts.md), [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
+| the liveness words (the facts pass is deleted) | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |

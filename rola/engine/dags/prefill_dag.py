@@ -45,19 +45,17 @@ class PrefillContext:
 
 @node(gives=("facts", "carve", "layout", "statics"), needs=("routes", "values"), stream="main")
 def facts(f):
-    """THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, each side's
-    lists at its list group and the writers' factor products, with the carve
+    """THE FACTS PASS over the bundle (NOT BUILT: `rola.ops.facts.facts` raises `KernelNotBuilt`), with the carve
     the planner picks, the layout the words are read in -- the topology's padded widths -- and the two sides' statics,
     their dense levels unread (`rola.ops.facts`)."""
     from rola.engine.carve import plan_carve
-    from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
 
     routes = f["routes"]
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, f["values"].v.shape[-1])
-    out = facts_ops.facts(routes, f["values"], layout, *statics, carry_ops.lists_form(carry_ops.arm_key(carve)))
+    out = facts_ops.facts(routes, f["values"], layout, *statics)
     return out, carve, layout, statics
 
 

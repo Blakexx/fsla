@@ -2,8 +2,8 @@
 
 The subject is a CONTRACT and its executable spec, both of which are pure Python over
 torch tensors, so the whole file gates without the built extension and without a GPU.
-What is NOT gated here is the facts pass KERNEL (`tests/integration/test_facts_pass.py`):
-this file is what that kernel is graded against (docs/internals/facts/liveness_contract.md).
+No facts kernel is built on this line: this file is what a Hopper schedule of the words is
+graded against (docs/internals/facts/liveness_contract.md).
 
 Symbols: ``D`` routing depth; ``B_l`` the PADDED per-level width; ``b_l`` the LOGICAL
 one; ``L`` tokens; ``BH`` = batch x heads; ``N = prod_l B_l`` leaves; atom = 16
@@ -12,11 +12,7 @@ space.
 """
 from __future__ import annotations
 
-import re
-import shutil
-import subprocess
 from math import prod
-from pathlib import Path
 
 import pytest
 import torch
@@ -24,8 +20,6 @@ import torch
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
-
-_HEADER = Path(__file__).resolve().parents[2] / "csrc/rola/src/facts/liveness_contract.cuh"
 
 #: (B_l per level, L) -- a padded dense level, a two-level and a three-level topology,
 #: an L that is not a whole number of words, and one cell whose boxes SPLIT an atom.
@@ -112,42 +106,6 @@ def test_layout_refuses_a_digit_outside_its_level():
     layout = lv.LivenessLayout.of(_format((16, 16)), 32)
     with pytest.raises(ValueError, match="carries 16 digits"):
         layout.row_of(0, 16)
-
-
-# --------------------------------------------------------------- the header mirror
-
-
-def test_header_constants_mirror_the_python_reader():
-    text = _HEADER.read_text()
-    constants = dict(re.findall(r"constexpr (?:int|uint16_t) (\w+) = (0x[0-9a-fA-F]+|\d+)u?;", text))
-    assert int(constants["kTokBits"]) == lv.TOK_BITS
-    assert int(constants["kTileTokens"]) == lv.TILE_TOKENS
-    assert int(constants["kGroupDigits"]) == lv.GROUP_DIGITS
-    assert int(constants["kMaxLevels"]) == 4
-    assert re.search(r"kRead = 0, kWrite = 1, kSides = 2", text)
-    assert (lv.READ, lv.WRITE, lv.SIDES) == (0, 1, 2)
-
-
-def test_header_compiles_as_a_standalone_translation_unit(tmp_path):
-    compiler = shutil.which("g++")
-    if compiler is None:
-        pytest.skip("no host C++ compiler on this box")
-    source = tmp_path / "liveness_contract_tu.cpp"
-    source.write_text(f'#include "{_HEADER}"\n'
-                      "static constexpr rola::facts::LivenessLayout kL{2, {16, 16, 0, 0}, 64};\n"
-                      "static_assert(kL.rows() == 32);\n"
-                      "static_assert(kL.words() == 2);\n"
-                      "static_assert(kL.row_of(1, 3) == 19);\n"
-                      "static_assert(kL.side_bytes() == 64 * 32 / 8);\n"
-                      "static_assert(kL.word_index(1, 1, 0, 0) == 3 * kL.side_words());\n"
-                      "static_assert(kL.token_bit(33) == 2u);\n"
-                      "static_assert(kL.groups() == 2 && kL.group_base(1) == 1 && kL.tiles() == 1);\n"
-                      "static_assert(kL.union_index(1, 1, 1, 0) == 3 * 2 + 1);\n"
-                      "static_assert(rola::facts::digit_live(uint8_t{1}));\n"
-                      "static_assert(!rola::facts::digit_live(uint8_t{0}));\n"
-                      "static_assert(rola::facts::mask_bit(0x4u, 34));\n"
-                      "int main() { return 0; }\n")
-    subprocess.run([compiler, "-std=c++17", "-fsyntax-only", str(source)], check=True)
 
 
 # --------------------------------------------------------------- the pass model
