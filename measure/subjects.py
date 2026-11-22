@@ -98,36 +98,40 @@ def prefill_op(fx) -> Launch:
     from rola.interface import rola_op
 
     spec = fx["cell"]
-    routes, values, _layout, _statics = bundle_of(spec, realize(spec))
+    routes, values, masks, plan, _layout = bundle_of(spec, realize(spec))
 
     def run():
-        return rola_op(routes, values)
+        return rola_op(routes, values, masks, plan=plan)
 
     run()
     return Launch(name=f"prefill|{spec.name}", call=run)
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
-    """``(routes, values, layout, (read_statics, write_statics))``: the cell's draw over ``tokens`` in the format the
-    kernels read, a side dense where the cell declares it so."""
-    from rola.engine.facts import liveness as lv
+    """``(routes, values, masks, plan, layout)``: the cell's draw over ``tokens`` in the format the kernels read, the
+    masks the draw's own nonzero digits (the producer knows what it gives), and the plan the cell's declared sparsity
+    names: the levels each side walks by lists."""
+    from rola.engine import PrefillPlan
+    from rola.engine.carve import plan_carve
     from rola.ops import facts as facts_ops
     from rola.routing.factors import RouteFactors
+    from rola.routing.masks import PREFILL, Masks, pack_tokens
     from rola.routing.types import OpaqueRouting, Topology
     from rola.values import Values
 
     declared = spec.declared_sparsity()
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
     #: the cell's drawn write gain folded into write level 0, as a producer folds its own (docs/CONSTITUTION.md#r23)
+    read = [x[:, tokens] for x in drawn.read]
     write = [x[:, tokens] for x in drawn.write]
     write[0] = write[0] * drawn.gain[:, tokens, :, None].float()
-    routes = RouteFactors.from_levels(topology, [x[:, tokens] for x in drawn.read], write,
-                                      sparse=tuple(tuple(sparse[side] for sparse in declared) for side in (0, 1)))
+    routes = RouteFactors.from_levels(topology, read, write)
+    masks = Masks(PREFILL, tuple(pack_tokens(level != 0) for level in read),
+                  tuple(pack_tokens(level != 0) for level in write))
     values = Values.from_projection(drawn.v[:, tokens])
-    layout = facts_ops.call_layout(routes)
-    statics = tuple(lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths)
-                    for side in (0, 1))
-    return routes, values, layout, statics
+    walks = tuple(tuple(sparse[side] for sparse in declared) for side in (0, 1))
+    plan = PrefillPlan(carve=plan_carve(tuple(topology.padded_widths), *walks, values.v.shape[-1]))
+    return routes, values, masks, plan, facts_ops.call_layout(routes)
 
 
 # ------------------------------------------------------------------ layer cells
@@ -182,10 +186,10 @@ def layer_op(fx) -> Launch:
     spec, layer = fx["cell"], fx["layer"]
     _one_segment(spec, layer)
     with torch.no_grad():
-        routes, values = layer._produce(fx["x"][:, :spec.tokens].contiguous())
+        routes, values, masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())
 
     def run():
-        return rola_op(routes, values)[0]
+        return rola_op(routes, values, masks, plan=layer.prefill_plan)[0]
 
     run()
     return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)
@@ -203,6 +207,7 @@ def decode_step(fx) -> Launch:
     from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
+    from rola.ops.produce import decode_plan
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -211,12 +216,14 @@ def decode_step(fx) -> Launch:
     #: routing writes -- a decode step's cost is a function of residency and routing,
     #: not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
+    plan = decode_plan(layer.topology, d_v=layer.d_v, decay=layer.decay is not None)
     routes = fx["routes"]
     layout = facts_ops.call_layout(routes)
-    statics = facts_ops.call_statics(routes, layout)
-    #: THE WORDS BY THE MODEL (no facts kernel is built on this line): the seed needs the bits, which the model states bit for bit
-    words = lv.liveness_words(list(routes.amp_read), list(routes.amp_write), layout, *statics)
-    bits = lv.page_bits(words, layout, *statics)
+    #: THE WORDS BY THE MODEL (no facts kernel is built on this line): the seed needs the bits, which the model states
+    #: bit for bit from the masks the producer emits beside the rows
+    with torch.no_grad():
+        masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
+    bits = lv.page_bits(lv.gather_words(masks, layout), layout)
     seeded: dict = {}
 
     def reset():
@@ -233,11 +240,12 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            routes, values = layer._produce(token)[0], rola.Values.from_projection(v_token)
-            y, state = decode_step_gated(routes, values, seeded["state"])
+            routes, _values, masks = layer._produce(token, layer.step_plan)
+            values = rola.Values.from_projection(v_token)
+            y, state = decode_step_gated(routes, values, masks, seeded["state"], plan=plan)
             if growth_pending(state):
                 admit_growth(state)
-                y, state = decode_step_gated(routes, values, state)
+                y, state = decode_step_gated(routes, values, masks, state, plan=plan)
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory

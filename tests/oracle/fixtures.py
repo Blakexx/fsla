@@ -19,6 +19,7 @@ from rola.ops import carry as carry_ops
 from rola.ops.naive import naive_rola
 from rola.ops.paging import decode_pages, encode_pages
 from rola.routing.factors import RouteFactors
+from rola.routing.masks import DECODE, Masks, pack_digits, pack_tokens
 from rola.values import Values
 from tests.oracle import tolerances
 
@@ -70,17 +71,18 @@ def with_gain(write, g_write):
 
 def step_bundles(v, read, write, topology):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
-    them (u8 rows, bf16 values). A drawn level with exact zeros is declared SPARSE, as a production whose activation
-    has exact zeros is. Every side has a dense level (docs/api.md section 2.1): a side whose drawn levels ALL have
-    zeros declares the ALTERNATING level dense (the read side's level 0, the write side's level 1, level 0 at depth
-    one) and keeps the others sparse."""
-    sparse = tuple(tuple(bool((level == 0).any()) for level in side) for side in (read, write))
-    depth = len(read)
-    sparse = tuple(flags if not all(flags) else tuple(i != dense for i in range(depth))
-                   for flags, dense in zip(sparse, (0, 1 % depth)))
-    routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
-                                      sparse=sparse)
+    them (u8 rows, bf16 values). The bundle carries no flag; the bits a fixture's draw supports are
+    :func:`masks_of`'s."""
+    routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write))
     return routes, Values.from_projection(v.float())
+
+
+def masks_of(routes, consumer=DECODE):
+    """THE MASKS A FIXTURE'S DRAW SUPPORTS, in ``consumer``'s layout: a bit where the bundle's own row is nonzero (the
+    producer knows what it gives; a test fixture is the producer here). Data handed to the op, never read back by it."""
+    pack = pack_digits if consumer == DECODE else pack_tokens
+    return Masks(consumer, tuple(pack(rows != 0) for rows in routes.read_rows),
+                 tuple(pack(rows != 0) for rows in routes.write_rows))
 
 
 def bundle_operands(routes, values):

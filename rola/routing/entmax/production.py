@@ -445,7 +445,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
         ctx.logits_shape = read_logits.shape
         ctx.logits_dtype = read_logits.dtype
         ctx.midpoint_offsets = midpoint_offsets
-        return (*read_levels, *write_levels)
+        ctx.mark_non_differentiable(support_words)
+        return (*read_levels, *write_levels, support_words)
 
     @staticmethod
     def backward(ctx, *grads):
@@ -660,14 +661,20 @@ def _torch_routing_factor_levels(
     return tuple(reads), tuple(writes)
 
 
-def production_routing_factor_levels(
+def production_routing_levels(
     read_logits: torch.Tensor,
     write_logits: torch.Tensor,
     routing: ResolvedRouting,
     *,
     stored_dtype: torch.dtype = torch.bfloat16,
-) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-    """Exact per-level ``(read, write)`` routing factors on the production solve.
+) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...], torch.Tensor | None]:
+    """Exact per-level ``(read, write)`` routing factors on the production solve, and the solve's ``support_words``.
+
+    THE SUPPORT WORDS ARE ROUTED OUT as the kernels write them: int32 ``[B * H, ceil(T / 32), sum of the supported
+    levels' widths]``, stream ``b * H + h`` (so ``[B, H, ...]`` is a free view), bit ``t % 32`` of word ``t // 32`` at a
+    digit's column = token ``t`` live at that digit, the levels' columns at ``routing.support_offsets``. ``None`` on
+    the torch lowering, which writes no words.
+
 
     Returns one ``[BH, T, width_l]`` tensor per level-side -- the shape the producer
     hands ``naive_rola`` and the consumer. Lowered to the hand-CUDA solve
@@ -717,8 +724,22 @@ def production_routing_factor_levels(
         #: axis -- are addressable as they stand, and materializing either is a whole
         #: extra pass over the side.
         outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing, stored_dtype)
-        return tuple(outputs[:routing.D]), tuple(outputs[routing.D:])
-    return _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
+        return tuple(outputs[:routing.D]), tuple(outputs[routing.D:2 * routing.D]), outputs[2 * routing.D]
+    reads, writes = _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
+    return reads, writes, None
+
+
+def production_routing_factor_levels(
+    read_logits: torch.Tensor,
+    write_logits: torch.Tensor,
+    routing: ResolvedRouting,
+    *,
+    stored_dtype: torch.dtype = torch.bfloat16,
+) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+    """:func:`production_routing_levels` without the support words: exact per-level ``(read, write)`` factors, one
+    ``[BH, T, width_l]`` tensor per level-side."""
+    reads, writes, _support = production_routing_levels(read_logits, write_logits, routing, stored_dtype=stored_dtype)
+    return reads, writes
 
 
 def _flat(logits: torch.Tensor) -> torch.Tensor:
@@ -737,4 +758,5 @@ def _flat(logits: torch.Tensor) -> torch.Tensor:
 __all__ = [
     "production_factor",
     "production_routing_factor_levels",
+    "production_routing_levels",
 ]

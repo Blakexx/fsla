@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The prefill family's DAG, read top to bottom, and the context it runs over.
 
-ONE SEGMENT in, its readout out: the facts pass over the segment's bundle, the
+ONE SEGMENT in, its readout out: the facts pass over the segment's masks, the
 carry and the intra, then the post pass ``y = num / (den + eps / r)``. The stateless and
 stateful bands are one tuple, the stateless being the stateful with the residency band
 masked out. Segmentation is the LAYER's (docs/internals/engine/prefill_dag.md): this
@@ -16,11 +16,23 @@ from typing import Any
 
 import torch
 
-from rola.engine import SUPPLIABLE, Mask, node, rules, run, validate_dag
+from rola.engine import (
+    SUPPLIABLE,
+    PrefillLaunch,
+    PrefillOperands,
+    PrefillPlan,
+    PrefillWorkspace,
+    Variant,
+    node,
+    rules,
+    run,
+    validate_dag,
+)
 from rola.engine.facts import liveness, nodes
 from rola.engine.facts.call import require_envelope
+from rola.routing.masks import PREFILL, Masks
 
-_SEEDS = ("routes", "values", "decay", "state", "expert", "want_state", "given_state_in", "given_arena")
+_SEEDS = ("routes", "values", "masks", "decay", "state", "plan", "want_state", "given_state_in", "given_arena")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,39 +46,34 @@ class PrefillContext:
 
     routes: Any
     values: Any
+    masks: Any
+    plan: Any
     decay: Any = None
     state: Any = None
-    expert: Any = None
     state_in: torch.Tensor | None = None
     arena: Any = None
     want_state: bool = False
     supplied: Mapping[str, Any] = field(default_factory=dict)
 
 
-@node(gives=("facts", "carve", "layout", "statics"), needs=("routes", "values"), stream="main")
+@node(gives=("facts", "layout"), needs=("routes", "masks"), stream="main")
 def facts(f):
-    """THE FACTS PASS over the bundle (NOT BUILT: `rola.ops.facts.facts` raises `KernelNotBuilt`), with the carve
-    the planner picks, the layout the words are read in -- the topology's padded widths -- and the two sides' statics,
-    their dense levels unread (`rola.ops.facts`)."""
-    from rola.engine.carve import plan_carve
+    """THE FACTS PASS over the call's masks (NOT BUILT: `rola.ops.facts.facts` raises `KernelNotBuilt`), with the layout
+    the words are read in -- the topology's padded widths (`rola.ops.facts`). It reads the masks and nothing else."""
     from rola.ops import facts as facts_ops
 
-    routes = f["routes"]
-    layout = facts_ops.call_layout(routes)
-    statics = facts_ops.call_statics(routes, layout)
-    carve = plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, f["values"].v.shape[-1])
-    out = facts_ops.facts(routes, f["values"], layout, *statics)
-    return out, carve, layout, statics
+    layout = facts_ops.call_layout(f["routes"])
+    return facts_ops.facts(f["masks"], layout), layout
 
 
-@node(gives=("atom_bits",), needs=("facts", "layout", "statics"), stream="main", masks=(Mask.M2,))
+@node(gives=("atom_bits",), needs=("facts", "masks", "layout"), stream="main", variants=(Variant.PREFILL_STATEFUL,))
 def activity(f):
-    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the words: the state's write set
+    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the masks' words: the state's write set
     (`rola.engine.facts.liveness.page_bits`)."""
-    return liveness.page_bits(f["facts"].words, f["layout"], *f["statics"])
+    return liveness.page_bits(liveness.gather_words(f["masks"], f["layout"]), f["layout"])
 
 
-@node(gives=("bc",), needs=("d_v",), masks=(Mask.M2,))
+@node(gives=("bc",), needs=("d_v",), variants=(Variant.PREFILL_STATEFUL,))
 def box(f):
     """The carry's box, the arena's allocation extent: allocator policy, never an address."""
     from rola.ops import carry as carry_ops
@@ -78,7 +85,7 @@ def box(f):
 
 @node(gives=("state_in", "arena"),
       needs=("state", "given_state_in", "given_arena", "routes", "d_v", "atom_bits", "paging", "bc"),
-      stream="side", masks=(Mask.M2,), host_sync=True)
+      stream="side", variants=(Variant.PREFILL_STATEFUL,), host_sync=True)
 def residency(f):
     """The state's entry plane and arena, this call's write atoms committed (`RoLAState._kernel_entry`)."""
     state = f["state"]
@@ -87,13 +94,22 @@ def residency(f):
     return state._kernel_entry(f["routes"], f["atom_bits"], d_v=f["d_v"], paging=f["paging"], BC=f["bc"])
 
 
-@node(gives=("num", "den"), needs=("routes", "values", "facts", "carve", "layout", "statics"), stream="main")
+@node(gives=("num", "den"),
+      needs=("plan", "routes", "values", "masks", "decay", "facts", "layout", "state_in", "page_table", "arena",
+             "state_out"),
+      stream="main")
 def launch(f):
     """The carry at its bytes and the intra into the same planes: ``num [BH, T, d_v]`` and
-    ``den [BH, T]``, fp32, each over the reader factor (`rola.ops.prefill.prefill`)."""
+    ``den [BH, T]``, fp32, each over the reader factor (`rola.ops.prefill.prefill`), over the launch's three named
+    parts -- the static plan, the operands and the workspace (:class:`rola.engine.plan.PrefillLaunch`)."""
     from rola.ops import prefill as prefill_ops
 
-    return prefill_ops.prefill(f["routes"], f["values"], f["facts"], f["carve"], f["layout"], *f["statics"])
+    bundle = PrefillLaunch(
+        plan=f["plan"],
+        operands=PrefillOperands(routes=f["routes"], values=f["values"], masks=f["masks"], decay=f["decay"],
+                                 state_in=f["state_in"], page_table=f["page_table"]),
+        workspace=PrefillWorkspace(arena=f["arena"], state_out=f["state_out"]))
+    return prefill_ops.prefill(bundle, f["facts"], f["layout"])
 
 
 @node(gives=("y",), needs=("num", "den", "routes"), stream="main")
@@ -108,7 +124,7 @@ PREFILL_DAG = (
     rules.paging_preference.node,
     nodes.topology,
     nodes.classify_call,
-    rules.mask.node,
+    rules.variant.node,
     facts,
     activity,
     box,
@@ -168,6 +184,16 @@ def validate_context(ctx: PrefillContext) -> None:
             "rola_op's `state` argument is a rola.RoLAState from rola.state(), got "
             f"{type(ctx.state).__name__}. A raw tensor is not one: the state owns its own "
             "backing (dense or paged) and the shape it is bound to.")
+    if type(ctx.plan) is not PrefillPlan:
+        raise TypeError(
+            "rola_op's `plan` is a PrefillPlan, got "
+            f"{type(ctx.plan).__name__}. rola.ops.produce.prefill_plan builds one from the declaration.")
+    if type(ctx.masks) is not Masks:
+        raise TypeError(f"rola_op's `masks` is a rola.routing.masks.Masks, got {type(ctx.masks).__name__}; the producer "
+                        "emits it beside the bundle (docs/api.md section 2.6)")
+    if ctx.masks.consumer != PREFILL:
+        raise ValueError(f"rola_op takes the {PREFILL!r}-layout masks, got {ctx.masks.consumer!r}")
+    ctx.masks.check(routes)
     require_envelope(routes, values, decay, ctx.state)
 
 
@@ -178,8 +204,8 @@ def run_prefill(ctx: PrefillContext) -> tuple[torch.Tensor, torch.Tensor | None]
     The facts pass and the intra read the bundle; the carry leg's floating operands are `rola.ops.prefill`'s,
     dequantized there once a call until the carry reads the rows.
     """
-    facts = {"routes": ctx.routes, "values": ctx.values, "decay": ctx.decay, "state": ctx.state,
-             "expert": ctx.expert, "want_state": ctx.want_state, "given_state_in": ctx.state_in,
+    facts = {"routes": ctx.routes, "values": ctx.values, "masks": ctx.masks, "decay": ctx.decay, "state": ctx.state,
+             "plan": ctx.plan, "want_state": ctx.want_state, "given_state_in": ctx.state_in,
              "given_arena": ctx.arena}
     facts.update(ctx.supplied)
     done = run(PREFILL_DAG, facts)

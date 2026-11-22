@@ -20,6 +20,7 @@ import torch
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
+from rola.routing.masks import DECODE, PREFILL, Masks, pack_tokens
 
 #: (B_l per level, L) -- a padded dense level, a two-level and a three-level topology,
 #: an L that is not a whole number of words, and one cell whose boxes SPLIT an atom.
@@ -32,35 +33,29 @@ def _format(widths, d_v=64, BH=2):
                        ids=BH * (prod(widths) >> PAGE_RECTANGLE_BITS))
 
 
-def _draw(layout, statics, *, BH=2, seed=0):
-    """A side's synthetic rows, ``[1, L, BH, b_l]`` u8 per level at its logical width: sparse levels get a random
-    support with at least one live digit per (token, level), dense levels a full row of nonzero digits."""
-    generator = torch.Generator().manual_seed(seed)
-    rows = []
-    for level in range(layout.D):
-        base = layout.row_base(level)
-        logical = sum(statics.digit_mask[base:base + layout.B[level]])
-        block = torch.randint(1, 256, (1, layout.L, BH, logical), generator=generator)
-        if not statics.dense_levels[level]:
-            keep = torch.rand((1, layout.L, BH, logical), generator=generator) < 0.4
-            keep[..., 0] |= ~keep.any(dim=-1)
-            block = block * keep
-        rows.append(block.to(torch.uint8))
-    return tuple(rows)
-
-
-def _truth(rows, layout):
-    """``[BH, rows, L]`` bool: each digit's nonzero test, a level's digits past its rows dead."""
-    live = torch.zeros((rows[0].shape[2], layout.rows, layout.L), dtype=torch.bool)
-    for level, block in enumerate(rows):
-        base = layout.row_base(level)
-        live[:, base:base + block.shape[-1]] = (block[0] != 0).permute(1, 2, 0)
-    return live
-
-
-def _statics(layout, *, dense=(), logical=None):
+def _draw(layout, *, logical=None, dense=(), BH=2, seed=0):
+    """A call's synthetic MASKS, as data: ``(masks, bits)`` -- the PREFILL-layout :class:`~rola.routing.masks.Masks` of
+    ``BH`` heads (read and write sides alike) and each level's drawn bool bits ``[1, L, BH, b_l]`` at its logical width. A
+    level in ``dense`` is all live, the others a random support with at least one live digit per token. No row exists:
+    a mask is the bits, never derived from anything here."""
     logical = tuple(layout.B) if logical is None else tuple(logical)
-    return lv.side_statics(layout, tuple(level in dense for level in range(layout.D)), logical)
+    generator = torch.Generator().manual_seed(seed)
+    bits = []
+    for level in range(layout.D):
+        live = torch.rand((1, layout.L, BH, logical[level]), generator=generator) < 0.4
+        live[..., 0] |= ~live.any(dim=-1)
+        bits.append(torch.ones_like(live) if level in dense else live)
+    packed = tuple(pack_tokens(level_bits) for level_bits in bits)
+    return Masks(PREFILL, packed, packed), tuple(bits)
+
+
+def _truth(bits, layout):
+    """``[BH, rows, L]`` bool: the drawn bits laid out in the table's rows, a level's digits past its width dead."""
+    live = torch.zeros((bits[0].shape[2], layout.rows, layout.L), dtype=torch.bool)
+    for level, block in enumerate(bits):
+        base = layout.row_base(level)
+        live[:, base:base + block.shape[-1]] = block[0].permute(1, 2, 0)
+    return live
 
 
 def _boxes(layout, spans):
@@ -112,27 +107,23 @@ def test_layout_refuses_a_digit_outside_its_level():
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES)
-def test_sparse_rows_are_the_amplitude_support(widths, L):
+def test_the_words_are_the_masks_bits_and_nothing_else(widths, L):
     layout = lv.LivenessLayout.of(_format(widths), L)
-    statics = _statics(layout)
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
-    bits = lv.unpack(words, layout)
-    assert torch.equal(bits[:, lv.READ], _truth(rows, layout))
-    assert torch.equal(bits[:, lv.READ], bits[:, lv.WRITE])
+    masks, bits = _draw(layout)
+    words = lv.gather_words(masks, layout)
+    unpacked = lv.unpack(words, layout)
+    assert torch.equal(unpacked[:, lv.READ], _truth(bits, layout))
+    assert torch.equal(unpacked[:, lv.READ], unpacked[:, lv.WRITE])
 
 
-def test_dense_rows_are_the_static_width_mask_and_cost_no_read():
+def test_an_all_live_level_is_its_masks_words_not_a_static_width_mask():
+    """A dense level has a mask like every other: the producer's all-live words. The pass reads them like any level's
+    (there is no flag and no second path), and a digit past the level's width is the pad."""
     layout = lv.LivenessLayout.of(_format((32, 16)), 64)
-    statics = _statics(layout, dense=(0,), logical=(20, 16))
-    rows = _draw(layout, statics)
-    #: the dense level's digits are OVERWRITTEN with zeros: a pass that read them
-    #: would report the level dead, and the width mask is what makes it not.
-    blinded = (torch.zeros_like(rows[0]),) + rows[1:]
-    words = lv.liveness_words(blinded, blinded, layout, statics, statics)
-    bits = lv.unpack(words, layout)[:, lv.READ, :32]
-    mask = torch.tensor(statics.digit_mask[:32], dtype=torch.bool)
-    assert torch.equal(bits, mask[None, :, None].expand(bits.shape))
+    masks, bits = _draw(layout, logical=(20, 16), dense=(0,))
+    got = lv.unpack(lv.gather_words(masks, layout), layout)[:, lv.READ, :32]
+    assert got[:, :20].all() and not got[:, 20:].any()
+    assert torch.equal(got, _truth(bits, layout)[:, :32])
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES)
@@ -140,9 +131,8 @@ def test_pad_digits_are_dead_by_construction(widths, L):
     layout = lv.LivenessLayout.of(_format(widths), L)
     logical = tuple(max(1, width - 3) for width in widths)
     for dense in ((), (0,), tuple(range(len(widths)))):
-        statics = _statics(layout, dense=dense, logical=logical)
-        rows = _draw(layout, statics)
-        bits = lv.unpack(lv.liveness_words(rows, rows, layout, statics, statics), layout)
+        masks, _bits = _draw(layout, logical=logical, dense=dense)
+        bits = lv.unpack(lv.gather_words(masks, layout), layout)
         for level in range(layout.D):
             base = layout.row_base(level)
             pad = bits[:, :, base + logical[level]:base + widths[level], :]
@@ -151,9 +141,9 @@ def test_pad_digits_are_dead_by_construction(widths, L):
 
 def test_a_token_past_the_end_votes_dead():
     layout = lv.LivenessLayout.of(_format((16, 16)), 33)
-    statics = _statics(layout)
-    rows = tuple(torch.ones((1, layout.L, 1, width), dtype=torch.uint8) for width in layout.B)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    bits = tuple(torch.ones((1, layout.L, 1, width), dtype=torch.bool) for width in layout.B)
+    packed = tuple(pack_tokens(level) for level in bits)
+    words = lv.gather_words(Masks(PREFILL, packed, packed), layout)
     assert layout.words == 2
     tail = words[:, :, :, 1]
     assert torch.equal(tail, torch.ones_like(tail))
@@ -165,9 +155,8 @@ def test_a_tile_union_is_its_groups_digits_live_anywhere_in_its_64_tokens(widths
     """The unions against the per-token bits directly: bit ``i`` of (group ``g`` of level ``l``, tile ``t``) is digit
     ``32 g + i`` of level ``l`` live at some token of the tile; a group past a narrow level's digits is dead."""
     layout = lv.LivenessLayout.of(_format(widths), L)
-    statics = _statics(layout)
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    masks, _bits = _draw(layout)
+    words = lv.gather_words(masks, layout)
     bits = lv.unpack(words, layout)
     unions = lv.tile_unions(words, layout)
     assert unions.shape == (2, lv.SIDES, layout.groups, layout.tiles)
@@ -183,27 +172,11 @@ def test_a_tile_union_is_its_groups_digits_live_anywhere_in_its_64_tokens(widths
             assert not ((unions[:, :, group] >> bit) & 1).any()
 
 
-def test_negative_zero_is_dead_like_positive_zero():
+def test_the_pass_reads_the_prefill_layout_and_refuses_the_decode_one_by_name():
     layout = lv.LivenessLayout.of(_format((16, 16)), 32)
-    statics = _statics(layout)
-    rows = tuple(torch.full((1, layout.L, 1, width), -0.0) for width in layout.B)
-    rows[0][0, 0, 0, 5] = -1.0
-    bits = lv.unpack(lv.liveness_words(rows, rows, layout, statics, statics), layout)
-    assert bits[:, lv.READ].sum() == 1
-    assert bits[0, lv.READ, 5, 0]
-
-
-def test_the_static_mask_packs_into_the_words_the_kernel_reads():
-    """`SideStatics` is an OPERAND, not a description: the bits the seam packs are the
-    bits `digit_in_mask` reads back, and no logical width crosses with them."""
-    layout = lv.LivenessLayout.of(_format((32, 16)), 64)
-    statics = _statics(layout, dense=(0,), logical=(20, 9))
-    words = [statics.mask_word(index) for index in range(lv.mask_words(layout.rows))]
-    assert len(words) == 2
-    for row in range(layout.rows):
-        read_back = bool((words[row // 32] >> (row % 32)) & 1)
-        assert read_back == statics.digit_mask[row]
-    assert sum(statics.digit_mask) == 20 + 9
+    masks, _bits = _draw(layout)
+    with pytest.raises(ValueError, match="'prefill'-layout masks"):
+        lv.gather_words(Masks(DECODE, masks.read, masks.write), layout)
 
 
 # --------------------------------------------------------------- the folds
@@ -213,13 +186,12 @@ def test_the_static_mask_packs_into_the_words_the_kernel_reads():
 @pytest.mark.parametrize("spans", ("whole", "half"))
 def test_box_bits_are_the_or_over_tokens_of_the_and_over_levels(widths, L, spans):
     layout = lv.LivenessLayout.of(_format(widths), L)
-    statics = _statics(layout, dense=(0,) if len(widths) > 1 else ())
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    masks, _bits = _draw(layout, dense=(0,) if len(widths) > 1 else ())
+    words = lv.gather_words(masks, layout)
     bits = lv.unpack(words, layout)[:, lv.READ]
     step = [width if spans == "whole" else max(1, width // 2) for width in widths]
     boxes = _boxes(layout, step)
-    got = lv.box_activity(words, layout, boxes, lv.READ, statics)
+    got = lv.box_activity(words, layout, boxes, lv.READ)
     for index, box in enumerate(boxes):
         clause = torch.ones((bits.shape[0], layout.L), dtype=torch.bool)
         for level in range(layout.D):
@@ -230,11 +202,10 @@ def test_box_bits_are_the_or_over_tokens_of_the_and_over_levels(widths, L, spans
 
 def test_a_fully_pad_box_is_dead_and_a_straddling_one_is_not():
     layout = lv.LivenessLayout.of(_format((32, 16)), 64)
-    statics = _statics(layout, logical=(20, 16))
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    masks, _bits = _draw(layout, logical=(20, 16))
+    words = lv.gather_words(masks, layout)
     boxes = _boxes(layout, [8, 16])
-    live = lv.box_activity(words, layout, boxes, lv.WRITE, statics)
+    live = lv.box_activity(words, layout, boxes, lv.WRITE)
     for index, box in enumerate(boxes):
         if box.start[0] >= 20:
             assert not live[:, index].any(), "a box of nothing but pad digits must die"
@@ -261,13 +232,12 @@ def test_box_refuses_a_run_that_is_not_an_aligned_divisor():
 @pytest.mark.parametrize(("widths", "L"), _SHAPES)
 def test_page_bits_are_the_or_of_the_box_bits_over_the_box_to_page_map(widths, L):
     layout = lv.LivenessLayout.of(_format(widths), L)
-    statics = _statics(layout)
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    masks, _bits = _draw(layout)
+    words = lv.gather_words(masks, layout)
     read_boxes = _boxes(layout, [max(1, width // 2) for width in widths])
     write_boxes = _boxes(layout, list(widths))
-    read_bits = lv.box_activity(words, layout, read_boxes, lv.READ, statics)
-    write_bits = lv.box_activity(words, layout, write_boxes, lv.WRITE, statics)
+    read_bits = lv.box_activity(words, layout, read_boxes, lv.READ)
+    write_bits = lv.box_activity(words, layout, write_boxes, lv.WRITE)
     pages = lv.page_activity(layout, read_boxes, read_bits, write_boxes, write_bits)
     assert pages.shape == (read_bits.shape[0], layout.atoms)
     want = torch.zeros_like(pages)
@@ -284,11 +254,10 @@ def test_page_bits_cover_every_leaf_the_routing_actually_touches(widths, L):
     """SOUNDNESS: the derived set is a box-grain OR, so it may over-report, but a page
     holding a live leaf is never missed -- allocation and residency depend on it."""
     layout = lv.LivenessLayout.of(_format(widths), L)
-    statics = _statics(layout)
-    rows = _draw(layout, statics)
-    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    masks, _bits = _draw(layout)
+    words = lv.gather_words(masks, layout)
     boxes = _boxes(layout, [max(1, width // 2) for width in widths])
-    live = lv.box_activity(words, layout, boxes, lv.WRITE, statics)
+    live = lv.box_activity(words, layout, boxes, lv.WRITE)
     pages = lv.page_activity(layout, boxes, live, boxes, live)
     bits = lv.unpack(words, layout)[:, lv.WRITE]
     strides = layout.radix_strides

@@ -896,16 +896,14 @@ int64_t rola_decode_build_stamp() {
   return item<int64_t>(out);
 }
 
-Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                           std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
-                           std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state,
-                           Tensor yacc, Tensor queue, Tensor growth, Tensor growth_any,
-                           Tensor growth_ctr, Tensor done, Tensor atom_bits,
-                           std::vector<int64_t> level_widths,
-                           std::vector<int64_t> level_row_offsets, int64_t lattice_k,
-                           int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
-                           std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
-                           std::optional<Tensor> pool_cursor) {
+Tensor rola_decode_forward(
+    std::vector<Tensor> read, std::vector<Tensor> write, std::vector<Tensor> read_scale,
+    std::vector<Tensor> write_scale, std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
+    std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state, Tensor yacc, Tensor queue,
+    Tensor growth, Tensor growth_any, Tensor growth_ctr, Tensor done, Tensor atom_bits,
+    std::vector<int64_t> level_widths, std::vector<int64_t> level_row_offsets, int64_t lattice_k,
+    int64_t lattice_m, bool write_dense, int64_t ctas, double eps, std::optional<Tensor> page_table,
+    std::optional<Tensor> pool_slots, std::optional<Tensor> pool_cursor) {
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
@@ -979,6 +977,21 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     p.read_scale[l] = detail::scalar_span_of(read_scale[l], B, H, "read_scale[l]");
     p.write_scale[l] = detail::scalar_span_of(write_scale[l], B, H, "write_scale[l]");
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
+  }
+  //: THE MASKS: int32 words, DIGIT-packed, one token, `[B, H, ceil(width_l / 32)]` a side a level -- bit `d % 32` of word
+  //: `d // 32` is digit `d` live. The pointers reach `DecodeParams`; no device code reads them yet.
+  STD_TORCH_CHECK(
+      read_mask.size() == static_cast<size_t>(D) && write_mask.size() == static_cast<size_t>(D),
+      "one digit mask a level a side");
+  for (int l = 0; l < D; ++l) {
+    const int64_t words = (level_widths[l] + 31) / 32;
+    for (const Tensor* m : {&read_mask[l], &write_mask[l]}) {
+      detail::check_i32(*m, "mask[l]");
+      STD_TORCH_CHECK(m->dim() == 3 && m->size(0) == B && m->size(1) == H && m->size(2) == words,
+                      "mask[l] must be [B, H, ceil(width_l / 32)] int32, got ", shape(m->sizes()));
+    }
+    p.read_mask[l] = read_mask[l].mutable_data_ptr<int32_t>();
+    p.write_mask[l] = write_mask[l].mutable_data_ptr<int32_t>();
   }
   //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
   p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;

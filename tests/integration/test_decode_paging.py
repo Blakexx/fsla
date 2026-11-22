@@ -61,9 +61,10 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, _write_atom_bitmap, derive_decode_geometry
+from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.lattice import permutation, to_canonical
 from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
+from rola.ops.produce import decode_plan
 
 pytestmark = [
     pytest.mark.cuda,
@@ -79,6 +80,7 @@ from tests.oracle.fixtures import (  # noqa: E402
     assert_reordered_close,
     assert_slots_close,
     bundle_operands,
+    masks_of,
     oracle_run,
     reordered_close,
     state_pages,
@@ -152,7 +154,7 @@ def _bundles(fixture):
 
 
 def _config(widths):
-    return derive_decode_geometry(_topology(widths), d_v=_DV, decay=False)
+    return decode_plan(_topology(widths), d_v=_DV, decay=False)
 
 
 def _leaf_support(levels, widths, config):
@@ -270,11 +272,9 @@ def test_the_paged_backing_matches_the_dense_one(arm, support):
     dense = _dense_masked_to(arena, entry)
     _seed_from_dense(arena, dense)
 
-    y_dense, dense_out, _ = _decode_step(
-        routes, values, config,
+    y_dense, dense_out, _ = _decode_step(routes, values, masks_of(routes), config,
         state_pages(dense.clone()))
-    y_paged, _, _ = _decode_step(
-        routes, values, config, arena.state,
+    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
         page_table=arena.page_table)
 
     assert_reordered_close(y_paged, y_dense, "the two backings' y")
@@ -326,11 +326,9 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     _seed_from_dense(arena, dense)
     table_before = arena.page_table.clone()
 
-    y_dense, _, _ = _decode_step(
-        routes, values, config,
+    y_dense, _, _ = _decode_step(routes, values, masks_of(routes), config,
         state_pages(dense.clone()))
-    y_paged, _, _ = _decode_step(
-        routes, values, config, arena.state,
+    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
         page_table=arena.page_table)
 
     assert bytes_equal(arena.state[resident:],
@@ -379,7 +377,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
         arena.plan_exact(bitmap, fresh=False)
         arena.wait()
         routes, values = _bundles(step)
-        y, _, _ = _decode_step(routes, values, config, arena.state,
+        y, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
                                page_table=arena.page_table)
         ys.append(y)
 
@@ -438,7 +436,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
                 arena.plan_exact(bitmap, fresh=False)
                 arena.wait()
             routes, values = _bundles(step)
-            y, _, _ = _decode_step(routes, values, config, arena.state,
+            y, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
                                    page_table=arena.page_table, pool=pool)
             out.append(y)
         ys[name] = out

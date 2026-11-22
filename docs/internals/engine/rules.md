@@ -20,13 +20,12 @@ C++ — cannot be read as a set with the others, and cannot be exercised without
 
 | rule | reads | decides |
 |---|---|---|
-| `mask` | `CallClass` | which subgraph — M1 or M2 |
+| `variant` | `CallClass` | which subgraph — PREFILL_STATELESS or PREFILL_STATEFUL |
 | `prefill_envelope` | `widths`, `d_v`, decay, whether the intra reads the widths, whether a state rides the call | the prefill's refusal (always one, by name, while no carry is built) |
 | `envelope` | unratified activations, device | the operand-side refusal, or None |
 | `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table (in no DAG: kept for the carry port) |
-| `paging_preference` | the expert overrides | dense or paged backing |
+| `paging_preference` | the plan's `paging` pin | dense or paged backing |
 | `admission` | the allocator's cursor, capacity, extent, count | the run's first slot |
-| `carve` | the rows' shipped widths, each level's two sparse flags, `d_v`, the expert overrides | the carry's box and each side's operation plan |
 
 ## <a id="the-marker"></a>2. The marker is the inventory
 
@@ -50,7 +49,7 @@ inputs are the entry-state plane, the exit-state plane and the page table, and i
 reads exactly whether each is there.
 
 What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
-the import graph: `paging_preference`'s `expert` is a `PlanOverrides` from `types.py`,
+the import graph: `paging_preference`'s `plan` is a `PrefillPlan` from `plan.py`,
 imported from `rola.engine` like every other core name, so no module here names
 `rola.expert` or `rola.interface` ([`engine.md` §8](engine.md#refusals)). The
 alternative shape — a rule reaching up into the facade for the type of a value it was
@@ -59,8 +58,8 @@ handed — survives an import-graph check only while the import hides in a funct
 ## <a id="rules-are-nodes"></a>3. Rules are nodes, not a phase
 
 There is no second executor and no rule pass. Band 2 runs INTERLEAVED with band 1 in
-the one walk — `paging_preference` at the head, `mask` the moment the call class
-exists, `decode_mask` the moment the
+the one walk — `paging_preference` at the head, `variant` the moment the call class
+exists, `decode_variant` the moment the
 step's backing does — and every one of them sits on the DAG's parallel front, never on
 its critical path. That is why the layer costs nothing.
 
@@ -85,7 +84,7 @@ by oversight:
 
 `run_table` is the pattern in miniature and the pattern the whole layer copies: write
 the RULE once in readable form — the rows of
-[`#run-table`](#run-table) — and DERIVE the mask by evaluating
+[`#run-table`](#run-table) — and DERIVE the variant by evaluating
 it over all eight bit values. The kernel's predicate is then one shift and one AND with
 no call-class knowledge in it.
 
@@ -108,7 +107,7 @@ folds exists.
 
 A proposed rule either folds facts that already exist, or it NAMES ITS ONE MISSING
 FACT explicitly — and that named fact goes through the fact-node review, as a new
-launch, a new mask and a new byte cost, separately. There is no third path in which a
+launch, a new variant and a new byte cost, separately. There is no third path in which a
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
 
@@ -123,10 +122,9 @@ validates the carve it is handed and refuses one it was not built for; it never 
 a carve. So the planner can change -- a cost model in place of fixed rules -- and every
 kernel keeps working for whatever it returns.
 
-`carve` is the rule: the expert's pinned carve (`PlanOverrides.carve`) after the same
-check the planner's own passes, else the planner's (`rola/engine/carve.py`,
-[`carve.md`](carve.md)). It reads the rows' last dimension and the bundle's flags, never
-their contents. That is the standing rule for every launch-static axis: it is a function of
+The carve is no rule of the engine: it is the PRODUCER's plan rule (`rola.ops.produce.prefill_plan`: the pinned carve after the same
+check the planner's own passes, else the planner's (`rola/engine/carve.py`, [`carve.md`](carve.md))). It reads the declaration's
+widths and which levels each side walks by lists, never an operand. That is the standing rule for every launch-static axis: it is a function of
 launch-static facts (shapes, declared flags, the binary's arms) and never of a routing
 statistic, because the routing distribution moves step to step and a layout chosen from it
 would make the state's shape depend on the data.
@@ -182,7 +180,7 @@ because it is the argument that decides the cost:
 
 `rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
 `uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
-eight values, so the rule is written once in readable form and the mask is derived, never
+eight values, so the rule is written once in readable form and the variant is derived, never
 hand-authored. The kernel's whole predicate is then one shift and one AND, with no branching
 taxonomy and no call-class knowledge in it. The eighth argument triple — a page table with
 no state at all — is refused at the binding before the derivation is reached, and derives

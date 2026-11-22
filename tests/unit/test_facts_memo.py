@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from rola.engine.runner import Node, node, run, validate_dag
-from rola.engine.types import Mask
+from rola.engine.types import Variant
 
 
 def _counting(**kwargs):
@@ -85,10 +85,10 @@ def test_a_dropped_sequence_drops_its_scratch():
 #: below. A node arriving with no bag fails there BY NAME, which is what makes the
 #: discipline a gate rather than a habit.
 def _decode_scratch_facts():
-    from rola.ops.decode import derive_decode_geometry
+    from rola.ops.produce import decode_plan
     from tests.oracle.oracle_fixtures import _topology
 
-    return {"geometry": derive_decode_geometry(_topology((16, 16)), d_v=64, decay=False),
+    return {"plan": decode_plan(_topology((16, 16)), d_v=64, decay=False),
             "BH": 2, "device": "cpu"}
 
 
@@ -191,12 +191,12 @@ def test_a_dag_declares_exactly_one_join_and_at_most_one_host_read():
 
 
 def test_a_masked_out_node_leaves_its_facts_null():
-    """The runtime-null OUTPUT skip: intra-mask variation is a null plan field, never
-    a mask split, so a skipped band's facts must be PRESENT and null rather than
+    """The runtime-null OUTPUT skip: intra-variant variation is a null plan field, never
+    a variant split, so a skipped band's facts must be PRESENT and null rather than
     absent -- a downstream node reads them either way."""
 
-    skipped, calls = _counting(gives=("arena",), masks=(Mask.M2,))
-    facts = run((skipped,), {"mask": Mask.M1})
+    skipped, calls = _counting(gives=("arena",), variants=(Variant.PREFILL_STATEFUL,))
+    facts = run((skipped,), {"variant": Variant.PREFILL_STATELESS})
     assert facts["arena"] is None and not calls
 
 
@@ -243,7 +243,7 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     for dag in (PREFILL_DAG, DECODE_STEP):
         assert not any(step.reference_only for step in dag)
     with pytest.raises(ValueError, match="second derivation"):
-        validate_dag((write_atom_bitmap,), ("routes", "geometry"))
+        validate_dag((write_atom_bitmap,), ("masks", "plan"))
 
 
 def test_the_decode_dag_ends_at_the_step_and_its_verdict_is_read_outside_it():

@@ -13,7 +13,7 @@ comparison would be an inference; the arm the layer recorded is a fact — or th
 call was REFUSED, which is what everything outside the built envelope now is. Every row
 drives exactly ONE forward, which is what makes the last arm the arm.
 
-``'decode'`` is a separate name rather than a shade of ``'cuda'`` precisely so this
+``'decode'`` is a separate name rather than a shade of ``'prefill'`` precisely so this
 table can tell the two CUDA branches apart. A test that could not would pass while the
 wrong kernel ran.
 
@@ -36,7 +36,7 @@ import rola
 from rola import LayerContinuation
 from rola.expert import PlanOverrides
 from rola.interface import BackwardNotImplemented
-from tests.oracle.fixtures import with_gain
+from tests.oracle.fixtures import masks_of, with_gain
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
 #: PREFILL kernel can. Decode itself is indifferent (it is BC-blind and general in the
@@ -223,8 +223,9 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     same class of failure (two implementations behind one call) that the layer's guard
     exists to prevent, pointed the other way.
     """
-    from rola.ops.decode import _decode_step, derive_decode_geometry
+    from rola.ops.decode import _decode_step
     from rola.ops.paging import page_layout
+    from rola.ops.produce import decode_plan
     from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
     from tests.oracle.fixtures import step_bundles
 
@@ -233,14 +234,14 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in widths))
-    config = derive_decode_geometry(topology, d_v=d_v, decay=False)
+    config = decode_plan(topology, d_v=d_v, decay=False)
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)
     routes, values = step_bundles(v, levels, with_gain(levels, g_write), topology)
     state = torch.zeros(1, config.N // 16, page_layout(config.d_v).bytes, dtype=torch.uint8, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
-        _decode_step(routes, values, config, state)
+        _decode_step(routes, values, masks_of(routes), config, state)
 
 
 @pytest.mark.cuda

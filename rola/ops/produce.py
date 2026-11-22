@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PRODUCER: one call from a stretch of tokens to the bundle -- the routes and the values, in the internal format.
 
-    routes, values = produce(x, plan, weights)
+    routes, values, masks = produce(x, plan, weights)
 
 The layer declares WHAT it routes (:class:`rola.routing.producer.Routing`), owns the weights, and compiles a
-:class:`ProducerPlan` once; this is the one primitive that computes the bundle from them. It is the whole job --
+:class:`ProducerPlan` once; this is the one primitive that computes the bundle from them, and the masks beside it in
+the layout of the consumer the plan names (:mod:`rola.routing.masks`). It is the whole job --
 the projection, every level's solve, the write gain (folded into write level 0's scale), the quantization into
 unit-max rows and the value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
 behind it (docs/api.md section 2): on CUDA with no gradient, the producer kernel's one launch, which is not built on
@@ -17,38 +18,49 @@ returns are the ones the ops take; a caller with its own levels builds them with
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 
+from rola.engine import DecodePlan, PrefillPlan
+from rola.engine.carve import check_carve, plan_carve
 from rola.engine.facts.operands import requires_backward
 from rola.ops._ext import not_built
-from rola.routing.entmax.production import production_routing_factor_levels
+from rola.routing.entmax.production import production_routing_levels
 from rola.routing.factors import RouteFactors
+from rola.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
+from rola.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
 from rola.values import Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "hidden_contiguous", "produce", "projection_dtype", "route_logits"]
+__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_plan", "hidden_contiguous", "prefill_plan", "produce",
+           "projection_dtype", "route_logits"]
 
 
 @dataclass(frozen=True)
 class ProducerPlan:
     """What one layer's producer computes, compiled once from its declaration: the routing, the heads, the widths
-    in and out. Every per-call decision is read off this, never off the data."""
+    in and out, and ``consumer``, the kernel family the masks are emitted for (:data:`rola.routing.masks.PREFILL` or
+    :data:`~rola.routing.masks.DECODE`): the producer's output layout is a static parameter per consumer, so no
+    conversion stands between the producer and the op. Every per-call decision is read off this, never off the data."""
 
     routing: Routing
     num_heads: int
     hidden_size: int
     d_v: int
+    consumer: str = PREFILL
 
     def __post_init__(self) -> None:
         for name in ("num_heads", "hidden_size", "d_v"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive exact int, got {value!r}")
+        if self.consumer not in (PREFILL, DECODE):
+            raise ValueError(f"consumer is {PREFILL!r} or {DECODE!r}, got {self.consumer!r}")
 
 
 @dataclass(frozen=True)
@@ -78,9 +90,10 @@ def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
     return route_W.transpose(1, 2).contiguous().transpose(1, 2)
 
 
-def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
-    """``x [B, T, hidden]`` -> ``(RouteFactors, Values)``, the bundle the ops take: the fused kernel's on CUDA with no
-    gradient -- not built on this line (:func:`rola.ops._ext.not_built`) -- the composition's otherwise."""
+def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
+    """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks)``, the operands the ops take: the fused kernel's on CUDA
+    with no gradient -- not built on this line (:func:`rola.ops._ext.not_built`) -- the composition's otherwise. The
+    masks come in the layout of the consumer the plan names (:mod:`rola.routing.masks`)."""
     if x.ndim != 3 or x.shape[-1] != plan.hidden_size:
         raise ValueError(f"x must be [B, T, {plan.hidden_size}], got {tuple(x.shape)}")
     operands = (x, weights.route_W, weights.route_bias, weights.gain_bias, weights.v_W)
@@ -89,13 +102,13 @@ def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tu
     return _composition(x, plan, weights)
 
 
-def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
+def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
     """The producer in torch: the fp64 and host reference, and the path a gradient takes."""
     B, T, _ = x.shape
     H = plan.num_heads
     routing = plan.routing
     read_logits, write_logits, gain_logits = route_logits(x, plan, weights)
-    read_bh, write_bh = production_routing_factor_levels(read_logits, write_logits, routing.resolved)
+    read_bh, write_bh, support = production_routing_levels(read_logits, write_logits, routing.resolved)
 
     #: THE LEVELS AS THEY ARE: no level need sum to 1 (docs/CONSTITUTION.md#r23). The producer's write gain is its
     #: own, folded into write level 0, so its scale carries it as the kernel's level-0 job stores it.
@@ -104,12 +117,13 @@ def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) 
                           device=x.device)
     write_levels = (write_levels[0] * g_write.unsqueeze(-1), *write_levels[1:])
     routes = RouteFactors.from_levels(routing.topology, read_levels, write_levels)
+    masks = _masks(plan, read_levels, write_levels, support, B=B, H=H)
 
     #: `v` FLOWS bf16 into the format (docs/api.md section 4.1); the fp64 reference computes it in fp64
     v_dtype = torch.float64 if x.dtype == torch.float64 else torch.bfloat16
     v = F.linear(x.to(v_dtype), weights.v_W.to(v_dtype))
     values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=plan.d_v))
-    return routes, values
+    return routes, values, masks
 
 
 def route_logits(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights):
@@ -136,3 +150,66 @@ def _write_gain(gain_logits, gain_bias, *, B, T, H, dtype, device) -> torch.Tens
 def _public(levels: tuple[torch.Tensor, ...], *, B: int, H: int) -> tuple[torch.Tensor, ...]:
     """Each level from the solve's ``[BH, T, width]`` to the public ``[B, T, H, width]`` (a permute of it)."""
     return tuple(level.reshape(B, H, -1, level.shape[-1]).permute(0, 2, 1, 3) for level in levels)
+
+
+def _masks(plan: ProducerPlan, read_levels, write_levels, support, *, B: int, H: int) -> Masks:
+    """THE MASKS the producer emits, in the layout of ``plan.consumer``: a bit where the producer's own level is
+    nonzero (the producer knows what it gives). For the prefill, a level the CUDA solve wrote support words for takes
+    them as the kernel wrote them (:func:`_solve_words`); the host composition packs the floating level."""
+    def packed(level: torch.Tensor) -> torch.Tensor:
+        return pack_tokens(level != 0) if plan.consumer == PREFILL else pack_digits(level != 0)
+
+    resolved = plan.routing.resolved
+    sides = []
+    for side, levels in enumerate((read_levels, write_levels)):
+        out = []
+        for index, level in enumerate(levels):
+            words = None if support is None or plan.consumer != PREFILL else _solve_words(
+                resolved, index, side, support, B=B, H=H)
+            out.append(packed(level) if words is None else words)
+        sides.append(tuple(out))
+    return Masks(plan.consumer, *sides)
+
+
+def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: int, H: int) -> torch.Tensor | None:
+    """The CUDA solve's own ``support_words`` of ``side``'s level ``index`` as ``[B, H, ceil(T / 32), width]`` (a free
+    view: the stream axis is ``B * H``, ``H`` inner), or ``None`` where the solve wrote none for this side -- a level with
+    no support slice, a union level (its one slice is the union's, not either side's), a side the level's support
+    flags do not name."""
+    level, offset, width = resolved.levels[index], resolved.support_offsets[index], resolved.branches[index]
+    if offset < 0 or isinstance(level, UnionRouting):
+        return None
+    if not resolved.support_side_flags[index] & (READ_SUPPORT if side == 0 else WRITE_SUPPORT):
+        return None
+    return support.view(B, H, support.shape[1], -1)[..., offset:offset + width]
+
+
+@cache
+def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side walks by lists -- those whose
+    activation has exact zeros (an opaque level, which may have zeros, included). A choice made once from the
+    declaration's activation metadata, and carried by the plan; no consumer asks the activations again."""
+    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
+                 for side in ("read", "write"))
+
+
+def prefill_plan(topology, d_v: int, *, paging: bool | None = None, carve=None) -> PrefillPlan:
+    """THE PRODUCER-OWNED PREFILL PLAN RULE: the carve from the declaration (the walk rule, then
+    :func:`rola.engine.carve.plan_carve`), or a pinned ``carve`` checked against the same declaration; ``paging`` the
+    state's mapping pin (:class:`rola.engine.plan.PrefillPlan`)."""
+    widths = tuple(topology.padded_widths)
+    read_sparse, write_sparse = activation_walks(topology)
+    if carve is None:
+        carve = plan_carve(widths, read_sparse, write_sparse, d_v)
+    else:
+        check_carve(carve, widths, read_sparse, write_sparse, d_v)
+    return PrefillPlan(carve=carve, paging=paging)
+
+
+def decode_plan(topology, *, d_v: int, decay: bool) -> DecodePlan:
+    """THE PRODUCER-OWNED DECODE PLAN RULE: the step's static plan, ``write_dense`` -- deposit whole atoms -- chosen from
+    the declaration: the innermost level's write activation has no exact zeros."""
+    from rola.ops.decode import derive_decode_plan
+
+    write_dense = not activation_walks(topology)[1][-1]
+    return derive_decode_plan(topology, d_v=d_v, decay=decay, write_dense=write_dense)

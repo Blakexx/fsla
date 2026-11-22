@@ -24,13 +24,14 @@ import torch
 
 import rola
 from rola.routing.factors import RouteFactors
+from rola.routing.masks import PREFILL
 from rola.values import Values
 
 
 def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
     """A layer over a declared routing: the producer is the layer's."""
     levels = [rola.dense_routing(w) if routing is None else routing.at(w) for w in widths]
-    return rola.RoLA(rola.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=8)
+    return rola.RoLA(rola.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=32)
 
 
 def _x(layer, *, B=2, T=6, dtype=torch.float64):
@@ -45,10 +46,24 @@ def _factors(layer, **kwargs) -> RouteFactors:
 def _validate(routes, v) -> None:
     """One walk of the engine's fast-fail over `(routes, v)`: the prefill DAG's `validate_context`, which is where
     the bundle contract is gated, before any fact is found."""
-    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
+    from rola.engine.dags.prefill_dag import validate_context
 
     values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
-    validate_context(PrefillContext(routes=routes, values=values))
+    validate_context(_context(routes, values))
+
+
+def _context(routes, values):
+    """The call's context: the bundle's own bits as the PREFILL-layout masks and a valid plan (validation reads neither's contents) (a
+    non-bundle is the type refusal's, which speaks before either is read)."""
+    from rola.engine import PrefillPlan
+    from rola.engine.carve import plan_carve
+    from rola.engine.dags.prefill_dag import PrefillContext
+    from tests.oracle.fixtures import masks_of
+
+    if not isinstance(routes, RouteFactors):
+        return PrefillContext(routes=routes, values=values, masks=None, plan=None)
+    return PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
+                          plan=PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64)))
 
 
 def _admitted(routes, v) -> None:
@@ -200,18 +215,15 @@ def test_a_zero_digit_is_a_zero_at_every_level():
 
 
 def test_rows_are_u8_at_every_depth():
-    """The producer writes u8 rows at every depth, dense or sparse, each against its own max, and every side has a
-    dense level (2026-10-08); a row of any other type is refused, and a deep bundle dequantizes to its levels within
+    """The producer writes u8 rows at every depth, each against its own max (a side with no dense level is the plan's
+    refusal, `rola.engine.carve.plan_carve`; the bundle carries no flag); a row of any other type is refused, and a deep bundle dequantizes to its levels within
     half a digit a row."""
     from rola.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
-    sparse = ((False, True, True), (False, True, True))
-    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, sparse=sparse)
+    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3)
     assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write)
-    with pytest.raises(ValueError, match="every read level sparse"):
-        RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, sparse=((True,) * 3, (False, True, True)))
     for got in bundle.dequantized()[0]:
         top = level.amax(-1, keepdim=True)
         assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
@@ -219,7 +231,7 @@ def test_rows_are_u8_at_every_depth():
     wrong[1] = wrong[1].to(torch.float16)
     with pytest.raises(TypeError, match="stored as torch.uint8"):
         RouteFactors(topology=deep, amp_read=wrong, amp_write=bundle.amp_write, scale_read=bundle.scale_read,
-                     scale_write=bundle.scale_write, sparse=sparse)
+                     scale_write=bundle.scale_write)
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -237,13 +249,13 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
 def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
     """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
     `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
-    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
+    from rola.engine.dags.prefill_dag import validate_context
 
     producer = _routes()
     factors = _factors(producer)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="Values"):
-        validate_context(PrefillContext(routes=factors, values=v))
+        validate_context(_context(factors, v))
     _admitted(factors, v)
 
 
@@ -301,7 +313,7 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
         def forward(self, stream):
             B, T = stream.shape[0], stream.shape[1]
             level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
-            return RouteFactors.from_levels(self.topology, (level,), (level.clone(),), sparse=((False,), (False,)))
+            return RouteFactors.from_levels(self.topology, (level,), (level.clone(),))
 
     producer = Uniform()
     factors = producer(_x(producer))
@@ -411,7 +423,7 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     #: The set names what is BEHIND the door today; the RULE is what this row states
     #: and it does not move when the set does: launch geometry is behind the marked
     #: door, never at the top level.
-    quarantined = {"PlanOverrides", "requires_backward", "envelope_refusal"}
+    quarantined = {"PrefillPlan", "requires_backward", "envelope_refusal"}
     import rola.expert as expert
 
     assert quarantined.isdisjoint(rola.__all__)
@@ -425,8 +437,8 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
         "self", "routing", "hidden_size", "num_heads",
-        "d_v", "decay", "layer_idx", "expert", "memory_budget"]
-    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "expert", "memory_budget"):
+        "d_v", "decay", "layer_idx", "plan", "memory_budget"]
+    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "plan", "memory_budget"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
@@ -436,15 +448,15 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 #: arm's `BC` belongs to the built arm the manifest carries for a topology and is
 #: not host-selectable, so there is no feasible SET for a pin to shrink. The pin
 #: itself did not become silently inert -- the unsupported-topology arm refused
-#: `PlanOverrides(state_block=...)` on the kernel arm BY NAME, and
+#: a `state_block` pin on the kernel arm BY NAME, and
 #: `tests/integration/test_layer_dispatch.py` holds that refusal.
 
 
-def test_the_expert_argument_refuses_a_lookalike():
+def test_the_plan_argument_refuses_a_lookalike():
     """PLANTED VIOLATION: a dict that happens to have the right keys."""
     producer = _routes()
-    with pytest.raises(TypeError, match="PlanOverrides"):
-        rola.RoLA(producer.routing, hidden_size=32, num_heads=2, expert={"state_block": 16})
+    with pytest.raises(TypeError, match="PrefillPlan"):
+        rola.RoLA(producer.routing, hidden_size=32, num_heads=2, plan={"state_block": 16})
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +559,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from rola.engine.rules.envelope import prefill_envelope;"
             "from rola.engine.dags.prefill_dag import PrefillContext, run_prefill;"
             "from rola.ops.prefill import prefill;"
-            "from rola.ops.decode import derive_decode_geometry;"
+            "from rola.ops.decode import derive_decode_plan;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `measure/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"

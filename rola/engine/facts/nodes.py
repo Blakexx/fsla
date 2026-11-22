@@ -9,7 +9,7 @@ primitives beside it (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
-from rola.engine import CallClass, Mask, node
+from rola.engine import CallClass, Variant, node
 from rola.engine.facts import planes
 from rola.engine.facts.operands import operands_of, requires_backward
 
@@ -33,7 +33,7 @@ def classify_call(f):
         grad=requires_backward(*operands_of(f["routes"], f["values"], f["decay"])))
 
 
-@node(needs=("arena",), stream="main", masks=(Mask.M2,), waits=("residency",))
+@node(needs=("arena",), stream="main", variants=(Variant.PREFILL_STATEFUL,), waits=("residency",))
 def join(f):
     """The admission's table write and slot zeroing ran on the arena's side stream;
     this wait puts them before the BLOCK-BITS pass, which READS the page table, and

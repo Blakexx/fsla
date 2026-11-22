@@ -45,9 +45,9 @@ it at all:
 * `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
   `validate_capturable`), the value types, the pins a caller may set over axes the op
-  decides — `PlanOverrides` — the carry's carve — `Carve`, `SidePlan` — and the
+  decides — the carry's carve — `Carve`, `SidePlan` — and the
   refusal every no-backward clause raises —
-  `BackwardNotImplemented` — (`types.py`), and the per-family plans (`plan.py`).
+  `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, `DecodePlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan`, `operands`, `workspace`).
 * `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
   bitmap (`planes.py`), the liveness words and their folds (`liveness.py`), the facts
   pass's list model (`lists.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
@@ -85,24 +85,24 @@ surprise.
 
 The runner is the whole execution model:
 
-* a node whose mask does not contain the call's MASK — the MaskRule's own output,
+* a node whose mask does not contain the call's VARIANT — the VariantRule's own output,
   read as a fact — is SKIPPED, and its facts are
   seeded null — the runtime-null output skip;
 * a node whose facts are already in the bag is skipped, which is how a SUPPLIED fact
   short-circuits every node upstream of it;
 * otherwise its needs are asserted present and it is called.
 
-## <a id="masks"></a>4. Masks, and why not per-fact bools
+## <a id="variants"></a>4. Variants, and why not per-fact bools
 
-Specialization is per CALL CLASS, and the set is CLOSED AT FOUR: `M1`
-prefill-stateless and `Mask.M2` prefill-stateful for the prefill family, `Mask.M3` decode-dense and
-`M4` decode-paged for the decode family. Each family has its own MaskRule over its own
-facts — `mask` folds `CallClass`'s four bits, `decode_mask` folds the one bit a decode
-step has — and a mask earns its name only by selecting a DIFFERENT node set. A growth
-step does not: it is `M4` walked twice around an admission
-([`decode_dag.md` §1](decode_dag.md#the-two-masks)).
+Specialization is per CALL CLASS, and the set is CLOSED AT FOUR: `PREFILL_STATELESS`
+prefill-stateless and `Variant.PREFILL_STATEFUL` prefill-stateful for the prefill family, `Variant.DECODE_DENSE` decode-dense and
+`DECODE_PAGED` decode-paged for the decode family. Each family has its own VariantRule over its own
+facts — `variant` folds `CallClass`'s four bits, `decode_variant` folds the one bit a decode
+step has — and a variant earns its name only by selecting a DIFFERENT node set. A growth
+step does not: it is `DECODE_PAGED` walked twice around an admission
+([`decode_dag.md` §1](decode_dag.md#the-two-variants)).
 
-A bool per fact would be `2^n` specializations of everything downstream, so intra-mask
+A bool per fact would be `2^n` specializations of everything downstream, so intra-variant
 variation is carried as a null plan FIELD instead — `state_in is None`, a dense step's
 `page_table is None` — which is free and costs no hot-loop register.
 
@@ -186,9 +186,9 @@ same composition without the raise, which is what lets a caller ask before calli
 `rola.expert` re-exports it as the public address (`docs/api.md` §5), and that
 re-export is the only direction the dependency runs.
 
-`PlanOverrides` is the same statement from the other end. A pin is a VALUE a rule
+`PrefillPlan` is the same statement from the other end. A plan field is a VALUE a rule
 folds — `rules/paging.py` reads it and returns a bool — so it is engine vocabulary and
-`types.py` is where it is defined; `rola.expert` re-exports it as the marked door
+`plan.py` is where it is defined; `rola.expert` re-exports it as the marked door
 (`docs/api.md` §5). NO MODULE UNDER `rola/engine/` IMPORTS `rola.interface` OR
 `rola.expert`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds

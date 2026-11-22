@@ -18,14 +18,20 @@ import torch
 
 from rola.ops._ext import not_built
 
-__all__ = ["prefill", "reader_factor", "readout"]
+__all__ = ["launch_bytes_per_token", "prefill", "reader_factor", "readout"]
 
 
-def prefill(routes, values, facts, carve, layout, read_statics, write_statics, **kwargs
-            ) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it), the carry's and
+def prefill(launch, facts, layout, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+    """``launch`` is the :class:`rola.engine.plan.PrefillLaunch`. ``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it), the carry's and
     the intra's reduced into the same planes: not built on this line (:func:`rola.ops._ext.not_built`)."""
     not_built("prefill")
+
+
+def launch_bytes_per_token(plan, topology, num_heads: int, d_v: int, hidden_size: int) -> int:
+    """A segment's working set per batch-token in bytes: the sum of what the launch builder allocates for a
+    :class:`rola.engine.plan.PrefillLaunch`'s operands and workspace, by the same function. Not built on this line
+    (:func:`rola.ops._ext.not_built`): the builder exists with the prefill kernel."""
+    not_built("prefill launch builder")
 
 
 def reader_factor(routes) -> torch.Tensor:

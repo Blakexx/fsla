@@ -63,7 +63,7 @@ from tests.integration.test_decode_paging import (
     _fixture,
     _leaf_support,
 )
-from tests.oracle.fixtures import assert_reordered_close, reordered_close
+from tests.oracle.fixtures import assert_reordered_close, masks_of, reordered_close
 
 _SUPPORT = {"sparse": 0.25, "half": 0.5, "all": 1.0}
 
@@ -79,8 +79,7 @@ def _step(fixture, config, arena, *, workspace=None, pool=None):
     BH = fixture["B"] * fixture["H"]
     if workspace is None:
         workspace = DecodeScratch.build(config, BH, torch.device("cuda"))
-    y, _state, workspace = _decode_step(
-        routes, values, config, arena.state, workspace=workspace,
+    y, _state, workspace = _decode_step(routes, values, masks_of(routes), config, arena.state, workspace=workspace,
         page_table=arena.page_table, pool=pool)
     return y, workspace
 

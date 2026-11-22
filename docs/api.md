@@ -22,7 +22,7 @@ or, without the layer, from levels you computed yourself -- the format's own uti
 
 ```python
 factors = rola.RouteFactors.from_levels(topology, read_levels, write_levels)
-y, _ = rola.rola_op(factors, rola.Values.from_projection(v), decay())
+y, _ = rola.rola_op(factors, rola.Values.from_projection(v), masks, decay(), plan=plan)
 ```
 
 ---
@@ -30,13 +30,16 @@ y, _ = rola.rola_op(factors, rola.Values.from_projection(v), decay())
 ## 1. The op
 
 ```python
-rola_op(routes: RouteFactors, values: Values, decay: LeafMassDecay | None = None, *,
-        state=None, expert=None) -> (y, state)
+rola_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay | None = None, *,
+        plan: PrefillPlan, state=None) -> (y, state)
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
-`decay` is the recurrence dial. `y` is `[B, T, H, d_v]`.
+`masks` is the data beside the rows, like attention's mask (§2.6): the op computes with `r * m`.
+`decay` is the recurrence dial. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
+what to do, never what you are giving, and it changes at most rounding within the oracle's tolerance, never the
+mathematical output -- the data does.
 
 `state` is `None` (a stateless call, returning `(y, None)`) or a `rola.state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
@@ -55,10 +58,10 @@ thinnest batch-head still has) and `refill_pool(state)` (restock what the device
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
 [`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
 
-There is no plan argument, no configuration argument, and no statistics argument. Those
-are not model facts — they are how the op RUNS, and the op decides how it runs, per
-call, from the routing it was actually given. They live behind
-[`rola.expert`](#5-the-expert-surface).
+The plan is a frozen, hashable `PrefillPlan` -- what to do (the carve and the state's backing mapping) and
+nothing else, built once from the declaration by the producer's plan rule (`rola.expert.prefill_plan`); the layer
+holds its own. There is no configuration argument and no statistics argument: those are not model facts -- they are
+how the op RUNS. The plan type lives behind [`rola.expert`](#5-the-expert-surface).
 
 **Any level width, any `d_v`.** A `Routing` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's
@@ -88,8 +91,9 @@ the no-fallback rule forbids.
 | an unratified activation | — | refused |
 
 Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the
-sentence the refusal will carry, or `None`. `rola.expert.require_envelope(...)` is the
-raising form the op itself uses.
+sentence the refusal will carry. IT ALWAYS REFUSES while no carry arm is built (it never returns `None`: the
+sentence names the first clause the call fails, and a call that passes them all is refused for want of a carry arm).
+`rola.expert.require_envelope(...)` is the raising form the op itself uses, and likewise always raises.
 
 **The envelope is narrow, and that is stated rather than softened.** Shapes outside the
 matrix are refused, and there is NO TRAINING PATH through this surface until the native
@@ -163,10 +167,9 @@ launch surface (`rola.ops.carry.carry`), so a prefill does not yet run end to en
 ### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, source=None, sparse=None)
-RouteFactors.from_levels(topology, read, write, *, sparse=None)        # the framework's epilogue
-RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, source=None, *,
-                       sparse=None)                                    # rows already in the format
+RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, source=None)
+RouteFactors.from_levels(topology, read, write)                        # the framework's epilogue
+RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, source=None)  # rows already in the format
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
@@ -175,14 +178,8 @@ digit is an exact zero, with no floor under it; an all-zero row is a dead token 
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
 tensor per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
 row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
-intra and decode read rows, and the carry reads rows through the facts pass's words). `sparse` is
-`(read, write)`, a bool a level: the levels whose support the facts pass words because they may hold
-exact zeros worth skipping. It is set at production -- the producer flags a side whose activation
-has exact zeros, and `from_levels`/`from_rows` default to that rule -- and read by every consumer;
-no consumer derives it from the activations. A flag cannot disagree with the rows: a sparse-flagged
-level with no zeros costs its words, and a dense-flagged level with zeros is read whole.
-EVERY SIDE HAS A DENSE LEVEL: a `sparse` that flags every level of a side is refused -- a side's dense levels are
-a carry's operand rows on that side (`docs/internals/engine/rules.md#carve`).
+intra and decode read rows, and the carry reads rows through the masks' words). The bundle carries NO liveness: which
+digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
 <a id="grouped-queries"></a>
 GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
@@ -209,7 +206,7 @@ else.
 stored levels, their scales and the topology they are shaped by — nothing else, and in
 particular no declaration a caller could pair with tensors that do not describe it.
 `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the provenance: one
-level per topology level at that level's width, one `sparse` flag a level a side, one shared
+level per topology level at that level's width, one shared
 prefix a side, one device, one dtype, each scale fp32 at its side's prefix. A test that plants
 a specific routing pattern builds one directly and is held to exactly those invariants.
 Unit-sum-ness is not among them: no level need sum to 1 ([§2.2](#22-the-scaled-block-and-the-gain)).
@@ -375,6 +372,30 @@ scale-free: a magnitude a write level carries -- a producer's gain, a level summ
 scales the deposit and not the clock. That is the defined semantics rather than a defect, but it
 is a choice a level's author is making, so it is stated here rather than buried.
 
+### 2.6 The masks are data, in each consumer's native layout
+
+A mask is a bit per side, per level, per digit, per token -- true where the digit is live (ruled 2026-11-13) -- and it
+is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22): the op computes with `r * m`, the product under the
+mask. The masks are validated for shape, dtype and device, never for their values, and used blindly: a bit under a
+nonzero row drops that digit's term, a bit over a zero row adds nothing, and the oracle (`rola.naive_rola(..., masks=)`)
+is the result the data fixes. The backward saves the masks and they carry no gradient: a masked coefficient's gradient is zero.
+
+```python
+rola.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
+```
+
+The producer emits them in the layout of the consumer its plan names (`ProducerPlan.consumer`, a static field), so no
+conversion stands between the producer and the op, and each op documents the layout it reads:
+
+| consumer | a level's mask | bit |
+|---|---|---|
+| `"prefill"` (`rola_op`, `RoLA.forward`) | int32 `[B, H, ceil(T / 32), width_l]` (`H_w` on the write side), TOKEN-packed: the entmax kernels' `support_words` as they are | bit `t % 32` of word `t // 32` = token `t` live at that digit; the solve's stream axis is `B * H` with `H` inner, so its `[B * H, ...]` words are this shape as a view |
+| `"decode"` (`decode_step_gated`) | int32 `[B, H, ceil(width_l / 32)]`, DIGIT-packed, one token | bit `d % 32` of word `d // 32` = digit `d` live |
+
+Bits past `T` (prefill) or past `width_l` (decode) are zero. A level whose activation has no exact zeros carries an
+all-live mask. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
+(u8 `[B, T, H, width_l]` rows and fp32 `[B, T, H]` scales, bf16 `[B, T, H_w, d_v]` values with their fp32 scale).
+
 ## 3. The decay-source slot
 
 Where the recurrence's forgetting rates come from is a CHOICE, and the recurrence cannot
@@ -409,7 +430,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, expert=None, memory_budget=None)
+RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, plan=None, memory_budget=None)
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=rola.state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -439,7 +460,7 @@ independently of gradient reachability, because reentrant gradient checkpointing
 its first pass under `no_grad()` with the module still in training mode — and a
 forward that pass could take would be a forward no backward can follow.
 
-`layer.last_execution_backend` names the arm the last forward took — `'cuda'` or
+`layer.last_execution_backend` names the arm the last forward took — `'prefill'` or
 `'decode'`, and `None` until one completes. It is a fact about the branch rather than an
 inference from a timing, and it is published for exactly that: a benchmark process
 cannot spy on the call it is timing, and wall-clock cannot tell two arms apart. It is a
@@ -475,8 +496,8 @@ are bounded along with the op -- which an op-level split cannot do once the whol
 The op runs one segment and knows nothing of segmentation.
 
 `T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
-whole number of the device's windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
-every per-token tensor a segment allocates, gated against the measured peak) fits beside the state
+whole number of the device's windows whose working set (the per-token bytes of the prefill launch builder's own
+allocation, `rola.ops.prefill.launch_bytes_per_token`, which refuses by name until the prefill kernel exists) fits beside the state
 (`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
 `memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
 no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
@@ -490,14 +511,15 @@ the pins over axes the op otherwise decides, and the fine-grained gain layout be
 the layer's one public flag:
 
 ```python
-from rola.expert import PlanOverrides, envelope_refusal
-layer = rola.RoLA(routes, expert=PlanOverrides())
+from rola.expert import PrefillPlan, prefill_plan, envelope_refusal
+layer = rola.RoLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
 ```
 
 | name | what it is |
 |---|---|
-| `PlanOverrides` | the pins: `paging`, `carve` |
-| `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | whether a call has an arm, asked before making it — the refusing clause in its own words, or `None`. `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
+| `PrefillPlan`, `DecodePlan` | the frozen static plans, one per kernel family -- what to do only: `PrefillPlan(carve, paging)`, and `DecodePlan` (the decode step's geometry, `write_dense` -- deposit whole atoms -- and the CTA count) |
+| `prefill_plan(topology, d_v, ...)` / `decode_plan(topology, ...)` | the producer-owned plan rules: they choose from the declaration alone (the levels each side walks by lists, whole-atom deposits) |
+| `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | why a call has no arm, asked before making it — the refusing clause in its own words (it always refuses on this line). `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 
@@ -508,16 +530,17 @@ machine and with the built matrix. The model facts it carries are the exception,
 because they are not decisions.
 
 **Every pin is a declared restriction rather than a dial, and each refuses by name
-rather than being ignored.** `PlanOverrides` carries two fields. `paging` is the state's
+rather than being ignored.** `PrefillPlan` carries two fields. `paging` is the state's
 BACKING, never a launch shape: `None` is the paged default, `False` pins the dense plane
 the bit-identity gate compares against, and `True` is refused because paging is on by
 default and bitwise invisible. `carve` pins the carry's box and operation plans; the rule
 checks a pinned carve against the declaration exactly as it checks its own
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)).
 
-**There is no plan object and no derive/execute seam.** The carry's launch geometry is
-the carve — the rule's, or a pinned one checked the same way — so there is no
-launch-shaping object for a caller to hold or synthesize. A conformance family drives the
+**A plan is static and reads no operand.** The carry's launch geometry is the carve -- the rule's, or a pinned one checked
+the same way -- and the plan is what to do, hashable, the arm and the cache key. Inside, one launch bundle per kernel
+family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the `plan`, the `operands` (the data, masks included)
+and the `workspace` (scratch, pool) -- built at a DAG's terminal node and never public. A conformance family drives the
 envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and `envelope_refusal` answers the same question before a call.
 

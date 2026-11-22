@@ -35,19 +35,20 @@ from dataclasses import dataclass
 import torch
 
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
-from rola.engine.plan import DecodeGeometry, DecodePlan
+from rola.engine.plan import DecodeLaunch, DecodeOperands, DecodePlan, DecodeWorkspace
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import derive_lattice, permutation
 from rola.ops.padding import pad_v, padded_value_width, slice_y
 from rola.ops.paging import MMA_K_QUANTUM, page_layout
+from rola.routing.masks import DECODE
 from rola.routing.types import Topology
 
 __all__ = [
     "DecodeScratch",
     "arms",
-    "derive_decode_geometry",
+    "derive_decode_plan",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
@@ -116,18 +117,19 @@ def _admit(widths: tuple[int, ...]) -> None:
                 DV=2, dtype=SPLIT_PLANE_DTYPE, ids=1)
 
 
-def derive_decode_geometry(
+def derive_decode_plan(
     topology: Topology,
     *,
     d_v: int,
     decay: bool,
+    write_dense: bool,
     eps: float = READOUT_EPS,
-    write_dense: bool | None = None,
-) -> DecodeGeometry:
-    """Build the carrier once, at the boundary.
+) -> DecodePlan:
+    """Build the static plan once, at the boundary. ``write_dense`` is the plan's action (deposit whole atoms), chosen by
+    the producer's plan rule (:func:`rola.ops.produce.decode_plan`); nothing here reads an activation.
 
     HOST-SIDE PADDING ("d_v padding is also host-side"): ``d_v`` is the caller's
-    LOGICAL value width, and this is the SEAM -- the geometry this returns carries
+    LOGICAL value width, and this is the SEAM -- the plan this returns carries
     the padded ``DV`` (:func:`_shipped_decode_dv`), which is what the scratch sizing
     and the launch address. Decode's arm key is ``(DV, D, decay)`` ONLY (:func:`arms`):
     ``DV`` is padded to a shipped value, but the per-level widths carry no such
@@ -150,11 +152,7 @@ def derive_decode_geometry(
         row_offset.append(acc)
         acc += w
 
-    #: the bundle's flag where the caller has one (the step's graph); a caller holding a topology alone takes the
-    #: production rule
-    if write_dense is None:
-        write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
-    return DecodeGeometry(
+    return DecodePlan(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
         d_v=int(d_v), has_decay=decay, eps=eps, ctas=None, write_dense=write_dense)
 
@@ -195,7 +193,7 @@ class DecodeScratch:
     atom_bits: torch.Tensor
 
     @staticmethod
-    def build(config: DecodeGeometry, BH: int, device) -> DecodeScratch:
+    def build(config: DecodePlan, BH: int, device) -> DecodeScratch:
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
@@ -243,6 +241,14 @@ def fold_levels(levels) -> list[torch.Tensor]:
     return [_fold(rows).float() for rows in levels]
 
 
+def check_decode_masks(masks, routes) -> None:
+    """The decode step's masks are the DECODE layout, digit-packed int32 ``[B, H, ceil(width_l / 32)]`` a side a level,
+    validated for shape and dtype only (:meth:`~rola.routing.masks.Masks.check`)."""
+    if masks.consumer != DECODE:
+        raise ValueError(f"the decode step takes the {DECODE!r}-layout masks, got {masks.consumer!r}")
+    masks.check(routes)
+
+
 def guard_no_grad(operands) -> None:
     if not torch.is_grad_enabled():
         return
@@ -257,7 +263,7 @@ def guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-def step_plane(v: torch.Tensor, config: DecodeGeometry, decay,
+def step_plane(v: torch.Tensor, config: DecodePlan, decay,
                state: torch.Tensor, page_table: torch.Tensor | None) -> torch.Tensor:
     """The plane the kernel indexes, and the per-step agreement checks that find it.
 
@@ -297,7 +303,7 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, decay,
     return state
 
 
-def leaf_rate_dials_for(decay, config: DecodeGeometry, device) -> torch.Tensor | None:
+def leaf_rate_dials_for(decay, config: DecodePlan, device) -> torch.Tensor | None:
     """``[H, sum_l width_l]`` fp32 -- the decay arm's per-HEAD constant, or ``None``.
 
     It is the ONE operand the step kernel does not fold: a per-HEAD constant rather than a
@@ -309,8 +315,8 @@ def leaf_rate_dials_for(decay, config: DecodeGeometry, device) -> torch.Tensor |
     return leaf_rate_dials(decay, config).to(device).float()
 
 
-def step(plan: DecodePlan) -> torch.Tensor:
-    """THE STEP, in ONE launch, in place on ``plan.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
+def step(launch: DecodeLaunch) -> torch.Tensor:
+    """THE STEP, in ONE launch, in place on ``launch.operands.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
     Fold, expand and walk are one kernel: the per-token operands are gathered from the
     producer's own views straight into the CTA's shared memory, the digit masks and owner
@@ -326,24 +332,26 @@ def step(plan: DecodePlan) -> torch.Tensor:
     and the verdict it publishes is per batch-head
     (docs/internals/decode/decode.md#absorbed-verdict).
     """
-    config = plan.config
-    pool = plan.pool
+    config, op, pool = launch.plan, launch.operands, launch.workspace.pool
+    scratch = launch.workspace.scratch
     y = extension().rola_decode_forward(
-        read=list(plan.read),
-        write=list(plan.write),
-        read_scale=list(plan.read_scale),
-        write_scale=list(plan.write_scale),
-        dials=plan.dials,
-        v=plan.v,
-        v_scale=plan.v_scale,
-        state=plan.state_plane,
-        yacc=plan.scratch.yacc,
-        queue=plan.scratch.queue,
-        growth=plan.scratch.growth,
-        growth_any=plan.scratch.growth_any,
-        growth_ctr=plan.scratch.growth_ctr,
-        done=plan.scratch.done,
-        atom_bits=plan.scratch.atom_bits,
+        read=list(op.read),
+        write=list(op.write),
+        read_scale=list(op.read_scale),
+        write_scale=list(op.write_scale),
+        read_mask=list(op.read_mask),
+        write_mask=list(op.write_mask),
+        dials=op.dials,
+        v=op.v,
+        v_scale=op.v_scale,
+        state=op.state_plane,
+        yacc=scratch.yacc,
+        queue=scratch.queue,
+        growth=scratch.growth,
+        growth_any=scratch.growth_any,
+        growth_ctr=scratch.growth_ctr,
+        done=scratch.done,
+        atom_bits=scratch.atom_bits,
         level_widths=list(config.widths),
         level_row_offsets=list(config.level_row_offset),
         lattice_k=config.lattice_k,
@@ -351,17 +359,17 @@ def step(plan: DecodePlan) -> torch.Tensor:
         write_dense=config.write_dense,
         ctas=-1 if config.ctas is None else config.ctas,
         eps=config.eps,
-        page_table=plan.page_table,
+        page_table=op.page_table,
         pool_slots=None if pool is None else pool.pool_slots,
         pool_cursor=None if pool is None else pool.pool_cursor,
     )
-    B, _T, H, _d_v = plan.v.shape
+    B, _T, H, _d_v = op.v.shape
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
-def _write_atom_bitmap(write_live, config: DecodeGeometry) -> torch.Tensor:
+def _write_atom_bitmap(write_live, config: DecodePlan) -> torch.Tensor:
     """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY, from each write level's live
-    digits (:meth:`~rola.routing.factors.RouteFactors.live`).
+    digits: the write masks' bits (:meth:`~rola.routing.masks.Masks.bits`), ``[B, 1, H, width_l]`` bool a level.
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
     gate's reference; calling it on a shipped path would delete the gate's independence
@@ -385,7 +393,8 @@ def _write_atom_bitmap(write_live, config: DecodeGeometry) -> torch.Tensor:
 def _decode_step(
     routes,
     values,
-    config: DecodeGeometry,
+    masks,
+    config: DecodePlan,
     state: torch.Tensor,
     *,
     decay=None,
@@ -395,19 +404,21 @@ def _decode_step(
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
     """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
 
-    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors` and ``values`` a one-token
-    :class:`~rola.values.Values`; the kernel reads their rows, scales and values as they are. ``state`` is the dense
+    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`, ``values`` a one-token
+    :class:`~rola.values.Values` and ``masks`` their DECODE-layout :class:`~rola.routing.masks.Masks`; the kernel
+    reads their rows, scales, values and mask words as they are. ``state`` is the dense
     ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
-    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_geometry`), which is what makes this the SEAM
+    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_plan`), which is what makes this the SEAM
     for decode's value width: the values are padded to ``config.d_v`` with zero columns and the returned ``y``
     is sliced back to the caller's ``d_v`` (``rola.ops.padding``). Per-level widths are NOT padded --
-    :func:`derive_decode_geometry` already refused ``config`` past :func:`_admit`'s floor rather than pad it, so the
+    :func:`derive_decode_plan` already refused ``config`` past :func:`_admit`'s floor rather than pad it, so the
     rows reach the kernel exactly as the bundle holds them.
     """
     guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
+    check_decode_masks(masks, routes)
     routes.refuse_grouped("the decode step")
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
@@ -418,9 +429,11 @@ def _decode_step(
     BH = values.batch * values.heads
     if workspace is None:
         workspace = DecodeScratch.build(config, BH, v.device)
-    y = step(DecodePlan(
-        config=config, heads=values.heads, read=routes.amp_read, write=routes.amp_write,
-        read_scale=routes.scale_read, write_scale=routes.scale_write,
-        dials=leaf_rate_dials_for(decay, config, v.device), v=v, v_scale=values.scale,
-        state_plane=plane, page_table=page_table, scratch=workspace, pool=pool))
+    y = step(DecodeLaunch(
+        plan=config,
+        operands=DecodeOperands(
+            read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
+            read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, config, v.device), v=v,
+            v_scale=values.scale, state_plane=plane, page_table=page_table),
+        workspace=DecodeWorkspace(scratch=workspace, pool=pool)))
     return slice_y(y, logical_d_v), state, workspace

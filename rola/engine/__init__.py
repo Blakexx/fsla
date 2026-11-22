@@ -17,7 +17,16 @@ the engine rather than of the fact-finder that happened to define it
 (docs/internals/engine/engine.md).
 """
 
-from rola.engine.plan import DecodeGeometry, DecodePlan
+from rola.engine.plan import (
+    DecodeLaunch,
+    DecodeOperands,
+    DecodePlan,
+    DecodeWorkspace,
+    PrefillLaunch,
+    PrefillOperands,
+    PrefillPlan,
+    PrefillWorkspace,
+)
 from rola.engine.runner import (
     Node,
     node,
@@ -32,9 +41,8 @@ from rola.engine.types import (
     BackwardNotImplemented,
     CallClass,
     Carve,
-    Mask,
-    PlanOverrides,
     SidePlan,
+    Variant,
 )
 
 __all__ = [
@@ -43,12 +51,17 @@ __all__ = [
     "BackwardNotImplemented",
     "CallClass",
     "Carve",
-    "DecodeGeometry",
+    "DecodeLaunch",
+    "DecodeOperands",
     "DecodePlan",
-    "Mask",
+    "DecodeWorkspace",
     "Node",
-    "PlanOverrides",
+    "PrefillLaunch",
+    "PrefillOperands",
+    "PrefillPlan",
+    "PrefillWorkspace",
     "SidePlan",
+    "Variant",
     "node",
     "rule",
     "run",

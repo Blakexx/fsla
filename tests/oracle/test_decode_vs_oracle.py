@@ -54,9 +54,10 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.decode import _decode_step
 from rola.ops.lattice import permutation, to_canonical, to_lattice
 from rola.ops.paging import bytes_equal
+from rola.ops.produce import decode_plan
 from rola.routing import quant
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
@@ -66,6 +67,7 @@ from tests.oracle.fixtures import (
     assert_slots_close,
     bundle_operands,
     logical_state,
+    masks_of,
     oracle_run,
     state_pages,
     state_quantum,
@@ -160,7 +162,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     """
     topology = _topology(widths)
     N = math.prod(widths)
-    config = derive_decode_geometry(topology, d_v=d_v, decay=False)
+    config = decode_plan(topology, d_v=d_v, decay=False)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
@@ -173,7 +175,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
                                     sparse=(read_flags, flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
-    _y, state, _ws = _decode_step(routes, values, config, state)
+    _y, state, _ws = _decode_step(routes, values, masks_of(routes), config, state)
     return (logical_state(state, d_v) != 0).any(-1)
 
 
@@ -219,7 +221,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         ref = ref._replace(state=state_rounded(ref.state))
 
     # ---- decode ---------------------------------------------------------------
-    config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None)
+    config = decode_plan(topology, d_v=d_v, decay=decay is not None)
     if ctas is not None:
         config = dataclasses.replace(config, ctas=ctas)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
@@ -234,7 +236,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     workspace = None
     y_outs = []
     for routes, values in bundles:
-        y, state, workspace = _decode_step(routes, values, config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
     state = to_canonical(logical_state(state, d_v).reshape(B, H, N, cols), widths, config.lattice_k, config.lattice_m)
 
@@ -332,11 +334,11 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = derive_decode_geometry(topology, d_v=d_v, decay=False)
+    config = decode_plan(topology, d_v=d_v, decay=False)
     m0 = state_pages(0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32))
     state = m0.clone()
     routes, values = step_bundles(v, zeros, with_gain(zeros, g_write), topology)
-    y, state, _workspace = _decode_step(routes, values, config, state)
+    y, state, _workspace = _decode_step(routes, values, masks_of(routes), config, state)
     assert not _leaf_support(routes.live("write"), widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
@@ -543,12 +545,12 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    config = derive_decode_geometry(pre["topology"], d_v=d_v, decay=False)
+    config = decode_plan(pre["topology"], d_v=d_v, decay=False)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
     entry = state_pages(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
     routes, values = step_bundles(step_v, step_read, with_gain(step_write, step_gw), pre["topology"])
-    y_dec, state_dec, _ = _decode_step(routes, values, config, entry)
+    y_dec, state_dec, _ = _decode_step(routes, values, masks_of(routes), config, entry)
     step_v, step_read, step_write = bundle_operands(routes, values)
     state_dec = to_canonical(logical_state(state_dec, d_v).reshape(B, H, config.N, d_v + 1), widths,
                              config.lattice_k, config.lattice_m)

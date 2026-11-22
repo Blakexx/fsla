@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 #: below refuses.
 EPS_SITES = (
     ("rola/ops/naive.py", "naive_rola"),
-    ("rola/ops/decode.py", "derive_decode_geometry"),
+    ("rola/ops/decode.py", "derive_decode_plan"),
 )
 
 #: The retired tiled consumer's row is dropped. Its replacement is NOT
@@ -87,10 +87,10 @@ def test_every_eps_default_is_the_named_constant_not_a_literal(relative, functio
 
 def test_every_eps_default_is_the_same_value_at_runtime():
     """Rule 1, through the signature a caller actually binds against."""
-    from rola.ops.decode import derive_decode_geometry
+    from rola.ops.decode import derive_decode_plan
     from rola.ops.naive import naive_rola
 
-    for fn in (naive_rola, derive_decode_geometry):
+    for fn in (naive_rola, derive_decode_plan):
         default = inspect.signature(fn).parameters["eps"].default
         assert default == READOUT_EPS, f"{fn.__qualname__} binds eps={default}"
 

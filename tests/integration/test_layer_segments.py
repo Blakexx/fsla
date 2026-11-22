@@ -42,9 +42,16 @@ def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> rola.RoLA:
 def _bundles(tokens: int, heads: int = 2):
     layer = _layer(heads=heads).cuda().eval()
     with torch.no_grad():
-        routes, _values = layer._produce(torch.randn(1, tokens, 64, device="cuda"))
+        routes, _values, masks = layer._produce(torch.randn(1, tokens, 64, device="cuda"))
         values = rola.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
-    return routes, values
+    return routes, values, masks, layer.prefill_plan
+
+
+def _cut_masks(masks, span: slice):
+    """One stretch of a call's masks: the token-packed words of the stretch, whole 32-token words (a window is)."""
+    first, last = span.start // 32, -(-span.stop // 32)
+    return rola.Masks(masks.consumer, tuple(m[:, :, first:last] for m in masks.read),
+                      tuple(m[:, :, first:last] for m in masks.write))
 
 
 def _cut(bundle, span: slice):
@@ -61,9 +68,9 @@ def _cut(bundle, span: slice):
 
 
 def test_the_op_matches_the_fp64_oracle_per_slot():
-    routes, values = _bundles(2 * window_of())
+    routes, values, masks, plan = _bundles(2 * window_of())
     with torch.no_grad():
-        y, state = rola.rola_op(routes, values)
+        y, state = rola.rola_op(routes, values, masks, plan=plan)
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
     ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
@@ -75,16 +82,17 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
 def test_segments_carried_through_a_state_are_the_whole_call(paging):
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
     one state are the whole call to fp32 ULPs, in either backing."""
-    from rola.engine import PlanOverrides
+    from rola.engine import PrefillPlan
 
-    routes, values = _bundles(4 * window_of())
-    expert = None if paging else PlanOverrides(paging=False)
+    routes, values, masks, plan = _bundles(4 * window_of())
+    plan = plan if paging else PrefillPlan(carve=plan.carve, paging=False)
     with torch.no_grad():
-        whole, _ = rola.rola_op(routes, values)
+        whole, _ = rola.rola_op(routes, values, masks, plan=plan)
         state = rola.state()
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
-            y, state = rola.rola_op(_cut(routes, span), _cut(values, span), state=state, expert=expert)
+            y, state = rola.rola_op(_cut(routes, span), _cut(values, span), _cut_masks(masks, span), plan=plan,
+                                    state=state)
             parts.append(y)
     assert state.paged is paging
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
@@ -97,7 +105,7 @@ def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     with torch.no_grad():
         whole, whole_cont = layer(x)
     assert whole_cont.state is None
-    layer.memory_budget = layer.state_bytes(1) + 2 * window_of() * layer.segment_bytes_per_token()
+    layer.memory_budget = layer.state_bytes(1) + 2 * window_of() * 4096
     assert layer.segment_tokens(1, 4 * window_of()) == 2 * window_of()
     with torch.no_grad():
         segmented, cont = layer(x)
@@ -112,42 +120,21 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
         _, whole = layer(x, continuation=rola.LayerContinuation(state=rola.state()))
-        layer.memory_budget = layer.state_bytes(1) + window_of() * layer.segment_bytes_per_token()
+        layer.memory_budget = layer.state_bytes(1) + window_of() * 4096
         _, segmented = layer(x, continuation=rola.LayerContinuation(state=rola.state()))
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 
 
-def test_the_budget_derives_the_segment_and_refuses_below_one_window():
+def test_the_budget_takes_its_per_token_bytes_from_the_launch_builder_and_refuses_by_name():
+    """No budget: one segment. A budget asks the prefill launch builder's own allocation for the per-token bytes, which
+    refuses by name until the prefill kernel exists."""
+    from rola.ops._ext import KernelNotBuilt
+
     layer = _layer()
     assert layer.segment_tokens(2, 3 * window_of()) == 3 * window_of(), "no budget: one segment"
-    per_window = window_of() * 2 * layer.segment_bytes_per_token()
-    layer.memory_budget = layer.state_bytes(2) + 2 * per_window + per_window // 2
-    assert layer.segment_tokens(2, 8 * window_of()) == 2 * window_of()
-    assert layer.segment_tokens(2, window_of()) == window_of(), "a segment never exceeds the call"
-    layer.memory_budget = layer.state_bytes(2) + per_window - 1
-    with pytest.raises(ValueError, match="cannot hold one"):
+    layer.memory_budget = layer.state_bytes(2) + 10 ** 9
+    with pytest.raises(KernelNotBuilt, match="prefill launch builder"):
         layer.segment_tokens(2, 8 * window_of())
     with pytest.raises(ValueError, match="memory_budget"):
         _layer(memory_budget=0)
-
-
-@pytest.mark.parametrize("heads,hidden", [(2, 64), (4, 256)])
-def test_the_working_set_bound_holds_against_the_measured_peak(heads, hidden):
-    """`segment_bytes_per_token` is an UPPER BOUND on the layer's working set: the measured peak's slope over the
-    sequence length must sit under it, and within 1.5x of it (a bound that loose would starve the budget)."""
-    layer = _layer(hidden=hidden, heads=heads).cuda().eval()
-    peaks = {}
-    for tokens in (window_of(), 8 * window_of()):
-        x = torch.randn(1, tokens, hidden, device="cuda")
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
-        base = torch.cuda.memory_allocated()
-        with torch.no_grad():
-            out, _ = layer(x)
-        torch.cuda.synchronize()
-        peaks[tokens] = torch.cuda.max_memory_allocated() - base
-        del out
-    measured = (peaks[8 * window_of()] - peaks[window_of()]) / (7 * window_of())
-    bound = layer.segment_bytes_per_token()
-    assert measured <= bound <= 1.5 * measured, f"measured {measured:.0f} B/token against the bound {bound}"

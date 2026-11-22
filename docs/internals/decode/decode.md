@@ -76,7 +76,7 @@ big one.
 
 ## <a id="bc-absent"></a>3. `BC` is the lattice's owner, never a launch shape or an address term
 
-With one token there is nothing to amortize across a block of leaves, so `DecodeGeometry`
+With one token there is nothing to amortize across a block of leaves, so `DecodePlan`
 carries no launch-shape `BC` ([`engine/plan.py`](../../../rola/engine/plan.py)). The `(k, m)`
 lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
 walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
@@ -997,7 +997,7 @@ instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 
 ## The write term by whole atoms
 
 When the innermost level's WRITE side is dense by declaration (its activation has no exact
-zeros; `DecodeGeometry.write_dense`, from `Topology.activation_properties`) and the innermost
+zeros; `DecodePlan.write_dense`, chosen by the producer's plan rule `rola.ops.produce.decode_plan` from `Topology.activation_properties`) and the innermost
 run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
 takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
 (leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a

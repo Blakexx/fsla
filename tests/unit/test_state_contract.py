@@ -176,7 +176,7 @@ def test_decode_op_entry_reuses_state_format_not_a_second_copy():
     That test pins `RoLAState._decode_entry` (a BOUND state's own check); this pins
     `rola.ops.decode`'s OP ENTRY, which a call reaches directly with no `RoLAState` in
     play at all (every oracle/integration fixture in `tests/oracle/test_decode_*.py` and
-    `tests/integration/test_decode_*.py` calls `derive_decode_geometry` this way). Before
+    `tests/integration/test_decode_*.py` calls `derive_decode_plan` this way). Before
     K53 that path asked no floor at all -- `StateFormat` is imported here rather than a
     hand-rolled power-of-two check, so a future rewrite that duplicates the rule instead
     of asking the one class shows up as a source diff here.
@@ -185,8 +185,8 @@ def test_decode_op_entry_reuses_state_format_not_a_second_copy():
 
     src = inspect.getsource(decode_ops._admit)
     assert "StateFormat(" in src, "_admit does not route through StateFormat"
-    geometry_src = inspect.getsource(decode_ops.derive_decode_geometry)
-    assert "_admit(" in geometry_src, "derive_decode_geometry does not call _admit"
+    geometry_src = inspect.getsource(decode_ops.derive_decode_plan)
+    assert "_admit(" in geometry_src, "derive_decode_plan does not call _admit"
 
 
 def test_decode_op_entry_refuses_an_unlawful_topology_by_name():

@@ -1,4 +1,4 @@
-# The decode family's DAG — M3 and M4
+# The decode family's DAG — DECODE_DENSE and DECODE_PAGED
 
 `rola/engine/dags/decode_dag.py`. The kernel-side page is
 [`internals/decode/decode.md`](../decode/decode.md); this one is the HOST side — what
@@ -9,16 +9,16 @@ capturable, and its growth must self-correct.
 Symbols used below: `B` batch, `H` heads, `BH = B*H`, `D` level count, `N` leaf count,
 `d_v` value width, **atom** = 16 consecutive leaves = the page granule.
 
-## <a id="the-two-masks"></a>1. M3 and M4 are the two BACKINGS, and a growth step is neither
+## <a id="the-two-variants"></a>1. DECODE_DENSE and DECODE_PAGED are the two BACKINGS, and a growth step is neither
 
-`Mask.M3` is decode-dense and `Mask.M4` is decode-paged. After the step absorbed its own
+`Variant.DECODE_DENSE` is decode-dense and `Variant.DECODE_PAGED` is decode-paged. After the step absorbed its own
 residency question, the node SET is one tuple for both — a dense call simply never finds
 an atom the table does not map, because it has no table. The host-visible verdict READ is
 not a node: `growth_pending` makes it at the caller's synchronization, and answers `False`
 for a dense state without reading, since a dense step has no residency fact to read back.
 
 **A GROWTH STEP IS NOT A THIRD MASK.** It is `DECODE_STEP` walked twice around an
-admission the host performs between the two walks. A mask selects a subgraph; growth
+admission the host performs between the two walks. A variant selects a subgraph; growth
 selects the same one, which is exactly why a CUDA graph captured over the step stays
 valid across an admission and why a replay is self-correcting: the verdict is INSIDE the
 captured region, so on the second walk a batch-head that could not advance the first time
@@ -26,15 +26,14 @@ carries no done flag yet and the step it had skipped performs.
 
 ## <a id="the-order"></a>2. The step, read top to bottom
 
-| node | gives | stream | mask |
+| node | gives | stream | variant |
 |---|---|---|---|
-| `decode_call` | `widths`, `d_v`, `has_decay`, `BH`, `device`, `paged` | host | both |
-| `decode_mask` (rule) | `mask` | host | both |
-| `geometry` | `geometry` | host, `pure_of` | both |
+| `decode_call` | `BH`, `device`, `paged` | host | both |
+| `decode_variant` (rule) | `variant` | host | both |
 | `scratch` | `scratch` | host, `per_state` | both |
 | `backing` | `carried_plane`, `page_table`, `pool` | main | both |
 | `state_plane` | `state_plane` | main | both |
-| `build_plan` | `plan` | main | both |
+| `build_launch` | `launch` | main | both |
 | `step` | `y` | main | both |
 
 **THERE IS NO OPERAND NODE AND NO ADMISSION NODE.** The step's per-token operands are
@@ -49,10 +48,10 @@ launch still to come. The detached clock is the write rows' own shares
 of its own either.
 
 `backing` is `RoLAState._decode_entry`: the plane, table and slack pool the state already
-has, over the residency it already has — it admits nothing itself. `build_plan` carries a
+has, over the residency it already has — it admits nothing itself. `build_launch` carries a
 stream because the decay arm's `dials` are derived there: a per-HEAD constant, and the one
-operand the step kernel does not fold. Everything else on the plan is a view the producer
-already holds.
+operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
+already holds; its `plan` is the static `DecodePlan` the call was handed.
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the frozen config,
 the plane's extent against the backing, the page table's against `[BH, N/16]`. They are
@@ -87,9 +86,9 @@ reads a device value, or allocates per step, fails at import rather than at some
 first `graph.replay()` — and `tests/integration/test_decode_graph_step.py` is what proves
 the declaration is TRUE of a real capture.
 
-## <a id="host-carrier"></a>5. The carrier and the scratch, and why each is memoized the way it is
+## <a id="host-carrier"></a>5. The plan and the scratch, and why the scratch is memoized the way it is
 
-`DecodeGeometry` (`rola/engine/plan.py`) answers "what shape is the launch?" — widths,
+`DecodePlan` (`rola/engine/plan.py`), the frozen static plan (what to do, a seed of the DAG, the memo key of the scratch), answers "what shape is the launch?" — widths,
 per-level dial row offsets, the `(k, m)` lattice the state plane is written in
 (`lattice_k`, `lattice_m`, [`decode_lattice.md`](../decode/decode_lattice.md)), `d_v`, the
 decay arm, `eps`, `ctas`, `write_dense`. None of that is a derived axis. `BC` is deliberately NOT a
@@ -130,7 +129,7 @@ shipped DAG would make the gate compare the step against itself, and `validate_d
 refuses any DAG containing a `reference_only` node — which is the mechanical form of the
 warning the function's docstring used to carry alone.
 
-## <a id="the-pool"></a>7. The slack pool is storage mechanics, and neither node nor mask
+## <a id="the-pool"></a>7. The slack pool is storage mechanics, and neither node nor variant
 
 A step admits into its state's slack pool INSIDE the kernel, from the pool buffers
 `backing` hands the plan — there is no node for it, because it is not a fact the host

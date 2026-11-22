@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op.
 
-    rola_op(routes, values, decay)
+    rola_op(routes, values, masks, decay, plan=plan)
 
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 :class:`~rola.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
-the internal format -- a :class:`~rola.values.Values` bundle -- and ``decay`` is the
-recurrence dial. No plan, no configuration, no statistics appear on
-it, because none of them are model facts: they are how the op runs, and the op decides
-how it runs.
+the internal format -- a :class:`~rola.values.Values` bundle -- ``masks`` is the DATA beside the rows, like attention's
+mask (:class:`~rola.routing.masks.Masks`: a bit a side, level, digit and token; the op computes with ``r * m``) and
+``decay`` is the recurrence dial. ``plan`` is a static :class:`~rola.engine.plan.PrefillPlan`: what to do, never what
+you are giving, and never changing the mathematical output -- the data does.
 
 ONE SEGMENT a call: the op runs the prefill DAG (:mod:`rola.engine.dags.prefill_dag`)
 over the segment it is handed and continues the state it is handed. Splitting a long
@@ -22,7 +22,7 @@ backward is rebuilt, and refuses a gradient by name; the fp64 oracle
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -31,7 +31,9 @@ from rola.engine import BackwardNotImplemented
 from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
+    from rola.engine import PrefillPlan
     from rola.routing.factors import RouteFactors
+    from rola.routing.masks import Masks
     from rola.routing.types import DecayConfig
     from rola.values import Values
 
@@ -46,15 +48,18 @@ __all__ = [
 def rola_op(
     routes: RouteFactors,
     values: Values,
+    masks: Masks,
     decay: DecayConfig = None,
     *,
+    plan: PrefillPlan,
     state: RoLAState | None = None,
-    expert: Any = None,
 ) -> tuple[torch.Tensor, RoLAState | None]:
     """Run RoLA over one segment: ``(y, state)``.
 
     ``routes``: a :class:`~rola.routing.factors.RouteFactors`; ``values``: a :class:`~rola.values.Values` with
-    the same ``[B, T, H]``; ``decay``: the recurrence dial, or ``None``. ``state``: ``None`` for a stateless
+    the same ``[B, T, H]``; ``masks``: the PREFILL-layout :class:`~rola.routing.masks.Masks` the producer emitted beside
+    them (validated for shape and dtype, never values); ``decay``: the recurrence dial, or ``None``; ``plan``: the
+    static :class:`~rola.engine.plan.PrefillPlan` (:func:`rola.ops.produce.prefill_plan`). ``state``: ``None`` for a stateless
     call, or a :class:`~rola.RoLAState` from :func:`rola.state` -- an unbound one binds from this call, a bound
     one is continued. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object, mutated in place (``None``
     when the call was stateless).
@@ -65,7 +70,7 @@ def rola_op(
     """
     from rola.engine.dags.prefill_dag import PrefillContext, validate_context
 
-    ctx = PrefillContext(routes=routes, values=values, decay=decay, state=state, expert=expert,
+    ctx = PrefillContext(routes=routes, values=values, masks=masks, plan=plan, decay=decay, state=state,
                          want_state=state is not None)
     #: in the CALLER's grad mode: inside the node's forward autograd has turned it off, and the gradient
     #: clause would never speak.

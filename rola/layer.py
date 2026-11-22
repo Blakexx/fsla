@@ -21,7 +21,7 @@ exists anyway rather than collapsing back to a bare :class:`~rola._state.RoLASta
 future layer-level recurrences become fields on this container, never on the op's, and
 the membership rule (docs/internals/state.md §7) needs a place to land them.
 
-**Execution backends: two arms, and the choice is STRUCTURAL.** ``'cuda'`` is the
+**Execution backends: two arms, and the choice is STRUCTURAL.** ``'prefill'`` is the
 prefill arm through :func:`rola.rola_op` — DELETED pending the rebuild (the op raises,
 naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
 ``T = 1`` sibling kernel, which bypasses selection architecturally (at one token
@@ -47,7 +47,7 @@ import torch.nn as nn
 
 from rola._inference_copy import InferenceCopy, reads_copy
 from rola._state import state as rola_state
-from rola.engine import PlanOverrides
+from rola.engine import PrefillPlan
 from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.interface import (
     BackwardNotImplemented,
@@ -55,9 +55,18 @@ from rola.interface import (
     requires_backward,
     rola_op,
 )
-from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
+from rola.ops.prefill import launch_bytes_per_token
+from rola.ops.produce import (
+    ProducerPlan,
+    ProducerWeights,
+    decode_plan,
+    hidden_contiguous,
+    prefill_plan,
+    produce,
+    projection_dtype,
+)
 from rola.routing.decay import validate_decay_source
-from rola.routing.factors import default_sparse
+from rola.routing.masks import DECODE
 from rola.routing.producer import Routing, _init_packed_router
 from rola.routing.side_gain import init_side_gain_bias
 
@@ -117,9 +126,10 @@ class RoLA(nn.Module):
         decay: a decay source (:mod:`rola.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
-        expert: :class:`rola.expert.PlanOverrides`. Everything it pins is an axis the
-            op decides; it is quarantined because a caller pinning one is not
-            describing a model.
+        plan: a :class:`rola.engine.plan.PrefillPlan` (``rola.expert``) pinning the prefill's carve or paging mapping,
+            checked against the declaration; ``None`` takes the producer's plan rule (:func:`rola.ops.produce.prefill_plan`).
+            Everything it pins is a choice of how the op runs, never of what it computes; it is quarantined because a
+            caller pinning one is not describing a model.
     """
 
     def __init__(
@@ -131,7 +141,7 @@ class RoLA(nn.Module):
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
-        expert=None,
+        plan: PrefillPlan | None = None,
         memory_budget: int | None = None,  #: reserved: the caller's declaration (docs/api.md section 4.2)
     ) -> None:
         super().__init__()
@@ -146,10 +156,19 @@ class RoLA(nn.Module):
             raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
         #: the plan validates `hidden_size` and `num_heads`
         self.plan = ProducerPlan(routing=routing, num_heads=num_heads, hidden_size=hidden_size, d_v=d_v)
+        #: the same producer, emitting the masks in the DECODE layout (digit-packed) for the one-token step
+        self.step_plan = ProducerPlan(routing=routing, num_heads=num_heads, hidden_size=hidden_size, d_v=d_v,
+                                      consumer=DECODE)
         if decay is not None:
             validate_decay_source(decay, routing.topology, num_heads)
 
-        overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
+        if plan is not None and type(plan) is not PrefillPlan:
+            raise TypeError(f"plan is a rola.expert.PrefillPlan or None, got {type(plan).__name__}")
+        #: THE STATIC PLANS, compiled once from the declaration at their first use: a declaration no carve admits is
+        #: refused there, and the decode step's arm table is the binary's
+        self._pinned = plan
+        self._prefill_plan = None
+        self._decode_plan = None
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -157,7 +176,6 @@ class RoLA(nn.Module):
         self.routing = routing
         self.decay = decay
         self.layer_idx = layer_idx
-        self.expert = overrides
         self.memory_budget = memory_budget
 
         #: ONE ROUTING PARAMETER, and the write gain's columns are its trailing span: the gain is a function of the
@@ -196,31 +214,16 @@ class RoLA(nn.Module):
     def head_v_dim(self) -> int:
         return self.d_v
 
+    @property
+    def prefill_plan(self) -> PrefillPlan:
+        """The static prefill plan: the producer's rule over the declaration, or the pinned plan checked against it."""
+        if self._prefill_plan is None:
+            pinned = self._pinned
+            self._prefill_plan = (prefill_plan(self.topology, self.d_v) if pinned is None else
+                                  prefill_plan(self.topology, self.d_v, paging=pinned.paging, carve=pinned.carve))
+        return self._prefill_plan
+
     # --- segmentation (docs/api.md section 4.2) -------------------------------
-
-    def segment_bytes_per_token(self) -> int:
-        """AN UPPER BOUND on a prefill segment's working set per batch-token, in bytes: every per-token tensor
-        a segment allocates, summed as if all were alive at once. Gated against the measured peak
-        (tests/integration/test_layer_segments.py); a kernel port that adds or drops a tensor changes its term here.
-
-        A head's, both sides: its rows (a byte a digit at every level); the levels' scales and
-        the producer's level masses (four bytes each a level); the facts pass's words (a bit a row, the read and the
-        write slot), its tile unions and factor products; each side's lists at its one sparse
-        level -- a window's slots a digit, a uint32 an entry, with the union by slot at the finest list group and
-        the boundaries and totals under a sixteenth of the width; the values (bf16) and their scale and the gain; the
-        carry's ``num`` (fp32 at most) and den; the readout's unpacked ``num``,
-        den, factor and reader factor, ``y`` and its bf16 copy for the output projection. A token's: the hidden
-        stream's two bf16 casts and the output, fp32 at most.
-        """
-        widths = self.topology.padded_widths
-        D, total = len(widths), sum(widths)
-        per_head = 16 * D + total // 4 + total // 64 + 16 * self.d_v + 49
-        for sparse in default_sparse(self.topology):
-            per_head += total
-            if sparse.count(True) == 1:
-                width = widths[sparse.index(True)]
-                per_head += 4 * width + width // 8 + width // 16
-        return self.num_heads * per_head + 8 * self.hidden_size
 
     def state_bytes(self, batch: int) -> int:
         """The carried state at full residency, in bytes: the fixed part of a segmented call's footprint."""
@@ -228,14 +231,17 @@ class RoLA(nn.Module):
 
     def segment_tokens(self, batch: int, length: int, device=None) -> int:
         """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
-        windows whose working set fits beside the state, capped at ``length``. No budget: one segment. A
+        windows whose working set fits beside the state, capped at ``length``. The working set's per-token bytes are the
+        prefill launch builder's own allocation (:func:`rola.ops.prefill.launch_bytes_per_token`), which refuses by name
+        until the prefill kernel exists. No budget: one segment. A
         budget below one window beside the state is refused. The window is ``device``'s card's (the current device's for
         ``None``): the binary answers (docs/internals/common/arch_runtime.md#segment-tokens)."""
         from rola.ops._ext import device_index, extension
 
         if self.memory_budget is None:
             return length
-        per_token = self.segment_bytes_per_token()
+        per_token = launch_bytes_per_token(self.prefill_plan, self.topology, self.num_heads, self.d_v,
+                                           self.hidden_size)
         tokens = int(extension().segment_tokens(self.memory_budget, self.state_bytes(batch), per_token, batch, length,
                                                 device_index(device)))
         if tokens < 1:
@@ -313,7 +319,7 @@ class RoLA(nn.Module):
             return projected, LayerContinuation(state=state)
 
         out, state = self._prefill(x, state, decay)
-        self.last_execution_backend = "cuda"
+        self.last_execution_backend = "prefill"
         return self._project(out.reshape(B, L, H * self.head_v_dim), x.dtype), LayerContinuation(state=state)
 
     def _step(self, x: torch.Tensor, state) -> torch.Tensor:
@@ -324,20 +330,23 @@ class RoLA(nn.Module):
         step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
         """
         decay = None if self.decay is None else self.decay()
-        routes, values = self._produce(x)
+        routes, values, masks = self._produce(x, self.step_plan)
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
-        out, _state = decode_step_gated(routes, values, state, decay=decay, expert=self.expert)
+        if self._decode_plan is None:
+            self._decode_plan = decode_plan(self.topology, d_v=self.d_v, decay=self.decay is not None)
+        out, _state = decode_step_gated(routes, values, masks, state, plan=self._decode_plan, decay=decay)
         return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
 
     def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
         """The output projection, bf16 operands, in the caller's dtype."""
         return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
-    def _produce(self, x: torch.Tensor):
-        """One stretch of tokens into the format: ``(routes, values)``, from one producer call."""
-        return produce(x, self.plan, self._weights(x))
+    def _produce(self, x: torch.Tensor, plan: ProducerPlan | None = None):
+        """One stretch of tokens into the format: ``(routes, values, masks)``, from one producer call, the masks in the
+        layout of the consumer ``plan`` names."""
+        return produce(x, self.plan if plan is None else plan, self._weights(x))
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
         """The layer's weights as the producer reads them: the reused copies when no gradient flows."""
@@ -360,8 +369,8 @@ class RoLA(nn.Module):
         carried = state if state is not None or T >= L else rola_state()
         outs = []
         for start in range(0, L, T):
-            routes, values = self._produce(x[:, start:start + T])
-            y, carried = rola_op(routes, values, decay, state=carried, expert=self.expert)
+            routes, values, masks = self._produce(x[:, start:start + T], self.plan)
+            y, carried = rola_op(routes, values, masks, decay, plan=self.prefill_plan, state=carried)
             outs.append(y)
         return torch.cat(outs, dim=1) if len(outs) > 1 else outs[0], state if state is None else carried
 

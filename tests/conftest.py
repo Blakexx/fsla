@@ -284,7 +284,7 @@ def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bia
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                 decay=None, decay_rate=2.0 ** -8, gain=True,
-                bias=False, expert=None, layer_idx=None, **kwargs):
+                bias=False, plan=None, layer_idx=None, **kwargs):
     """A :class:`rola.RoLA` over :func:`build_routing`.
 
     ``decay`` takes ``None`` (no decay), ``'learned'`` or ``'constant'`` -- the two
@@ -299,7 +299,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
     source = None if decay is None else sources[decay](
         decay_rate, widths=declared.widths, num_heads=num_heads)
     return RoLA(declared, hidden_size=hidden_size, num_heads=num_heads, d_v=d_v, decay=source,
-                layer_idx=layer_idx, expert=expert)
+                layer_idx=layer_idx, plan=plan)
 
 
 # -----------------------------------------------------------------------------

@@ -61,7 +61,7 @@ from tests.integration.test_decode_paging import (
     _config,
     _fixture,
 )
-from tests.oracle.fixtures import assert_reordered_close
+from tests.oracle.fixtures import assert_reordered_close, masks_of
 
 pytestmark = [
     pytest.mark.cuda,
@@ -85,7 +85,7 @@ def _absent_one_written_atom(fixture, config, arena):
 
 def _step(fixture, config, arena, *, workspace=None):
     routes, values = _bundles(fixture)
-    y, _state, workspace = _decode_step(routes, values, config, arena.state,
+    y, _state, workspace = _decode_step(routes, values, masks_of(routes), config, arena.state,
                                         workspace=workspace, page_table=arena.page_table)
     return y, workspace
 

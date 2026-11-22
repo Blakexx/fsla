@@ -39,6 +39,7 @@ import torch
 
 from rola.ops._oracle_contract import initial_cache, validate_inputs, validate_levels
 from rola.ops.constants import READOUT_EPS
+from rola.routing.masks import Masks
 from rola.routing.types import DecayConfig, Topology
 
 
@@ -114,6 +115,7 @@ def naive_rola(
     topology: Topology,
     decay: DecayConfig,
     *,
+    masks: Masks | None = None,
     eps: float = READOUT_EPS,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
@@ -139,6 +141,13 @@ def naive_rola(
     clock prices survival per unit of deposited mass whatever magnitude the levels
     carry; a level that writes nothing (its row sums to 0) has share 0 and leaves the
     clock still.
+
+    THE MASKS ARE DATA (ruled 2026-11-22): ``masks`` is the bit a side, level, digit and token
+    (:class:`~rola.routing.masks.Masks`, either layout), and the oracle computes with ``r * m`` -- every level times its
+    bits, in fp64, before anything else reads it (the leaf products, the decay clock's shares). A digit under a zero
+    bit contributes nothing and its coefficient's gradient is exactly zero; the masks are saved by the backward and
+    carry no gradient. ``None`` is every bit set. The oracle takes NO plan: a plan changes at most rounding, and the
+    oracle is the result the data fixes.
 
     Returns ``(y, final_state)`` with ``y: [B,T,H,d_v]`` and, if
     ``output_final_state``, ``final_state: [B,H_w,N,d_v+1]`` (the last column
@@ -170,6 +179,11 @@ def naive_rola(
     v64 = v.to(torch.float64)
     read64 = tuple(level.to(torch.float64) for level in read_levels)
     write64 = tuple(level.to(torch.float64) for level in write_levels)
+    if masks is not None:
+        read64 = tuple(level * masks.bits("read", index, T, level.shape[-1]).to(torch.float64)
+                       for index, level in enumerate(read64))
+        write64 = tuple(level * masks.bits("write", index, T, level.shape[-1]).to(torch.float64)
+                        for index, level in enumerate(write64))
     validate_levels("read_levels", read64)
     validate_levels("write_levels", write64)
 

@@ -5,14 +5,17 @@ carve, the readout's value carve and its token and channel groups -- the pinned 
 (docs/internals/engine/rules.md#carve)."""
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-import torch
 
-from rola.engine import Carve, PlanOverrides
-from rola.engine.carve import channel_groups, check_carve, plan_carve, token_groups
-from rola.engine.rules.carve import carve as carve_rule
+from rola.engine import Carve, PrefillPlan
+from rola.engine.carve import channel_groups, check_carve, plan_carve, token_groups, walks
+from rola.ops.produce import activation_walks, prefill_plan
+from rola.routing.types import (
+    EntmaxActivation,
+    IndependentRouting,
+    SoftmaxActivation,
+    Topology,
+)
 
 
 def _flags(level_tags):
@@ -120,12 +123,30 @@ def test_refusals():
                     (256, 256), (False, True), (True, False), 256)
 
 
-def test_rule_reads_shapes_and_takes_a_checked_pin():
-    routes = SimpleNamespace(amp_read=(torch.empty(1, 1, 1, 256), torch.empty(1, 1, 1, 256)),
-                             sparse=((False, True), (True, False)))
-    assert carve_rule(routes, 64, None) == plan_carve((256, 256), (False, True), (True, False), 64)
-    pinned = plan_carve((256, 256), (False, True), (True, False), 64)
-    assert carve_rule(routes, 64, PlanOverrides(carve=pinned)) is pinned
-    bad = Carve(pinned.widths, pinned.extents, pinned.channels, pinned.readout, pinned.fold)
+def _alternating() -> Topology:
+    """Level 0 reads dense and writes sparse; level 1 reads sparse and writes dense: the alternating box."""
+    return Topology(levels=(
+        IndependentRouting(width=256, read=SoftmaxActivation(), write=EntmaxActivation(alpha=1.5)),
+        IndependentRouting(width=256, read=EntmaxActivation(alpha=1.5), write=SoftmaxActivation())))
+
+
+def test_the_producers_plan_rule_reads_the_declaration_and_takes_a_checked_pin():
+    """The plan is the producer's rule over the DECLARATION (no operand), a pinned carve is checked against it, and the
+    levels each side walks by lists are the carve's own (`walks`)."""
+    topology = _alternating()
+    assert activation_walks(topology) == ((False, True), (True, False))
+    plan = prefill_plan(topology, 64)
+    assert plan == PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64))
+    assert walks(plan.carve) == ((False, True), (True, False))
+    assert prefill_plan(topology, 64, carve=plan.carve, paging=False) == PrefillPlan(carve=plan.carve, paging=False)
+    bad = Carve(plan.carve.widths, plan.carve.extents, plan.carve.channels, plan.carve.readout, plan.carve.fold)
     with pytest.raises(ValueError, match="plan"):
-        carve_rule(routes, 64, PlanOverrides(carve=bad))
+        prefill_plan(topology, 64, carve=bad)
+
+
+def test_a_plan_pins_the_mapping_only():
+    carve = plan_carve((256, 256), (False, True), (True, False), 64)
+    with pytest.raises(ValueError, match="nothing to turn on"):
+        PrefillPlan(carve=carve, paging=True)
+    with pytest.raises(TypeError, match="carve must be a Carve"):
+        PrefillPlan(carve=None)

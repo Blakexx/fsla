@@ -28,7 +28,7 @@ with a ROW, and the row is the only place the properties live.
 
 | column | question it answers | who reads it |
 |---|---|---|
-| `exact_zeros` | does it produce exact structural zeros, not merely small values? | the production's sparse rule (`rola.routing.factors.default_sparse`: the producer's flags, the factory's default, the layer's working set), the resolved routing's can-zero levels, decode's dense innermost write level, union routing's precondition, independent routing's refusal of two exact-zero sides |
+| `exact_zeros` | does it produce exact structural zeros, not merely small values? | the producer's walk rule (`rola.ops.produce.activation_walks`: which levels a side walks by lists, carried by the plan), the resolved routing's can-zero levels, decode's dense innermost write level, union routing's precondition, independent routing's refusal of two exact-zero sides |
 | `kerneled` | has the CUDA consumer been RATIFIED for this activation? | the kernel dispatch |
 
 A column is kept only while something reads it. Whether a map's output sums to 1 is not

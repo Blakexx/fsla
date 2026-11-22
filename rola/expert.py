@@ -19,15 +19,19 @@ Importing this module is a statement that you accept that. The op never requires
 
 from __future__ import annotations
 
-from rola.engine import PlanOverrides
+from rola.engine import DecodePlan, PrefillPlan
 from rola.engine.facts.call import envelope_refusal, require_envelope
 from rola.interface import requires_backward
+from rola.ops.produce import decode_plan, prefill_plan
 from rola.routing.side_gain import GainConfig
 
 __all__ = [
+    "DecodePlan",
     "GainConfig",
-    "PlanOverrides",
+    "PrefillPlan",
+    "decode_plan",
     "envelope_refusal",
+    "prefill_plan",
     "require_envelope",
     "requires_backward",
 ]

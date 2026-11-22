@@ -16,7 +16,7 @@ would break both pins for no reason: nothing downstream of the producer needs a 
 `RouteFactors` to exist as an object.
 
 **KERNEL CONTRACT.** The two padding seams -- the prefill's carry leg (`rola.ops.prefill`)
-and the decode step (`rola.ops.decode.derive_decode_geometry`/`_decode_step`) -- receive the
+and the decode step (`rola.ops.decode.derive_decode_plan`/`_decode_step`) -- receive the
 caller's logical tensors and widths and pad INTERNALLY, once, before any launch-facing
 derivation. The kernel itself is never handed a width other than its own; `y` is sliced
 back to the caller's own `d_v` before it leaves the op.
@@ -51,7 +51,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   BOTH axes: every level to `rola.routing.topology.padded_level_width` (next power of two
   >= 16, the register-shape floor), and `v` to the smallest shipped value width that
   admits it.
-* **decode** (`rola.ops.decode.derive_decode_geometry`, `_decode_step`) pads ONLY
+* **decode** (`rola.ops.decode.derive_decode_plan`, `_decode_step`) pads ONLY
   `d_v` -> the smallest `DV` its own shipped arm table
   (`rola.ops.decode.arms`, keyed `(DV, D, decay)`) carries at that `(D, decay)`. Its
   per-level widths carry NO floor of their own -- `derive_lattice`/`box_shape`

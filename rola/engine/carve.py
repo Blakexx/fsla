@@ -118,6 +118,13 @@ def _readout(lists, operand, extents) -> SidePlan:
                     tile_rows=_product(rows, extents))
 
 
+def walks(carve: Carve) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """``(read, write)``, a bool a level: the levels each side WALKS BY LISTS -- the carve's own lists (the readout the
+    read side's, the fold the write side's). The plan's answer to which levels are listed; no operand is read."""
+    D = len(carve.widths)
+    return (tuple(lv in carve.readout.lists for lv in range(D)), tuple(lv in carve.fold.lists for lv in range(D)))
+
+
 def channel_groups(carve: Carve) -> int:
     """The readout's channel groups: 8 channels a group, at most a warp each."""
     return min(WARPS, carve.channels // GROUP_CHANNELS)

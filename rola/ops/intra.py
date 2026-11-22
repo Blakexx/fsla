@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.engine.facts.liveness import LivenessLayout, SideStatics
+from rola.engine.facts.liveness import LivenessLayout
 from rola.ops._ext import not_built
 
 #: The value width the kernel reads.
@@ -21,9 +21,8 @@ MAX_LEVEL_WIDTH = 256
 __all__ = ["MAX_LEVELS", "MAX_LEVEL_WIDTH", "VALUE_WIDTH", "WIDTH_GRANULE", "admits", "intra_forward", "reads"]
 
 
-def intra_forward(routes, values, facts, layout: LivenessLayout, read_statics: SideStatics,
-                  write_statics: SideStatics, num: torch.Tensor, den: torch.Tensor, **kwargs) -> None:
-    """REDUCE the within-window pairs of the bundle into ``num`` and ``den``: not built on this line
+def intra_forward(launch, facts, layout: LivenessLayout, num: torch.Tensor, den: torch.Tensor, **kwargs) -> None:
+    """REDUCE the within-window pairs of the launch's operands (:class:`rola.engine.plan.PrefillLaunch`) into ``num`` and ``den``: not built on this line
     (:func:`rola.ops._ext.not_built`)."""
     not_built("intra")
 

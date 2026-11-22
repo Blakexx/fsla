@@ -36,16 +36,18 @@ import pytest
 import torch
 
 from rola.engine.facts.call import arm_refusal
-from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.decode import _decode_step
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.paging import bytes_equal
+from rola.ops.produce import decode_plan
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
 from tests.oracle.fixtures import (
     assert_slots_close,
     bundle_operands,
     logical_state,
+    masks_of,
     oracle_run,
     state_pages,
     state_quantum,
@@ -163,13 +165,13 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
     ref = ref._replace(state=state_rounded(ref.state))
 
-    config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on)
+    config = decode_plan(topology, d_v=_DV, decay=decay_on)
     #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
     state = state_pages(to_lattice(ref.state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     workspace, cold_seen = None, False
     for s in range(steps):
         routes, values = _bundles(_draw(gen, device, 1, 0.5, 0.4), topology)
-        y, state, workspace = _decode_step(routes, values, config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
         ref = oracle_run(*bundle_operands(routes, values), topology, decay, entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
         assert_slots_close(y, ref.y, output=DECODE_Y, envelope=ref.y_envelope, what=f"y at step {s}")
@@ -213,13 +215,13 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     m0[..., _DV] = m0[..., _DV].abs()
     m0 = state_rounded(m0)
 
-    config = derive_decode_geometry(topology, d_v=_DV, decay=True)
+    config = decode_plan(topology, d_v=_DV, decay=True)
     state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     ref = m0
     workspace = None
     for s in range(1, max(_CHECKPOINTS) + 1):
         routes, values = _bundles(_draw(gen, device, 1, 0.5, 0.4), topology)
-        y, state, workspace = _decode_step(routes, values, config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
         ref = oracle_run(*bundle_operands(routes, values), topology, decay, entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
         if s in _CHECKPOINTS:
@@ -248,7 +250,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = _topology(_WIDTHS)
-    derived = derive_decode_geometry(topology, d_v=_DV, decay=False)
+    derived = decode_plan(topology, d_v=_DV, decay=False)
     configs = {f"ctas={n}": dataclasses.replace(derived, ctas=n) for n in (1, 3, 8)}
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
@@ -264,7 +266,7 @@ def test_the_decode_split_is_performance_only_under_drift():
         state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
         workspace, ys = None, []
         for routes, values in steps:
-            y, state, workspace = _decode_step(routes, values, config, state, workspace=workspace)
+            y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, workspace=workspace)
             ys.append(y)
         outcomes[name] = (ys, state)
 
@@ -285,5 +287,5 @@ def test_the_decode_split_is_performance_only_under_drift():
     # The certificates half: an arm mismatch REFUSES rather than degrades.
     routes, values = steps[0]
     with pytest.raises(ValueError, match="has_decay"):
-        _decode_step(routes, values, configs["ctas=1"], base[1].clone(),
+        _decode_step(routes, values, masks_of(routes), configs["ctas=1"], base[1].clone(),
                        decay=LeafMassDecay(dials=_decay_dials(_WIDTHS, _H, gen, device)))

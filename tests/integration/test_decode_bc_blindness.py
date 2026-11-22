@@ -35,9 +35,10 @@ import pytest
 import torch
 
 from rola.engine.plan import DecodeGeometry
-from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.decode import _decode_step
 from rola.ops.paging import bytes_equal
-from tests.oracle.fixtures import assert_reordered_close, state_pages, step_bundles, with_gain
+from rola.ops.produce import decode_plan
+from tests.oracle.fixtures import assert_reordered_close, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -93,10 +94,10 @@ def test_decode_is_blind_to_prefill_bc(widths):
         # frozen carrier. `derive_decode_geometry` is called inside the loop because
         # it must be a pure function of the topology, `d_v` and `decay`.
         assert BC in _BCS
-        config = derive_decode_geometry(topology, d_v=d_v, decay=False)
+        config = decode_plan(topology, d_v=d_v, decay=False)
         configs.append(config)
         state = m0.clone()
-        y, state, _ = _decode_step(routes, values, config, state)
+        y, state, _ = _decode_step(routes, values, masks_of(routes), config, state)
         results.append((y, state))
 
     assert configs[0] == configs[1] == configs[2], (

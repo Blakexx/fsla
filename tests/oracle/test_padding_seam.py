@@ -30,13 +30,14 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.decode import _decode_step
 from rola.ops.lattice import box_shape, to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
 from rola.ops.paging import bytes_equal
+from rola.ops.produce import decode_plan
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.oracle.fixtures import assert_reordered_close, logical_state, state_pages, step_bundles, with_gain
+from tests.oracle.fixtures import assert_reordered_close, logical_state, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
 
 # ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
     v_logical = torch.randn(B, 1, H, d_v_logical, device=device, dtype=torch.float64,
                             generator=generator)
 
-    config = derive_decode_geometry(topology, d_v=d_v_logical, decay=False)
+    config = decode_plan(topology, d_v=d_v_logical, decay=False)
     assert config.d_v == DV, "d_v=48 must pad up to the shipped DV=64, not run at 48 directly"
 
     def run(v):
@@ -160,7 +161,7 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
             to_lattice(torch.zeros(B, H, N, cols, device=device, dtype=torch.float32),
                       widths, config.lattice_k, config.lattice_m))
         routes, values = step_bundles(v, read_levels, with_gain(write_levels, g_write), topology)
-        y, state, _ = _decode_step(routes, values, config, state, decay=None)
+        y, state, _ = _decode_step(routes, values, masks_of(routes), config, state, decay=None)
         logical = logical_state(state, config.d_v).reshape(B, H, N, cols)
         return y, to_canonical(logical, widths, config.lattice_k, config.lattice_m)
 

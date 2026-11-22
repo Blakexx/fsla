@@ -23,8 +23,8 @@ made mechanical.
 
 ```python
 s = rola.state()                        # unbound
-y, s = rola.rola_op(routes, values, state=s) # bound to this call's shape; s is mutated
-y, _ = rola.rola_op(routes, values)          # stateless: (y, None)
+y, s = rola.rola_op(routes, values, masks, plan=plan, state=s) # bound to this call's shape; s is mutated
+y, _ = rola.rola_op(routes, values, masks, plan=plan)  # stateless: (y, None)
 ```
 
 `rola.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
@@ -146,7 +146,7 @@ The backing is chosen at BIND time and is not a per-call flag:
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
 * **dense** — one `[BH, N/16, 16, cols]` plane: the SAME page sequence with every page
-  resident. Selected by `expert=PlanOverrides(paging=False)`, and it is what the
+  resident. Selected by `plan=PrefillPlan(carve, paging=False)`, and it is what the
   bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED: the exit sweep stores the atoms a call WRITES and no others, so the atoms it
   skips must already hold the zero an absent paged atom reads as.
 
@@ -299,13 +299,13 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`rola.engine.dags.decode_dag.decode_step_gated(routes, v, state, decay=..., expert=...)` takes and
+`rola.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, plan=..., decay=...)` takes and
 returns the state exactly as `rola_op` does, and its caller owns the verdict (`growth_pending`, then
 `admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
 behind that seam:
 
-* **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`) are the
-  decode DAG's own memoized nodes, not the state's — launch machinery fails the
+* **The static plan and the scratch** (`DecodePlan`, `DecodeScratch`) are the
+  decode DAG's own (the plan a seed, the scratch a memoized node), not the state's — launch machinery fails the
   membership test. The ORDER and the two memo disciplines are that DAG's page
   ([`engine/decode_dag.md` §5](engine/decode_dag.md#host-carrier)); what the state owes
   them is only its identity, which is what the `per_state` table is keyed on.

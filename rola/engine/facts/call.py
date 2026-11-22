@@ -10,7 +10,7 @@ it decides nothing of its own (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from rola.engine import BackwardNotImplemented, rules
 from rola.engine.facts.operands import operands_of, requires_backward
@@ -40,8 +40,9 @@ def arm_refusal(routes, decay: Any = None, *, d_v: int, stateful: bool = False) 
     return rules.prefill_envelope(*prefill_clauses(routes, decay, d_v=d_v, stateful=stateful))
 
 
-def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None, *, stateful: bool = False) -> str | None:
-    """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
+def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None, *, stateful: bool = False) -> str:
+    """Why the built kernel arm has no arm for this call. IT ALWAYS REFUSES: no carry arm is built on this line, so there
+    is no call the arm runs and this never returns ``None``; the sentence names the first clause the call fails.
 
     THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
     before calling and get the sentence the refusal will carry. It is a CALLER of the
@@ -56,8 +57,9 @@ def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None, *,
 
 
 def require_envelope(routes: RouteFactors, values: Values, decay: Any = None,
-                     state: Any = None) -> None:
-    """Refuse anything the built kernels cannot run. THE FAST-FAIL, in one place.
+                     state: Any = None) -> NoReturn:
+    """Refuse anything the built kernels cannot run. THE FAST-FAIL, in one place. IT ALWAYS RAISES: no carry arm is
+    built on this line (:func:`envelope_refusal` always has a sentence), so every call that reaches it is refused.
 
     There is no second arm to route to: the fp64 oracle is the executable spec, not a
     fallback, and a caller who wants it calls it (:func:`rola.ops.naive.naive_rola`).
@@ -71,9 +73,7 @@ def require_envelope(routes: RouteFactors, values: Values, decay: Any = None,
             "a RoLA PREFILL carrying a gradient: the prefill has no reverse pass until the native backward is "
             "rebuilt, and running it would sever the graph silently. Run under torch.no_grad(), freeze the "
             "operands, or train through the fp64 oracle (rola.ops.naive.naive_rola).")
-    reason = envelope_refusal(routes, values, decay, stateful=state is not None)
-    if reason is not None:
-        raise NotImplementedError(
-            f"rola_op runs the BUILT envelope only and there is no kernel for this call: "
-            f"{reason}. Nothing else is reachable through this surface "
-            "(docs/api.md §1).")
+    raise NotImplementedError(
+        f"rola_op runs the BUILT envelope only and there is no kernel for this call: "
+        f"{envelope_refusal(routes, values, decay, stateful=state is not None)}. Nothing else is reachable through "
+        "this surface (docs/api.md §1).")

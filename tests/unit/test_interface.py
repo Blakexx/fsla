@@ -22,6 +22,8 @@ import torch
 from conftest import build_layer
 
 import rola
+from rola.engine import PrefillPlan
+from rola.engine.carve import plan_carve
 from rola.expert import envelope_refusal, require_envelope
 from rola.interface import BackwardNotImplemented, operands_of, requires_backward
 from rola.values import Values
@@ -75,12 +77,12 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     levels, gains), exactly as `requires_grad` on the five loose tensors used to.
     """
     torch.manual_seed(3)
-    B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
+    B, T, H, d_v, hidden, w = 1, 8, 1, 32, 8, 16
     layer = build_layer(hidden_size=hidden, num_heads=H, widths=(w,), d_v=d_v, routing=_dense_routing()).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
-    routes, _values = layer._produce(x)
+    routes, _values, masks = layer._produce(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
-    return v, routes
+    return v, routes, masks, PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64))
 
 
 def test_a_grad_bearing_prefill_is_refused_loudly():
@@ -88,13 +90,13 @@ def test_a_grad_bearing_prefill_is_refused_loudly():
     must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
     The gradient clause speaks before the envelope's: the same bundle on the CPU without a gradient is refused
     for its device instead."""
-    v, routes = _tiny_routing(requires_grad=True)
+    v, routes, masks, plan = _tiny_routing(requires_grad=True)
     values = Values.from_projection(v)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
-        rola.rola_op(routes, values)
+        rola.rola_op(routes, values, masks, plan=plan)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        rola.rola_op(routes, values)
+        rola.rola_op(routes, values, masks, plan=plan)
 
 
 def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
@@ -108,9 +110,9 @@ def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
     passing one is a plain `TypeError` (unknown keyword) regardless of which arm
     the call would otherwise take, rather than a case the op has to notice and
     refuse."""
-    v, routes = _tiny_routing(requires_grad=True)
+    v, routes, masks, plan = _tiny_routing(requires_grad=True)
     with pytest.raises(TypeError):
-        rola.rola_op(routes, v, paging=object())
+        rola.rola_op(routes, v, masks, plan=plan, paging=object())
 
 
 def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
@@ -123,7 +125,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     an every-input-requires-grad call is ADMITTED past the gradient clause, because
     the predicate is gradient REACHABILITY and not the `requires_grad` flag.
     """
-    v, routes = _tiny_routing(requires_grad=True)
+    v, routes, _masks, _plan = _tiny_routing(requires_grad=True)
     with torch.no_grad():
         assert requires_backward(v, *routes.tensors()) is False
         #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
@@ -132,7 +134,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
-    v, routes = _tiny_routing(requires_grad=False)
+    v, routes, _masks, _plan = _tiny_routing(requires_grad=False)
     with torch.no_grad():
         assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
 
@@ -149,7 +151,7 @@ def test_the_envelope_refuses_a_no_grad_cuda_bundle_for_want_of_a_carry_arm():
     x = torch.randn(1, 512, 32, device="cuda")
     v = torch.randn(1, 512, 1, 64, device="cuda")
     with torch.no_grad():
-        routes, _values = layer._produce(x)
+        routes, _values, _masks = layer._produce(x)
         assert "no carry arm" in envelope_refusal(routes, Values.from_projection(v))
         with pytest.raises(NotImplementedError, match="no carry arm"):
             require_envelope(routes, Values.from_projection(v))

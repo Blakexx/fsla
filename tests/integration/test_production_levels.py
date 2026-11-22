@@ -741,7 +741,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.ops.produce`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
     monkeypatch.setattr(
-        production_path, "production_routing_factor_levels", oracle_factor_levels)
+        production_path, "production_routing_levels", lambda *args, **kwargs: (*oracle_factor_levels(*args, **kwargs), None))
     oracle = _run_producer(oracle_params, topology)
 
     #: THE ENVELOPE RE-DERIVES with the projection's operand class, it is not widened.

@@ -144,6 +144,10 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int ctas;        // the resident grid; see decode.md#queue
   int total_rows;  // sum_l b_l
   float eps;
+
+  const int32_t* read_mask
+      [kMaxLevels];  // digit-packed words [B, H, ceil(B_l / 32)] a level; host-threaded, unread
+  const int32_t* write_mask[kMaxLevels];
 };
 
 //: THE WORK QUEUE'S ADMISSION WORDS: a head's published state (ready, needy) and a visiting CTA's -- see docs/internals/decode/decode.md#queue-admission

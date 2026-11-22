@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`rola.interface.rola_op`).
 
-The paged arena is the default backing and `PlanOverrides(paging=False)` pins the dense plane (docs/api.md section 5):
+The paged arena is the default backing and `PrefillPlan(paging=False)` pins the dense plane (docs/api.md section 5):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
 hands no state back. A call whose writes reach a strict subset of the leaves a previous call wrote leaves every other
 leaf exactly as it found it -- an idle resident page is neither loaded nor stored.
@@ -18,25 +18,31 @@ import torch
 import rola
 from measure.cells import by_name, realize
 from measure.subjects import bundle_of
-from rola.expert import PlanOverrides
+from rola.expert import PrefillPlan
 from rola.interface import rola_op
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
 #: cells with sparse, structured and dense support: every page touched, some pages never touched, a split read side
 CELLS = ("flagship-alt-k4", "flagship-cohort-k4", "flagship-struct25", "flat-small-multiwindow")
-DENSE = PlanOverrides(paging=False)
+DENSE = False
 
 
 def operands(spec, tokens: slice = slice(None)):
-    routes, values, _layout, _statics = bundle_of(spec, realize(spec), tokens)
-    return routes, values
+    routes, values, masks, plan, _layout = bundle_of(spec, realize(spec), tokens)
+    return routes, values, masks, plan
 
 
-def calls(spec, parts, expert=None):
+def run(operands_, state, paging=None):
+    """The op over one call's operands, the plan's mapping pinned to ``paging`` (``False``: the dense plane)."""
+    routes, values, masks, plan = operands_
+    return rola_op(routes, values, masks, plan=PrefillPlan(carve=plan.carve, paging=paging), state=state)
+
+
+def calls(spec, parts, paging=None):
     """``(ys, state)``: the op over ``parts`` of the cell's tokens, one state carried through them."""
     state = rola.state()
-    ys = [rola_op(*operands(spec, part), state=state, expert=expert)[0] for part in parts]
+    ys = [run(operands(spec, part), state, paging)[0] for part in parts]
     return ys, state
 
 
@@ -65,7 +71,7 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(name):
 
 def test_a_stateless_call_carries_no_state():
     """The predicate is "a state was passed": a stateless call hands back ``None``."""
-    _y, state = rola_op(*operands(by_name("flagship-alt-k4")))
+    _y, state = run(operands(by_name("flagship-alt-k4")), None)
     assert state is None
 
 
@@ -78,17 +84,18 @@ def test_an_idle_resident_page_is_neither_loaded_nor_stored():
     first, second = operands(spec, slice(0, half)), operands(spec, slice(half, spec.tokens))
     widths = second[0].topology.widths
     touched = None
-    for level, live in enumerate(second[0].live("write")):
+    for level, width in enumerate(widths):
+        live = second[2].bits("write", level, second[0].tokens, width)
         digits = live.any(dim=(0, 1, 2))
         shape = [1] * len(widths)
         shape[level] = widths[level]
         touched = digits.view(shape) if touched is None else touched & digits.view(shape)
     untouched = ~touched.reshape(-1)
     assert bool(untouched.any()), "the cell's second half writes every leaf: the claim is vacuous"
-    for expert in (None, DENSE):
+    for paging in (None, DENSE):
         state = rola.state()
-        rola_op(*first, state=state, expert=expert)
+        run(first, state, paging)
         before = state.materialize().clone()
-        rola_op(*second, state=state, expert=expert)
+        run(second, state, paging)
         after = state.materialize()
         assert torch.equal(after[..., untouched, :], before[..., untouched, :])

@@ -8,11 +8,12 @@ decides which sub-states each token reads and writes. That reduction IS this API
 user who knows linear attention meets exactly ONE new concept here, the feature map,
 and everything else is linear attention's own contract.
 
-    rola_op(routes, values, decay)
+    rola_op(routes, values, masks, decay, plan=plan)
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
--- and ``decay`` is the recurrence dial. The layer DECLARES its routing -- the levels, each carrying its own
+-- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; the op computes with ``r * m``),
+``decay`` is the recurrence dial and ``plan`` is the static what-to-do (``rola.expert``). The layer DECLARES its routing -- the levels, each carrying its own
 width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
 bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
@@ -31,7 +32,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteFactors`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
+| feature map | `RouteFactors`, `Masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA`, `LayerContinuation` | STABLE |
@@ -51,6 +52,7 @@ from rola.layer import LayerContinuation, RoLA
 from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from rola.routing.factors import RouteFactors
+from rola.routing.masks import Masks
 from rola.routing.producer import (
     Routing,
     dense_routing,
@@ -77,6 +79,7 @@ __all__ = [
     "rola_op",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
+    "Masks",
     "Values",
     "Routing",
     "dense_routing",

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from rola.engine.types import Mask
+from rola.engine.types import Variant
 
 _STREAMS = ("host", "main", "side")
 
@@ -61,7 +61,7 @@ class Node:
     gives: tuple[str, ...]
     needs: tuple[str, ...]
     stream: str
-    masks: tuple[Mask, ...]
+    variants: tuple[Variant, ...]
     waits: tuple[str, ...]
     host_sync: bool
     pure_of: tuple[str, ...]
@@ -93,7 +93,7 @@ class Node:
 
 
 def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
-         stream: str = "host", masks: tuple[Mask, ...] = (Mask.M1, Mask.M2),
+         stream: str = "host", variants: tuple[Variant, ...] = (Variant.PREFILL_STATELESS, Variant.PREFILL_STATEFUL),
          waits: tuple[str, ...] = (), host_sync: bool = False,
          pure_of: tuple[str, ...] = (), per_state: bool = False,
          capturable: bool = False, reference_only: bool = False,
@@ -114,7 +114,7 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
                 f"{fn.__name__}: a host_sync node reads a device value on the host, "
                 f"which is exactly what a capture forbids; it cannot be capturable")
         return Node(fn=fn, name=fn.__name__, gives=tuple(gives), needs=tuple(needs),
-                    stream=stream, masks=tuple(masks), waits=tuple(waits),
+                    stream=stream, variants=tuple(variants), waits=tuple(waits),
                     host_sync=host_sync, pure_of=tuple(pure_of), per_state=per_state,
                     capturable=capturable, reference_only=reference_only,
                     memo=WeakKeyDictionary() if per_state else {})
@@ -123,7 +123,7 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
 
 
 def rule(*, gives: tuple[str, ...], needs: tuple[str, ...],
-         masks: tuple[Mask, ...] = (Mask.M1, Mask.M2)) -> Callable[[Callable], Callable]:
+         variants: tuple[Variant, ...] = (Variant.PREFILL_STATELESS, Variant.PREFILL_STATEFUL)) -> Callable[[Callable], Callable]:
     """Declare a RULE: a pure host fold from facts to a decision.
 
     **A rule may read a fact's SHAPE, DTYPE, DEVICE and PRESENCE, and never its
@@ -156,7 +156,7 @@ def rule(*, gives: tuple[str, ...], needs: tuple[str, ...],
         #: every rule is capturable by its own contract -- there is nothing else for it
         #: to be.
         fn.node = replace(
-            node(gives=gives, needs=needs, masks=masks, capturable=True)(walk), pure=fn)
+            node(gives=gives, needs=needs, variants=variants, capturable=True)(walk), pure=fn)
         return fn
 
     return declare
@@ -208,8 +208,8 @@ def validate_capturable(dag: tuple[Node, ...], name: str) -> None:
 def run(dag: tuple[Node, ...], facts: dict) -> dict:
     """Walk `dag` in order over the seeded fact bag, and return it."""
     for step in dag:
-        mask = facts.get("mask")
-        if mask is not None and mask not in step.masks:
+        variant = facts.get("variant")
+        if variant is not None and variant not in step.variants:
             facts.update({name: None for name in step.gives if name not in facts})
             continue
         if step.gives and all(name in facts for name in step.gives):

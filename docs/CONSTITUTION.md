@@ -279,5 +279,6 @@ The producer knows what it gives, its sparsity too, and owns the rules that turn
 them, and any other caller supplies whatever valid plan it wants. The op refuses a plan the data's shape cannot
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
-nothing else. NOT YET SO: [`open-work.md`](open-work.md#the-surface) row A-c lists where the op still reads its
-inputs' provenance, and row A-e where liveness is still decided from row values.
+nothing else. SO on the prefill and decode surfaces since 2026-11-22: the bundle carries no flag, the plan is a frozen
+static argument and the masks are an operand; [`open-work.md`](open-work.md#the-surface) rows A-c and A-e list what remains
+(the plan fields beyond the carve, the passes that read the masks, and the decode kernel's own mask read).

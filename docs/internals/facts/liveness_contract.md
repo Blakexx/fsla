@@ -94,26 +94,15 @@ u8 digits and lets a drawn call state its support from its floating levels (`-0`
 
 <a id="statics"></a>
 
-## Dense levels: the static width mask, and no logical width in the signature
+## Every level has a mask: the words are the supplied bits
 
-A dense level — an activation with no exact zeros (softmax), as the topology declares
-it — is NOT read by a pass, and its rows are NOT WRITTEN: they are the STATIC WIDTH MASK,
-ones for digits below `b_l` over the live tokens, zeros for the pad, which every reader of
-the words — the folds (`box_activity`, `atom_activity`, `page_bits`, given the side's
-statics) and the kernels — takes from the statics, never from the table. The model
-(`liveness_words`) states those rows all the same, as the definition the folds reproduce. That is exact up to a sound over-report: only a pad digit's
-logit is `-inf`, and a digit whose probability rounded to a zero digit in the bundle's
-format is reported live — work a consumer spends, never a contribution it misses.
-"Absent means full" would have marked a fully-pad box live and allocated pages of
-nothing but pad; the mask is a handful of words, not a read of `Σ_dense b_l` digits a
-token.
-
-The mask reaches the kernel as BITS, never as a width. `SideStatics` carries
-`dense_levels` (a bitmask over levels — a MODE fact)
-and `digit_mask` (one bit per row, `mask_bit`). The two contracts put the translation
-at the seam and keep logical-width fields out of every kernel entry signature (the review checks it; the lint is owed, CONSTITUTION R13);
-`rola.engine.facts.liveness.side_statics` is that translation, and it is the only place
-`b_l` appears.
+The words are the op's MASKS (ruled 2026-11-13, 2026-11-22; [`api.md` §2.6](../../api.md)): the producer emits a bit per side,
+level, digit and token beside the rows, token-packed in the layout the pass reads (bit `t % 32` of word `t // 32` at a digit,
+`[B, H, ceil(L / 32), w_l]` a level), and `rola.engine.facts.liveness.gather_words` lays them out in the pass's table -- the
+model of the table the gather pass reads and no test of any value. There is no row test, no dense flag and no static width
+mask: a level whose activation has no exact zeros has an all-live mask like any other, a digit past a level's width holds
+a zero bit, and every fold (`box_activity`, `atom_activity`, `page_bits`) reads the words alone. A mask that does not cover a
+row's nonzero digits changes the result; that is the supplier's job, and the oracle states it (`r * m`).
 
 <a id="tile-unions"></a>
 

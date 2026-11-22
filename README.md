@@ -136,7 +136,7 @@ routes   = rola.RouteProducer(rola.uniform(2, rola.union_routing(8, alpha=1.5)),
                               hidden_size=512, num_heads=8)
 
 factors = routes(hidden_states)          # the (q, k) pair, after the feature map
-y, state = rola.rola_op(factors, v)
+y, state = rola.rola_op(factors, v, masks, plan=plan)
 ```
 
 `rola_op` runs the BUILT ENVELOPE and refuses everything else, by name — including

@@ -13,7 +13,7 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `rules.paging_preference` | `paging` | whether a state bound here gets an arena (the expert may say no) |
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
-| `rules.mask` | `mask` | the band: stateless or stateful |
+| `rules.variant` | `variant` | the variant: stateless or stateful |
 | `facts` | `facts`, `carve`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch (NOT BUILT: `rola.ops.facts.facts` raises `KernelNotBuilt` on this line, so the node does, and everything after it is unreached): both sides' class-1 words and their tile unions, each side's lists at its list group and the writers' factor products, with the carve the planner picks, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
 | `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words: the state's write set (`rola.engine.facts.liveness.page_bits`) |
 | `box` (stateful) | `bc` | the carry's box, the arena's allocation extent |

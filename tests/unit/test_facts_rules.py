@@ -24,16 +24,17 @@ import pytest
 import torch
 
 import rola.engine.rules as rules_pkg
+from rola.engine.plan import PrefillPlan
 from rola.engine.rules import (
     admission,
-    decode_mask,
+    decode_variant,
     envelope,
-    mask,
     paging_preference,
     run_table,
+    variant,
 )
 from rola.engine.runner import Node
-from rola.engine.types import CallClass, Mask
+from rola.engine.types import CallClass, Variant
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -94,40 +95,42 @@ def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
 def test_a_rule_runs_as_a_node_over_a_fact_bag():
     """Rules are NODES, not a phase: the same fold a caller invokes with values is
     what the walk runs, and `.node` is the one it walks."""
+    from rola.engine.carve import plan_carve
     from rola.engine.runner import run
 
-    facts = run((mask.node, paging_preference.node), {"call_class": CallClass(False, False, False, False),
-                                                      "expert": None})
-    assert facts["mask"] is Mask.M1
+    plan = PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64))
+    facts = run((variant.node, paging_preference.node), {"call_class": CallClass(False, False, False, False),
+                                                      "plan": plan})
+    assert facts["variant"] is Variant.PREFILL_STATELESS
     assert facts["paging"] is True
 
 
 # ---------------------------------------------------------------------------
-# MaskRule
+# VariantRule
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("state_in", [False, True])
 @pytest.mark.parametrize("state_out", [False, True])
 @pytest.mark.parametrize("paged", [False, True])
 @pytest.mark.parametrize("grad", [False, True])
-def test_the_mask_is_m1_exactly_when_no_state_bit_is_engaged(state_in, state_out, paged, grad):
-    """GRAD IS NOT A MASK: it is a retention decision, and the mask must not move
+def test_the_variant_is_v1_exactly_when_no_state_bit_is_engaged(state_in, state_out, paged, grad):
+    """GRAD IS NOT A VARIANT: it is a retention decision, and the variant must not move
     with it -- a grad-bearing stateless call runs the subgraph exactly."""
     engaged = state_in or state_out or paged
-    assert mask(CallClass(state_in, state_out, paged, grad)) is (Mask.M2 if engaged
-                                                                 else Mask.M1)
+    assert variant(CallClass(state_in, state_out, paged, grad)) is (Variant.PREFILL_STATEFUL if engaged
+                                                                 else Variant.PREFILL_STATELESS)
 
 
 @pytest.mark.parametrize("paged", [False, True])
-def test_the_decode_mask_is_the_backing_and_nothing_else(paged):
-    """A GROWTH STEP IS NOT A MASK. M4 is walked twice around an admission, so the
+def test_the_decode_variant_is_the_backing_and_nothing_else(paged):
+    """A GROWTH STEP IS NOT A VARIANT. DECODE_PAGED is walked twice around an admission, so the
     only thing that selects a different node set at T = 1 is dense vs paged."""
-    assert decode_mask(paged) is (Mask.M4 if paged else Mask.M3)
+    assert decode_variant(paged) is (Variant.DECODE_PAGED if paged else Variant.DECODE_DENSE)
 
 
-def test_the_four_masks_are_the_four_call_classes():
+def test_the_four_variants_are_the_four_call_classes():
     """The set is CLOSED at four: prefill and decode, each over its two backings."""
-    assert [m.name for m in Mask] == ["M1", "M2", "M3", "M4"]
+    assert [m.name for m in Variant] == ["PREFILL_STATELESS", "PREFILL_STATEFUL", "DECODE_DENSE", "DECODE_PAGED"]
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +156,12 @@ def test_the_operand_envelope_names_the_activation_before_the_device():
 # PagingPreferenceRule
 # ---------------------------------------------------------------------------
 
-def test_paging_is_the_default_and_the_expert_may_only_turn_it_off():
-    from rola.expert import PlanOverrides
+def test_paging_is_the_default_and_the_plan_may_only_turn_it_off():
+    from rola.engine.carve import plan_carve
 
-    assert paging_preference(None) is True
-    assert paging_preference(PlanOverrides()) is True
-    assert paging_preference(PlanOverrides(paging=False)) is False
+    carve = plan_carve((256, 256), (False, True), (True, False), 64)
+    assert paging_preference(PrefillPlan(carve=carve)) is True
+    assert paging_preference(PrefillPlan(carve=carve, paging=False)) is False
 
 
 # ---------------------------------------------------------------------------

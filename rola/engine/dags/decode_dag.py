@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The decode family's DAG, read top to bottom, its context, and its four entries.
 
-M3 (decode-dense) and M4 (decode-paged) are ONE tuple, and after the step absorbed its
+DECODE_DENSE and DECODE_PAGED are ONE tuple, and after the step absorbed its
 own residency question they are the same tuple. The host-visible verdict is not a node:
 :func:`growth_pending` reads it at the caller's own synchronization (the layer's one-token
 ``forward``, or a serving loop replaying a captured step). A GROWTH STEP IS NOT A THIRD
@@ -15,8 +15,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from rola.engine import (
+    DecodeLaunch,
+    DecodeOperands,
     DecodePlan,
-    Mask,
+    DecodeWorkspace,
+    Variant,
     node,
     rules,
     run,
@@ -25,11 +28,11 @@ from rola.engine import (
 )
 from rola.ops import decode as bodies
 
-_SEEDS = ("routes", "values", "decay", "state", "expert")
+_SEEDS = ("routes", "values", "masks", "decay", "state", "plan")
 
-#: BOTH decode masks. A node carrying only `Mask.M4` is one the dense backing has no
+#: BOTH decode variants. A node carrying only `Variant.DECODE_PAGED` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
-_DECODE = (Mask.M3, Mask.M4)
+_DECODE = (Variant.DECODE_DENSE, Variant.DECODE_PAGED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,37 +40,26 @@ class DecodeContext:
     """One decode step's RAW inputs -- everything before a single fact is found.
 
     `state` is the facade's :class:`~rola.RoLAState`, which owns its own backing and
-    therefore answers the one question the mask folds.
+    therefore answers the one question the variant folds.
     """
 
     routes: Any
     values: Any
+    masks: Any
     state: Any
+    plan: Any
     decay: Any = None
-    expert: Any = None
 
 
-@node(gives=("widths", "d_v", "has_decay", "BH", "device", "paged", "write_dense"),
-      needs=("routes", "values", "decay", "state"), masks=_DECODE, capturable=True)
+@node(gives=("BH", "device", "paged"), needs=("routes", "state"), variants=_DECODE, capturable=True)
 def decode_call(f):
     routes, state = f["routes"], f["state"]
     routes.refuse_grouped("the decode step")
-    return (tuple(routes.topology.widths), f["values"].d_v, f["decay"] is not None,
-            routes.batch * routes.heads, routes.device, bool(state.paged), not routes.sparse[1][-1])
+    return routes.batch * routes.heads, routes.device, bool(state.paged)
 
 
-@node(gives=("geometry",),
-      needs=("routes", "widths", "d_v", "has_decay", "write_dense"),
-      pure_of=("widths", "d_v", "has_decay", "write_dense"), masks=_DECODE,
-      capturable=True)
-def geometry(f):
-    """The frozen carrier. Memoized on the CONFIG half alone, which is what it is."""
-    return bodies.derive_decode_geometry(
-        f["routes"].topology, d_v=f["d_v"], decay=f["has_decay"], write_dense=f["write_dense"])
-
-
-@node(gives=("scratch",), needs=("state", "geometry", "BH", "device"),
-      per_state=True, pure_of=("geometry", "BH", "device"), masks=_DECODE,
+@node(gives=("scratch",), needs=("state", "plan", "BH", "device"),
+      per_state=True, pure_of=("plan", "BH", "device"), variants=_DECODE,
       capturable=True)
 def scratch(f):
     """The per-sequence buffers, held WEAKLY against the state that owns them.
@@ -77,11 +69,11 @@ def scratch(f):
     also what hoists the allocation and the one-time zeroing of the counters and flags above
     any captured region (docs/internals/decode/decode.md#capture).
     """
-    return bodies.DecodeScratch.build(f["geometry"], f["BH"], f["device"])
+    return bodies.DecodeScratch.build(f["plan"], f["BH"], f["device"])
 
 
 @node(gives=("carried_plane", "page_table", "pool"), needs=("state", "routes"),
-      stream="main", masks=_DECODE, capturable=True)
+      stream="main", variants=_DECODE, capturable=True)
 def backing(f):
     """The state's own plane, table and slack pool, over the residency it already has.
 
@@ -93,41 +85,43 @@ def backing(f):
 
 
 @node(gives=("state_plane",),
-      needs=("values", "geometry", "decay", "carried_plane", "page_table"),
-      masks=_DECODE, capturable=True)
+      needs=("values", "plan", "decay", "carried_plane", "page_table"),
+      variants=_DECODE, capturable=True)
 def state_plane(f):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
-    return bodies.step_plane(f["values"].v, f["geometry"], f["decay"],
+    return bodies.step_plane(f["values"].v, f["plan"], f["decay"],
                              f["carried_plane"], f["page_table"])
 
 
-@node(gives=("plan",),
-      needs=("geometry", "routes", "values", "decay", "state_plane", "page_table", "scratch", "pool"),
-      stream="main", masks=_DECODE, capturable=True)
-def build_plan(f):
-    """The launch's arguments, over the bundles' OWN rows, scales and values.
+@node(gives=("launch",),
+      needs=("plan", "routes", "values", "masks", "decay", "state_plane", "page_table", "scratch", "pool"),
+      stream="main", variants=_DECODE, capturable=True)
+def build_launch(f):
+    """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the static plan, the
+    operands and the workspace (:class:`rola.engine.plan.DecodeLaunch`).
 
     It carries a stream because the decay arm's dials are derived here: a per-HEAD
     constant, the one operand the step kernel does not fold
     (docs/internals/decode/decode_fold.md).
     """
-    routes, values, geometry = f["routes"], f["values"], f["geometry"]
-    return DecodePlan(
-        config=geometry, heads=routes.heads, read=routes.amp_read, write=routes.amp_write,
-        read_scale=routes.scale_read, write_scale=routes.scale_write,
-        dials=bodies.leaf_rate_dials_for(f["decay"], geometry, values.device),
-        v=values.v, v_scale=values.scale,
-        state_plane=f["state_plane"],
-        page_table=f["page_table"], scratch=f["scratch"], pool=f["pool"])
+    routes, values, masks, plan = f["routes"], f["values"], f["masks"], f["plan"]
+    return DecodeLaunch(
+        plan=plan,
+        operands=DecodeOperands(
+            read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
+            write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
+            dials=bodies.leaf_rate_dials_for(f["decay"], plan, values.device), v=values.v, v_scale=values.scale,
+            state_plane=f["state_plane"], page_table=f["page_table"]),
+        workspace=DecodeWorkspace(scratch=f["scratch"], pool=f["pool"]))
 
 
-@node(gives=("y",), needs=("plan",), stream="main", masks=_DECODE, capturable=True)
+@node(gives=("y",), needs=("launch",), stream="main", variants=_DECODE, capturable=True)
 def step(f):
     """THE STEP: fold, expand, walk and the residency verdict, in one launch."""
-    return bodies.step(f["plan"])
+    return bodies.step(f["launch"])
 
 
-@node(gives=("atom_bits",), needs=("routes", "geometry"), masks=_DECODE,
+@node(gives=("atom_bits",), needs=("masks", "plan"), variants=_DECODE,
       reference_only=True)
 def write_atom_bitmap(f):
     """The gate's INDEPENDENT second derivation of the write-atom set.
@@ -137,8 +131,9 @@ def write_atom_bitmap(f):
     that compared the step against itself would prove nothing
     (docs/internals/decode/decode.md#second-derivation).
     """
-    routes = f["routes"]
-    return bodies._write_atom_bitmap(routes.live("write"), f["geometry"])
+    masks = f["masks"]
+    live = tuple(masks.bits("write", level, 1, width) for level, width in enumerate(f["plan"].widths))
+    return bodies._write_atom_bitmap(live, f["plan"])
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph
@@ -146,12 +141,11 @@ def write_atom_bitmap(f):
 #: device value on the host and nothing in it allocates.
 DECODE_STEP = (
     decode_call,
-    rules.decode_mask.node,
-    geometry,
+    rules.decode_variant.node,
     scratch,
     backing,
     state_plane,
-    build_plan,
+    build_launch,
     step,
 )
 
@@ -173,13 +167,19 @@ def validate_context(ctx: DecodeContext) -> None:
     if ctx.routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={ctx.routes.tokens}")
+    if type(ctx.plan) is not DecodePlan:
+        raise TypeError(f"the decode step takes a DecodePlan, got {type(ctx.plan).__name__}; "
+                        "rola.ops.produce.decode_plan builds one from the declaration")
+    if tuple(ctx.routes.topology.widths) != ctx.plan.widths:
+        raise ValueError(f"the plan is for widths {ctx.plan.widths}, the bundle's are {tuple(ctx.routes.topology.widths)}")
+    bodies.check_decode_masks(ctx.masks, ctx.routes)
     bodies.guard_no_grad((*ctx.values.tensors(), *ctx.routes.tensors(),
                           *(ctx.decay.dials if ctx.decay is not None else ())))
 
 
 def _facts(ctx: DecodeContext) -> dict:
-    return {"routes": ctx.routes, "values": ctx.values, "decay": ctx.decay, "state": ctx.state,
-            "expert": ctx.expert}
+    return {"routes": ctx.routes, "values": ctx.values, "masks": ctx.masks, "decay": ctx.decay, "state": ctx.state,
+            "plan": ctx.plan}
 
 
 def _scratch_of(state):
@@ -195,7 +195,7 @@ def _scratch_of(state):
     return next(iter(table.values()))
 
 
-def decode_step_gated(routes, values, state, *, decay=None, expert=None):
+def decode_step_gated(routes, values, masks, state, *, plan, decay=None):
     """ONE decode step with NO host participation -- the decode entry, and CAPTURE-SAFE.
 
     Each batch-head is gated on the step's own device-side answer, so one whose write set
@@ -214,7 +214,7 @@ def decode_step_gated(routes, values, state, *, decay=None, expert=None):
     carries a done flag into the second and re-reads for its `y` without depositing again
     (docs/internals/decode/decode.md#done-flags).
     """
-    ctx = DecodeContext(routes=routes, values=values, state=state, decay=decay, expert=expert)
+    ctx = DecodeContext(routes=routes, values=values, masks=masks, state=state, plan=plan, decay=decay)
     validate_context(ctx)
     return run(DECODE_STEP, _facts(ctx))["y"], state
 

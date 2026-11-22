@@ -26,6 +26,9 @@ def support(routes) -> list[dict]:
     """Each level's and side's nonzero digits a token, over every batch row, token and head."""
     import torch
 
+    from rola.ops.produce import activation_walks
+
+    walks = activation_walks(routes.topology)
     out = []
     for level in range(routes.topology.D):
         for side, flag in (("read", 0), ("write", 1)):
@@ -34,7 +37,7 @@ def support(routes) -> list[dict]:
             q = torch.quantile(count[:: max(1, count.numel() // (1 << 24))], torch.tensor([0.5, 0.99], device=count.device,
                                                                                          dtype=torch.float64))
             width = rows.shape[-1]
-            out.append({"level": level, "side": side, "sparse": bool(routes.sparse[flag][level]), "width": width,
+            out.append({"level": level, "side": side, "sparse": bool(walks[flag][level]), "width": width,
                         "mean": round(float(count.mean()), 2), "median": float(q[0]), "p99": float(q[1]),
                         "fraction": round(float(count.mean()) / width, 4)})
     return out
