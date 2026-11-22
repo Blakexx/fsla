@@ -18,7 +18,7 @@ The census reads the units the graph's CUDA rule compiled (`//:census`, `bazel/d
 `ptxas -v` report and its object, with the graph's disassemblers -- one compile, read twice, never a recompile with a
 flag list of its own. Per kernel and architecture it prints the instantiations, their registers, the register-side CTAs
 an SM, the spill stores and loads, and the local accesses inside a loop; the scope is the build's parameters
-(`--//:archs`, `--//:carry_arms`, `--//:decode_arms`), so an iteration build's census is the measurement of its subset.
+(`--//:archs`, one `--//:<family>_arms` per family of `ARM_FAMILIES`), so an iteration build's census is the measurement of its subset.
 A spill is admissible when it is priced and worse than every alternative in hand, not when it is absent: the census
 makes it a number to read, and a change that moves one is read in the census before and after.
 

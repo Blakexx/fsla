@@ -45,10 +45,9 @@ class _Whitelist:
 
     # THE DIFF SIDES (`tests/oracle/sides.py`) are executors a declaration names by `module:function` string
     # (`declare.py`'s SURFACES), called by the build's side worker and never by name in code.
-    # THE CARRY ORACLE'S GUARDS (`tests/oracle/fixtures.py`): the binary's arm table and the device-side freshness stamp
+    # THE CARRY ORACLE'S GUARDS (`tests/oracle/fixtures.py`): the device-side freshness stamp
     # every carry oracle test asks first (docs/build.md, KERNEL_STANDARDS: the extension trap); the tests that call them
     # land with the carry's components, and the guards are kept rather than re-derived then.
-    built_arms = None
     assert_fresh_binary = None
     pytest_tier = None  # `measure/executors.py`, named by `declare.py`'s oracle-tier target
 
@@ -102,5 +101,5 @@ _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,  # ruff B01
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.Activation, _.state_size, _.sequence_length,
-               _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.built_arms, _.assert_fresh_binary, _.pytest_tier,
+               _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary, _.pytest_tier,
                _.build_wheel, _.build_sdist, _.build_editable)

@@ -31,7 +31,7 @@ METHOD for `__global__` (heuristic, not a real C++ parser -- see LIMITS below):
 LIMITS: (a) no macro expansion -- a kernel name built by token-pasting would not match its own textual declaration; none
 exist in this codebase today. (b) demangled-substring matching can false-negative on a name that is also a common
 English/C substring of an unrelated symbol (none observed: kernel names here are long and specific). (c) the census is
-the build's: an iteration build (`--//:carry_arms`, `--//:archs`) compiles a subset, and a template only the other arms
+the build's: an iteration build (`--//:<family>_arms`, `--//:archs`) compiles a subset, and a template only the other arms
 instantiate reads as unused -- run the check on the default build.
 
 Usage: `bazel test //csrc/rola:unused_instantiations`, which runs it on the graph's census.

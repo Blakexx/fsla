@@ -1,24 +1,18 @@
-// csrc/rola/src/common/arm.cuh -- ONE CARRY ARM'S KEY AND CONSTANTS, torch-free: the per-arm units and the host
-// dispatch (common/arm_switch.cuh) share them. see docs/internals/common/arm.md
+// csrc/rola/src/common/arm.cuh -- an arm's key and constants, any family's, torch-free; see docs/internals/common/arm.md
 #pragma once
 
 namespace rola {
 
-//: A CARRY ARM'S KEY: the carve's operation-plan pair (`CARRY_KEY` in `csrc/rola/src/carry/arms.bzl`, in its order).
-struct CarryKey {
-  int fold_rows, fold_factors, read_rows, read_factors, channels, same_split;
+template <int N>
+struct ArmKey {
+  int v[N];
 };
 
-template <int INDEX, int FOLD_ROWS, int FOLD_FACTORS, int READ_ROWS, int READ_FACTORS, int CHANNELS,
-          int SAME_SPLIT>
+template <int INDEX, int... VALUES>
 struct Arm {
   static constexpr int index = INDEX;
-  static constexpr int fold_rows = FOLD_ROWS;
-  static constexpr int fold_factors = FOLD_FACTORS;
-  static constexpr int read_rows = READ_ROWS;
-  static constexpr int read_factors = READ_FACTORS;
-  static constexpr int channels = CHANNELS;
-  static constexpr int same_split = SAME_SPLIT;
+  static constexpr int size = sizeof...(VALUES);
+  static constexpr int values[sizeof...(VALUES)] = {VALUES...};
 };
 
 }  // namespace rola

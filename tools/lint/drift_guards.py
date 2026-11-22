@@ -35,9 +35,10 @@ PYPKG = ROOT / "rola"
 TESTS = ROOT / "tests"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-#: THE DECLARED ARM KEY, read from the declaration rather than restated. A lint that
+#: THE DECLARED ARM KEYS, read from the declarations rather than restated: one `arms.bzl` beside each family's kernel
+#: (`csrc/rola/src/<family>/arms.bzl`, the family `bazel/arms.bzl`'s `arm_family` instantiates). A lint that
 #: hard-codes the key it enforces is a second declaration of it.
-CARRY_ARMS_BZL = CSRC / "src" / "carry" / "arms.bzl"
+ARM_DECLARATIONS = sorted((CSRC / "src").glob("*/arms.bzl"))
 
 #: THE GEOMETRY BLOCK -- the ONE place the addressing derivation may be instantiated.
 GEOMETRY_BLOCK = ("common/geom.cuh", "common/geom.cu", "common/geom_api.cuh")
@@ -51,13 +52,20 @@ GEOMETRY_BLOCK = ("common/geom.cuh", "common/geom.cu", "common/geom_api.cuh")
 DERIVATION_NAMES = ("derive_carry_geom", "sub_boxes", "ModeOrder", "StreamSpans")
 
 
-def arm_key() -> tuple[str, ...]:
-    """The carry's declared key: `CARRY_KEY` in the Starlark declaration, a literal read by AST (a lint imports nothing
-    to learn a fact about the repo's files)."""
-    for node in ast.parse(CARRY_ARMS_BZL.read_text()).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "CARRY_KEY" for t in node.targets):
-            return tuple(ast.literal_eval(node.value))
-    raise SystemExit(f"drift_guards: {CARRY_ARMS_BZL.relative_to(ROOT)} declares no `CARRY_KEY`")
+def arm_keys() -> dict[str, tuple[str, ...]]:
+    """Every family's declared key, by family: `<FAMILY>_KEY` in its Starlark declaration, a literal read by AST (a lint
+    imports nothing to learn a fact about the repo's files)."""
+    keys = {}
+    for path in ARM_DECLARATIONS:
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    name = getattr(target, "id", "")
+                    if name.endswith("_KEY"):
+                        keys[name.removesuffix("_KEY").lower()] = tuple(ast.literal_eval(node.value))
+    if not keys:
+        raise SystemExit("drift_guards: no `arms.bzl` declares a `<FAMILY>_KEY`")
+    return keys
 
 
 def _walk(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
@@ -107,14 +115,20 @@ def rule_arm_axes(files=None) -> list[str]:
     Non-integer parameters (types) and parameters spelled as file constants (a leading
     `k`) are not axes and are not reported.
 
-    THE KEY GOVERNS THE FAMILY THAT DECLARES IT. `CARRY_KEY` is the carry
-    family's declaration, so this rule reads carry kernels: the producer's solves and
-    the decode step key on their own axes, and whether those fold into this key is an
-    open question in `docs/open-work.md`, not a finding here.
+    THE KEY GOVERNS THE FAMILY THAT DECLARES IT: each family's kernels (`<family>*_kernel`) are read against that
+    family's `<FAMILY>_KEY`, in every family an `arms.bzl` declares. The producer's solves key on their own axes,
+    and whether those fold into a family's key is an open question in `docs/open-work.md`, not a finding here.
     """
-    declared = arm_key()
+    findings = []
+    for family, declared in arm_keys().items():
+        findings += _arm_axes_of(family, declared, files)
+    return findings
+
+
+def _arm_axes_of(family: str, declared: tuple[str, ...], files) -> list[str]:
+    """One family's kernels against its declared key (`rule_arm_axes`)."""
     key = {k.lower() for k in declared}
-    family = re.compile(r"\bcarry\w*_kernel\b")
+    family = re.compile(rf"\b{re.escape(family)}\w*_kernel\b")
     findings = []
     for path in (cuda_files() if files is None else files):
         lines = path.read_text().splitlines()
@@ -358,7 +372,7 @@ def rule_host_dispatch_is_arm_switch(files=None) -> list[str]:
     Heuristic: a host `if` comparing a key field to a literal, in a file that does not
     mention `arm_switch`.
     """
-    key = arm_key()
+    key = {field for declared in arm_keys().values() for field in declared}
     test = re.compile(r"\bif\s*\(.*\b(" + "|".join(re.escape(k) for k in key) +
                       r"|dv|d_v)\s*==\s*\d+")
     findings = []
@@ -465,10 +479,10 @@ FIXTURE_PAIRS = {
 
 
 def self_test() -> int:
-    global CARRY_ARMS_BZL
+    global ARM_DECLARATIONS
     bad = []
-    #: the fixtures are written against a key of their own (`fixtures/drift_arms.bzl`), not the carry's
-    real_declaration, CARRY_ARMS_BZL = CARRY_ARMS_BZL, FIXTURES / "drift_arms.bzl"
+    #: the fixtures are written against a key of their own (`fixtures/drift_arms.bzl`), not a family's
+    real_declarations, ARM_DECLARATIONS = ARM_DECLARATIONS, [FIXTURES / "drift_arms.bzl"]
     for name, (fires, quiet) in sorted(FIXTURE_PAIRS.items()):
         rule = RULES[name]
         hot = rule([FIXTURES / fires])
@@ -477,7 +491,7 @@ def self_test() -> int:
             bad.append(f"    {name}: did not fire on {fires}")
         if cold:
             bad.append(f"    {name}: fired on {quiet}: {cold}")
-    CARRY_ARMS_BZL = real_declaration
+    ARM_DECLARATIONS = real_declarations
     #: AND THE FIXTURES MUST NOT REACH THE REAL SCAN. A lint that walks a tree holding
     #: its own deliberate violations reports them as findings; this has happened to
     #: two lints in this directory already, so it is checked rather than remembered.

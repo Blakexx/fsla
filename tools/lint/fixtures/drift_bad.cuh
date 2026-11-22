@@ -5,10 +5,10 @@
 namespace fixture {
 
 template <int D, int DV, int WARPS_PER_CTA, int B, int K>
-__global__ void carry_kernel(float* out);
+__global__ void fixture_kernel(float* out);
 
 template <int D, int DV, int WARPS_PER_CTA>
-__global__ void carry_split_kernel(float* out);
+__global__ void fixture_split_kernel(float* out);
 
 __device__ void read_page(void* pages) {
   float* row = reinterpret_cast<float*>(pages);

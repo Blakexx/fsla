@@ -127,15 +127,6 @@ def state_rounded(state):
     return out.to(state.dtype)
 
 
-def built_arms() -> set:
-    """The carry arm keys THIS binary carries (`rola.ops.carry.arm_key`).
-
-    `arms()` is the binary's own answer (`rola.ops.carry.arms()`), so this is a fact
-    about the `.so` under test and never about the source tree that produced it.
-    """
-    return {tuple(row) for row in carry_ops.arms()}
-
-
 def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap: the carry family's build stamp is
     a fact only a built kernel produces (`rola.ops.carry.build_stamp`)."""

@@ -5,12 +5,12 @@
 
 namespace fixture {
 
-template <int Index, int FoldRows, int FoldFactors, int ReadRows, int ReadFactors, int Channels, int SameSplit>
+template <int Index, int DV, int Levels, int Decay>
 __global__ void arm_kernel(int* out) {
-  if (threadIdx.x == 0 && blockIdx.x == 0) out[0] = Index + FoldRows + FoldFactors + ReadRows + ReadFactors + Channels + SameSplit;
+  if (threadIdx.x == 0 && blockIdx.x == 0) out[0] = Index + DV + Levels + Decay;
 }
 
 }  // namespace fixture
 
-#define ROLA_FIXTURE_ARM_DEFINE(I, FR, FF, RR, RF, CH, SS) \
-  template __global__ void fixture::arm_kernel<I, FR, FF, RR, RF, CH, SS>(int*);
+#define ROLA_FIXTURE_ARM_DEFINE(I, DV, LV, DC) \
+  template __global__ void fixture::arm_kernel<I, DV, LV, DC>(int*);

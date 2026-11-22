@@ -13,7 +13,7 @@ one session and one memory pass over the cells, every result stored.
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; no
 kernel has a pipe-counter or stall-census row on this line, so neither is declared), and with a timing server
-the timing registrations: `prefill` on the carry cells, `entmax_solve@layer=C`,
+the timing registrations: `entmax_solve@layer=C`,
 `layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each RoLA
 construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
 reach one record its refusal. Every
@@ -50,7 +50,6 @@ INSTRUMENTS = {
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
     "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
 }
-CARRY_ARMS = ("prefill",)
 LAYER_ARMS = ("entmax_solve", "layer_prefill", "decode_step", "layer_op")
 #: seconds an instrument may run on one cell
 #: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
@@ -117,9 +116,6 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     if timing is None:
         return out
     timed = _code("measure/executors.py", ["measure/bench"])
-    for arm in CARRY_ARMS if carry else ():
-        out["entries"][arm] = register_timing(g, arm, server=timing, env=env, executor=EXECUTORS + "timed",
-                                              cells=cell_nodes(g, carry), params={"arm": arm}, deps=facts, code=timed)
     constructions = load(Path(env.cwd) / "measure" / "cells" / "layer.py")["CONSTRUCTIONS"]
     for construction in constructions.values():
         takes = [c for c in layer if c in construction.cells]

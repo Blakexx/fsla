@@ -27,8 +27,8 @@ bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (be
 bazel run //:wheels                                    # the two wheels of a clean commit (below)
 ```
 
-A build's PARAMETERS are the graph's settings -- `--//:archs`, `--//:carry_arms`,
-`--//:decode_arms` ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
+A build's PARAMETERS are the graph's settings -- `--//:archs` and one `--//:<family>_arms` per family
+of `ARM_FAMILIES` (`--//:decode_arms`) ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
 `host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets: beyond the target count it buys
 nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
 machine-wide host budget, which the front door takes for it ([`build-graph.md`](build-graph.md#front-door)); any other
@@ -67,7 +67,7 @@ closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rul
 The census (every instantiation's registers and spills) is not among them: it is a report on demand,
 `bazel run //:ratify -- --census` ([`build-graph.md`](build-graph.md#census)).
 
-<a id="generated-headers"></a>The build's GENERATED HEADERS (the arm selections, the carry parts, the builds, the
+<a id="generated-headers"></a>The build's GENERATED HEADERS (the arm selections and tables, the builds, the
 csrc stamp) are actions over their generators, and `bazel run //:library` copies them into `build/generated/`, where
 a compile outside the graph reads them,. Only `common/build_stamp.cu` reads the csrc stamp, whose text
 changes with every `csrc/` edit.
@@ -87,8 +87,8 @@ states), and three properties make it safe to have:
 * **The default is every declared arm and every built architecture.** An empty arm setting expands to the whole
   list, so a plain build and every wheel are the closed-world one. There is no configuration in which a subset is the
   default.
-* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `rola.ops.carry.arms()` and
-  `rola.ops.decode.arms()` return the rows the fatbin actually carries, read off the same list the build compiled
+* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `rola.ops.<family>.arms()` (`rola.ops.decode.arms()`)
+  returns the rows the fatbin actually carries, read off the same list the build compiled
   from; asking a launch for any other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
 * **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
   construction, so its record says `iteration: True` and `bazel run //:wheels` refuses it.
@@ -100,7 +100,7 @@ numbers no shipped binary has is worse than none. The census (`bazel run //:rati
 graph compiled for the build's own parameters (its record names them), so an iteration build's census is the measurement of its
 subset; the arm gate asks the BUILT binary which arms it carries and compares the answer with the declaration
 ([`build-graph.md#gates`](build-graph.md#gates)); and no arm subset is a compile flag: each family's selection is a
-generated header (`carry_selection.inc`, `decode_selection.inc`; [`build-graph.md#arms`](build-graph.md#arms)) written for
+generated header (`<family>_selection.inc`; [`build-graph.md#arms`](build-graph.md#arms)) written for
 the build's own scope, so a flag naming WHAT WAS COMPILED, rather than HOW, never reaches a unit's command line. The one
 such flag is `-gencode`, the architectures, which the graph takes from the build.
 
@@ -130,17 +130,15 @@ family's single unit, before the per-arm split, peaked at 6.14 GB. A build's pea
 Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, each a Bazel action keyed
 on the argv and the content of every input the compiler reported reading.
 
-## <a id="carry-arm-lists"></a>The carry arm list
+## <a id="arm-lists"></a>The arm lists
 
-`csrc/rola/src/carry/arms.bzl` declares the carry family's arms and `bazel/arms.bzl` instantiates them
-([`build-graph.md#arms`](build-graph.md#arms)). An arm is the
-carve's operation-plan pair, keyed `fold_rows, fold_factors, read_rows, read_factors, channels, same_split`
-([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)); the box's per-level extents, the depth and the
-widths are runtime addressing. The declaration has one list, `CARRY_ARMS`: every declared row is built by a default build and shipped. Each row is
-one generated unit per built architecture, `carry_arm_<i>_sm_<arch>`, `i` its index in the canonical-sorted list.
+`csrc/rola/src/<family>/arms.bzl` declares a family's arms and `bazel/arms.bzl` instantiates them
+([`build-graph.md#arms`](build-graph.md#arms)); the shipped families are `ARM_FAMILIES` there. The decode's arm is
+`d_v × levels × decay`; the box's per-level extents, the depth and the widths are runtime addressing. A declaration has
+one list, `<FAMILY>_ARMS`: every declared row is built by a default build and shipped.
 
-A binary answers which arms it carries itself (`rola.ops.carry.arms()`), never the source tree. A launch whose carve
-selects an arm the binary does not carry is refused by name, with the key field that has no built member.
+A binary answers which arms it carries itself (`rola.ops.decode.arms()`), never the source tree. A launch whose key
+selects an arm the binary does not carry is refused by name.
 
 ## <a id="kernel-identity"></a>A kernel's code is a function of its source and toolchain
 
@@ -244,7 +242,7 @@ version and the toolchain and is no iteration build. It writes
 `dist/rola-<v>-py3-none-any.whl` and `dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl`, byte-reproducible for a commit
 (fixed member order and timestamps). `bazel run //tools:wheels -- --check dist` installs them into a scratch venv over
 the environment's torch and requires `rola` alone to refuse naming the extra, and both together to load and name
-their carry arms ([`internals/tools/wheels.md`](internals/tools/wheels.md)).
+their decode arms ([`internals/tools/wheels.md`](internals/tools/wheels.md)).
 
 The platform tag is the build host's, `linux_x86_64`: the wheels install on a machine whose glibc is at least the build
 host's. A `manylinux` tag, which PyPI requires, is not claimed.

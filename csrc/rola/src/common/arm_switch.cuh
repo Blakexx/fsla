@@ -6,101 +6,108 @@
 #include <torch/headeronly/util/Exception.h>
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "carry_selection.inc"
 #include "common/arm.cuh"
 
 namespace rola {
 
-//: THE CARRY FAMILY'S ARM SET, GENERATED -- see docs/internals/common/arm_switch.md#carry-arm-set
-struct CarryArmSet {
-  //: what THIS BINARY carries, and what the declaration declares. Both, because the
-  //: refusal tells an unbuilt arm from an undeclared one.
-  static constexpr int count = ROLA_CARRY_ARM_COUNT;
-  static constexpr int declared = ROLA_CARRY_ARM_DECLARED;
-  static constexpr const char* family = "carry";
-  static constexpr const char* key =
-      "(fold_rows, fold_factors, read_rows, read_factors, channels, same_split)";
+//: ONE FAMILY'S HOST ARM SET, defined from the family's generated selection header (`<family>_selection.inc`, included
+//: before this macro is used): `ROLA_DEFINE_ARM_SET(DecodeArmSet, DECODE)` defines the struct `arm_switch` takes -- what THIS
+//: BINARY carries and what the declaration declares (both, because the refusal tells an unbuilt arm from an undeclared one),
+//: the visit over the built arms, the built set spelled and as rows, and the field that has no member at all.
+//: -- see docs/internals/common/arm_switch.md#arm-set
+#define ROLA_ARM_VISIT(I, ...)                                                          \
+  if (matches(k, ::rola::Arm<I, __VA_ARGS__>::values)) {                                       \
+    ++hits;                                                                             \
+    if (hits == 1) body(::rola::Arm<I, __VA_ARGS__>{});                                         \
+  }
+#define ROLA_ARM_NAME(I, ...)                    \
+  out += (out.empty() ? "" : ", ");              \
+  out += spell(::rola::Arm<I, __VA_ARGS__>::values);
+#define ROLA_ARM_ROW(I, ...) \
+  out.emplace_back(std::begin(::rola::Arm<I, __VA_ARGS__>::values), std::end(::rola::Arm<I, __VA_ARGS__>::values));
+#define ROLA_ARM_FIELD(I, ...)                                          \
+  for (int i = 0; i < arity; ++i) seen[i] = seen[i] || k.v[i] == ::rola::Arm<I, __VA_ARGS__>::values[i];
 
-  template <class Body>
-  static int visit(const CarryKey& k, Body&& body) {
-    (void)k;
-    (void)body;
-    int hits = 0;
-#define ROLA_ARM_VISIT(I, FR_, FF_, RR_, RF_, CH_, SS_)                                                       \
-  if (k.fold_rows == (FR_) && k.fold_factors == (FF_) && k.read_rows == (RR_) && k.read_factors == (RF_) \
-      && k.channels == (CH_) && k.same_split == (SS_)) {                                                  \
-    ++hits;                                                                                               \
-    if (hits == 1) body(Arm<I, FR_, FF_, RR_, RF_, CH_, SS_>{});                                          \
+#define ROLA_DEFINE_ARM_SET(NAME, UPPER)                                                              \
+  struct NAME {                                                                                       \
+    static constexpr int count = ROLA_##UPPER##_ARM_COUNT;                                            \
+    static constexpr int declared = ROLA_##UPPER##_ARM_DECLARED;                                      \
+    static constexpr const char* family = ROLA_##UPPER##_ARM_FAMILY;                                  \
+    static constexpr const char* key = ROLA_##UPPER##_ARM_KEY;                                        \
+    static constexpr const char* fields[] = {ROLA_##UPPER##_ARM_FIELDS};                              \
+    static constexpr int arity = sizeof(fields) / sizeof(fields[0]);                                  \
+    using Key = ::rola::ArmKey<arity>;                                                                        \
+                                                                                                      \
+    static bool matches(const Key& k, const int (&row)[arity]) {                                      \
+      for (int i = 0; i < arity; ++i)                                                                 \
+        if (k.v[i] != row[i]) return false;                                                           \
+      return true;                                                                                    \
+    }                                                                                                 \
+    static std::string spell(const int (&row)[arity]) {                                               \
+      std::string out = "(";                                                                          \
+      for (int i = 0; i < arity; ++i) out += (i ? ", " : "") + std::to_string(row[i]);                \
+      return out + ")";                                                                               \
+    }                                                                                                 \
+                                                                                                      \
+    template <class Body>                                                                             \
+    static int visit(const Key& k, Body&& body) {                                                     \
+      (void)k;                                                                                        \
+      (void)body;                                                                                     \
+      int hits = 0;                                                                                   \
+      ROLA_##UPPER##_ARM_SET_X(ROLA_ARM_VISIT)                                                        \
+      return hits;                                                                                    \
+    }                                                                                                 \
+                                                                                                      \
+    /* THE BUILT SET, SPELLED, so a refusal is one a caller can act on. */                            \
+    static std::string members() {                                                                    \
+      std::string out;                                                                                \
+      ROLA_##UPPER##_ARM_SET_X(ROLA_ARM_NAME)                                                         \
+      return out.empty() ? std::string("none") : out;                                                 \
+    }                                                                                                 \
+                                                                                                      \
+    /* THE BUILT SET AS ROWS, each an arm's key: the binary's own answer to what it carries. */       \
+    static std::vector<std::vector<int64_t>> rows() {                                                 \
+      std::vector<std::vector<int64_t>> out;                                                          \
+      ROLA_##UPPER##_ARM_SET_X(ROLA_ARM_ROW)                                                          \
+      return out;                                                                                     \
+    }                                                                                                 \
+                                                                                                      \
+    /* WHICH FIELD HAS NO MEMBER AT ALL -- see docs/internals/common/arm_switch.md#offending-field */ \
+    static std::string offending_field(const Key& k) {                                                \
+      (void)k;                                                                                        \
+      bool seen[arity] = {};                                                                          \
+      ROLA_##UPPER##_ARM_SET_X(ROLA_ARM_FIELD)                                                        \
+      for (int i = 0; i < arity; ++i)                                                                 \
+        if (!seen[i]) return fields[i];                                                               \
+      return "the combination";                                                                       \
+    }                                                                                                 \
   }
-    ROLA_CARRY_ARM_SET_X(ROLA_ARM_VISIT)
-#undef ROLA_ARM_VISIT
-    return hits;
-  }
-
-  //: THE BUILT SET, SPELLED, so a refusal is one a caller can act on.
-  static std::string members() {
-    std::string out;
-#define ROLA_ARM_NAME(I, FR_, FF_, RR_, RF_, CH_, SS_) \
-  out += (out.empty() ? "" : ", ");                    \
-  out += "(" #FR_ ", " #FF_ ", " #RR_ ", " #RF_ ", " #CH_ ", " #SS_ ")";
-    ROLA_CARRY_ARM_SET_X(ROLA_ARM_NAME)
-#undef ROLA_ARM_NAME
-    return out.empty() ? std::string("none") : out;
-  }
-
-  //: THE BUILT SET AS ROWS, each an arm's key: the binary's own answer to what it carries.
-  static std::vector<std::vector<int64_t>> rows() {
-    std::vector<std::vector<int64_t>> out;
-#define ROLA_ARM_ROW(I, FR_, FF_, RR_, RF_, CH_, SS_) out.push_back({FR_, FF_, RR_, RF_, CH_, SS_});
-    ROLA_CARRY_ARM_SET_X(ROLA_ARM_ROW)
-#undef ROLA_ARM_ROW
-    return out;
-  }
-
-  //: WHICH FIELD HAS NO MEMBER AT ALL -- see docs/internals/common/arm_switch.md#offending-field
-  static std::string offending_field(const CarryKey& k) {
-    (void)k;
-    bool seen[6] = {false, false, false, false, false, false};
-#define ROLA_ARM_FIELD(I, FR_, FF_, RR_, RF_, CH_, SS_) \
-  seen[0] = seen[0] || k.fold_rows == (FR_);           \
-  seen[1] = seen[1] || k.fold_factors == (FF_);        \
-  seen[2] = seen[2] || k.read_rows == (RR_);           \
-  seen[3] = seen[3] || k.read_factors == (RF_);        \
-  seen[4] = seen[4] || k.channels == (CH_);            \
-  seen[5] = seen[5] || k.same_split == (SS_);
-    ROLA_CARRY_ARM_SET_X(ROLA_ARM_FIELD)
-#undef ROLA_ARM_FIELD
-    static constexpr const char* names[6] = {"fold_rows",    "fold_factors", "read_rows",
-                                             "read_factors", "channels",     "same_split"};
-    for (int i = 0; i < 6; ++i)
-      if (!seen[i]) return names[i];
-    return "the combination";
-  }
-};
 
 //: ONE HOST BRANCH OVER A GENERATED ARM SET; an empty set refuses every call by name.
 //: -- see docs/internals/common/arm_switch.md#arm-switch
 template <class ArmSet, class Body>
-inline void arm_switch(const CarryKey& k, Body&& body) {
+inline void arm_switch(const typename ArmSet::Key& k, Body&& body) {
   static_assert(ArmSet::count >= 0, "an arm set carries a member count");
   static_assert(ArmSet::count <= ArmSet::declared,
                 "a build carries a subset of the declared arms; a set larger than the "
                 "declaration means the selection and the declaration disagree");
   const int hits = ArmSet::visit(k, std::forward<Body>(body));
-  STD_TORCH_CHECK(hits <= 1, "the ", ArmSet::family, " arm set covers ", ArmSet::key, " = (",
-                  k.fold_rows, ", ", k.fold_factors, ", ", k.read_rows, ", ", k.read_factors, ", ",
-                  k.channels, ", ", k.same_split, ") ", hits,
-                  " times; an arm set is a set and each key selects one body");
-  STD_TORCH_CHECK(hits == 1, "this build carries no ", ArmSet::family, " arm for ", ArmSet::key,
-                  " = (", k.fold_rows, ", ", k.fold_factors, ", ", k.read_rows, ", ",
-                  k.read_factors, ", ", k.channels, ", ", k.same_split,
-                  "); the field that misses is ", ArmSet::offending_field(k), ". It carries ",
-                  ArmSet::count, " of ", ArmSet::declared, " declared arms: ", ArmSet::members());
+  const std::string at = [&] {
+    std::string out = "(";
+    for (int i = 0; i < ArmSet::arity; ++i) out += (i ? ", " : "") + std::to_string(k.v[i]);
+    return out + ")";
+  }();
+  const std::string where = std::string(ArmSet::family) + " arm for " + ArmSet::key + " = " + at;
+  STD_TORCH_CHECK(hits <= 1, "the ", where, " is covered ", hits, " times; an arm set is a set");
+  STD_TORCH_CHECK(hits == 1, "this build carries no ", where, "; the field that misses is ",
+                  ArmSet::offending_field(k), ". It carries ", ArmSet::count, " of ",
+                  ArmSet::declared, " declared arms: ", ArmSet::members());
 }
 
 }  // namespace rola

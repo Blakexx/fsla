@@ -18,9 +18,10 @@ Checks:
      only be conservative in one direction --  see HEURISTIC LIMITS below.
   2. NO TORCH INCLUDE IN ARM TUs (belt to the ast-grep rule
      torch_include_in_arm_tu.yml). A `#include` line naming `torch/`
-     under csrc/rola/src/carry/, found by TEXT rather than AST so a
-     macro-guarded or unusually-formatted include cannot hide from either
-     check.
+     under csrc/rola/src/<family>/ of every family the arm registry
+     (`ARM_FAMILIES`, bazel/arms.bzl) names, found by TEXT rather than AST so
+     a macro-guarded or unusually-formatted include cannot hide from either
+     check; and the AST rule's scope names the same directories.
   3. NO CTA BARRIER IN A DECLARED BARRIER-FREE REGION (Blake, 2026-09-29, generalizing
      the decode prologue law of 2026-08-27, "11 barriers, all in the prologue ... 0 after
      it"). Any device file may declare a region between `//: @barrier-free <reason>` and
@@ -72,7 +73,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CSRC_ROLA = ROOT / "csrc" / "rola"
-CARRY_SOURCES = CSRC_ROLA / "src" / "carry"
+ARMS_BZL = ROOT / "bazel" / "arms.bzl"
+TORCH_RULE = ROOT / "tools" / "lint" / "rules" / "torch_include_in_arm_tu.yml"
 TESTS_ROOT = ROOT / "tests"
 
 #: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
@@ -245,20 +247,40 @@ def check_unroll_discipline() -> list[str]:
     return findings
 
 
+def arm_families() -> list[str]:
+    """The families the build ships: `ARM_FAMILIES` in bazel/arms.bzl, the one registry, a literal read by AST."""
+    import ast
+
+    for node in ast.parse(ARMS_BZL.read_text()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "ARM_FAMILIES" for t in node.targets):
+            return list(ast.literal_eval(node.value))
+    raise SystemExit(f"{ARMS_BZL.relative_to(ROOT)} declares no `ARM_FAMILIES`")
+
+
 def check_no_torch_in_arm_tus() -> list[str]:
+    """No torch include under any registered family's sources; and the ast-grep rule scans those same directories."""
+    import yaml
+
     findings = []
-    if not CARRY_SOURCES.is_dir():
-        return findings
-    for path in CARRY_SOURCES.rglob("*"):
-        if not path.is_file() or path.suffix not in DEVICE_SUFFIXES:
+    dirs = [CSRC_ROLA / "src" / family for family in arm_families()]
+    scoped = set(yaml.safe_load(TORCH_RULE.read_text())["files"])
+    for directory in dirs:
+        glob = f"{directory.relative_to(ROOT)}/**"
+        if glob not in scoped:
+            findings.append(f"belt to torch_include_in_arm_tu.yml: the rule's `files` omits {glob}, the sources of a "
+                            "family the arm registry names")
+        if not directory.is_dir():
             continue
-        rel = path.relative_to(ROOT)
-        for idx, line in enumerate(path.read_text().splitlines(), start=1):
-            if TORCH_INCLUDE_RE.search(line):
-                findings.append(
-                    f"belt to torch_include_in_arm_tu.yml: {rel}:{idx}: "
-                    f"torch include in the carry's arm sources -- {line.strip()!r}"
-                )
+        for path in directory.rglob("*"):
+            if not path.is_file() or path.suffix not in DEVICE_SUFFIXES:
+                continue
+            rel = path.relative_to(ROOT)
+            for idx, line in enumerate(path.read_text().splitlines(), start=1):
+                if TORCH_INCLUDE_RE.search(line):
+                    findings.append(
+                        f"belt to torch_include_in_arm_tu.yml: {rel}:{idx}: "
+                        f"torch include in a family's arm sources -- {line.strip()!r}"
+                    )
     return findings
 
 

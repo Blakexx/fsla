@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE CARRY, as a caller reaches it. No carry kernel is built on this line: :func:`carry` raises
-:class:`rola.ops._ext.KernelNotBuilt`, and :func:`arms` is the binary's own answer to what it carries (nothing).
+:class:`rola.ops._ext.KernelNotBuilt`.
 
 What stands is the carve's vocabulary the planner and the envelope read: the carve
 (:class:`rola.engine.types.Carve`) names the box -- an extent a level and the channel extent -- and each side's list
@@ -12,7 +12,7 @@ from __future__ import annotations
 from rola.engine.types import Carve
 from rola.ops._ext import extension, not_built
 
-__all__ = ["arm_key", "arms", "carry", "same_split", "sm_clock_ghz"]
+__all__ = ["arm_key", "carry", "same_split", "sm_clock_ghz"]
 
 
 def _outer(plan) -> set[int]:
@@ -36,7 +36,7 @@ def same_split(carve: Carve) -> int:
 def arm_key(carve: Carve) -> tuple[int, ...]:
     """The compiled body a carve selects: ``(fold_rows, fold_factors, read_rows, read_factors, channels,
     same_split)`` -- each side's dense rows (the fold's warp tile, the readout's K) and its operand's level count, the
-    channel extent and the hand-off's form (:func:`same_split`; ``CARRY_KEY`` in ``csrc/rola/src/carry/arms.bzl``)."""
+    channel extent and the hand-off's form (:func:`same_split`)."""
     return (carve.fold.tile_rows, len(carve.fold.operand), carve.readout.tile_rows, len(carve.readout.operand),
             carve.channels, same_split(carve))
 
@@ -44,11 +44,6 @@ def arm_key(carve: Carve) -> tuple[int, ...]:
 def carry(routes, values, facts, carve: Carve, *args, **kwargs):
     """THE LAUNCH: not built on this line (:func:`rola.ops._ext.not_built`)."""
     not_built("carry")
-
-
-def arms() -> list[tuple[int, ...]]:
-    """The arms THIS binary carries, each its :func:`arm_key`: the binary's own answer, never the source tree's."""
-    return [tuple(row) for row in extension().carry_arms()]
 
 
 def sm_clock_ghz() -> float | None:

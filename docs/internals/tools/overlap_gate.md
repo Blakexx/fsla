@@ -21,7 +21,7 @@ THE INSTRUMENT'S CHECK is owed on an H100: the sm_86 probes (a pure read stream 
 GEMM, priced by `mma.sync` shape) are the branch `ampere`'s, and the GEMM probe row and its shape-cost table are deleted --
 a Hopper GEMM issues `wgmma`, which no rate prices. Its Hopper probe rows land with the first measured `wgmma` rate.
 
-THE ROWS: none on this line. The two rows it had (`facts-alt-k4`, `facts-dense`) were the facts pass's, which is deleted (`docs/internals/DELETIONS.md`); with no row the gate is red, never vacuously green, and a kernel with a schedule adds its row and its launch with it.
+THE ROWS: none on this line; with no row the gate is red, never vacuously green, and a kernel with a schedule adds its row and its launch with it.
 
 `tools/lint/coverage.py` reads `ROWS` by AST: every kernel's `overlap` obligation in `tools/coverage.json` names a row
 gating it, or is exempt or owed with its reason.

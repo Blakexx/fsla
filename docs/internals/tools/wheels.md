@@ -23,4 +23,4 @@ order and timestamps).
 
 `check` makes a scratch venv whose only borrowed package directory is the one holding the running interpreter's torch,
 installs `rola` alone and runs `_PROBE` (a kernel call must refuse, naming `rola[cu13]`), then installs `rola-cu13` and
-runs it again (the binary must load and list its carry arms). It prints both verdicts and `wheels check OK` or `FAIL`.
+runs it again (the binary must load and list its decode arms). It prints both verdicts and `wheels check OK` or `FAIL`.

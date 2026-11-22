@@ -5,18 +5,13 @@ from runtime values. This header is the mechanism for that selection in a hand-w
 launcher: `entmax.cu`'s forward and backward launchers (`factor.cu`'s four launchers use
 it the same way).
 
-The carry and decode families select from a GENERATED ARM LIST instead. The carry's is
-the declared arm list (`csrc/rola/src/carry/arms.bzl`, keyed on the carve's plan
-pair): `bazel/arms.bzl` emits `carry_selection.inc`, one X-macro over every built
-arm, and `carry/carry.cu` expands `ROLA_CARRY_ARM_SET_X` four times — the arm
-declarations, the launch dispatch through `arm_switch` ([`common/arm_switch.md`](common/arm_switch.md)),
-the census and the per-arm row listing — so the enumeration exists once and is
-single-sourced with the per-arm translation units it partitions into
-(the graph's, `docs/build-graph.md#arms`). Decode's is `ROLA_DECODE_ARM_SET_X`, generated the same way
-(`decode_selection.inc` from `csrc/rola/src/decode/arms.bzl`), an X-macro over the declared
-`(DV, D, decay)` rows, tried in order and refused by name if none matches.
+The decode family selects from a GENERATED ARM LIST instead: `ROLA_DECODE_ARM_SET_X`, an X-macro over the declared
+`(DV, D, decay)` rows (`decode_selection.inc`, which `bazel/arms.bzl` emits from `csrc/rola/src/decode/arms.bzl`), tried in
+order and refused by name if none matches. The enumeration exists once and is single-sourced with the declaration
+(the graph's, `docs/build-graph.md#arms`); a family that wants the host dispatch as a type uses
+`common/arm_switch.cuh` ([`common/arm_switch.md`](common/arm_switch.md)).
 
-THE RULE BETWEEN THE TWO IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
+THE RULE BETWEEN THE TWO FORMS IS WHERE THE ENUMERATION LIVES. A launcher with a handful of
 axes and one kernel writes its selection here, in the one place its `<<<...>>>`
 configuration exists. A matrix large enough that spelling it out would be a SECOND
 COPY of the instantiation set is generated instead — and once it is generated, a table

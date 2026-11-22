@@ -10,6 +10,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
+load("//bazel:arms.bzl", "ARM_FAMILIES")
 load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
@@ -19,10 +20,8 @@ exports_files([
     ".clang-format",
     ".clang-tidy",
     "MODULE.bazel",
-    "pyproject.toml",
     "requirements.lock",
     "sgconfig.yml",
-    "README.md",
     "rola/__init__.py",
     "measure/__init__.py",
     "measure/hardware.py",
@@ -37,17 +36,12 @@ string_list_flag(
     visibility = ["//visibility:public"],
 )
 
-string_list_flag(
-    name = "carry_arms",
+#: one arm flag per shipped family (`ARM_FAMILIES`, bazel/arms.bzl)
+[string_list_flag(
+    name = "%s_arms" % family,
     build_setting_default = [],
     visibility = ["//visibility:public"],
-)
-
-string_list_flag(
-    name = "decode_arms",
-    build_setting_default = [],
-    visibility = ["//visibility:public"],
-)
+) for family in ARM_FAMILIES]
 
 rola_extension(
     name = "library",
@@ -62,7 +56,6 @@ rola_extension(
         "//tests:__pkg__",
     ],
     deps = [
-        "//csrc/rola:carry_arm_set",
         "//csrc/rola:decode_declarations",
         "//csrc/rola:entmax_units",
         "//csrc/rola:registration",

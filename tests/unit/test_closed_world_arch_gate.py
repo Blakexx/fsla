@@ -58,7 +58,6 @@ DEVICE_TUS = tuple(sorted(SRC.glob("*/*.cu")))
 #: Named rather than pattern-matched: "it looked like a query" is how an entry that
 #: does launch acquires an exemption.
 _LAUNCHLESS = {
-    "carry_arms": "reads the built arm set out of compile-time constants",
     "intra_footprint": "a host derivation over the widths; no device work",
     "rola_decode_arms": "reads the built arm set out of compile-time constants",
     "carry_build_stamp": "returns a compiled-in stamp",

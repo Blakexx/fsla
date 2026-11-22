@@ -30,8 +30,7 @@ with a null table (the slot IS the atom), and paging ONE base translation rather
 second path. ``slot < 0`` -- an atom the plan committed nothing for -- is skipped at both
 ends, exactly and not defensively, because the plan's bitmap holds the whole write set:
 the write set itself where every write level is sparse, and a superset where a dense
-level's digit rounded to zero (the deleted facts pass worded a dense level by its width,
-`../DELETIONS.md`). The decode step is today's reader
+level's digit rounded to zero. The decode step is today's reader
 ([`../decode/decode.md#paged-address`](../decode/decode.md#paged-address)); the rebuilt
 carry has no state I/O yet.
 

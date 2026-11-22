@@ -10,15 +10,16 @@ admissible shapes. The contract is otherwise the same one, and the reason is the
 a dispatch that enumerates its own cases is a second enumeration of a set that already
 exists, and two enumerations of one set drift.
 
-<a id="carry-arm-set"></a>
+<a id="arm-set"></a>
 ## The four layers, and who owns each
 
-1. **The cases are GENERATED, with the count asserted.** `ROLA_CARRY_ARM_SET_X(F)` in
-   the generated selection header expands to one `F(index, <the six key fields>)` per
-   BUILT arm, the key being `CarryKey` (`arm.md`), and `CarryArmSet` is built from it — no hand-written list exists to
-   disagree with the per-arm translation units, because both come out of
-   `bazel/arms.bzl` reading `csrc/rola/src/carry/arms.bzl`. The header also
-   carries `ROLA_CARRY_ARM_COUNT` and `ROLA_CARRY_ARM_DECLARED`.
+1. **The cases are GENERATED, with the count asserted.** `ROLA_<FAMILY>_ARM_SET_X(F)` in
+   the generated selection header expands to one `F(index, <the key's fields>)` per
+   BUILT arm, the key being `ArmKey<N>` (`arm.md`), and `ROLA_DEFINE_ARM_SET(Name, FAMILY)` builds the family's
+   set struct from it and from the header's `ROLA_<FAMILY>_ARM_FAMILY`, `_ARM_KEY` and `_ARM_FIELDS` — no hand-written
+   list exists to disagree with the per-arm translation units, because both come out of
+   `bazel/arms.bzl` reading `csrc/rola/src/<family>/arms.bzl`. The header also
+   carries `ROLA_<FAMILY>_ARM_COUNT` and `ROLA_<FAMILY>_ARM_DECLARED`.
 2. **A compile-time exhaustiveness assert.** `arm_switch` static-asserts that the set
    is a subset of the declaration (`count <= declared`). A build carries FEWER arms
    than the declaration declares — never other ones — so a set larger than the
@@ -39,8 +40,8 @@ exists, and two enumerations of one set drift.
 <a id="arm-switch"></a>
 ## `arm_switch<ArmSet>`
 
-`arm_switch<ArmSet>(key, body)` instantiates `body(Arm<index, <key fields>>{})` once per
-member and runs the one whose six fields match the `CarryKey`, so every field the body
+`arm_switch<ArmSet>(key, body)` instantiates `body(Arm<index, <key values>>{})` once per
+member and runs the one whose fields match the `ArmKey`, so every field the body
 reads off its `Arm` is a compile-time constant. Selecting an arm anywhere else — a
 hand-written `if` chain on a plan field, a table
 of function pointers, a `switch` on a depth — is the second enumeration this exists to
@@ -57,9 +58,9 @@ second `ArmSet`, not a second switch.
 
 ## Users
 
-- `carry.cu`'s dispatch: `arm_switch<CarryArmSet>` resolves every launch's `CarryKey`
-  (the carve's plan pair, `rola.ops.carry.arm_key`) to the body of the declared row it
-  names (`csrc/rola/src/carry/arms.bzl`).
+- No shipped family dispatches through it yet: the decode step selects with its own generated `ROLA_DECODE_ARM_SET_X`
+  (`decode/decode.cu`), and no carry kernel is built on this line. A family that dispatches on its host joins by
+  `ROLA_DEFINE_ARM_SET` over its selection header.
 - `tests/unit/test_arm_switch.py` compiles a probe against the shipped header with a
   synthetic three-arm selection header — rendered by the same rule a build uses (`bazel/arms.bzl`'s `arm_selection`) —
   and exercises every layer: both counts, a built arm dispatching with its own

@@ -23,24 +23,30 @@ import arms  # noqa: E402
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--so", type=Path, required=True, help="the built extension")
-    ap.add_argument("--header", type=Path, required=True, help="the carry selection header the build compiled against")
-    ap.add_argument("--table", type=Path, required=True, help="the carry family's generated table (carry_arms.py)")
+    ap.add_argument("--header", action="append", default=[], metavar="FAMILY=PATH",
+                    help="a family's selection header the build compiled against")
+    ap.add_argument("--table", action="append", default=[], metavar="FAMILY=PATH", help="a family's generated table")
+    ap.add_argument("--arms", action="append", default=[], metavar="FAMILY=SPEC", help="a family's arm scope")
     ap.add_argument("--python", required=True, help="the environment's interpreter, torch beside it")
     ap.add_argument("--driver-stub", type=Path, required=True, help="the toolkit's libcuda.so stub")
-    ap.add_argument("--carry-arms", default="", help="the build's carry arm spec")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    table = arms.Table(a.table)
-    want = arms.family_arms(table, a.carry_arms, "--//:carry_arms")
-    bad = arms.check_built_arm_table(a.header.read_text(), want, table, "carry")
-    if bad:
-        raise SystemExit("the built arm table:\n" + "\n".join(bad))
+    headers, tables, specs = (arms.by_family(a.header, "--header"), arms.by_family(a.table, "--table"),
+                              arms.by_family(a.arms, "--arms"))
+    report = []
     with tempfile.TemporaryDirectory(prefix="rola_arm_gate_") as tmp:
         #: the stub under its soname, the one the binary's NEEDED names
         (Path(tmp) / "libcuda.so.1").symlink_to(a.driver_stub.absolute())
-        swept = arms.sweep_binary(str(Path(a.python).absolute()), a.so.absolute(), want, table, cwd=Path(tmp),
-                                        env={"LD_LIBRARY_PATH": tmp, "PATH": "/usr/bin:/bin"})
-    a.out.write_text(f"arm table OK  {len(want)} built of {len(table.arms)} declared; {swept} arm(s) swept\n")
+        for family in sorted(tables):
+            table = arms.Table(Path(tables[family]))
+            want = arms.family_arms(table, specs.get(family, ""), f"--//:{family}_arms")
+            bad = arms.check_built_arm_table(Path(headers[family]).read_text(), want, table, family)
+            if bad:
+                raise SystemExit(f"the built {family} arm table:\n" + "\n".join(bad))
+            swept = arms.sweep_binary(str(Path(a.python).absolute()), a.so.absolute(), family, want, table, cwd=Path(tmp),
+                                      env={"LD_LIBRARY_PATH": tmp, "PATH": "/usr/bin:/bin"})
+            report.append(f"arm table OK  {family}: {len(want)} built of {len(table.arms)} declared; {swept} arm(s) swept\n")
+    a.out.write_text("".join(report))
     return 0
 
 

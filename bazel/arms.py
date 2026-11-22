@@ -24,6 +24,17 @@ class Table:
         self.arms: tuple = module.ARMS
 
 
+def by_family(values: list[str], knob: str) -> dict[str, str]:
+    """`family=value` arguments (`--table decode=<path>`), by family."""
+    out: dict[str, str] = {}
+    for value in values:
+        family, sep, rest = value.partition("=")
+        if not sep or not family:
+            raise SystemExit(f"{knob}: {value!r} is not <family>=<value>")
+        out[family] = rest
+    return out
+
+
 def family_arms(table: Table, value: str, knob: str) -> list[int]:
     """A family's arm scope from a build's spec (indices into its declared rows, or `all`); an empty spec is every row."""
     spec = value.replace(",", " ").split()
@@ -45,18 +56,18 @@ def family_arms(table: Table, value: str, knob: str) -> list[int]:
     return sorted(set(out))
 
 
-def is_iteration(carry: list[int], carry_table: Table, decode: list[int], decode_table: Table, archs: list[str],
-                 built: list[str]) -> bool:
-    """A build whose carry or decode arms or architectures are not the declared set is an ITERATION build: never a
-    wheel, and self-identifying (docs/build.md#iteration). A build carrying MORE than the declared rows is one too."""
-    return (set(carry) != set(range(len(carry_table.arms))) or set(decode) != set(range(len(decode_table.arms)))
+def is_iteration(scopes: dict[str, tuple[list[int], Table]], archs: list[str], built: list[str]) -> bool:
+    """A build whose arms (any family's, `scopes[family] = (the arms selected, its table)`) or architectures are not the
+    declared set is an ITERATION build: never a wheel, and self-identifying (docs/build.md#iteration). A build carrying
+    MORE than the declared rows is one too."""
+    return (any(set(want) != set(range(len(table.arms))) for want, table in scopes.values())
             or {f"sm_{a}" for a in archs} != set(built))
 
 
 def check_built_arm_table(header: str | None, want: list[int], table: Table, family: str) -> list[str]:
     """The built arm table against the declared arms: the selection header the build compiled against names exactly the
     arms the build selected, and its counts and members are those rows. `header` is that header's text, `family` the
-    family's name (`carry`). The findings, empty when both hold."""
+    family's name (`decode`). The findings, empty when both hold."""
     up = family.upper()
     if header is None:
         return [f"the build has no {family} selection header: the arm units compiled against something else"]
@@ -89,24 +100,25 @@ name = Path(sys.argv[1]).name.split(".")[0]  # the module's init symbol is PyIni
 spec = importlib.util.spec_from_file_location(name, sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)  # loading the library registers torch.ops.rola
-print(json.dumps([list(row) for row in torch.ops.rola.carry_arms()]))
+print(json.dumps([list(row) for row in getattr(torch.ops.rola, f"rola_{sys.argv[2]}_arms")()]))
 """
 
 
-def sweep_binary(python: str, so: Path, want: list[int], table: Table, cwd: Path, env: dict | None = None) -> int:
+def sweep_binary(python: str, so: Path, family: str, want: list[int], table: Table, cwd: Path,
+                 env: dict | None = None) -> int:
     """R9's fourth layer, host side: the binary is asked what it carries (`python`, an interpreter with torch, loads it
-    by path in `cwd`), and the answer must be exactly the rows the build selected -- the table, the selection header and
+    by path in `cwd`; the family's own op, `rola_<family>_arms`), and the answer must be exactly the rows the build selected -- the table, the selection header and
     the binary are three statements of one set. The count swept; raises on any difference."""
     import subprocess
 
-    proc = subprocess.run([python, "-c", _ARM_SWEEP_PROBE, str(so)], capture_output=True, text=True, cwd=str(cwd),
+    proc = subprocess.run([python, "-c", _ARM_SWEEP_PROBE, str(so), family], capture_output=True, text=True, cwd=str(cwd),
                           env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"the arm coverage sweep could not load {so}:\n{proc.stderr}")
     got = sorted(tuple(row) for row in json.loads(proc.stdout))
     expect = sorted(tuple(table.arms[i]) for i in want)
     if got != expect:
-        raise RuntimeError(f"{so.name} reports the carry arms {[list(r) for r in got]}, the build selected "
+        raise RuntimeError(f"{so.name} reports the {family} arms {[list(r) for r in got]}, the build selected "
                            f"{[list(r) for r in expect]}: a binary that cannot name what it carries cannot refuse "
                            "what it does not")
     return len(got)

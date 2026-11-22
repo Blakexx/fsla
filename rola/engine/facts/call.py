@@ -28,18 +28,11 @@ def widths_of(routes) -> tuple[int, ...]:
 def prefill_clauses(routes, decay: Any = None, *, d_v: int, stateful: bool = False) -> tuple:
     """The facts :func:`rola.engine.rules.envelope.prefill_envelope` folds, for this segment: the call's shape,
     whether the intra reads its widths, the carve's arm where the binary carries it and whether a state rides the call."""
-    from rola.engine.carve import plan_carve
-    from rola.ops import carry as carry_ops
     from rola.ops import intra as intra_ops
 
     widths = widths_of(routes)
+    #: no carry kernel is built on this line (`rola.ops.carry`): the binary carries no arm for any carve
     key = None
-    if len(widths) == 2:
-        try:
-            key = carry_ops.arm_key(plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, d_v))
-        except ValueError:
-            key = None
-        key = key if key is not None and tuple(key) in {tuple(arm) for arm in carry_ops.arms()} else None
     return (widths, d_v, decay, intra_ops.admits(widths, intra_ops.VALUE_WIDTH),
             intra_ops.VALUE_WIDTH, key, stateful)
 

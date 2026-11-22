@@ -37,7 +37,7 @@ ptxas's report beside its object, so reading the two measures the binary itself,
 and disassemblers, the derivation harness the graph built, and the build's parameters; the readers read with the graph's
 tools.
 
-- THE SCOPE IS THE BUILD'S PARAMETERS (`--//:archs`, `--//:carry_arms`, `--//:decode_arms`): an iteration build's
+- THE SCOPE IS THE BUILD'S PARAMETERS (`--//:archs`, one `--//:<family>_arms` per family of `ARM_FAMILIES`): an iteration build's
   census is the measurement of its subset.
 - THE MODES are `--census [--json PATH]` (the table, exit 1 on a discarded launch bound) and `--self-test`.
 - THE DERIVATION HARNESS is built by the graph: `tools/derivation.py` renders it from the declared cases with the

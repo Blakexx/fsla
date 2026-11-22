@@ -26,23 +26,14 @@ def test_the_root_declares_the_checkout_its_session_its_memory_pass_and_their_st
     out = declared()
     labels = set(out["targets"])
     assert {"rola/binary", "rola/environment", "rola/sass", "rola/support",
-            "rola/prefill", "rola/clock", "session", "memory", "store/session", "store/memory",
+            "rola/clock", "session", "memory", "store/session", "store/memory",
             "store/sass", "timing-server", "timing-server-stop"} <= labels
     assert {"rola/entmax_solve@layer=chunk-sparse-gain8", "rola/entmax_solve@layer=chunk-decode-w16",
             "rola/decode_step@layer=chunk-decode-w16"} <= labels
     assert "rola/decode_step@layer=chunk-sparse-gain8" not in labels
-    #: a cell is a NODE, and an instrument takes the nodes of EVERY carry cell as its data inputs: what a build runs
-    #: on is pruned by label at the CLI, never chosen here
-    from rola_devtools.cells import central
-
-    #: ... and those are the cells SIZED FOR MEASUREMENT (`tier` probe or both); the oracle tier's are the diff
-    #: surfaces' and the tier node's, never an instrument's
-    carry = {f"cells/{n}" for n, r in central().cells.items()
-             if r["data"].endswith("carry_cell") and r["params"].get("tier") in ("probe", "both")}
-    assert {t.label for t in out["targets"]["rola/prefill"].inputs} == carry
     #: no kernel has a pipe-counter or stall-census row on this line, so neither instrument is declared
     assert not {"rola/counters", "rola/census", "rola/facts_pass"} & labels
-    assert out["targets"]["cells/flagship-dense"].params == {"cell": "flagship-dense"}
+    assert out["targets"]["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {"cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
     #: the graph's front door takes the host budget for the build: a holder never starts a Bazel build
     assert out["targets"]["rola/binary"].holds == {} and not out["targets"]["rola/binary"].cache
     assert out["targets"]["timing-server-stop"].always_run

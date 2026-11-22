@@ -41,7 +41,6 @@ reaches into the module itself.
 | group | operators |
 |---|---|
 | build, card and clock facts | `csrc_build_stamp`, `device_card`, `segment_tokens`, `sm_clock_ghz` |
-| the carry family's built arms (none on this line) | `carry_arms` |
 | the addressing block | `carry_geometry`, `carry_sub_boxes` |
 | the producer's solves | `entmax_union_forward`, `entmax_union_backward`, `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the T=1 decode path | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_arms`, `rola_decode_ledger_bind`, `rola_decode_ledger_warps`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |

@@ -165,7 +165,7 @@ import rola
 from rola.ops import _ext
 try:
     _ext.extension()
-    print("LOADED", sorted(map(tuple, _ext.extension().carry_arms())))
+    print("LOADED", sorted(map(tuple, _ext.extension().rola_decode_arms())))
 except ImportError as e:
     print("REFUSED", str(e).splitlines()[0], "|", [l.strip() for l in str(e).splitlines() if "pip install" in l])
 """

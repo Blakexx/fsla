@@ -195,7 +195,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve),
 [`internals/engine/carve.md`](internals/engine/carve.md)):
 a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(their live digits a window, listed: by the facts pass, and on hopper by the carry CTA itself, from the token list the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, listed by the carry CTA itself, from the token list the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -203,7 +203,7 @@ read overlaps every write -- an exact-zero pair, with its exact-zero gradient, c
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
 every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
 (on hopper where they are equal too, the image then laid along the fold's own lists: MEASURED 1.3% over the divergent cell's window, [`carry_window`](lab/carry_window.md); a readout on the fold's own registers is not built). Every kernel that
-depends on the geometry takes the carve — the facts pass groups its unions and lists by the box's list levels, the
+depends on the geometry takes the carve — the gather pass groups its stream by the box's list levels, the
 carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
 launch-static facts (the rows' shapes and the bundle's declared flags), never from a routing statistic, so the
 planner can change and every kernel keeps working for whatever it returns.
@@ -229,7 +229,7 @@ The compiled key is the family's own:
 
 | family | compiled key | runtime addressing |
 |---|---|---|
-| carry | the carve's operation-plan pair: `fold_rows, fold_factors, read_rows, read_factors, channels, same_split` (`csrc/rola/src/carry/arms.bzl`, [`build.md#carry-arm-lists`](build.md#carry-arm-lists)) | the box's per-level extents, the depth, the widths |
+| carry | not built on this line: no arm is declared | the box's per-level extents, the depth, the widths |
 | decode | `DV × D × decay` (`csrc/rola/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan or the layout |
@@ -248,8 +248,8 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 
 ## 6. The kernels
 
-Five kernel families, in one call's order: the producer writes the bundle; the facts pass reads it once for every
-consumer (on hopper the gather pass writes the carry a token list and the carry CTA lays its own lists, section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
+Five kernel families, in one call's order: the producer writes the bundle; the gather pass reads it once and writes the carry a token
+list, from which the carry CTA lays its own lists (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
@@ -268,37 +268,15 @@ line (its hopper form: section 9); the solves are their own kernels
 ([`internals/entmax/entmax.md`](internals/entmax/entmax.md)), and the torch composition behind the same call is the
 fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
 
-### 6.2 The facts pass
+### 6.2 The gather pass
 
-ON HOPPER the carry is handed no list: RULED 2026-11-13 and 2026-11-15, the gather pass reads the masks and writes
-the carry's stream, a sparse block's live tokens in token order, from which a carry CTA lays its own lists -- RULED 2026-11-15, in its own CTAs beside the carry's, in one grid, the stream a ring ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)); where the
-factor products and the tile unions then come from is OPEN ([`open-work.md`](open-work.md), row A-e). What follows
-is the pass as it was built and deleted whole (Blake, 2026-11-21: "lets just delete facts"; no facts kernel is built on this line, `rola.ops.facts.facts` raises `KernelNotBuilt`), kept as the design the hopper gather pass is read against.
-
-One pass over the bundle's rows emits what the downstream launches need instead of an amplitude scan: per side, per
-token, per sparse level, ONE BIT PER DIGIT in canonical order (a dense level's bits are its static width mask, read
-from the statics and never written), the tile unions per 64 tokens, each token's factor products `(F, m)`, and per
-(window, list digit) the lists a carry walks -- the union's tokens by rank, each list's entries (a slot and a byte),
-their boundaries and totals. It is an indexer: nothing of a card is in what it emits, no exponent, no coefficient in
-an operand's format, no layout offset. The emitted size is a function of the sequence and the WIDTHS, never of `N`,
-and the digit grain is what makes the pass carve-independent: each consumer ORs its own span's digits a level and ANDs
-the levels. Liveness is a VALUE test in the deleted pass, and a pad digit, whose amplitude is exactly zero, is
-never live. RULED AND NOT YET BUILT (Blake, 2026-11-13): SPARSITY IS DECLARED, NEVER DETECTED -- a side's sparse masks
-become an input OPERAND, data as the rows are and as the causal mask is -- A BIT A DIGIT A TOKEN, a side and a level
-(fixed in size, and a mask on the public surface as an attention mask is) -- which the op uses blindly: every list, union
-and skipped pair decided from the masks alone, no row read to find what is live and none checked against its mask.
-The result is the oracle's wherever a mask covers its rows' nonzero digits, which is its supplier's to give; the
-pass then reads masks, not rows ([`open-work.md`](open-work.md) row A-e names what changes)
-([`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md), the words' contract, which stands as the Python model).
-
-WHAT BELONGS IN IT (Blake, 2026-09-28 and 2026-09-29): a fact the raw produced values determine -- a list word, a
-per-window aggregate, a per-token factor -- is computed here once rather than rescanned by every warp or CTA that needs
-it, but only where computing it once, plus writing and reading its bytes, beats the recomputations ("if doing so doesn't
-pay, just don't do it"); and there is no pre-pass kernel beside it, whose own per-window frame would roughly double the
-sparse fixed work. Precomputing into HBM is admissible while it adds no `O(L N)` term (Blake, 2026-10-03: "as long as
-it doesn't significantly impact hbm asymptotically or in practice"): per-token factors `O(L)`, per (window, list)
-prescales `O(L/W · N_s)` and list entries `O(L k)` pass; anything per (window, leaf) or per (token, leaf) does not,
-and per (token, sparse digit) planes pass the asymptotic test but are priced against the bundle itself.
+On hopper the gather pass reads a sparse side's masks and writes the carry's stream: a sparse block's live tokens in
+token order, their values and sparse bytes (RULED 2026-11-13 and 2026-11-15). It runs in its own CTAs beside the
+carry's, in one grid, the stream a ring; a carry CTA lays its own lists from the stream and forms its own
+coefficients ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
+[`architecture/hopper-carry.md`](architecture/hopper-carry.md)). Sparsity is declared, never detected: the masks are
+an input operand the pass uses blindly. No gather kernel is built on this line. Where the factor products and the tile
+unions come from, and the masks' format on the surface, are open ([`open-work.md`](open-work.md), row A-e).
 
 ### 6.3 The carry — the inter-window term
 

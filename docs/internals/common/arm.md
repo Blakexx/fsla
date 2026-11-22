@@ -1,8 +1,7 @@
-# `common/arm.cuh` — one carry arm's key and constants
+# `common/arm.cuh` — one arm's key and constants, any family's
 
-Mirrors `csrc/rola/src/common/arm.cuh`. `CarryKey` is a carry arm's key, the carve's operation-plan pair in
-`CARRY_KEY`'s order (`csrc/rola/src/carry/arms.bzl`) -- its last field, `same_split`, whether the fold's lists are the readout's
-digits (both sides list one level) or its K; `Arm`
-hands one row's fields to a kernel as compile-time constants. The header
-includes nothing, so a per-arm translation unit (the graph's, `bazel/arms.bzl`) never parses the torch headers the
-host dispatch needs (`docs/internals/common/arm_switch.md`).
+Mirrors `csrc/rola/src/common/arm.cuh`. `ArmKey<N>` is an arm's key: the N integers of a family's declared key
+(`<FAMILY>_KEY` in `csrc/rola/src/<family>/arms.bzl`), in its order; `Arm<INDEX, VALUES...>` hands one row's values to a kernel
+or a host body as compile-time constants (`Arm::values`). The header includes nothing, so a per-arm translation unit
+(the graph's, `bazel/arms.bzl`) never parses the torch headers the host dispatch needs
+(`docs/internals/common/arm_switch.md`).

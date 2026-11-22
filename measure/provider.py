@@ -5,7 +5,7 @@
 `arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
 and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
 - any cell, when the binary lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): an iteration build
-  (`--//:carry_arms`, `--//:decode_arms`) measures a subset of the tree;
+  (`--//:<family>_arms`) measures a subset of the tree;
 - data that is neither kind.
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
 through `oneshot_argv`.
@@ -82,30 +82,32 @@ def _declared(family: str) -> tuple:
     return module.ARMS
 
 
-def _refuse_a_partial_binary() -> None:
-    from rola.ops import carry, decode
+def _declared_families() -> list[str]:
+    """The families this tree declares: one generated table each (`bazel/arms.bzl`'s `ARM_FAMILIES`), whose op module
+    (`rola.ops.<family>`) answers what the binary carries."""
+    return sorted(path.name.removesuffix("_arms.py") for path in (CHECKOUT / "build" / "generated").glob("*_arms.py"))
 
-    families = (("carry", _declared("carry"), carry.arms(), "--//:carry_arms"),
-                ("decode", _declared("decode"), decode.arms(), "--//:decode_arms"))
-    for family, rows, carried, knob in families:
-        declared = {tuple(int(x) for x in row) for row in rows}
-        built = {tuple(int(x) for x in arm) for arm in carried}
+
+def _refuse_a_partial_binary() -> None:
+    import importlib
+
+    for family in _declared_families():
+        declared = {tuple(int(x) for x in row) for row in _declared(family)}
+        built = {tuple(int(x) for x in arm) for arm in importlib.import_module(f"rola.ops.{family}").arms()}
         if declared - built:
             raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the declared arms "
-                               f"{sorted(declared - built)}: an iteration build ({knob}) measures a subset of the "
+                               f"{sorted(declared - built)}: an iteration build (--//:{family}_arms) measures a subset of the "
                                "tree; build the declared set")
 
 
 def _kernel_carried(subject: str, spec, construction) -> bool:
     """Whether this binary carries the kernel `subject` launches at the cell's shape, or a layer cell's construction
     (the cell's own facts are `measure.subjects.applicable`'s)."""
-    from rola.ops import carry, decode
+    from rola.ops import decode
 
-    #: the op's prefill launches the carry arm the cell's carve selects
+    #: the carry is not built on this line (`rola.ops.carry`): no arm of it is carried, so the op's prefill is never offered
     if subject == "prefill":
-        from measure.subjects import cell_carve
-
-        return carry.arm_key(cell_carve(spec)) in {tuple(arm) for arm in carry.arms()}
+        return False
     if subject == "decode_step":
         rows = decode.arms()
         padded = [dv for dv, _d, _decay in rows if dv >= spec.dv]

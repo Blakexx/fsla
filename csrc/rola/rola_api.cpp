@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "common/arch_runtime.cuh"
-#include "common/arm_switch.cuh"
 #include "common/build_stamp.cuh"
 #include "common/select.cuh"
 #include "common/torch_seam.cuh"
@@ -103,7 +102,6 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("device_card(int device) -> int[]");
   m.def(
       "segment_tokens(int budget, int state, int per_token, int batch, int length, int device) -> int");
-  m.def("carry_arms() -> int[][]");
   m.def("csrc_build_stamp() -> int");
   m.def("sm_clock_ghz(int spin_cycles=20000000) -> float");
 
@@ -171,7 +169,6 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("device_card", TORCH_BOX(&device_card_op));
   m.impl("segment_tokens", TORCH_BOX(&rola::segment_tokens));
 
-  m.impl("carry_arms", TORCH_BOX(&rola::CarryArmSet::rows));
   m.impl("csrc_build_stamp", TORCH_BOX(&rola::csrc_build_stamp));
   m.impl("sm_clock_ghz", TORCH_BOX(&rola::sm_clock_ghz));
   m.impl("carry_geometry", TORCH_BOX(&rola::carry::geometry));

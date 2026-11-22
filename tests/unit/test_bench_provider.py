@@ -1,8 +1,7 @@
 """rola's runner (measure/provider.py): it reads central cells, names an arm by its subject, its call count
 and a layer arm's construction, offers the arms this binary carries at the cell's shape, and refuses a cell by name --
-an iteration build of either arm family, a cell of another kind -- while a missing carry arm leaves `prefill` unoffered. No GPU: nothing here builds an arm, and the binary's
-arm tables are planted (the carry's as the arms the cells' own carves select, and the declared tables the graph
-generates: this line declares no carry arm)."""
+an iteration build of a declared arm family, a cell of another kind -- while the unbuilt carry leaves `prefill` unoffered. No GPU: nothing here builds an arm, and the binary's
+arm tables are planted (the decode family's, and the declared tables the graph generates)."""
 from __future__ import annotations
 
 import sys
@@ -20,25 +19,19 @@ from measure.cells import by_name  # noqa: E402
 from measure.cells.layer import CONSTRUCTIONS  # noqa: E402
 from measure.subjects import SUBJECTS  # noqa: E402
 
-CARRY_CELLS = ("flagship-alt-k4", "flat-small-alt-k16")
 DECODE_CELL = "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"
 
 
 @pytest.fixture
 def binary(monkeypatch):
-    """A binary carrying the carry arms `CARRY_CELLS`' carves select and every decode arm (the intra reads its widths
-    by rule)."""
-    import rola.ops.carry as carry
+    """A binary carrying every decode arm (the intra reads its widths by rule)."""
     import rola.ops.decode as decode
 
-    tables = SimpleNamespace(carry=[carry.arm_key(subjects.cell_carve(by_name(name))) for name in CARRY_CELLS],
-                             decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)],
-                             declared_carry=[])
+    tables = SimpleNamespace(decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     declared_decode = tuple(tables.decode)
-    monkeypatch.setattr(carry, "arms", lambda: tables.carry)
     monkeypatch.setattr(decode, "arms", lambda: tuple(tables.decode))
-    monkeypatch.setattr(provider, "_declared",
-                        lambda family: tuple(tables.declared_carry) if family == "carry" else declared_decode)
+    monkeypatch.setattr(provider, "_declared_families", lambda: ["decode"])
+    monkeypatch.setattr(provider, "_declared", lambda family: declared_decode)
     #: the window an sm_90a card's build runs (hardware.json), planted as the tables are: no device answers it here
     monkeypatch.setattr(subjects, "_shared_window", lambda: hardware.load()["arch"]["sm_90a"]["build"]["window"])
     return tables
@@ -52,10 +45,9 @@ def test_an_arm_is_named_by_its_subject_its_call_count_and_its_construction():
 
 def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert "prefill" in names
     assert all(name.split("@")[0] in SUBJECTS for name in names)
-    #: a call shorter than a window is a call: the prefill is offered
-    assert "prefill" in provider.arms(by_name("flat-small-alt-k16"))
+    #: the carry is not built on this line: its op's prefill is offered on no cell
+    assert "prefill" not in names | set(provider.arms(by_name("flat-small-alt-k16")))
 
 
 def test_a_layer_cells_arms_are_its_declared_constructions(binary):
@@ -66,12 +58,7 @@ def test_a_layer_cells_arms_are_its_declared_constructions(binary):
     assert all(name.endswith("@layer=chunk-decode-w16") for name in names)
 
 
-def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monkeypatch):
-    import rola.ops.intra as intra
-
-    monkeypatch.setattr(intra, "reads", lambda widths: False)
-    names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert "prefill" not in names
+def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
     with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:decode_arms"):
@@ -80,10 +67,9 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monk
 
 def test_a_cell_is_refused_by_name(binary):
     assert "prefill" not in provider.arms(by_name("deep3-dense"))
-    binary.declared_carry = list(binary.carry)
     with pytest.raises(TypeError, match="rola's runner takes a central carry cell or layer cell"):
         provider.arms(by_name("qkv-L1024-dv64"))
-    binary.carry = []
+    binary.decode = []
     with pytest.raises(RuntimeError, match="iteration build"):
         provider.arms(by_name("flagship-alt-k4"))
 
@@ -91,8 +77,8 @@ def test_a_cell_is_refused_by_name(binary):
 def test_the_declared_arms_are_the_graphs_generated_table_and_its_absence_names_the_build(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "CHECKOUT", tmp_path)
     with pytest.raises(RuntimeError, match="bazel run //:library"):
-        provider._declared("carry")
+        provider._declared("decode")
     generated = tmp_path / "build" / "generated"
     generated.mkdir(parents=True)
-    (generated / "carry_arms.py").write_text('KEY = ("a", "b")\nARMS = (\n    (1, 2),\n)\n')
-    assert provider._declared("carry") == ((1, 2),)
+    (generated / "decode_arms.py").write_text('KEY = ("a", "b")\nARMS = (\n    (1, 2),\n)\n')
+    assert provider._declared("decode") == ((1, 2),)

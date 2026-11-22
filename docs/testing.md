@@ -311,8 +311,8 @@ must never be able to fail a merge.
 Performance work has its own document — [`measurement.md`](measurement.md) — because the instruments are as much a
 subject of review as the kernel. The timing system's own non-vacuity tests live with it, in rola-devtools and
 rola-results; this repository's is `tests/unit/test_bench_provider.py`, which plants an
-iteration build of either arm family and another library's data, and requires each refusal by name, and a binary
-without the carry arm a cell's carve selects, and requires that the `prefill` arm is not offered on it.
+iteration build of a declared arm family and another library's data, and requires each refusal by name, and
+requires that the `prefill` arm, whose carry is not built, is offered on no cell.
 `bazel run //:ratify -- --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).
 
 ### Triaging a suspected stream-ordering bug

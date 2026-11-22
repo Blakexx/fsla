@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/facts_lists.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 A sparse level's liveness is RULED to be a mask the op is handed, a bit a digit a token, used blindly; the pass
-this tree builds still tests the rows' values ([`ARCHITECTURE.md`](../ARCHITECTURE.md#62-the-facts-pass)). This
+this tree builds still tests the rows' values ([`ARCHITECTURE.md`](../ARCHITECTURE.md#62-the-gather-pass)). This
 lab prices the ruled form beside the built one's access. The mask says, for a token, which digits are live; a
 carry CTA needs the opposite each window -- for each of its digits, WHICH TOKENS are live on it, the data it pulls.
 What does turning one into the other cost a token on hopper, and what does the value test it replaces cost beside

@@ -1,12 +1,11 @@
-"""THE EXTENSION'S UNITS: every hand-written unit under src/, each carry arm's unit for each built architecture
+"""THE EXTENSION'S UNITS: every hand-written unit under src/, each arm family's units for each built architecture
 (`bazel/arms.bzl`), the registration unit, the generated headers and the device stamp (docs/build-graph.md#compile)."""
 
 load("@rola_env//:flags.bzl", "BUILT_ARCHS", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("//bazel:arms.bzl", "arm_family")
+load("//bazel:arms.bzl", "ARM_FAMILIES", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "census_test", "include_root", "rola_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass")
-load(":src/carry/arms.bzl", "CARRY_ARMS", "CARRY_DOMAINS", "CARRY_KEY")
 load(":src/decode/arms.bzl", "DECODE_ARMS", "DECODE_DECLARATIONS", "DECODE_DOMAINS", "DECODE_KERNEL", "DECODE_KEY")
 load(":src/entmax/declarations.bzl", "ENTMAX_DECLARATIONS")
 load(":units.bzl", "RUNTIME_UNITS")
@@ -14,7 +13,6 @@ load(":units.bzl", "RUNTIME_UNITS")
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
-    "src/carry/arms.bzl",
     "src/common/hardware.json",
 ])
 
@@ -54,16 +52,10 @@ include_root(
     deps = [":hardware"],
 )
 
-#: each arm family's selection header and Python table, and the carry's units: its arms from the declaration beside the
-#: kernel (docs/build-graph.md#arms), the Hopper carry filling the empty list
+#: each arm family's selection header and Python table (docs/build-graph.md#arms)
 rola_headers(
     name = "generated",
-    arm_families = [
-        ":carry_selection",
-        ":carry_table",
-        ":decode_selection",
-        ":decode_table",
-    ],
+    arm_families = [":%s_%s" % (family, part) for family in ARM_FAMILIES for part in ("selection", "table")],
 )
 
 #: the device stamp: the digest of every file under src/ but its markdown, as `tools/csrc_stamp.py` computes it
@@ -147,23 +139,6 @@ cuda_unit(
     library = "//:library",
     unit = unit.rsplit("/", 1)[-1].removesuffix(".cu"),
 ) for unit in glob(["src/**/*.cu"])]
-
-arm_family(
-    name = "carry",
-    arms = CARRY_ARMS,
-    built_archs = BUILT_ARCHS,
-    domains = CARRY_DOMAINS,
-    flag = "//:carry_arms",
-    includer = "the per-arm units and the carry dispatch unit",
-    key = CARRY_KEY,
-    unit = {
-        "arm_header": "carry/carry_arm.cuh",
-        "copts": NVCC_FLAGS,
-        "define": "ROLA_CARRY_ARM_DEFINE",
-        "deps": _DEPS,
-        "host_cc": _HOST_CC,
-    },
-)
 
 arm_family(
     name = "decode",

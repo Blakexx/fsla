@@ -81,8 +81,8 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
   `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
-  [`architecture/families.md`](architecture/families.md)), `--//:carry_arms` and `--//:decode_arms` (arm indices; empty is
-  every arm). Any value but a default makes an iteration build, which its record says.
+  [`architecture/families.md`](architecture/families.md)), one `--//:<family>_arms` for each family of `ARM_FAMILIES` in `bazel/arms.bzl` (the registry: `--//:decode_arms`; arm
+  indices; empty is every arm). Any value but a default makes an iteration build, which its record says.
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@rola_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
   none of its own. rules_cuda's own additions are off on every unit (its extended lambdas, compilation-mode flags,
@@ -113,8 +113,8 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   (`csrc/rola/units.bzl`'s `RUNTIME_UNITS`, `//csrc/rola:runtime`, held to `tools/kernels.py`'s `runtime_units` by
   `tests/unit/test_units_list.py`); a family's arm units are the next section's.
 - <a id="arms"></a>A KERNEL'S ARMS are Bazel targets declared in Starlark: `csrc/rola/src/<kernel>/arms.bzl` holds the arm
-  key (`<FAMILY>_KEY`), each field's domain and the arms, one row of the key each in canonical order (the carry's list is
-  empty: no carry kernel is written on this line; the decode's holds its sixteen). `bazel/arms.bzl`'s `arm_family` reads
+  key (`<FAMILY>_KEY`), each field's domain and the arms, one row of the key each in canonical order (the decode's holds its sixteen;
+  a kernel not built on this line declares no family). `bazel/arms.bzl`'s `arm_family` reads
   that one list and makes the family's pieces: one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
   a generated source that defines the arm under its own selection guard) when the family has per-arm units; the selection
   header of the build (`<family>_selection.inc`, from `--//:<family>_arms`: indices or `all`, empty for every arm, an index
@@ -124,7 +124,8 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   declaration is refused at analysis, naming the field: a row of the wrong width, a value outside its domain, a duplicate,
   or rows out of canonical order (an arm's index is what the flag, the header and the unit names say, so it is the
   declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
-  `tests/unit/test_arm_family.py` reading what it made. The Hopper carry fills its list.
+  `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's flags, parameters, record and
+  gates are made for each name in it, so a family joins by being named there and declared beside its kernel.
 - `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
   cicc a job runs is the count its job budget divides by.
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)

@@ -16,9 +16,9 @@ extent, and `MIN_DENSE` (16) is a warp's least operand rows, one MMA tile.
 The channel extent comes first: the largest power of two dividing `d_v`, at most
 `MAX_CHANNELS` (`_channels`), so a token's output is a whole box's channels and the
 readout's warps each own theirs -- halved until the box is one the kernels take
-(`_admitted`): every listed level spans a list group the facts pass ranks (`LIST_GROUPS`, 16
-or 32 digits, or the level's whole width), each side its own -- the lists come ranked in
-groups, and a box over part of a group would read and drain tokens it never touches; a box
+(`_admitted`): every listed level spans a list group (`LIST_GROUPS`, 16
+or 32 digits, or the level's whole width), each side its own -- a box over part of a group
+would read and drain tokens it never touches; a box
 with a listed side holds at most `LISTED_CHANNELS` (64: a 128-channel box needs the fold's k8
 and m8 forms); and each side's warps own an MMA tile of dense rows (`MIN_DENSE`). So at `d_v`
 64 a dense-dense declaration takes 64 channels, and so does the alternating one: 32 write

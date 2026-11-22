@@ -24,9 +24,8 @@ CHANNELS = 32
 MAX_CHANNELS = 128
 GROUP_CHANNELS = 8
 CAP = 32
-#: THE LISTS' GROUPS: a side's lists are ranked in a group of 16 or 32 digits
-#: (the deleted facts pass's), the arm reading its own (docs/internals/carry/ampere/plan.md#list-groups), so a
-#: listed level spans one of them (or its whole width) in the box, each side its own
+#: THE LISTS' GROUPS: a listed level's extent in the box is a group of 16 or 32 digits (or its whole width), each
+#: side its own, so a box never covers part of a group (`_admitted`)
 LIST_GROUPS = (16, 32)
 #: THE LISTED BOXES' CHANNELS: the components serve 32 or 64 channels where a side lists (a 128-channel box needs the
 #: fold's k8 and m8 forms and a readout warp of two channel groups)
@@ -163,7 +162,7 @@ def _channels(d_v: int) -> int:
 
 
 def _admitted(carve_: Carve, read_sparse, write_sparse) -> bool:
-    """Whether the box is one the kernels take: every listed level spans a list group the facts pass ranks
+    """Whether the box is one the kernels take: every listed level spans a list group
     (`LIST_GROUPS`, or its whole width), each side its own; a box with a listed side at most `LISTED_CHANNELS`; and each
     side's warps own a tile of dense rows (`MIN_DENSE`)."""
     listed = [(w, e) for w, r, wr, e in zip(carve_.widths, read_sparse, write_sparse, carve_.extents) if r or wr]
@@ -188,7 +187,7 @@ def _declared(widths, read_sparse, write_sparse, d_v: int) -> None:
 
 def plan_carve(widths, read_sparse, write_sparse, d_v: int) -> Carve:
     """Producer v1: the channel extent toward ``d_v`` (`_channels`), halved until the box is one the kernels take
-    (`_admitted`: every listed level spans a facts list group, each side's dense rows an MMA tile); the box's
+    (`_admitted`: every listed level spans a list group, each side's dense rows an MMA tile); the box's
     leaves from the tags under the per-level cap, the cap lifted to the widths when the box cannot be filled under it.
     A pure function of the declaration,
     planned once a declaration (the `Carve` is frozen): every call of a shape after its first costs no host time

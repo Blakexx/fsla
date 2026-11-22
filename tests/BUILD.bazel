@@ -8,7 +8,7 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel:arms.bzl", "arm_family", "arm_selection")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
-load("//csrc/rola:src/carry/arms.bzl", "CARRY_DOMAINS", "CARRY_KEY")
+load("//csrc/rola:src/decode/arms.bzl", "DECODE_DOMAINS", "DECODE_KEY")
 load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
 
 #: THE LAB'S UNIT TESTS: the lab's, the dev config's and the measurement declaration's (`declare.py`), which `:lab` runs and `:cpu` leaves out
@@ -52,8 +52,7 @@ cc_binary(
     ],
 )
 
-#: THE FIXTURE ARM FAMILY (tests/unit/fixtures/fixture_arms.bzl): the macro of bazel/arms.bzl on a family that is not the carry, which
-#: declares none. Its three rows make a unit each for each built architecture, its selection header names the arms
+#: THE FIXTURE ARM FAMILY (tests/unit/fixtures/fixture_arms.bzl): the macro of bazel/arms.bzl on a family that is not a shipped one. Its three rows make a unit each for each built architecture, its selection header names the arms
 #: `--//tests:fixture_arms` does, and its table is the rows (tests/unit/test_arm_family.py reads all three)
 string_list_flag(
     name = "fixture_arms",
@@ -76,10 +75,10 @@ arm_family(
     name = "fixture",
     arms = FIXTURE_ROWS,
     built_archs = BUILT_ARCHS,
-    domains = CARRY_DOMAINS,
+    domains = DECODE_DOMAINS,
     flag = ":fixture_arms",
     includer = "the fixture's arm units",
-    key = CARRY_KEY,
+    key = DECODE_KEY,
     unit = {
         "arm_header": "fixture_arm.cuh",
         "copts": NVCC_FLAGS,
@@ -94,9 +93,9 @@ arm_family(
 [arm_selection(
     name = "arm_switch_%s_selection" % variant,
     dir = "arm_switch_%s" % variant,
-    family = "carry",
+    family = "fixture",
     includer = "the arm switch's probe",
-    key = list(CARRY_KEY),
+    key = list(DECODE_KEY),
     rows = json.encode(FIXTURE_ROWS),
     selected = selected,
 ) for variant, selected in {"built": ["0", "2"], "empty": []}.items()]

@@ -188,9 +188,7 @@ GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
 `H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
 order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
-grouped run is the ungrouped run with each write head's side repeated for its query heads). The deleted facts pass read them,
-a write head's read side one union a window over its query heads' rows (`DELETIONS.md`), and
-a carry reads them a CTA a write head, its query heads' rows with it, as does the intra, so the prefill reads them. The decode step and the carried state read one head count
+grouped run is the ungrouped run with each write head's side repeated for its query heads). A carry reads them a CTA a write head, its query heads' rows with it, as does the intra, so the prefill reads them. The decode step and the carried state read one head count
 today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it
 over, whatever its sum ([§2.2](#22-the-scaled-block-and-the-gain)). This is what

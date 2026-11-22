@@ -2,7 +2,7 @@
 
 `csrc/rola/src/common/arm_switch.cuh` dispatches over the arm set the generated
 selection header carries; this file never depends on which arms are actually shipped
-(the carry's arms are declared in `csrc/rola/src/carry/arms.bzl`).
+(a family's arms are declared in `csrc/rola/src/<family>/arms.bzl`).
 This file runs a probe the graph compiled against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
 the graph's selection rule uses (`bazel/arms.bzl`'s `arm_selection`), so what is tested is what a build would emit --
@@ -56,12 +56,13 @@ def empty():
 
 def test_the_counts_and_the_members_are_the_generated_ones(built):
     assert built["count"] == ["2", "3"]
-    assert built["members"] == ["(32, 1, 32, 1, 32, 0), (128, 2, 128, 2, 64, 1)"]
+    assert built["members"] == ["(32, 1, 0), (64, 2, 1)"]
+    assert built["rows"] == ["2"]
 
 
 @pytest.mark.parametrize("label,want", [
-    ("built_first", ["0", "32", "1", "32", "0"]),
-    ("built_last", ["2", "128", "2", "64", "1"]),
+    ("built_first", ["0", "32", "1", "0"]),
+    ("built_last", ["2", "64", "2", "1"]),
 ])
 def test_a_built_arm_dispatches_with_its_own_constants(built, label, want):
     """The body runs under ITS member: a body carrying another arm's constants is
@@ -74,15 +75,14 @@ def test_a_built_arm_dispatches_with_its_own_constants(built, label, want):
 def test_a_declared_arm_this_build_did_not_carry_is_refused_with_both_counts(built):
     assert built["declared_unbuilt"][0] == "refused"
     message = built["declared_unbuilt"][1]
-    assert "carries no carry arm" in message
+    assert "this build carries no fixture arm" in message
     assert "2 of 3 declared arms" in message
 
 
 @pytest.mark.parametrize("label,field", [
-    ("undeclared_rows", "fold_rows"),
-    ("undeclared_channels", "channels"),
-    ("undeclared_factors", "read_factors"),
-    ("undeclared_split", "same_split"),
+    ("undeclared_d_v", "d_v"),
+    ("undeclared_levels", "levels"),
+    ("undeclared_decay", "decay"),
 ])
 def test_the_refusal_names_the_field_that_misses(built, label, field):
     assert built[label][0] == "refused"

@@ -20,14 +20,11 @@ load("@rola_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load(":arms.bzl", "ARM_FAMILIES")
 load(":cuda.bzl", "CudaUnitInfo")
 
 #: the build's parameters (the root package's settings), as every rule here reads them
-_SETTINGS = {
-    "_archs": "//:archs",
-    "_carry_arms": "//:carry_arms",
-    "_decode_arms": "//:decode_arms",
-}
+_SETTINGS = dict({"_archs": "//:archs"}, **{"_%s_arms" % family: "//:%s_arms" % family for family in ARM_FAMILIES})
 
 def _setting_attrs():
     return {name: attr.label(default = label) for name, label in _SETTINGS.items()}
@@ -37,8 +34,8 @@ def _value(ctx, name):
 
 def _parameters(ctx, args):
     args.add("--archs", ",".join(_value(ctx, "_archs")))
-    args.add("--carry-arms", ",".join(_value(ctx, "_carry_arms")))
-    args.add("--decode-arms", ",".join(_value(ctx, "_decode_arms")))
+    for family in ARM_FAMILIES:
+        args.add("--arms", "%s=%s" % (family, ",".join(_value(ctx, "_%s_arms" % family))))
 
 #: the header `bazel/headers.py` writes: the builds the binary carries (`measure/hardware.py`'s)
 _BUILDS = "builds.inc"
@@ -239,8 +236,8 @@ def _extension_impl(ctx):
     args.add("--torch", ctx.attr.torch)
     args.add("--torch-cuda", ctx.attr.torch_cuda)
     args.add("--cxx11-abi", str(ctx.attr.cxx11_abi))
-    args.add("--carry-table", tables["carry"])
-    args.add("--decode-table", tables["decode"])
+    for family in ARM_FAMILIES:
+        args.add("--table", "%s=%s" % (family, tables[family].path))
     _parameters(ctx, args)
     ctx.actions.run(
         executable = ctx.file._python,
@@ -255,22 +252,23 @@ def _extension_impl(ctx):
     #: asked what it carries)
     sass_verdict = _sass_gate(ctx, so, "rola_cu13/sass_gate.json")
     arm_verdict = ctx.actions.declare_file("rola_cu13/arm_gate.txt")
-    header = [f for f in ctx.files._headers if f.basename == "carry_selection.inc"][0]
+    headers = {family: [f for f in ctx.files._headers if f.basename == "%s_selection.inc" % family][0] for family in ARM_FAMILIES}
     stub = [f for f in ctx.files._cudart if f.path.endswith("stubs/libcuda.so")][0]
     arm_args = ctx.actions.args()
     arm_args.add(ctx.file._arm_gate)
     arm_args.add("--so", so)
-    arm_args.add("--header", header)
-    arm_args.add("--table", tables["carry"])
+    for family in ARM_FAMILIES:
+        arm_args.add("--header", "%s=%s" % (family, headers[family].path))
+        arm_args.add("--table", "%s=%s" % (family, tables[family].path))
+        arm_args.add("--arms", "%s=%s" % (family, ",".join(_value(ctx, "_%s_arms" % family))))
     #: the environment's interpreter by its store path, which carries the environment's key
     arm_args.add("--python", VENV + "/bin/python3")
     arm_args.add("--driver-stub", stub)
-    arm_args.add("--carry-arms", ",".join(_value(ctx, "_carry_arms")))
     arm_args.add("--out", arm_verdict)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [arm_args],
-        inputs = ctx.files._sources + [so, header, tables["carry"], stub, ctx.file._arm_gate],
+        inputs = ctx.files._sources + [so, stub, ctx.file._arm_gate] + headers.values() + [tables[family] for family in ARM_FAMILIES],
         outputs = [arm_verdict],
         mnemonic = "RolaArmGate",
         progress_message = "The arm table and its coverage sweep on %{label}'s library",
@@ -281,13 +279,13 @@ def _extension_impl(ctx):
 
     verdicts = [sass_verdict, arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
-    headers = [f for f in ctx.files._headers if f.extension in ("inc", "py")]
+    installed = [f for f in ctx.files._headers if f.extension in ("inc", "py")]
     ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)]),
-                                               headers = " ".join([f.short_path for f in headers])), is_executable = True)
+                                               headers = " ".join([f.short_path for f in installed])), is_executable = True)
     #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
     return [
         DefaultInfo(files = depset([so, record] + verdicts), executable = install,
-                    runfiles = ctx.runfiles(files = [so, record] + verdicts + headers)),
+                    runfiles = ctx.runfiles(files = [so, record] + verdicts + installed)),
         #: the units it links, for the census (`ratify_census`)
         CudaUnitInfo(
             units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep]),
@@ -389,11 +387,10 @@ def _census_impl(ctx):
     ctx.actions.write(record, json.encode_indent({
         "units": [{"source": u.source, "report": u.report.short_path, "object": u.object.short_path} for u in units],
         "tools": {name: f.short_path for name, f in tools.items()},
-        "parameters": {
-            "archs": ",".join(_value(ctx, "_archs")),
-            "carry_arms": ",".join(_value(ctx, "_carry_arms")),
-            "decode_arms": ",".join(_value(ctx, "_decode_arms")),
-        },
+        "parameters": dict({"archs": ",".join(_value(ctx, "_archs"))}, **{
+            "%s_arms" % family: ",".join(_value(ctx, "_%s_arms" % family))
+            for family in ARM_FAMILIES
+        }),
     }) + "\n")
     files = [record] + tools.values() + [u.report for u in units] + [u.object for u in units]
     return [DefaultInfo(files = depset([record]), runfiles = ctx.runfiles(files = files))]

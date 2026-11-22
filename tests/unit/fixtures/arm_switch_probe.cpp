@@ -6,38 +6,40 @@
 
 #include <c10/util/Exception.h>
 
+#include "fixture_selection.inc"
 #include "common/arm_switch.cuh"
 
 namespace {
 
-void probe(const char* label, rola::CarryKey k) {
-  int index = -1, rows = -1, factors = -1, channels = -1, split = -1;
+ROLA_DEFINE_ARM_SET(FixtureArmSet, FIXTURE);
+
+void probe(const char* label, FixtureArmSet::Key k) {
+  int index = -1, d_v = -1, levels = -1, decay = -1;
   try {
-    rola::arm_switch<rola::CarryArmSet>(k, [&](auto arm) {
+    rola::arm_switch<FixtureArmSet>(k, [&](auto arm) {
       index = decltype(arm)::index;
-      rows = decltype(arm)::fold_rows;
-      factors = decltype(arm)::read_factors;
-      channels = decltype(arm)::channels;
-      split = decltype(arm)::same_split;
+      d_v = decltype(arm)::values[0];
+      levels = decltype(arm)::values[1];
+      decay = decltype(arm)::values[2];
     });
   } catch (const std::exception& e) {
     std::printf("%s\trefused\t%s\n", label, std::string(e.what()).c_str());
     return;
   }
-  std::printf("%s\tdispatched\t%d\t%d\t%d\t%d\t%d\n", label, index, rows, factors, channels, split);
+  std::printf("%s\tdispatched\t%d\t%d\t%d\t%d\n", label, index, d_v, levels, decay);
 }
 
 }  // namespace
 
 int main() {
-  std::printf("count\t%d\t%d\n", rola::CarryArmSet::count, rola::CarryArmSet::declared);
-  std::printf("members\t%s\n", rola::CarryArmSet::members().c_str());
-  probe("built_first", {32, 1, 32, 1, 32, 0});
-  probe("built_last", {128, 2, 128, 2, 64, 1});
-  probe("declared_unbuilt", {32, 1, 32, 1, 32, 1});
-  probe("undeclared_rows", {16, 1, 32, 1, 32, 0});
-  probe("undeclared_channels", {32, 1, 32, 1, 16, 0});
-  probe("undeclared_factors", {32, 1, 32, 3, 32, 0});
-  probe("undeclared_split", {32, 1, 32, 1, 32, 2});
+  std::printf("count\t%d\t%d\n", FixtureArmSet::count, FixtureArmSet::declared);
+  std::printf("members\t%s\n", FixtureArmSet::members().c_str());
+  std::printf("rows\t%zu\n", FixtureArmSet::rows().size());
+  probe("built_first", {{32, 1, 0}});
+  probe("built_last", {{64, 2, 1}});
+  probe("declared_unbuilt", {{32, 1, 1}});
+  probe("undeclared_d_v", {{16, 1, 0}});
+  probe("undeclared_levels", {{32, 3, 0}});
+  probe("undeclared_decay", {{32, 1, 2}});
   return 0;
 }

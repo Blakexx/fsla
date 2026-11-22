@@ -4,7 +4,7 @@
 namespace fixture {
 
 template <int D, int DV, int WARPS_PER_CTA>
-__global__ void carry_kernel(float* out);
+__global__ void fixture_kernel(float* out);
 
 __device__ void read_page(void* pages) {
   __nv_bfloat16* row = reinterpret_cast<__nv_bfloat16*>(pages);

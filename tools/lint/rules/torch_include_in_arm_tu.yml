@@ -5,11 +5,10 @@ message: >-
   docs/build.md#compile-ledger: a torch header in a per-arm
   instantiation TU repays the ~34s / 2.86 GB `torch/extension.h` parse once
   per arm (measured ~12 minutes of redundant parsing across the arm set) --
-  arm TUs speak the torch-free ABI (`carry_arm_abi.cuh`) and take no torch
-  include. This is the belt half; lint_standards.py's textual check on
+  an arm family's translation units take no torch include. This is the belt half; lint_standards.py's textual check on
   `#include <torch` covers macro-guarded forms this AST rule cannot see.
 files:
-  - "csrc/rola/src/carry/**"
+  - "csrc/rola/src/decode/**"
   - "tools/lint/fixtures/**"
 rule:
   kind: preproc_include

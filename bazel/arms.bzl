@@ -14,13 +14,20 @@ canonical order). `arm_family` reads that one list and makes, for it:
   arm's template arguments, and the declarations of `declarations` for the arms they select, on each architecture the build carries
   (docs/build-graph.md#declarations).
 
-The Hopper carry fills its list; a family with no rows makes no unit and a selection naming none.
+A family with no rows makes no unit and a selection naming none.
+
+`ARM_FAMILIES` is the registry of the families a build ships: the build's settings (`--//:<family>_arms`), its census
+parameters, its gates and its arm flags are made for each of them, and a family joins by being named there.
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration", "regex_escape")
+
+#: THE FAMILIES A BUILD SHIPS, each `arm_family`'d in `csrc/rola/BUILD.bazel` with its declaration beside its kernel
+#: (`csrc/rola/src/<family>/arms.bzl`): the build rules read this list and no other
+ARM_FAMILIES = ["decode"]
 
 def _check(name, key, domains, arms):
     """The declaration, refused field by field: each way it could be wrong is a compile error in a generated file, or a
@@ -155,6 +162,9 @@ def _selection_impl(ctx):
         out.append("#define ROLA_%s_BUILD_%d 1\n" % (upper, i))
     out.append("\n// THE ARM SET, for the host's dispatch: one F(i, %s)\n" % ", ".join(key))
     out.append("// per BUILT arm, in index order. See docs/build-graph.md#arms\n")
+    out.append("#define ROLA_%s_ARM_FAMILY \"%s\"\n" % (upper, name))
+    out.append("#define ROLA_%s_ARM_KEY \"(%s)\"\n" % (upper, ", ".join(key)))
+    out.append("#define ROLA_%s_ARM_FIELDS %s\n" % (upper, ", ".join(['"%s"' % field for field in key])))
     out.append("#define ROLA_%s_ARM_COUNT %d\n" % (upper, len(picked)))
     out.append("#define ROLA_%s_ARM_DECLARED %d\n" % (upper, len(rows)))
     if picked:
@@ -250,11 +260,11 @@ def arm_family(name, key, domains, arms, flag, includer, built_archs, unit = Non
     per arm and built architecture.
 
     Args:
-      name: the family's name (`carry`): `<name>_selection`, `<name>_table` and `<name>_arm_set` are its targets.
+      name: the family's name (`decode`): `<name>_selection`, `<name>_table` and `<name>_arm_set` are its targets.
       key: the fields of a row, in order.
       domains: each field's admitted values, `{field: [values]}`.
       arms: the declared rows, in canonical order.
-      flag: the build setting naming the arms a build carries (`//:carry_arms`).
+      flag: the build setting naming the arms a build carries (`//:decode_arms`).
       includer: who includes the selection header, for the header's comment.
       built_archs: the architectures the units are made for (`BUILT_ARCHS`); a build compiles those its `--//:archs` names.
       unit: None, or a dict(arm_header, define, copts, host_cc, deps): the header that defines the arm macro, the macro
