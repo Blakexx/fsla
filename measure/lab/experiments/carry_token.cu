@@ -2,7 +2,8 @@
 // blindly consumes a window's packet, a block of value lines and a header, and the gather lays the packet out however
 // is best -- what does a window cost a CTA, which role waits on which, what do the fold's fill and its steps cost
 // apart, and what does the read side cost the fold? METHOD: a CTA an SM of four warpgroups, 512 threads, registers
-// traded by role: TWO FOLD warpgroups at 168 registers, a 16 x 16 box each, its state 16 accumulator sets of 8 in
+// traded by role: TWO FOLD warpgroups at 168 registers (176 in the grouped and per-column kernels and the
+// `kSplit` row, the readout then at 112 and the drain at 48), a 16 x 16 box each, its state 16 accumulator sets of 8 in
 // registers; ONE READOUT warpgroup at 120; ONE DRAIN warpgroup of four warps at 56. A window is a box's 256 entries
 // (16 lists of 8 to 24) and 256 tokens read the pair. A PACKET lands by two bulk copies behind one barrier, issued
 // behind the warpgroup's barrier that follows the wait on the window before's steps: its HEADER -- an entry's word and sparse byte, where each of the 32
@@ -12,8 +13,12 @@
 // is a PAD's, its two lines written zero by a thread's third word; no value line is moved. A step reads its A from the landed lines -- 16 consecutive positions are
 // an M|N-major tile, its address the block's and the header's start -- and its B from its tile, addressed by the
 // step's index: nothing is loaded a step, and the 32 steps are one commit group. THE ONE RULE on a packet: a step's
-// 16 tokens are consecutive positions. The host plays the gather with two layouts: every entry its own value lines;
-// and lists `2 p`, `2 p + 1` sharing four tokens, written once, the two lists' positions overlapping on them. Each
+// 16 tokens are consecutive positions. The host plays the gather with two per-list layouts: every entry its own value lines;
+// and lists `2 p`, `2 p + 1` sharing four tokens, written once, the two lists' positions overlapping on them. GROUPED
+// PACKETS (the grouped fold's): a group of four digits holds a token once, a step 16 tokens' value lines against a tile
+// of 16 tokens by the group's 64 columns -- a token on one digit of its group (two passes of eight steps, a pass's
+// tiles cleared), on all four (four steps, every line of a tile an entry's: nothing cleared), and on all 16 digits of
+// its box (the four groups' steps on the box's one run of value lines); and the four-digit tokens a list a digit. Each
 // fold warpgroup PUBLISHES its state as a bf16 image, 16 tiles, a tile group of 4 behind the readout, a line a
 // channel's 8 fold digits. The readout is MIRRORED: a thread expands one (token, box)'s 16 bytes, loaded two passes
 // ahead, to two lines of its digit's coefficient tile in shared memory, the tokens on the step's columns; a pass is 8
@@ -23,23 +28,34 @@
 // launch's edges stamped (`TRACE` 1), every warp's phases stamped (2: the coarse row, which is also each of the seven
 // detail rows -- one barrier's waits and arrivals more, the packet's waits and its copies' issues, the fold's fill by
 // phases, or its steps by eighths, `DETAIL`), every warp's timeline stamped (3), the plain row's long call by wall
-// time (the card's clock, and a window's span), the plain and coarse kernels on the overlapping layout, and one
-// ISOLATION row (`PROBE`): the
+// time (the card's clock, and a window's span), the plain and coarse kernels on the overlapping layout, the grouped kernels on
+// their packets and the per-list kernel on the four-digit tokens, the per-list fold at the grouped kernel's registers
+// (`kSplit`), THE PER-COLUMN FORM (`kColumn`: one kernel holding the per-list fold and the grouped one, a box's width word
+// read from global memory before its window loop choosing its fold, any other word a trap) on packets of each width,
+// and four ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
-// exactly in every row but the isolation row, whose kernel is not the carry's.
+// exactly in every row but the isolation rows, whose kernels are not the carry's.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
 // read of that group a window back, its 4 stores a thread of 16 bytes (two lines of two halves), their fence, the
 // group's arrival -- then the wait on its packet; a thread's two entries in turn, each its dense line (loaded at the
 // window's start, before the image) expanded to its two coefficient lines; a thread's pad's two lines written zero; the
 // header's two lines of tile starts loaded and held; the fence, the warpgroup's barrier; 32 steps issued, the commit,
-// the wait, the warpgroup's barrier; the next window's packet's copies. The readout's trip is a pass: the waits on its two tile groups, a
+// the wait, the warpgroup's barrier; the next window's packet's copies. THE GROUPED FOLD's trip differs
+// after the wait on its packet: a pass is its tiles cleared (16 stores a thread of 8 bytes), the fence and the
+// warpgroup's barrier, a thread's entry of the pass expanded, the fence and the barrier, the pass's 8 steps of 64 columns
+// one commit group, the wait, the warpgroup's barrier -- two passes a window where a token is on one digit of its group;
+// where it is on all four, no clear: a thread's two entries expanded, the fence and the barrier, 4 steps one commit
+// group, the wait, the barrier. THE PER-COLUMN kernel reads its box's width word once, before the first window, and runs
+// one of the two trips whole. The readout's trip is a pass: the waits on its two tile groups, a
 // thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded two passes before), the fence, the
 // warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
 // stored, the arrival. A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
 // words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the
-// readout's 64 sums (a chunk of 8 digits) and two passes' bytes and reader indices, 20 words; a drain's 16.
+// readout's 64 sums (a chunk of 8 digits) and two passes' bytes and reader indices, 20 words; a drain's 16. The grouped fold
+// holds a pass's tile starts in 2 words (1 where a window is 4 steps) and its kernel is 176 registers a fold thread, 112 the
+// readout's and 48 a drain's.
 // see docs/internals/tools/lab.md#carry-token
 #include <chrono>
 
@@ -309,16 +325,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     //: digits' accumulators end to end. One straight block a width
     if constexpr ((PROBE & kWide) != 0) {
       if constexpr ((PROBE & kFull) != 0) {
-        //: ONE STEP A GROUP: the four tiles cleared, a thread's two entries -- a (token, digit) each -- expanded, four
-        //: steps of 64 columns one commit group
-        {
-          const uint32_t x = lab::held(static_cast<uint32_t>(g));
-          unsigned long long* const zero = reinterpret_cast<unsigned long long*>(image + kTileAt * 16 + (x >> 5) * 4096u + (x & 31u) * 8u);
-#pragma unroll
-          for (int i = 0; i < 16; ++i) zero[32 * i] = 0ull;
-        }
-        lab::bulk_fence();
-        lab::bar_sync(kPoolId + box, kGroup);
+        //: ONE STEP A GROUP: a thread's two entries -- a (token, digit) each -- expanded, four steps of 64 columns one
+        //: commit group. Every line of a group's tile is an entry's (16 tokens by four digits): nothing is cleared
 #pragma unroll
         for (int half = 0; half < 2; ++half) {
           const int e = g + half * kGroup;
@@ -398,8 +406,10 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
           }
         lab::wg_commit();
         lab::wg_wait<0>();
+        //: THE PASS'S TILES ARE FREE -- and after the last pass the packet -- behind every warp's wait on the pass's steps:
+        //: the warpgroup's barrier is that edge
+        lab::bar_sync(kPoolId + box, kGroup);
       }
-      lab::bar_sync(kPoolId + box, kGroup);
       if (w + 1 < windows) issue_one(w + 1);
       continue;
     }
@@ -688,7 +698,8 @@ __global__ void __launch_bounds__(kThreads, 1)
       const uint32_t width =
           values[((blockIdx.x * 2 + (threadIdx.x >> 7)) % kColumns * kCallWindows * static_cast<uint32_t>(kOneLines) + kOneWide) * 4];
       if (width == 4) fold_role<TRACE, DETAIL, (PROBE & kAlone) | kWide | kFull>(smem, base, times, state, values, trace, windows);
-      else fold_role<TRACE, DETAIL, PROBE & kAlone>(smem, base, times, state, values, trace, windows);
+      else if (width == 1) fold_role<TRACE, DETAIL, PROBE & kAlone>(smem, base, times, state, values, trace, windows);
+      else __trap();
     } else {
       fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, trace, windows);
     }

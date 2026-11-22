@@ -1,0 +1,11 @@
+// a fixture of tools/lint/wgmma_width.py: library source that issues steps wider than 64 columns
+// (a comment naming wgmma.mma_async.sync.aligned.m64n256k16 is text and does not fire)
+__device__ void wide(float* d, unsigned long a, unsigned long b) {
+  asm volatile("{ wgmma.mma_async.sync.aligned.m64n256k16.f32.bf16.bf16 {%0}, %1, %2, 1, 1, 1, 0, 0; }" ::"f"(d[0]), "l"(a), "l"(b));
+}
+__device__ void wider(float* d, unsigned long a, unsigned long b) {
+  asm volatile("wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16 {%0}, %1, %2, 1, 1, 1;" ::"f"(d[0]), "l"(a), "l"(b));
+}
+__device__ void widest(float* d, unsigned long a, unsigned long b) {
+  asm volatile("wgmma.mma_async.sync.aligned.m64n192k32.f32.e4m3.e4m3 {%0}, %1, %2, 1, 1;" ::"f"(d[0]), "l"(a), "l"(b));
+}

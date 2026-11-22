@@ -42,5 +42,15 @@ The readout's cycles a wgmma differ between the columns (three sets at 128 regis
 the two differ in both the sets a commit group holds and the registers, so these rows do not say which one it is: the
 same sets at both counts are owed.
 
+A COMPILE OBSERVATION, 2026-11-22, toolkit 13.5 (ptxas, sm_90a; no device), NOT A ROW OF THE EXPERIMENT (the experiment
+must build, and a form ptxas refuses cannot): a kernel that enters at 128 registers a thread is refused one `wgmma
+m64n256k16` step, even in a warpgroup raised by `setmaxnreg` to 176, 192 or 232: "ptxas fatal: (C7602) Insufficient
+registers (128) to compile instruction ... Try to compile with register target of 154 or higher". It was reproduced in this
+experiment's own form (two warpgroups, `__launch_bounds__(256, 2)`, one lowered to 24, one raised to 232, each role's whole
+body in its own branch) with the raised group's work replaced by that one step; the committed experiment compiles five
+64-column sets there, registers up to R184. So the raise is honoured for placement, and the fit of one instruction is judged
+against the ENTRY count: a step of 256 columns cannot be issued by a kernel that enters at 128, whatever its warpgroups
+raise themselves to.
+
 Record: `measure/lab/results/reg_trade/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

@@ -35,6 +35,21 @@ TOKENS = 65536
 PREFIX = "the token-stream carry: both sides"
 UNIT = "cycles a window a CTA"
 SHARED = ", lists overlapping on shared tokens"
+#: the grouping rows' layouts, by the suffix the experiment's row name carries after its prefix (the order the name
+#: writes them: layout, the per-column choice, the isolation, the registers, the trace)
+GROUP4 = ", groups of four digits"
+TOKEN4 = ", a token on all four digits of its group, groups of four"
+TOKEN4_LIST = ", a token on all four digits of its group, a list a digit"
+TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
+LAYOUTS = (
+    (SHARED, "lists overlapping on shared tokens"),
+    (TOKEN4_LIST, "a token on all four digits of its group, a list a digit"),
+    (TOKEN4, "a token on all four digits of its group, groups of four"),
+    (TOKEN16, "a token on all 16 digits of its box, groups of four on one run of value lines"),
+    (GROUP4, "groups of four digits"),
+)
+COLUMN = ", the box's width word choosing its fold"
+SPLIT = ", registers 176 / 112 / 48"
 IDLE = ", the read side idle"
 FILL_ROW = ", the fold's fill by phases stamped"
 PACKET_ROW = ", the waits on the packets landed stamped"
@@ -63,6 +78,14 @@ def against(a: float, b: float) -> tuple[float, str]:
     return share, "the same as" if abs(share) <= SAME else ("over" if share > 0 else "under")
 
 
+def vs(a, b, obj=""):
+    """a against b: 'the same' (within SAME of the lesser) or its share of b over or under it, then `obj`"""
+    _, word = against(a, b)
+    if word == "the same as":
+        return "the same" + (f" as {obj}" if obj else "")
+    return f"{pct(abs(a - b) / b)} {word}" + (f" {obj}" if obj else "")
+
+
 def card(inst: str, device: str, sms: int) -> str:
     def one(label):
         return (
@@ -89,8 +112,14 @@ def short(name: str) -> str:
     """A row's name as the table words it: the name after its prefix, the layout and the probe, and the trace's suffix."""
     rest = name.removeprefix(PREFIX)
     layout, probe, kind = "", "", "plain"
-    if SHARED in rest:
-        layout, rest = "lists overlapping on shared tokens", rest.replace(SHARED, "")
+    for suffix, words in LAYOUTS:
+        if suffix in rest:
+            layout, rest = words, rest.replace(suffix, "")
+            break
+    if COLUMN in rest:
+        probe, rest = "the box's width word choosing its fold", rest.replace(COLUMN, "")
+    if SPLIT in rest:
+        probe, rest = "registers 176 / 112 / 48", rest.replace(SPLIT, "")
     if IDLE in rest:
         probe, rest = "the read side idle (not checked)", rest.replace(IDLE, "")
     for suffix, words in DETAILS:
@@ -100,9 +129,8 @@ def short(name: str) -> str:
         if suffix in rest:
             kind, rest = words, rest.replace(suffix, "")
     assert not rest, f"lab page: the row {name!r} has a part the generator does not name: {rest!r}"
-    if layout:
-        return f"{layout}, {kind}"
-    return f"{kind}, {probe}" if probe and kind != "plain" else kind
+    parts = [x for x in (layout, probe if probe and kind == "plain" else "", kind, probe if probe and kind != "plain" else "") if x]
+    return ", ".join(parts)
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -116,6 +144,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         assert r["blocks"] == n, f"lab page: the record named for {n} CTAs is of {r['blocks']}"
         assert all(c["ok"] for c in r["checks"] if "ok" in c), f"lab page: the {n}-CTA record holds a check that failed"
     assert one["git"] == full["git"], "lab page: the two records are of different commits"
+    assert one["toolkit"] == full["toolkit"], "lab page: the two records are of different toolkits"
     assert one["reps"] == full["reps"] and one["driver"] == full["driver"] and one["device"] == full["device"], (
         "lab page: the two records differ in repetitions, driver or device"
     )
@@ -154,7 +183,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         + [f"| {short(nm)} | {g(w(1, nm))} | {g(w(132, nm))} |" for nm in names]
     )
     checked = sum(1 for c in full["checks"] if "ok" in c)
-    unchecked = [c["variant"] for c in full["checks"] if "ok" not in c]
+    isolation = [c["variant"] for c in full["checks"] if "ok" not in c and "isolation" in c.get("reason", "")]
     assert checked == sum(1 for c in one["checks"] if "ok" in c)
     # a rule: every row of the record is checked or named unchecked, and the record's checks are its own
     check_names = {c["variant"] for c in full["checks"]}
@@ -273,12 +302,10 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     cost = (w(132, COARSE) - w(132, idle)) / w(132, COARSE)
     cost1 = (w(1, COARSE) - w(1, idle)) / w(1, COARSE)
     steps_idle = idle_ph["issuing steps"]
-    steps_cost = (steps - steps_idle) / steps
     read_side = (
         f"THE READ SIDE COSTS THE FOLDS {pct(cost)} OF THE WINDOW at {sms} CTAs ({pct(cost1)} at one CTA): the coarse row's window is"
         f" {g(w(132, COARSE))} cycles and the same kernel with the read side idle {g(w(132, idle))} (the isolation row, not checked: its"
-        f" kernel is not the carry's); the fold's 32 steps are {g(steps)} cycles and, with it idle, {g(steps_idle)} ({pct(steps_cost)}"
-        f" under the coarse row's)."
+        f" kernel is not the carry's); the fold's 32 steps are {g(steps)} cycles and, with it idle, {g(steps_idle)} ({vs(steps_idle, steps, 'the coarse row')})."
     )
 
     # the launch's own clocks: the rate between the cycle counter and the nanosecond timer, and a window's time
@@ -301,6 +328,83 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"THE MARKS' COST: the coarse row's window is {g(w(132, COARSE))} against the plain row's {g(twin(COARSE, 132))} at {sms} CTAs"
         f" ({pct(coarse_over)} over, its phases' starts and the launch's edges on both clocks); the figures above are the coarse"
         " row's."
+    )
+
+    # ---- the grouping rows, by name: what a layout and a step's shape decide
+    def cycles_of(n, layout, idle=False, column=False):
+        nm = PREFIX + layout + (COLUMN if column else "") + ((IDLE + COARSE_SUF) if idle else "")
+        return rows[n][nm]
+
+    list4, group4, wide16 = PREFIX + TOKEN4_LIST, PREFIX + TOKEN4, PREFIX + TOKEN16
+    col_list = cycles_of(132, TOKEN4_LIST, column=True)
+    col_group = cycles_of(132, TOKEN4, column=True)
+    exact_group = all(
+        exact(PREFIX + lay + (COLUMN if col else ""))
+        for lay, col in ((TOKEN4_LIST, True), (TOKEN4, True), (TOKEN4_LIST, False), (TOKEN4, False), (TOKEN16, False), (GROUP4, False))
+    ) and exact(PREFIX + SPLIT)
+    col_free = col_list <= w(132, list4) * (1 + SAME) and col_group <= w(132, group4) * (1 + SAME)
+    col_text = (
+        f"(a) A STEP SHAPE CHOSEN BEFORE THE WINDOW LOOP {'IS FREE' if col_free else 'IS NOT FREE'}: the per-column kernel (one kernel "
+        "holding both folds, the box's width word read before its window loop) is, at 132 CTAs, "
+        f"{g(col_list)} on per-list packets against the per-list kernel's {g(w(132, list4))} ({vs(col_list, w(132, list4))}; at one CTA "
+        f"{g(cycles_of(1, TOKEN4_LIST, column=True))} against {g(w(1, list4))}) and {g(col_group)} on group-of-four packets against the "
+        f"group-of-four kernel's {g(w(132, group4))} ({vs(col_group, w(132, group4))}; at one CTA {g(cycles_of(1, TOKEN4, column=True))} against "
+        f"{g(w(1, group4))}), {'exact' if exact_group else 'NOT exact'}."
+    )
+    sixteen = (
+        f"(b) A GROUP WIDER THAN FOUR DIGITS NEEDS NO STEP SHAPE OF ITS OWN: a token on all 16 digits of its box, executed as groups of four on "
+        f"one run of value lines, is {g(w(132, wide16))} cycles against the four-digit row's {g(w(132, group4))} ({vs(w(132, wide16), w(132, group4))}; at one CTA "
+        f"{g(w(1, wide16))} against {g(w(1, group4))}), {'exact' if exact(wide16) else 'NOT exact'}."
+    )
+    g4, g4idle = w(132, PREFIX + GROUP4), cycles_of(132, GROUP4, idle=True)
+    plain_idle = rows[132][PREFIX + IDLE + COARSE_SUF]
+    t4g, t4gi = w(132, group4), cycles_of(132, TOKEN4, idle=True)
+    t4l, t4li = w(132, list4), cycles_of(132, TOKEN4_LIST, idle=True)
+    split = w(132, PREFIX + SPLIT)
+    waste = (
+        f"(c) WHERE A TOKEN IS ON ONE DIGIT OF ITS GROUP THE 64-COLUMN STEP IS WASTE, AND ON FOUR IT IS THE FOLD'S GAIN: groups of four digits "
+        f"(a token on one digit) are {g(g4)} cycles against the per-list row's {g(w(132, PLAIN))} ({vs(g4, w(132, PLAIN))}), their folds alone {g(g4idle)} against "
+        f"the per-list folds' {g(plain_idle)} ({vs(g4idle, plain_idle)}), and the per-list fold at the wide kernel's registers (176 / 112 / 48) "
+        f"{g(split)} ({vs(split, w(132, PLAIN), 'the per-list row')}: the registers are not the excess). A token on all four digits of its group: the folds "
+        f"alone are {g(t4gi)} against {g(t4li)} a list a digit ({vs(t4gi, t4li)}), and the composed window {g(t4g)} against {g(t4l)} ({vs(t4g, t4l)}): "
+        f"the window keeps {g(t4g - t4gi)} cycles of the read side ({pct((t4g - t4gi) / t4g)} of it) and gains {g(t4l - t4g)} of the folds' {g(t4li - t4gi)}, so the composed "
+        f"window is then bound by the read side."
+    )
+    run_time = (
+        "(d) NOT MEASURED: a run-time count of steps a group -- every grouped fold of the record issues a fixed number of steps a window."
+    )
+
+    # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants
+    src = (root / "measure/lab/experiments/carry_token.cu").read_text()
+    for needle in (
+        "kLists = 16, kEntries = 16, kWindow = kLists * kEntries;",
+        "kGroup = 128,",
+        "kValueLines = 16 * kGroup, kValueBytes = kValueLines * 16,",
+    ):
+        assert needle in src, f"lab page: carry_token.cu no longer holds {needle!r}, the bytes' arithmetic reads it"
+    window, group_ = 16 * 16, 128
+    value_lines, value_bytes = 16 * group_, 16 * group_ * 16
+    line_bytes = 16
+    lines_a_token = value_lines // window
+    token_bytes = lines_a_token * line_bytes
+    assert value_bytes == window * token_bytes
+    layouts_bytes = [(1, "per list at one digit a token"), (4, "grouped at four digits a token"), (16, "grouped at 16 digits a token")]
+    held = "; ".join(f"{label}, {window // k} tokens, {g((window // k) * token_bytes)} bytes of value lines" for k, label in layouts_bytes)
+    bytes_text = (
+        f"THE BYTES A LAYOUT HOLDS, by arithmetic from the packet's layout (a token's value lines are {lines_a_token} lines, {token_bytes} bytes; a window is "
+        f"{window} memberships a box; `kValueBytes` is {g(value_bytes)}): {held}. Grouping's larger purpose is the stream's bytes when dense: a token on k "
+        "digits of a group is laid once, with its coefficients for those digits, so its value lines are k times fewer than a list a digit's."
+    )
+    not_here = (
+        "NOT MEASURED HERE: this kernel lands the whole `kValueBytes` of every packet whatever the layout (`issue_one`), and the cell is not "
+        f"bound on global memory (one CTA against {sms}), so no row shows the traffic a grouped layout saves; the {pct((t4l - t4g) / t4l)} at four digits a token "
+        "is the tensor steps' side alone. OWED: a row whose packet lands only its tokens' value lines; and the gather's cost of writing a token once. "
+        "ALSO OWED, as an observation: every membership holds its own dense line (16 bytes) though a token's dense line is the same on all its digits; "
+        "a grouped layout could hold it once a token."
+    )
+    grouping = (
+        "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}"
     )
 
     # ---- rows of the experiment the record does not hold yet
@@ -346,16 +450,23 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     not_measured += "."
 
     # ---- the section
+    toolkit = full["toolkit"].split("cuda_")[1].split(".r")[0]
     sha = full["git"]["sha"][:8] + (" (a dirty tree)" if full["git"].get("dirty") else "")
     dates = f"{one['date'][:10]} {one['date'][11:16]} and {full['date'][11:16]} UTC" if one["date"][:10] == full["date"][:10] else f"{one['date'][:10]} and {full['date'][:10]} UTC"
-    text = f"""MEASURED ({card(instance, full["device"], sms)}, driver {full["driver"]}, the clock locked; {dates} (the one-CTA and the full-grid records), the
+    text = f"""MEASURED ({card(instance, full["device"], sms)}, driver {full["driver"]}, toolkit {toolkit}, the clock locked; {dates} (the one-CTA and the full-grid records), the
 experiment at {sha}, {full["reps"]} repetitions; the labels name the boxes of the two records, which hold no box's id; the {checked} checked rows pass at one CTA
-and at {sms}{f", {len(unchecked)} row is unchecked (the isolation row)" if len(unchecked) == 1 else ""}; `sm_90a.blocks1.json` and `sm_90a.blocks{sms}.json`, each with its traced rows' records beside it). {UNIT[0].upper() + UNIT[1:]}:
+and at {sms}{f", the {len(isolation)} isolation rows are unchecked (their kernels are not the carry's)" if isolation else ""}; `sm_90a.blocks1.json` and `sm_90a.blocks{sms}.json`, each with its traced rows' records beside it). {UNIT[0].upper() + UNIT[1:]}:
 
 {table}
 
 WHAT IT DECIDES. {grid} {layout} {fold_text} {read_side} {marks_text}
 {clock_text} {not_measured}
+
+{grouping}
+
+{bytes_text}
+
+{not_here}
 
 THE PHASES, in each role's own window of the coarse row's record at {sms} CTAs (CTA {scope132}), cycles:
 - the fold: image {g(image)}, fill {g(fill)}, steps {g(steps)}.

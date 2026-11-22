@@ -88,6 +88,13 @@ tree_test(
 )
 
 tree_test(
+    name = "wgmma_width_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/wgmma_width.py", "--test-fixtures"],
+    data = [":tracked"],
+)
+
+tree_test(
     name = "unused_instantiations_fixtures",
     size = "small",
     cmd = ["python3", "tools/lint/unused_instantiations.py", "--test-fixtures"],
@@ -147,6 +154,7 @@ test_suite(
         ":rules_table_fixtures",
         ":unused_instantiations_fixtures",
         ":vulture_fixtures",
+        ":wgmma_width_fixtures",
     ],
 )
 
@@ -197,5 +205,6 @@ tool_test(
     "readability_spacing",
     "rules_table",
     "unused_instantiations",
+    "wgmma_width",
     "work_codes",
 ]]

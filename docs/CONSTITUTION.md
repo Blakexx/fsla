@@ -281,3 +281,25 @@ take and derives nothing from how the data was made. A plan is never wrong for t
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
 nothing else. NOT YET SO: [`open-work.md`](open-work.md#the-surface) row A-c lists what is still owed: the plan
 fields R24 names beyond the carve (the plan and the masks are what the op reads now).
+
+<a id="r25"></a>
+## R25. A group is a layout; its steps are shaped to it, never wider than 64 columns
+
+A GROUP of digits is a way of laying out data (Blake, 2026-11-22: "groups are just how we lay out in memory ... its a
+way of laying out data that we then execute onto via properly shaped wgmmas, going down to low N and maxing at 64"): a
+token live on several digits of a group is laid once, with its coefficients for those digits. Its first purpose is the
+stream's bytes: a token on k digits of a group is k times fewer value lines than a list a digit, which is what lets the
+digit stream scale with density (Blake, 2026-11-22: "grouping is largely for saving hbm traffic when
+dense"). How a layout is EXECUTED is the kernel's: tensor steps of the shape that fits it, from narrow steps up to 64
+columns and never wider. A layout wider than a step -- 8 or 16 digits -- is several 64-column steps whose A operand
+names the one run of value lines, so the layout's width is data the gather writes a window and no step shape follows
+from it. A step's shape pins its accumulator's registers, so the shape is chosen where no step is in flight: a box's
+word of the device plan, read before its window loop.
+MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns
+([`lab/wgmma_width.md`](lab/wgmma_width.md)): past 64 a wider step buys no tensor time. A token on all 16 digits of its
+box, executed as four 64-column steps on one run of value lines, is the four-digit window, exact; and a kernel holding a
+per-list fold and a grouped fold, choosing by a word read before the loop, costs nothing a window
+([`lab/carry_token.md`](lab/carry_token.md)). A 256-column step is also refused by ptxas in a CTA that enters at 128
+registers a thread ([`lab/reg_trade.md`](lab/reg_trade.md)).
+NOT YET SO: the lab's grouped folds issue a fixed number of steps a window; a run-time count a group is owed
+([`open-work.md`](open-work.md)).

@@ -378,6 +378,17 @@ tree_test(
     ],
 )
 
+#: NO LIBRARY KERNEL ISSUES A TENSOR STEP WIDER THAN 64 COLUMNS (CONSTITUTION R25): a `wgmma.mma_async` mnemonic of csrc/fsla with N over 64
+tree_test(
+    name = "wgmma_width",
+    size = "small",
+    cmd = ["python3", "tools/lint/wgmma_width.py"],
+    data = [
+        "//tools/lint:tracked",
+        "//csrc/fsla:tracked",
+    ],
+)
+
 tree_test(
     name = "portable_agent_files",
     size = "small",
@@ -501,6 +512,7 @@ test_suite(
         ":lint_standards",
         ":graph_only",
         ":readability_spacing",
+        ":wgmma_width",
         ":portable_agent_files",
         ":declarations",
         ":rules_table",

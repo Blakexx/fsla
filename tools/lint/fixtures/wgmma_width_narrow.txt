@@ -1,0 +1,7 @@
+// a fixture of tools/lint/wgmma_width.py: library source whose steps are at most 64 columns
+/* a block comment naming wgmma.mma_async.sync.aligned.m64n256k16.f32.bf16.bf16 is text and does not fire */
+__device__ void narrow(float* d, unsigned long a, unsigned long b) {
+  asm volatile("wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 {%0}, %1, %2, 1, 1, 1, 0, 0;" ::"f"(d[0]), "l"(a), "l"(b));
+  asm volatile("wgmma.mma_async.sync.aligned.m64n8k16.f32.bf16.bf16 {%0}, %1, %2, 1, 1, 1, 0, 0;" ::"f"(d[0]), "l"(a), "l"(b));
+  asm volatile("wgmma.mma_async.sync.aligned.m64n16k32.f32.e4m3.e4m3 {%0}, %1, %2, 1, 1;" ::"f"(d[0]), "l"(a), "l"(b));
+}
