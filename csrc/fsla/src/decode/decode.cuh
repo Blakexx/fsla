@@ -146,7 +146,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   float eps;
 
   const int32_t* read_mask
-      [kMaxLevels];  // digit-packed words [B, H, ceil(B_l / 32)] a level; host-threaded, unread
+      [kMaxLevels];  // digit-packed words [B, H, ceil(B_l / 32)] a level; `fold_digits` builds its masks from the row bytes (docs/open-work.md A-e)
   const int32_t* write_mask[kMaxLevels];
 };
 

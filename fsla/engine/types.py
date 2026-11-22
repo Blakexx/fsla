@@ -40,7 +40,7 @@ class Variant(IntEnum):
     DECODE_PAGED = 4
     """DECODE_PAGED -- one token onto an arena: the probe, the gate and the admission.
 
-    A GROWTH STEP IS NOT A MASK. It is DECODE_PAGED run twice around an admission, which is why
+    A GROWTH STEP IS NOT A VARIANT. It is DECODE_PAGED run twice around an admission, which is why
     the growth path selects no different subgraph (docs/internals/engine/decode_dag.md).
     """
 

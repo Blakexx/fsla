@@ -2,7 +2,7 @@
 
 This module is deliberately separate from ``routing.entmax.reference``. The reference is an fp64
 bisection oracle; this module owns the value path every runtime caller takes, and its analytic
-fixed-alpha VJP. Its plan-level surface is ``production_routing_factor_levels``: dense per-level
+fixed-alpha VJP. Its plan-level surface is ``production_routing_levels``: dense per-level
 ``[BH, T, width_l]`` factors, the contract the consumer and its fp64 oracle both consume. This is what
 the producer calls.
 
@@ -729,19 +729,6 @@ def production_routing_levels(
     return reads, writes, None
 
 
-def production_routing_factor_levels(
-    read_logits: torch.Tensor,
-    write_logits: torch.Tensor,
-    routing: ResolvedRouting,
-    *,
-    stored_dtype: torch.dtype = torch.bfloat16,
-) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-    """:func:`production_routing_levels` without the support words: exact per-level ``(read, write)`` factors, one
-    ``[BH, T, width_l]`` tensor per level-side."""
-    reads, writes, _support = production_routing_levels(read_logits, write_logits, routing, stored_dtype=stored_dtype)
-    return reads, writes
-
-
 def _flat(logits: torch.Tensor) -> torch.Tensor:
     """Token-major ``[B, T, H, W]`` as the flat ``[BH, T, W]`` plane, or itself.
 
@@ -757,6 +744,5 @@ def _flat(logits: torch.Tensor) -> torch.Tensor:
 
 __all__ = [
     "production_factor",
-    "production_routing_factor_levels",
     "production_routing_levels",
 ]

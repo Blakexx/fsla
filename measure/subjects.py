@@ -142,7 +142,7 @@ def entmax_solve(fx) -> Launch:
     The logits are drawn once from the cell's seed and held: what is priced is the
     SOLVE, not the projection that produced them.
     """
-    from fsla.routing.entmax.production import production_routing_factor_levels
+    from fsla.routing.entmax.production import production_routing_levels
 
     spec = fx["cell"]
     routing = fx["layer"].routing.resolved
@@ -152,7 +152,7 @@ def entmax_solve(fx) -> Launch:
     write_logits = torch.randn(shape, device="cuda", dtype=torch.float32, generator=gen)
 
     def run():
-        return production_routing_factor_levels(read_logits, write_logits, routing)
+        return production_routing_levels(read_logits, write_logits, routing)
 
     return Launch(name=f"entmax_solve|{spec.name}|{fx['construction'].name}", call=run)
 

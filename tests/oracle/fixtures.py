@@ -85,6 +85,13 @@ def masks_of(routes, consumer=DECODE):
                  tuple(pack(rows != 0) for rows in routes.write_rows))
 
 
+def live_of(routes, side):
+    """THE LIVE DIGITS of one side as the one-token step's masks hold them: bool ``[B, 1, H, width_l]`` a level, the bits
+    of :func:`masks_of`'s decode layout (what a fixture's draw supports)."""
+    masks = masks_of(routes)
+    return tuple(masks.bits(side, level, 1, routes.rows(level, side).shape[-1]) for level in range(routes.topology.D))
+
+
 def bundle_operands(routes, values):
     """What the kernel is handed, in fp64 -- the op oracle's inputs: ``(v, read, write)``, the bundle's levels as
     stored (docs/api.md section 2.1)."""

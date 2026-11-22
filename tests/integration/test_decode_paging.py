@@ -80,6 +80,7 @@ from tests.oracle.fixtures import (  # noqa: E402
     assert_reordered_close,
     assert_slots_close,
     bundle_operands,
+    live_of,
     masks_of,
     oracle_run,
     reordered_close,
@@ -237,7 +238,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
     widths, _BC = arm
     fixture = _fixture(widths, seed=len(widths) * 31 + 7, support=_SUPPORTS[support])
     config = _config(widths)
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
 
     got = _write_atom_bitmap(write, config)
     want = _leaf_support(write, widths, config).view(
@@ -261,7 +262,7 @@ def test_the_paged_backing_matches_the_dense_one(arm, support):
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
-    write = routes.live("write")
+    write = live_of(routes, "write")
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
@@ -309,7 +310,7 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
-    write = routes.live("write")
+    write = live_of(routes, "write")
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
@@ -358,7 +359,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
 
-    bits = [_write_atom_bitmap(_bundles(step)[0].live("write"), config) for step in (first, second)]
+    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), config) for step in (first, second)]
     new_atoms = int((bits[1] & ~bits[0]).sum())
     assert new_atoms > 0, "the second step reaches no new atom; the cell is vacuous"
 
@@ -423,7 +424,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
-    bits = [_write_atom_bitmap(_bundles(step)[0].live("write"), config) for step in (first, second)]
+    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), config) for step in (first, second)]
     assert int((bits[1] & ~bits[0]).sum()) > 0, "the second step grows nothing here"
 
     admitted = _arena(widths, BC, BH)

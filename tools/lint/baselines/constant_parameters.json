@@ -211,25 +211,5 @@
    "line_sha256": "9b0b2e5a64c6ce50",
    "count": 1
   }
- ],
- "follows": [
-  {
-   "path": "rola/_state.py",
-   "from_sha256": "be4a110899634130",
-   "to_sha256": "a8c1f7f9dd959c89",
-   "count": 1
-  },
-  {
-   "path": "rola/_state.py",
-   "from_sha256": "faeb4a1fc4a4b884",
-   "to_sha256": "2b3affefd366fbdd",
-   "count": 1
-  },
-  {
-   "path": "rola/_state.py",
-   "from_sha256": "faeb4a1fc4a4b884",
-   "to_sha256": "2b3affefd366fbdd",
-   "count": 1
-  }
  ]
 }

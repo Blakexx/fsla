@@ -173,7 +173,7 @@ largest, and the caller (`production.py`) is what groups the plan walk into tabl
 ## <a id="stored-form"></a>5. The stored form is what the solve WRITES
 
 The solve's levels have one consumer, the producer's torch path
-(`fsla.ops.produce`'s reference, through `production_routing_factor_levels`), which folds
+(`fsla.ops.produce`'s reference, through `production_routing_levels`), which folds
 them and quantizes them into the bundle's rows (`RouteFactors.from_levels`); it reads
 `bf16`. So `OutT` is `__nv_bfloat16` on that path and the solve writes the stored
 representation directly; there is no fp32 plane and no narrowing pass between them. The

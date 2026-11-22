@@ -21,7 +21,7 @@ at ``BC = 16`` and one at ``BC = 64`` produce entry states that differ in their 
 (different summation trees), so feeding decode the two real prefill outputs would
 compare two different inputs and prove nothing about ``BC``. The dependence being tested
 is decode's, so the state is held identical and the ``BC`` is varied everywhere it could
-possibly enter: the plan, the frozen carrier's construction, and the config object.
+possibly enter: the plan, the plan's construction, and the config object.
 
 Run: ``bazel test //tests:integration --test_filter=test_decode_bc_blindness``
 """
@@ -34,7 +34,7 @@ import math
 import pytest
 import torch
 
-from fsla.engine.plan import DecodeGeometry
+from fsla.engine.plan import DecodePlan
 from fsla.ops.decode import _decode_step
 from fsla.ops.paging import bytes_equal
 from fsla.ops.produce import decode_plan
@@ -51,17 +51,17 @@ pytestmark = [
 _BCS = [32, 64, 128, 256, 1024]
 
 
-def test_no_field_of_the_frozen_carrier_names_bc():
+def test_no_field_of_the_static_plan_names_bc():
     """The structural half: ``BC`` is not a field, and cannot become one by accident.
 
-    A field-level check rather than a comment, because the carrier is the one object
+    A field-level check rather than a comment, because the plan is the one object
     that could plausibly acquire a ``BC`` (it is built from a plan that has one), and a
     field added there would be invisible to the numeric gate below until something
     started reading it.
     """
-    names = {f.name.lower() for f in dataclasses.fields(DecodeGeometry)}
+    names = {f.name.lower() for f in dataclasses.fields(DecodePlan)}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
-        f"DecodeGeometry has acquired a BC-shaped field: {sorted(names)}")
+        f"DecodePlan has acquired a BC-shaped field: {sorted(names)}")
 
 
 @pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
@@ -91,7 +91,7 @@ def test_decode_is_blind_to_prefill_bc(widths):
         # `BC` is here to be IGNORED: it belongs to a prefill's built arm and is
         # not host-selectable, so the loop varies the number a prefill COULD have
         # run at and asserts there is no channel through which it could reach the
-        # frozen carrier. `derive_decode_geometry` is called inside the loop because
+        # static plan. `decode_plan` is called inside the loop because
         # it must be a pure function of the topology, `d_v` and `decay`.
         assert BC in _BCS
         config = decode_plan(topology, d_v=d_v, decay=False)
@@ -101,7 +101,7 @@ def test_decode_is_blind_to_prefill_bc(widths):
         results.append((y, state))
 
     assert configs[0] == configs[1] == configs[2], (
-        "the frozen carrier moved with the prefill's BC; it must be a pure function of "
+        "the static plan moved with the prefill's BC; it must be a pure function of "
         "the topology, `d_v` and `decay`")
     for BC, (y, state) in zip(_BCS[1:], results[1:]):
         assert_reordered_close(y, results[0][0], f"decode's y at prefill BC={BC}")

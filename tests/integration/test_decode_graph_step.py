@@ -61,7 +61,7 @@ from tests.integration.test_decode_paging import (
     _config,
     _fixture,
 )
-from tests.oracle.fixtures import assert_reordered_close, masks_of
+from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of
 
 pytestmark = [
     pytest.mark.cuda,
@@ -73,7 +73,7 @@ _WIDTHS, _BC = (64, 64), 128
 
 def _absent_one_written_atom(fixture, config, arena):
     """Admit the step's write set except ONE atom, and say which one. `(bitmap, atom)`."""
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
@@ -97,7 +97,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
     per batch-head, holding out one atom of one batch-head would leave the others running
     and the cell would be asserting the mechanism the design replaced.
     """
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
     held_out = bitmap.clone()
     for row in range(bitmap.shape[0]):
@@ -205,7 +205,7 @@ def test_gated_step_then_admit_then_replay_matches_admitting_first():
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
     config = _config(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
 
     reference = _arena(_WIDTHS, _BC, BH)
@@ -271,7 +271,7 @@ def _sequence():
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
-        routes, _values = layer._produce(x[:, :_T])
+        routes, _values, _masks = layer._produce(x[:, :_T])
         config = _config(_WIDTHS)
         bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
@@ -342,7 +342,7 @@ def test_the_captured_step_is_the_eager_step():
     """Same kernels, same order, the same state bytes and `y` to its sums' order -- the capture owes exactly this."""
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
-    routes, _values = layer._produce(x[:, token])
+    routes, _values, _masks = layer._produce(x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)
@@ -374,7 +374,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(static.live("write"), _config(_WIDTHS))
+    written = _write_atom_bitmap(live_of(static, "write"), _config(_WIDTHS))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False
@@ -399,7 +399,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     """
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
-    routes, _values = layer._produce(x[:, token])
+    routes, _values, _masks = layer._produce(x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)
@@ -429,7 +429,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     #: The same pair, eagerly, on its own sequence. `_sequence` is seeded, so the two
     #: states are the same state and the two tokens are the same token.
     layer2, x2, v2, eager_state = _sequence()
-    eager_routes, _values = layer2._produce(x2[:, token])
+    eager_routes, _values, _masks = layer2._produce(x2[:, token])
     eager_static, eager_static_v = _static(eager_routes, v2[:, token])
     _fill(eager_static, eager_static_v, eager_routes, v2[:, token])
     assert _make_growth(eager_state, eager_static) == (row, column), (

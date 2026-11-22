@@ -18,7 +18,6 @@ import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from fsla.engine.carve import plan_carve
 from measure.cells import CarryCell
 from measure.cells import carry_cells as registry_cells
 from measure.subjects import bundle_of
@@ -65,5 +64,5 @@ def test_a_drawn_cell_is_a_lawful_shape(spec):
     the rule's refusals, not the carry."""
     from measure.cells import realize
 
-    routes, values, _layout, _statics = bundle_of(spec, realize(spec))
-    plan_carve(tuple(routes.topology.padded_widths), *routes.sparse, values.v.shape[-1])
+    #: the bundle builder plans the cell's carve and refuses one the rule does not admit
+    bundle_of(spec, realize(spec))

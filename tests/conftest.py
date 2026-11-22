@@ -378,6 +378,6 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     weights = ProducerWeights(route_W=hidden_contiguous(fused) if fused.dtype is torch.bfloat16 else fused,
                               route_bias=bias, gain_bias=gain_bias,
                               v_W=torch.zeros(H * d_v, hidden_size, dtype=torch.bfloat16, device=x.device))
-    routes, _values = produce(x, plan, weights)
+    routes, _values, _masks = produce(x, plan, weights)
     read_levels, write_levels = routes.dequantized()
     return SimpleNamespace(read_levels=read_levels, write_levels=write_levels)

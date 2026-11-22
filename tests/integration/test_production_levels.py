@@ -1,6 +1,6 @@
 """Gates for the dense per-level production routing solve (the producer path).
 
-`fsla.routing.entmax.production.production_routing_factor_levels` is
+`fsla.routing.entmax.production.production_routing_levels` is
 what `fsla/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
 lowering at CUDA fp32 and the identical sorted closed form in torch on CPU/fp64 -- and
 both are gated here against the ONE canonical ground truth this branch authorizes for
@@ -51,7 +51,7 @@ from conftest import fuse_gain_columns, produce_routing, raw_side_gain, resolved
 
 import fsla.ops.produce as production_path
 from fsla.ops.produce import ProducerPlan, ProducerWeights, route_logits
-from fsla.routing.entmax.production import production_routing_factor_levels
+from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.producer import Routing
 from fsla.routing.reference import routing_factor_levels as oracle_factor_levels
 from fsla.routing.types import (
@@ -247,7 +247,7 @@ def _check_against_oracle(
     oracle_read = logits_read.detach().clone().to(torch.float64).requires_grad_()
     oracle_write = logits_write.detach().clone().to(torch.float64).requires_grad_()
 
-    reads, writes = production_routing_factor_levels(
+    reads, writes, _support = production_routing_levels(
         production_read, production_write, routing, stored_dtype=torch.float32)
     oracle_reads, oracle_writes = oracle_factor_levels(oracle_read, oracle_write, routing)
 
@@ -295,7 +295,7 @@ def test_tied_routing_read_factor_is_the_write_factor_on_both_lowerings(alpha):
     oracle_reads, oracle_writes = oracle_factor_levels(read, write, tied)
     assert oracle_reads[0] is oracle_writes[0]  # the read factor IS the write factor
 
-    prod_reads, prod_writes = production_routing_factor_levels(
+    prod_reads, prod_writes, _support = production_routing_levels(
         read.to(torch.float32), write.to(torch.float32), tied, stored_dtype=torch.float32)
     torch.testing.assert_close(prod_reads[0], prod_writes[0], rtol=0, atol=0)
 
@@ -312,7 +312,7 @@ def test_cuda_tied_routing_read_factor_is_the_write_factor(alpha):
     read = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
     write = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
 
-    tied_reads, tied_writes = production_routing_factor_levels(
+    tied_reads, tied_writes, _support = production_routing_levels(
         read, write, tied, stored_dtype=torch.float32)
     torch.testing.assert_close(tied_reads[0], tied_writes[0], rtol=0, atol=0)
 
@@ -378,9 +378,9 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
 
     cpu_read = read.detach().cpu().requires_grad_()
     cpu_write = write.detach().cpu().requires_grad_()
-    cuda_reads, cuda_writes = production_routing_factor_levels(
+    cuda_reads, cuda_writes, _support = production_routing_levels(
         read, write, routing, stored_dtype=torch.float32)
-    cpu_reads, cpu_writes = production_routing_factor_levels(cpu_read, cpu_write, routing)
+    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_read, cpu_write, routing)
     for level in range(routing.D):
         if routing.read_level_can_zero[level]:
             _assert_support_identical(cuda_reads[level].cpu(), cpu_reads[level], f"read {level}")
@@ -540,7 +540,7 @@ def test_the_solve_never_reaches_the_reference_cuda(monkeypatch):
     routing = _routings(1.5)["mixed_per_level"]
     read = _stress_logits(routing, "random", device="cuda", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cuda", seed=32).requires_grad_()
-    reads, writes = production_routing_factor_levels(
+    reads, writes, _support = production_routing_levels(
         read, write, routing, stored_dtype=torch.float32)
     sum(level.sum() for level in (*reads, *writes)).backward()
     assert read.grad is not None and write.grad is not None
@@ -558,7 +558,7 @@ def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
     read = _stress_logits(routing, "random", device="cpu", seed=31).requires_grad_()
     write = _stress_logits(routing, "random", device="cpu", seed=32).requires_grad_()
 
-    cpu_reads, cpu_writes = production_routing_factor_levels(read, write, routing)
+    cpu_reads, cpu_writes, _support = production_routing_levels(read, write, routing)
     sum(level.sum() for level in (*cpu_reads, *cpu_writes)).backward()
     assert read.grad is not None and write.grad is not None
 
@@ -665,7 +665,7 @@ def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
         "the shipped projection emits bf16 logits; this gate is meaningless against any "
         "other dtype")
 
-    kernel_read, kernel_write = production_routing_factor_levels(
+    kernel_read, kernel_write, _support = production_routing_levels(
         read_logits, write_logits, resolved)
     reference_read, reference_write = oracle_factor_levels(
         _flat64(read_logits), _flat64(write_logits), resolved)
@@ -830,9 +830,9 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
         "the two lowerings must be handed bit-identical inputs, or this measures the "
         "fixture rather than the port")
 
-    cuda_reads, cuda_writes = production_routing_factor_levels(
+    cuda_reads, cuda_writes, _support = production_routing_levels(
         cuda_read, cuda_write, routing, stored_dtype=torch.float32)
-    cpu_reads, cpu_writes = production_routing_factor_levels(cpu_read, cpu_write, routing)
+    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_read, cpu_write, routing)
     for level in range(routing.D):
         if routing.read_level_can_zero[level]:
             _assert_support_identical(
@@ -956,9 +956,9 @@ def test_the_stored_form_preserves_the_support_exactly(alpha, shape, kind):
     routing = _routings(alpha)[shape]
     read = _stress_logits(routing, kind, device="cuda", seed=17).requires_grad_()
     write = _stress_logits(routing, kind, device="cuda", seed=18).requires_grad_()
-    exact_reads, exact_writes = production_routing_factor_levels(
+    exact_reads, exact_writes, _support = production_routing_levels(
         read, write, routing, stored_dtype=torch.float32)
-    stored_reads, stored_writes = production_routing_factor_levels(
+    stored_reads, stored_writes, _support = production_routing_levels(
         read, write, routing, stored_dtype=torch.bfloat16)
     for level in range(routing.D):
         assert stored_reads[level].dtype is torch.bfloat16
@@ -982,7 +982,7 @@ def test_union_is_exact_at_the_fp32_extremes(alpha, relationship):
     _check_against_oracle(routing, read, write, label=f"fp32-extremes/{relationship}/{alpha}")
     production_read = read.detach().clone().requires_grad_()
     production_write = write.detach().clone().requires_grad_()
-    reads, writes = production_routing_factor_levels(
+    reads, writes, _support = production_routing_levels(
         production_read, production_write, routing, stored_dtype=torch.float32)
     assert torch.isfinite(reads[0]).all() and torch.isfinite(writes[0]).all()
     if relationship == "opposite":
@@ -1003,7 +1003,7 @@ def test_an_empty_call_keeps_the_autograd_contract():
     for routing in routings:
         read = torch.empty(1, 0, routing.packed_logit_width, device="cuda", dtype=torch.float32, requires_grad=True)
         write = torch.empty_like(read, requires_grad=True)
-        reads, writes = production_routing_factor_levels(read, write, routing, stored_dtype=torch.bfloat16)
+        reads, writes, _support = production_routing_levels(read, write, routing, stored_dtype=torch.bfloat16)
         for level in range(routing.D):
             assert reads[level].shape == writes[level].shape == (1, 0, routing.branches[level])
             assert reads[level].dtype == writes[level].dtype == torch.bfloat16

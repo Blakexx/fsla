@@ -44,9 +44,9 @@ def _entry(spec, routes):
 
 def run(spec):
     """``(routes, values, num, den)``: one carry launch over the cell, from its bundle and its carve."""
-    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    routes, values, masks, _plan, layout = bundle_of(spec, realize(spec))
     carve = cell_carve(spec)
-    facts = facts_ops.facts(routes, values, layout, *statics)
+    facts = facts_ops.facts(masks, layout)
     num, den = carry_ops.carry(routes, values, facts, carve)[:2]
     torch.cuda.synchronize()
     return routes, values, num, den

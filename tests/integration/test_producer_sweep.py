@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from fsla.ops.produce import activation_walks
 from measure.cells import by_name
 from measure.cells.layer import CONSTRUCTIONS, build
 
@@ -19,8 +20,9 @@ pytestmark = [pytest.mark.cuda,
 
 
 def _write_density(routes) -> float:
-    #: only the SPARSE write levels: a dense level's zeros are values that rounded to zero, not its support (docs/api.md section 2.1)
-    rows = [routes.rows(level, "write") for level in range(routes.topology.D) if routes.sparse[1][level]]
+    #: only the write levels the producer walks by lists (exact zeros): a dense level's zeros are values that rounded to zero
+    walked = activation_walks(routes.topology)[1]
+    rows = [routes.rows(level, "write") for level in range(routes.topology.D) if walked[level]]
     return sum(int((r != 0).sum()) for r in rows) / sum(r.numel() for r in rows)
 
 

@@ -129,7 +129,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     alike. A row that only checked closeness would pass on a stride bug that read the
     wrong columns of a symmetric fixture.
     """
-    from fsla.routing.entmax.production import production_routing_factor_levels
+    from fsla.routing.entmax.production import production_routing_levels
 
     torch.manual_seed(5)
     routing = ResolvedRouting(levels=(
@@ -141,7 +141,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     assert not sides[0].is_contiguous()
 
     def run(read, write):
-        levels = production_routing_factor_levels(read, write, routing)
+        levels = production_routing_levels(read, write, routing)[:2]
         out = sum(level.square().sum() for side in levels for level in side)
         return levels, torch.autograd.grad(out, both, retain_graph=True)[0]
 

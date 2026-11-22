@@ -63,7 +63,7 @@ from tests.integration.test_decode_paging import (
     _fixture,
     _leaf_support,
 )
-from tests.oracle.fixtures import assert_reordered_close, masks_of, reordered_close
+from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of, reordered_close
 
 _SUPPORT = {"sparse": 0.25, "half": 0.5, "all": 1.0}
 
@@ -101,7 +101,7 @@ def _verdict(fixture, config, arena, *, pool=None):
 
 def _would_admit(fixture, config, arena) -> int:
     """What the EXACT preamble would admit, run here and nowhere near the shipped path."""
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
     return int((bitmap & (arena.page_table < 0)).sum())
 
@@ -138,7 +138,7 @@ def test_the_verdict_fires_exactly_when_the_preamble_would_admit(arm, support):
     fixture = _fixture(widths, seed=hash((widths, support)) % 10_000, support=_SUPPORT[support])
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
 
     #: EMPTY: nothing is mapped, so every atom this step writes is new.
     arena = _arena(widths, BC, BH)
@@ -173,7 +173,7 @@ def test_one_absent_atom_is_enough_to_fire(arm):
     fixture = _fixture(widths, seed=907 + len(widths), support=0.5)
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
 
     arena = _arena(widths, BC, BH)
@@ -207,7 +207,7 @@ def test_an_absent_atom_the_step_does_not_write_is_not_growth(arm):
     fixture = _fixture(widths, seed=311 + len(widths), support=0.25)
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
 
     arena = _arena(widths, BC, BH)
@@ -250,7 +250,7 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
     fixture = _fixture(widths, seed=419 + len(widths), support=_SUPPORT[support])
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
 
     arena = _arena(widths, BC, BH)
     fired, workspace = _verdict(fixture, config, arena)
@@ -282,7 +282,7 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
 
 def _hold_out_one_atom_of_one_bh(fixture, config, arena):
     """Admit the whole write set except one atom of ONE batch-head. `(bitmap, bh)`."""
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
@@ -341,7 +341,7 @@ def test_the_admission_and_replay_advance_every_sequence_exactly_once(arm):
     fixture = _fixture(widths, seed=2317, support=0.5)
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
 
     reference = _arena(widths, BC, BH)
@@ -381,7 +381,7 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
     fixture = _fixture(widths, seed=4801 + len(widths), support=0.5)
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
 
     reference = _arena(widths, BC, BH)
@@ -425,7 +425,7 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     fixture = _fixture(widths, seed=4909, support=0.5)
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].live("write")
+    write = live_of(_bundles(fixture)[0], "write")
     bitmap = _write_atom_bitmap(write, config)
     demand = int(bitmap.sum(1).max())
 

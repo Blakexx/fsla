@@ -17,7 +17,7 @@ an atom the table does not map, because it has no table. The host-visible verdic
 not a node: `growth_pending` makes it at the caller's synchronization, and answers `False`
 for a dense state without reading, since a dense step has no residency fact to read back.
 
-**A GROWTH STEP IS NOT A THIRD MASK.** It is `DECODE_STEP` walked twice around an
+**A GROWTH STEP IS NOT A THIRD VARIANT.** It is `DECODE_STEP` walked twice around an
 admission the host performs between the two walks. A variant selects a subgraph; growth
 selects the same one, which is exactly why a CUDA graph captured over the step stays
 valid across an admission and why a replay is self-correcting: the verdict is INSIDE the

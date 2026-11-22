@@ -85,7 +85,7 @@ surprise.
 
 The runner is the whole execution model:
 
-* a node whose mask does not contain the call's VARIANT — the VariantRule's own output,
+* a node whose variants do not contain the call's VARIANT — the VariantRule's own output,
   read as a fact — is SKIPPED, and its facts are
   seeded null — the runtime-null output skip;
 * a node whose facts are already in the bag is skipped, which is how a SUPPLIED fact

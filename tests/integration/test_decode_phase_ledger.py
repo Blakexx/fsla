@@ -6,8 +6,8 @@ import pytest
 import torch
 
 import fsla
-from fsla.engine import PlanOverrides
 from fsla.ops import decode as decode_ops
+from fsla.ops.produce import prefill_plan
 from tests.oracle.fixtures import assert_reordered_close, state_pages
 
 pytestmark = [pytest.mark.cuda,
@@ -18,7 +18,7 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
     """A dense state bound by the layer's own routing and holding a drawn entry state, so a one-token call is a
     decode step without a prefill."""
     with torch.no_grad():
-        routes, _values = layer._produce(x)
+        routes, _values, _masks = layer._produce(x)
         state = fsla.state()
         state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
         entry = 0.1 * torch.randn(routes.batch * routes.heads, layer.topology.N, layer.d_v + 1, device="cuda")
@@ -30,7 +30,8 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     torch.manual_seed(0)
     routing = fsla.Routing([fsla.split_routing(64, sparse_duty="write"), fsla.split_routing(64, sparse_duty="read")])
-    layer = fsla.FSLA(routing, hidden_size=64, num_heads=2, d_v=64, expert=PlanOverrides(paging=False)).cuda().eval()
+    dense = prefill_plan(routing.topology, 64, paging=False)
+    layer = fsla.FSLA(routing, hidden_size=64, num_heads=2, d_v=64, plan=dense).cuda().eval()
     x = torch.randn(1, 1, 64, device="cuda")
     plain_state = _carrying_state(layer, x)
     booked_state = plain_state.clone()

@@ -32,7 +32,7 @@ import torch
 from conftest import build_layer, resolved_routing_from_topology
 
 from fsla import entmax, softmax
-from fsla.routing.entmax.production import production_routing_factor_levels
+from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.projection import packed_router_logits, packed_router_logits_reference
 from fsla.routing.types import IndependentRouting
 
@@ -47,7 +47,7 @@ _BRANCHES = (16, 16)
 
 
 def _support(read_logits, write_logits, routing):
-    reads, writes = production_routing_factor_levels(read_logits, write_logits, routing)
+    reads, writes, _support = production_routing_levels(read_logits, write_logits, routing)
     return [factor > 0 for factor in reads], [factor > 0 for factor in writes]
 
 

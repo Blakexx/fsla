@@ -72,7 +72,7 @@ def _routes(rows, scale):
     union-routed, whose read duty is never on the simplex: the fold reads it as stored."""
     topology = Topology(levels=(UnionRouting(width=rows.shape[-1]),))
     return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device),),
-                                  (scale,), (torch.zeros_like(scale),), sparse=((False,), (False,)))
+                                  (scale,), (torch.zeros_like(scale),))
 
 
 def _y_of(rows, scale, *, seed, s0=0):

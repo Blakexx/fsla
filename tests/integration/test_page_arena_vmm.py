@@ -44,7 +44,7 @@ import torch
 from fsla.ops.decode import _decode_step, _write_atom_bitmap
 from fsla.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
 from tests.integration.test_decode_paging import _ARMS, _bundles, _config, _fixture
-from tests.oracle.fixtures import assert_reordered_close, masks_of
+from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of
 
 pytestmark = [
     pytest.mark.cuda,
@@ -237,7 +237,7 @@ def test_the_two_backings_agree(arm):
     config = _config(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
-    write = routes.live("write")
+    write = live_of(routes, "write")
     bitmap = _write_atom_bitmap(write, config)
 
     outputs = []

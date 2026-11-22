@@ -34,8 +34,8 @@ from conftest import build_layer
 
 import fsla
 from fsla import LayerContinuation
-from fsla.expert import PlanOverrides
 from fsla.interface import BackwardNotImplemented
+from fsla.ops.produce import prefill_plan
 from tests.oracle.fixtures import masks_of, with_gain
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
@@ -75,7 +75,7 @@ def _prime(layer, device, *, prefill=32, paged=True):
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     state = fsla.state()
     with torch.no_grad():
-        routes, _values = layer._produce(x)
+        routes, _values, _masks = layer._produce(x)
         if paged:
             bits = torch.ones(x.shape[0] * _H,
                               routes.topology.N // MMA_K_QUANTUM,
@@ -259,9 +259,10 @@ def test_a_dense_pinned_layer_still_reaches_decode():
     the paged backing proper is P67 S4.
     """
     device = "cuda"
+    declared = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES, layer_idx=0)
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        expert=PlanOverrides(paging=False),
+        plan=prefill_plan(declared.topology, _DV, paging=False),
         layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()

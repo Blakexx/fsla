@@ -1,9 +1,8 @@
 """RED BY PLAN: no facts kernel is built on this line, so every launch here fails by name
 (`fsla.ops._ext.KernelNotBuilt`) until a hopper schedule of the words lands.
 
-The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the levels as the pass words
-them: a sparse level by its nonzero digits, a dense level whole (`_declared`). Against the stored digits the bitmap is
-the write set where every write level is sparse and a superset where a dense digit rounded to zero.
+The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the masks it is handed: a bit where
+the bundle's stored digit is nonzero (`masks_of`, `_declared`). Liveness is the masks', never derived from the rows.
 
 This is the gate the paging work's first stage exists to pass, and it is the one
 that decides the shape of everything after it. Residency is planned from this
@@ -55,6 +54,7 @@ from fsla.ops import facts as facts_ops
 from fsla.ops.naive import _leaf_product, _radix_strides
 from fsla.ops.paging import MMA_K_QUANTUM
 from fsla.routing.factors import RouteFactors
+from fsla.routing.masks import PREFILL
 from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
@@ -63,7 +63,7 @@ from fsla.routing.types import (
     Topology,
 )
 from fsla.values import Values
-from tests.oracle.fixtures import with_gain
+from tests.oracle.fixtures import masks_of, with_gain
 
 pytestmark = [
     pytest.mark.cuda,
@@ -101,39 +101,28 @@ def _simplex(shape, p_nonzero, generator):
     return (x / x.sum(-1, keepdim=True)).to(torch.float32)
 
 
-def _alternating_sparse(D):
-    """The ALTERNATING declaration (docs/api.md section 2.1), ``(read, write)`` sparse flags a level: read-dense on the
-    even levels, write-dense on the odd ones and, at depth one, on the one level -- every side has a dense level."""
-    return (tuple(level % 2 == 1 for level in range(D)), tuple(level % 2 == 0 and D > 1 for level in range(D)))
-
-
-def _bundle(write, sparse=None):
-    """The fixture's write levels in the format (both sides the same levels): the rows the facts pass reads, each
-    side's levels sparse or dense as ``sparse`` declares (default the alternating split). The reference reads the
-    bundle's OWN levels (:func:`_declared`), so a value that rounded to a zero digit is the same on both legs and the
-    comparison is about the derivation, not the rounding."""
+def _bundle(write):
+    """The fixture's write levels in the format (both sides the same levels): the rows the facts pass's masks are drawn
+    from. The reference reads the bundle's OWN levels (:func:`_declared`), so a value that rounded to a zero digit is the
+    same on both legs and the comparison is about the derivation, not the rounding."""
     B, T, H = write[0].shape[:3]
     topology = Topology(levels=tuple(OpaqueRouting(width=level.shape[-1]) for level in write))
     ones = torch.ones((B, T, H), device=write[0].device)
-    sparse = _alternating_sparse(len(write)) if sparse is None else sparse
-    return (RouteFactors.from_levels(topology, write, with_gain(write, ones), sparse=sparse),
+    return (RouteFactors.from_levels(topology, write, with_gain(write, ones)),
             Values.from_projection(torch.ones((B, T, H, 8), device=write[0].device)))
 
 
 def _declared(routes):
-    """The write levels as the pass words them: a sparse level's own values, and a dense level READ WHOLE -- its
-    support is not worded, so every digit of a live row counts (docs/api.md section 2.1)."""
-    levels = routes.dequantized()[1]
-    return tuple(level if sparse else (level.amax(-1, keepdim=True) > 0).expand_as(level).to(level.dtype)
-                 for level, sparse in zip(levels, routes.sparse[1]))
+    """The write levels as the masks word them: the bundle's own stored values, whose nonzero digits are the bits
+    :func:`~tests.oracle.fixtures.masks_of` supplies."""
+    return routes.dequantized()[1]
 
 
 def _kernel_bitmap(routes, values):
     """The written atoms of the facts pass's words, every level voted from its rows."""
     layout = facts_ops.call_layout(routes)
-    statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics).words
-    return planes.written_atoms(lv.page_bits(words, layout, *statics))
+    words = facts_ops.facts(masks_of(routes, PREFILL), layout)
+    return planes.written_atoms(lv.page_bits(words, layout))
 
 
 def _oracle_bitmap(write, widths):
@@ -173,9 +162,8 @@ def test_atom_bitmap_is_exact(arm, support):
 def test_two_token_cross_product_is_excluded():
     """THE ADVERSARIAL CELL: two tokens, disjoint live digits per sparse level.
 
-    Every side keeps a dense level, so the write side's two SPARSE levels are levels 0 and 1 of a depth-three call and
-    level 2 is the dense one (every digit live, so a leaf's atom is its two sparse digits' and the 16 leaves under
-    them). At `B = (64, 64, 16)` leaf `s = d0 * 1024 + d1 * 16 + d2`. Token 0 writes only `(0, 0)` (atom 0); token 1
+    The write side's two SPARSE levels are levels 0 and 1 of a depth-three call and level 2 has every digit live (so a
+    leaf's atom is its two sparse digits' and the 16 leaves under them). At `B = (64, 64, 16)` leaf `s = d0 * 1024 + d1 * 16 + d2`. Token 0 writes only `(0, 0)` (atom 0); token 1
     writes only `(1, 32)` (leaf 1536, atom 96). The exact answer is `{0, 96}`. A derivation that ORs over tokens before
     ANDing over levels also admits `(0, 32)` -> leaf 512 -> atom 32 and `(1, 0)` -> leaf 1024 -> atom 64: leaves that
     were never live at any single token. Those two atoms are named here so the assertion states the trap rather than
@@ -189,7 +177,7 @@ def test_two_token_cross_product_is_excluded():
     write[1][0, 1, 0, 32] = 1.0
     write[2][:] = 1.0 / 16
 
-    bits = _kernel_bitmap(*_bundle(write, sparse=((False, True, False), (True, True, False))))
+    bits = _kernel_bitmap(*_bundle(write))
     live = set(torch.nonzero(bits[0]).flatten().tolist())
     assert live == {0, 96}, f"expected atoms {{0, 96}}, got {sorted(live)}"
     assert 32 not in live and 64 not in live, (
@@ -199,7 +187,7 @@ def test_two_token_cross_product_is_excluded():
 
 
 def test_stats_through_the_host_seam():
-    """The prefill's own path -- the layout and statics the topology declares, the facts pass, the page fold -- on a
+    """The prefill's own path -- the layout the topology declares, the facts pass, the page fold -- on a
     real producer's bundle, whose packed rows are exactly the views a hand-built fixture would not make.
     """
     import sys
@@ -210,11 +198,10 @@ def test_stats_through_the_host_seam():
     layer = build_layer(hidden_size=64, num_heads=_H, widths=(16, 16), routing=alternating_routing(2)).cuda().eval()
     x = torch.randn(_B, _T, 64, device="cuda")
     with torch.no_grad():
-        routes, values = layer._produce(x)
+        routes, values, _masks = layer._produce(x)
     _, write = routes.dequantized()
     layout = facts_ops.call_layout(routes)
-    statics = facts_ops.call_statics(routes, layout)
-    words = facts_ops.facts(routes, values, layout, *statics).words
-    bits = lv.page_bits(words, layout, *statics)
+    words = facts_ops.facts(masks_of(routes, PREFILL), layout)
+    bits = lv.page_bits(words, layout)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(planes.written_atoms(bits), _oracle_bitmap(write, (16, 16)))
