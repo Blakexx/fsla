@@ -6,6 +6,7 @@ outside it is refused naming the facts, as is a call outside it; the launch func
 function's and a forced count replaces it."""
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -149,3 +150,17 @@ def test_a_forced_grid_replaces_the_planned_one_at_every_count_the_device_could_
         planned = _grid({"sm_count": sms}, ceiling=256, bh=64, forced=-1)
         for forced in (1, 2, planned - 1, planned, planned + 1, 4 * sms):
             assert _grid({"sm_count": sms}, ceiling=256, bh=64, forced=forced) == forced
+
+
+def test_the_depth_is_one_number_the_launch_header_and_the_width_facts_agree_on():
+    """Decode's depth is stated by `kDecodeMaxLevels` (the launch header, which sizes the per-level arrays of `DecodeArgs` and, through `decode.cuh`, the kernel's)
+    and by the call's `width_bits_k` facts (which `fsla.ops.produce.decode_descriptor` reads from the planner): adding a fact without raising the constant, or the
+    reverse, fails here; a call of the deepest level plans, one level deeper is outside the contract."""
+    from fsla.ops._ext import extension
+
+    constant = int(re.search(r"kDecodeMaxLevels = (\d+);", (ROOT / "csrc" / "fsla" / "src" / "common" / "plan" / "decode_launch.h").read_text()).group(1))
+    facts = [name for name in extension().fsla_call_facts().split(",") if name.startswith("width_bits_")]
+    assert facts == [f"width_bits_{k}" for k in range(1, constant + 1)]
+    deepest = _lines(_plan(None, f"d_v=64,levels={constant},decay=0"))
+    assert deepest["levels"].startswith(f"widths={','.join(['16'] * constant)} ")
+    assert _plan(None, f"d_v=64,levels={constant + 1},decay=0").returncode == 1

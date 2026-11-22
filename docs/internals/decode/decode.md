@@ -361,11 +361,13 @@ publishes its row at the CTA's exit. The ledger is bound by `fsla_decode_ledger_
 `[ctas][warps][kDecodePhases]` int64 (`warps` the plan's, `DecodePlan<B>::kWarps` at the card's build), a row per CTA; unbound, nothing is written and the
 clock's cost is its reads.
 
-## <a id="max-levels"></a><a id="kmaxlevels-2"></a><a id="kmaxlevels"></a>5. `kMaxLevels` — restated, not included
+## <a id="max-levels"></a><a id="kmaxlevels-2"></a><a id="kmaxlevels"></a>5. `kMaxLevels` — read from the planner's launch header
 
-`1 <= D <= 4`. `decode.cuh` states that bound itself rather than including it from another
-family's header: the spec is the shared authority, and a one-way include would imply a
-dependency on objects decode does not share. The page granule and an owner's shape come from
+`1 <= D <= 4`. The bound has ONE definition, `kDecodeMaxLevels` in the planner's launch header
+(`csrc/fsla/src/common/plan/decode_launch.h`, [`../common/plan/decode_launch.md`](../common/plan/decode_launch.md)), and
+`decode.cuh`'s `kMaxLevels` reads it: the launch function's per-level widths and the kernel's per-level arrays are
+the same size by construction. The contract's width facts (`width_bits_1` .. `width_bits_4`) name the same levels, which
+`tests/unit/test_planner.py` ties to the constant. The page granule and an owner's shape come from
 the box (`fsla/ops/lattice.py`, where the lattice's addressing constants and `box_shape` live),
 so the two families write and read ONE plane in ONE order; what decode adds is a RUNTIME carrier,
 the lattice's fields as scalars under the lattice's own names (§9).
@@ -939,7 +941,7 @@ backings one addressing law rather than two.
 
 PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the descriptor. `N`
 comes from the level widths and must be a whole number of pages, which a lawful routing
-makes it by construction; a ragged `N` is REFUSED at this seam rather than padded, and
+makes it by construction; a width outside the contract (so any ragged `N`) is REFUSED when the descriptor is made, naming the fact, never padded and never checked again at the entry, and
 decode carries no shape, tolerance or topology prefill does not. The dense plane is
 `[BH, N / 16, page_bytes]` — the same page sequence with every page resident.
 
