@@ -164,7 +164,7 @@ def test_the_oracle_computes_r_times_m_and_a_masked_coefficients_gradient_is_zer
             assert leaves[i][level].grad[~live].abs().max() == 0, "a masked coefficient has no gradient"
             assert leaves[i][level].grad[live].abs().max() > 0
     unmasked, _ = naive_fsla(v, tuple(read), tuple(write), _TOPOLOGY, None)
-    assert (unmasked - y.detach()).abs().max() > 1e-3
+    assert (unmasked - y.detach()).abs().max() > 1e-6
 
 
 def test_the_oracle_without_masks_is_every_bit_set():

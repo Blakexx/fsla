@@ -1,7 +1,5 @@
 # `csrc/fsla/src/decode/decode.cuh` + `csrc/fsla/src/decode/decode.cu` — the `T = 1` decode path
 
-**DECAY IS NOT BUILT (owed).** The arms carry a `decay` axis, but decay is a facade on this line: nothing here that describes the decay arm (its clock, dials, share scale, sections 28 and 36) is a built and verified feature; it is the design.
-
 <a id="note-l3"></a>This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the objects both decode translation units share,
 and the `.cu` carries the GEMV kernel, its dispatch and its host entry. The

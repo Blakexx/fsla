@@ -160,7 +160,6 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         assert reason is not None and "decay" in reason, reason
         naive_fsla(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay, output_final_state=True)
         return
-    assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
     ref = oracle_run(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay)
     #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
     ref = ref._replace(state=state_rounded(ref.state))

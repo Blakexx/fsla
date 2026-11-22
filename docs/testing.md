@@ -117,20 +117,7 @@ demonstrate its claimed regime fails rather than passes vacuously. The oracle ti
 along the sequence grows as `sqrt(T)`, so a short fixture under-charges it, and the multi-window cells carry it.
 
 <a id="whole-call-gates"></a>
-THE WHOLE-CALL GATES run on those cells and stay red, cell by cell, until the system under them is ported (ruling
-2026-09-29: a red test is the plan's record of what is unported; base infrastructure is re-pointed at a new seam, never
-deleted with the implementation it exercised): the carry's inter numerator against the fp64 inter term in the
-recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement
-`test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla`
-(`tests/oracle/test_prefill_vs_oracle.py`), and the state's backings bit-identical through a fresh call and a
-continuation (`tests/integration/test_chunk_paging_equivalence.py`, red by plan). Its readouts' bit-identity is an
-assertion a carry cannot meet -- its num differs run to run (its fp32 sums across CTAs reassociate) -- so the test's
-port re-points it to that sum's bound; the state's bit-identity stands. Every one of them is red on this line by the
-ops' named error (`fsla.ops._ext.KernelNotBuilt`): no carry, intra or producer kernel is built. THE TOLERANCES OF THOSE
-KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each
-kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by the same
-name. `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared
-once its clauses are measured and not before.
+THE WHOLE-CALL GATES run on those cells and are OWED until the kernel under them is built: a test that needs a kernel not built on this line carries `@pytest.mark.requires_kernel("carry")` (or `"intra"`, `"prefill"`, `"produce"`) and `tests/conftest.py` makes it a STRICT XFAIL on `fsla.ops._ext.KernelNotBuilt`, the reason naming the kernel. It always runs: the refusal is the expected failure (reported xfailed, counted by kernel in the run's `owed (carry: a, ...)` summary line, never a pass); a pass is a strict XPASS, a failure, so the markers come off in the commit that builds the kernel; any other exception, a refusal naming another kernel included, is a failure. The carry's inter numerator against the fp64 inter term in the recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement `test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla` (`tests/oracle/test_prefill_vs_oracle.py`) and the state's backings bit-identical through a fresh call and a continuation (`tests/integration/test_chunk_paging_equivalence.py`) are owed this way. Operands for a kernel under test come from the reference producer (`tests/conftest.py`'s `reference_produce`, the torch composition), never the producer kernel. THE TOLERANCES OF THOSE KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by name (`fsla.ops._ext.KernelNotBuilt`). `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared once its clauses are measured and not before.
 
 Decode is its own family (`tests/oracle/test_decode_family.py`): the prefill-to-decode hand-off, a 32-step horizon with
 checkpoints ALONG it (a per-step check cannot see cross-call compounding), and frozen density declarations proven
@@ -167,7 +154,7 @@ The same question — do two geometries of one computation agree — asked one f
 | file | the pair it relates |
 |---|---|
 | `test_decode_bc_blindness.py` | one decode step across prefill boxes that differ in `BC` |
-| `test_decode_paging.py`, `test_page_arena_vmm.py`, `test_atom_bitmap.py` | the dense and paged backings, and the backing's own structures |
+| `test_decode_paging.py`, `test_page_arena_vmm.py` | the dense and paged backings, and the backing's own structures |
 | `test_stream_discipline_fixture.py` | the crossing paths (below) |
 
 The census of instantiation axes lives on the binary's side: each family's `arms()` answers out of the running

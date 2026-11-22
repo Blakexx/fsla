@@ -26,6 +26,7 @@ def _write_density(routes) -> float:
     return sum(int((r != 0).sum()) for r in rows) / sum(r.numel() for r in rows)
 
 
+@pytest.mark.requires_kernel("produce")
 def test_the_logit_gain_sweeps_the_realized_density():
     sweep = [c for name, c in CONSTRUCTIONS.items() if name.startswith("producer-sweep-")]
     assert len(sweep) == 4 and [c.logit_gain for c in sweep] == sorted(c.logit_gain for c in sweep), (

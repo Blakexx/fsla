@@ -36,7 +36,7 @@ Per token `t` and leaf `n`:
 `R[t,n] = Π_l q[t,l,d_l(n)]` and `Wt[t,n] = Π_l k[t,l,d_l(n)]` are the per-leaf products of the per-level routing
 levels — each level a nonnegative row over its `B_l` digits, of any magnitude: no level need sum to 1, and a
 producer's write gain is a factor of write level 0 ([`CONSTITUTION.md` R23](CONSTITUTION.md#r23)) — and `d_l(n)` is
-leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials (decay is not built (owed): this is its design); the clock `c`
+leaf `n`'s digit at level `l`. `rate` is the per-leaf decay built the same way out of per-level dials (decode builds it; the prefill does not; outside the first paper's scope); the clock `c`
 is the product of the write levels' SHARES (each level's row over its own sum), detached. There is no query, no key
 and no feature map: the routing IS the addressing.
 

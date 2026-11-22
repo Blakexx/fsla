@@ -35,7 +35,7 @@ fsla_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
 `masks` is the data beside the rows, like attention's mask (§2.6): the op computes with `r * m`.
-`decay` is the recurrence dial and is NOT BUILT (owed, §3): leave it `None`. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
+`decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`. `plan` is the static what-to-do (§5): the plan says
 what to do, never what you are giving, and it changes at most rounding within the oracle's tolerance, never the
 mathematical output -- the data does.
 
@@ -85,7 +85,7 @@ the no-fallback rule forbids.
 | `d_v` | the intra's value width (`fsla.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`fsla.ops.intra.admits`) | refused |
 | `T` | any (a partial last window runs inside the kernels; the layer's segments are whole windows, §4.2) | — |
-| `decay` | not built (owed, §3) | refused |
+| `decay` | decode only (§3); outside the first paper's scope | refused |
 
 No activation reaches the op: it computes on the factors and the masks the producer made and is agnostic to what
 produced them, so there is no row for an activation here. What a producer supports is its own registry
@@ -397,8 +397,8 @@ all-live mask. The rows, scales and values need no conversion: the producer alre
 
 ## 3. The decay-source slot
 
-**NOT BUILT (owed).** Decay is a facade on this line: the source classes below exist as the declared surface, no kernel
-reads a decay, and nothing here is a working feature. What follows is the surface's design.
+**OUTSIDE THE FIRST PAPER'S SCOPE.** Decode builds a decay arm, checked against the oracle (`tests/oracle/test_decode_vs_oracle.py`'s
+decay rows); the prefill has none and refuses a decay (§2). The source classes below are the declared surface.
 
 Where the recurrence's forgetting rates would come from is a CHOICE, and the recurrence could
 not tell the answers apart:

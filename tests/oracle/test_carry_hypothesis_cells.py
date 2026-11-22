@@ -51,6 +51,7 @@ def drawn_cells(draw) -> CarryCell:
 
 @settings(deadline=None, max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(spec=drawn_cells())
+@pytest.mark.requires_kernel("carry")
 def test_the_inter_numerator_is_the_fp64_reference_on_a_drawn_cell(spec):
     """The tier's own comparison over a drawn cell: the same `run` and `check`, per slot against the same envelopes --
     only the cell is drawn, never the assertion."""

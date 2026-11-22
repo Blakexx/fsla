@@ -9,8 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fsla_devtools.build.declare import Graph
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -59,6 +57,8 @@ def test_every_node_declares_the_cells_it_runs_on_and_the_root_takes_no_cell_lis
 
     declared = load(ROOT / "declare.py")
     assert "cells" not in inspect.signature(declared["root"]).parameters
+    from fsla_devtools.build.declare import Graph
+
     g = Graph()
     declared["root"](g, python=sys.executable)
     assert "binary" not in g.targets["fsla/side/oracle"].deps and "binary" not in g.targets["fsla/side/producer"].deps
@@ -78,7 +78,7 @@ def test_a_surface_states_what_it_is_but_chooses_no_comparison():
 
 def test_the_oracle_tier_is_one_target_keyed_on_its_code_and_the_binary_and_stored():
     """The whole pytest tier as a node: a red cell becomes a stored fact, and an unchanged tree is a cache hit."""
-    from fsla_devtools.build.declare import load
+    from fsla_devtools.build.declare import Graph, load
 
     g = Graph()
     load(ROOT / "declare.py")["root"](g, python=sys.executable)

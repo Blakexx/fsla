@@ -12,6 +12,7 @@ import dataclasses
 
 import pytest
 import torch
+from conftest import reference_produce
 
 import fsla
 from fsla.ops.window import window_of
@@ -23,10 +24,10 @@ pytestmark = [pytest.mark.cuda,
 
 WIDTHS = (256, 256)
 
-#: RED BY PLAN (ruled 2026-09-29: no temporary patches): the unported carry reads and writes its own split pages and
-#: refuses the int8 state format by name, so a STATEFUL prefill cannot run until the carry's int8 port.
-_STATEFUL_PREFILL = pytest.mark.xfail(strict=True, raises=Exception,
-                                      reason="the carry refuses the int8 state format until its port")
+#: OWED (`requires_kernel`, `tests/conftest.py`): a call of the layer needs the producer and the prefill, a call of the op the
+#: prefill alone; each is owed while its kernel is not built
+_LAYER_PREFILL = pytest.mark.requires_kernel("produce", "prefill")
+_OP_PREFILL = pytest.mark.requires_kernel("prefill")
 
 
 def _routing() -> fsla.Routing:
@@ -42,7 +43,7 @@ def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> fsla.FSLA:
 def _bundles(tokens: int, heads: int = 2):
     layer = _layer(heads=heads).cuda().eval()
     with torch.no_grad():
-        routes, _values, masks = layer._produce(torch.randn(1, tokens, 64, device="cuda"))
+        routes, _values, masks = reference_produce(layer, torch.randn(1, tokens, 64, device="cuda"))
         values = fsla.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
     return routes, values, masks, layer.prefill_plan
 
@@ -67,6 +68,7 @@ def _cut(bundle, span: slice):
     return type(bundle)(**kw)
 
 
+@_OP_PREFILL
 def test_the_op_matches_the_fp64_oracle_per_slot():
     routes, values, masks, plan = _bundles(2 * window_of())
     with torch.no_grad():
@@ -78,7 +80,7 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
 
 
 @pytest.mark.parametrize("paging", [True, False])
-@_STATEFUL_PREFILL
+@_OP_PREFILL
 def test_segments_carried_through_a_state_are_the_whole_call(paging):
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
     one state are the whole call to fp32 ULPs, in either backing."""
@@ -98,7 +100,7 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
 
 
-@_STATEFUL_PREFILL
+@_LAYER_PREFILL
 def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
@@ -114,7 +116,7 @@ def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     torch.testing.assert_close(segmented, whole, rtol=2 ** -7, atol=float(whole.abs().max()) * 2 ** -7)
 
 
-@_STATEFUL_PREFILL
+@_LAYER_PREFILL
 def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")

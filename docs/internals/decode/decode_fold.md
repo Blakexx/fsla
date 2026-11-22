@@ -73,7 +73,7 @@ rather than a few hundred bytes once per step.
 
 ## <a id="row-sum"></a>4. The decay's row sums
 
-The decay arm (NOT BUILT, owed: decay is a facade on this line, and this section is its design) has a clock that is each leaf's SHARE of the token's write, `prod_l k_l[d_l(s)] / sum_d k_l[d]`
+The decay arm has a clock that is each leaf's SHARE of the token's write, `prod_l k_l[d_l(s)] / sum_d k_l[d]`
 ([`docs/CONSTITUTION.md` R23](../../CONSTITUTION.md#r23)), so a `DECAY` step sums each write level's staged row
 (`sum_staged_rows`: lane `j` of level `l`'s warp accumulates `row[j], row[j+32], ...` in ascending order, then five
 `__shfl_down_sync` steps) and a leaf's clock is its write amplitude times `1 / prod_l sum_l` (`share_scale`; 0 for a

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from conftest import reference_produce
 
 import fsla
 from fsla.ops import decode as decode_ops
@@ -18,7 +19,7 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
     """A dense state bound by the layer's own routing and holding a drawn entry state, so a one-token call is a
     decode step without a prefill."""
     with torch.no_grad():
-        routes, _values, _masks = layer._produce(x)
+        routes, _values, _masks = reference_produce(layer, x)
         state = fsla.state()
         state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
         entry = 0.1 * torch.randn(routes.batch * routes.heads, layer.topology.N, layer.d_v + 1, device="cuda")
@@ -27,6 +28,7 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
     return state
 
 
+@pytest.mark.requires_kernel("produce")
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     torch.manual_seed(0)
     routing = fsla.Routing([fsla.split_routing(64, sparse_duty="write"), fsla.split_routing(64, sparse_duty="read")])

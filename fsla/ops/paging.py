@@ -148,7 +148,7 @@ def _refuse_dtype(state: torch.Tensor) -> None:
         raise ValueError(
             f"a state page is fp32 words split into bf16 planes, so the pack and the "
             f"gather run on float32; got {state.dtype}. Convert AFTER the gather, never "
-            f"before it (docs/internals/common/state_page.md#split)")
+            f"before it (docs/internals/common/state_page.md#geometry)")
 
 
 def _refuse_ragged(state: torch.Tensor) -> None:

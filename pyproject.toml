@@ -83,6 +83,9 @@ ruff_preview_select = ["E3"]
 [tool.pytest.ini_options]
 markers = [
   "cuda: launches a CUDA kernel (deselect with -m 'not cuda')",
+  # A test of a kernel not built on this line (`tests/conftest.py`): a strict xfail on the not-built refusal, its reason
+  # naming the kernel; a pass is a failure ("remove the marker").
+  "requires_kernel(name, ...): the test needs these kernels; owed while they are not built",
   # A LATENCY gate, not a correctness gate: it belongs to the nightly `bench` job
   # and is deselected everywhere else, so a noisy machine can never fail a merge.
   "bench: per-(cell, arm) latency against the committed baseline",

@@ -47,6 +47,7 @@ from dataclasses import fields
 
 import pytest
 import torch
+from conftest import reference_produce
 
 from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from fsla.ops.decode import _decode_step, _write_atom_bitmap
@@ -271,7 +272,7 @@ def _sequence():
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
-        routes, _values, _masks = layer._produce(x[:, :_T])
+        routes, _values, _masks = reference_produce(layer, x[:, :_T])
         config = _config(_WIDTHS)
         bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
@@ -342,7 +343,7 @@ def test_the_captured_step_is_the_eager_step():
     """Same kernels, same order, the same state bytes and `y` to its sums' order -- the capture owes exactly this."""
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
-    routes, _values, _masks = layer._produce(x[:, token])
+    routes, _values, _masks = reference_produce(layer, x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)
@@ -399,7 +400,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     """
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
-    routes, _values, _masks = layer._produce(x[:, token])
+    routes, _values, _masks = reference_produce(layer, x[:, token])
     static, static_v = _static(routes, v[:, token])
     _fill(static, static_v, routes, v[:, token])
     graph, y_graph = _capture(static, static_v, state)
@@ -429,7 +430,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     #: The same pair, eagerly, on its own sequence. `_sequence` is seeded, so the two
     #: states are the same state and the two tokens are the same token.
     layer2, x2, v2, eager_state = _sequence()
-    eager_routes, _values, _masks = layer2._produce(x2[:, token])
+    eager_routes, _values, _masks = reference_produce(layer2, x2[:, token])
     eager_static, eager_static_v = _static(eager_routes, v2[:, token])
     _fill(eager_static, eager_static_v, eager_routes, v2[:, token])
     assert _make_growth(eager_state, eager_static) == (row, column), (
@@ -445,6 +446,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
 
 
 @torch.no_grad()
+@pytest.mark.requires_kernel("produce")
 def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_admission():
     """THE LAYER'S ONE-TOKEN STEP UNDER A GRAPH: `FSLA._step` -- the producer's launch, the gated step, the output
     projection -- captured whole. Two identical sequences take the same warm-up steps and lose the same written atom;
@@ -467,7 +469,7 @@ def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_adm
     with torch.cuda.graph(graph):
         y_graph = layer._step(static_x, state)
     static_x.copy_(x[:, token])
-    row, column = _make_growth(state, layer._produce(x[:, token])[0])
+    row, column = _make_growth(state, reference_produce(layer, x[:, token])[0])
     graph.replay()
     torch.cuda.synchronize()
     assert growth_pending(state), "the fixture's growth token is already resident"
@@ -480,7 +482,7 @@ def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_adm
     layer2, x2, _v2, eager_state = _sequence()
     for _ in range(3):
         layer2._step(x2[:, warm], eager_state)
-    assert _make_growth(eager_state, layer2._produce(x2[:, token])[0]) == (row, column), (
+    assert _make_growth(eager_state, reference_produce(layer2, x2[:, token])[0]) == (row, column), (
         "the two sequences are not the same sequence")
     eager_y, _ = layer2(x2[:, token], continuation=LayerContinuation(state=eager_state))
     torch.cuda.synchronize()

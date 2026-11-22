@@ -8,8 +8,9 @@ has nowhere to hide. ``num`` and ``den`` are compared in the recurrence's units 
 token's reader factor ``r`` out (`fsla.ops.prefill`), so each is multiplied by it (:func:`in_truth`) -- against each
 slot's envelope (the same reference on ``|v|``).
 
-RED BY PLAN: no carry kernel is built on this line, so every launch here fails by name
-(`fsla.ops._ext.KernelNotBuilt`) until a hopper schedule lands; the decomposition test runs no kernel and holds.
+OWED: no carry kernel is built on this line, so each test that launches it is reported owed (`requires_kernel("carry")`,
+`tests/conftest.py`) and runs whole the day the registry (`fsla.ops._ext.LAUNCHES`) says it is built; the decomposition test runs no
+kernel and holds.
 
 Symbols: ``W`` the window (`fsla.ops.window.window_of`, the device's), ``L`` tokens, ``C`` value channels.
 """
@@ -21,7 +22,6 @@ import pytest
 import torch
 
 from fsla.ops import carry as carry_ops
-from fsla.ops import facts as facts_ops
 from fsla.ops.prefill import reader_factor
 from fsla.ops.window import window_of
 from measure.cells import carry_cells, realize
@@ -44,10 +44,8 @@ def _entry(spec, routes):
 
 def run(spec):
     """``(routes, values, num, den)``: one carry launch over the cell, from its bundle and its carve."""
-    routes, values, masks, _plan, layout = bundle_of(spec, realize(spec))
-    carve = cell_carve(spec)
-    facts = facts_ops.facts(masks, layout)
-    num, den = carry_ops.carry(routes, values, facts, carve)[:2]
+    routes, values, _masks, _plan, _layout = bundle_of(spec, realize(spec))
+    num, den = carry_ops.carry(routes, values, cell_carve(spec))[:2]
     torch.cuda.synchronize()
     return routes, values, num, den
 
@@ -81,6 +79,7 @@ def check(spec, routes, values, num, _den):
 
 
 @pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
+@pytest.mark.requires_kernel("carry")
 def test_the_inter_numerator_is_the_fp64_reference(spec):
     """Every token and channel of ``num`` over the whole call, in the recurrence's units, against the inter term's
     numerator: the state before each window read by the window's tokens, nothing within the window."""
@@ -88,6 +87,7 @@ def test_the_inter_numerator_is_the_fp64_reference(spec):
 
 
 @pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
+@pytest.mark.requires_kernel("carry")
 def test_the_inter_denominator_is_the_fp64_reference(spec):
     """Every token's ``den`` over the whole call, in the recurrence's units, against the inter term's denominator."""
     routes, values, _num, den = run(spec)
@@ -95,6 +95,7 @@ def test_the_inter_denominator_is_the_fp64_reference(spec):
     assert_slots_close(in_truth(den, routes), den_ref, output=CARRY_DEN, envelope=den_ref, what=f"{spec.name} den")
 
 
+@pytest.mark.requires_kernel("carry")
 def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     """THE RULE HAS TEETH on the carry's numerator: on a real cell the kernel's output passes, and a wiped median slot
     and the smallest slots moved past their allowance fail."""

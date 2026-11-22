@@ -134,9 +134,12 @@ def test_a_strided_view_folds_by_address():
 # ---------------------------------------------------------------------------
 
 def test_more_than_one_token_is_refused():
+    """The decode layout holds one token, so the step's masks of a two-token bundle cannot be made: the mask packer
+    (`fsla.routing.masks.pack_digits`) refuses first, by that sentence; the step's own `takes one token` clause sits behind it
+    (`_decode_step`), reached only by routes of one token."""
     rows, scale = _read_rows(2, 2, 16, seed=5)
     two = quant.aligned_rows(2, 2, 2, 16, rows.device, rows.dtype).copy_(rows.repeat(1, 2, 1, 1))
-    with pytest.raises(ValueError, match="takes one token"):
+    with pytest.raises(ValueError, match="holds one token"):
         _y_of(two, scale.repeat(1, 2, 1), seed=5)
 
 

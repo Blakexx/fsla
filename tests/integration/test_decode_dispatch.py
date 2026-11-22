@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import build_layer
+from conftest import build_layer, reference_produce
 
 import fsla
 from fsla import LayerContinuation
@@ -43,6 +43,8 @@ from tests.oracle.fixtures import masks_of, with_gain
 #: topology, and ran fine on the narrower fixture); the fixture is shaped by the arm
 #: the contrast rows need, not by the arm under test.
 _HIDDEN, _H, _DV, _BRANCHES = 128, 2, 64, (16, 16)
+#: a call of the layer with no gradient in sight runs the producer kernel, so such a test is owed until it is built
+_PRODUCE = pytest.mark.requires_kernel("produce")
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the decode fork is a CUDA kernel")
 
 #: Old `decay="none"`/`"leaf_mass"` -> the two shipped decay SOURCES `build_layer`
@@ -75,7 +77,7 @@ def _prime(layer, device, *, prefill=32, paged=True):
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     state = fsla.state()
     with torch.no_grad():
-        routes, _values, _masks = layer._produce(x)
+        routes, _values, _masks = reference_produce(layer, x)
         if paged:
             bits = torch.ones(x.shape[0] * _H,
                               routes.topology.N // MMA_K_QUANTUM,
@@ -135,14 +137,14 @@ _REFUSALS = {
         (False, True, True, 1, True, "refuses-grad"),
         (False, True, False, 1, True, "refuses-grad"),
         # eval mode, no grad: the fork's own predicate decides
-        (False, False, False, 1, True, "decode"),
+        pytest.param(False, False, False, 1, True, "decode", marks=_PRODUCE),
         # ... and the PREFILL rows it is being distinguished from: every one of
         # them is the envelope's refusal at this width, and what separates the first
         # from the `decode` row above it is STILL the carried state alone -- the
         # dispatch reads the predicate before either arm speaks.
-        (False, False, False, 1, False, "refuses-envelope"),
-        (False, False, False, 32, True, "refuses-envelope"),
-        (False, False, False, 64, True, "refuses-envelope"),
+        pytest.param(False, False, False, 1, False, "refuses-envelope", marks=_PRODUCE),
+        pytest.param(False, False, False, 32, True, "refuses-envelope", marks=_PRODUCE),
+        pytest.param(False, False, False, 64, True, "refuses-envelope", marks=_PRODUCE),
     ],
 )
 def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expected):
@@ -172,6 +174,7 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
 
 @pytest.mark.cuda
 @_CUDA
+@_PRODUCE
 def test_a_continuation_round_trips_across_two_decode_steps():
     """K45: `LayerContinuation` is the container both directions of a chained call
     take -- what a forward RETURNS is exactly what the next forward ACCEPTS, and a
@@ -246,6 +249,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 
 @pytest.mark.cuda
 @_CUDA
+@_PRODUCE
 def test_a_dense_pinned_layer_still_reaches_decode():
     """REPOINTED: paging is not a layer configuration any more.
 
@@ -284,6 +288,7 @@ def test_a_dense_pinned_layer_still_reaches_decode():
 
 @pytest.mark.cuda
 @_CUDA
+@_PRODUCE
 def test_a_decay_step_runs_on_decode_which_has_the_arm():
     """The state is primed by a NON-decay layer of the same shape, because a decay
     prefill has no arm to run on: the state carries a sequence, not a configuration."""
@@ -298,6 +303,7 @@ def test_a_decay_step_runs_on_decode_which_has_the_arm():
 @pytest.mark.cuda
 @_CUDA
 @pytest.mark.parametrize("L,carried", [(1, False), (2, True), (16, True)])
+@_PRODUCE
 def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     """Every decay-configured prefill-shaped row refuses by naming DECAY (the decay
     retirement), the envelope's first clause, and it must speak BEFORE a kernel."""

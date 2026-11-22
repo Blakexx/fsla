@@ -53,6 +53,7 @@ def oracle(routes, values, entry=None):
 
 
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)
+@pytest.mark.requires_kernel("prefill")
 def test_the_op_matches_the_fp64_oracle(spec):
     """``y`` of a stateless call, every token and channel, against the recurrence's readout and its envelope."""
     routes, values, masks, plan = operands(spec)
@@ -63,6 +64,7 @@ def test_the_op_matches_the_fp64_oracle(spec):
 
 
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)
+@pytest.mark.requires_kernel("prefill")
 def test_the_op_hands_back_the_fp64_state(spec):
     """A stateful call binds the state and hands back the recurrence's final state, leaf by leaf in canonical order
     (`FSLAState.materialize`), against the oracle's and its envelope."""
@@ -74,6 +76,7 @@ def test_the_op_hands_back_the_fp64_state(spec):
                        what=f"{spec.name} state")
 
 
+@pytest.mark.requires_kernel("prefill")
 def test_a_chained_call_equals_one_long_call():
     """THE STATE IS THE WHOLE CONTRACT of a chunked prefill: two calls over the halves, one state between them, give
     the long call's readout and final state, each against the oracle's one long run."""
@@ -89,6 +92,7 @@ def test_a_chained_call_equals_one_long_call():
                        what="chained state")
 
 
+@pytest.mark.requires_kernel("prefill")
 def test_the_per_slot_rule_fails_what_a_global_max_passes():
     """The rule the cells are graded in can fail (docs/testing.md): a small slot moved by a hundredth of the readout's
     largest magnitude passes a global max-relative test at 2% and fails per slot."""
@@ -102,6 +106,7 @@ def test_the_per_slot_rule_fails_what_a_global_max_passes():
         assert_slots_close(planted, want.y, output=PREFILL_READOUT, envelope=want.y_envelope, what="planted")
 
 
+@pytest.mark.requires_kernel("prefill")
 def test_the_intra_term_is_actually_present():
     """NON-VACUITY: the inter term alone fails the op's gate on a multi-window cell, so a call that dropped the intra
     (or the carry) could not pass. Runs no kernel."""

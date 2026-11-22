@@ -1112,18 +1112,6 @@
    "count": 1
   },
   {
-   "path": "tests/oracle/test_atom_bitmap.py",
-   "message": "names the work code 'D2-b'",
-   "line_sha256": "ae4a90aeac52c9bf",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_atom_bitmap.py",
-   "message": "names the work code 'P67'",
-   "line_sha256": "ae4a90aeac52c9bf",
-   "count": 1
-  },
-  {
    "path": "tests/oracle/test_decode_family.py",
    "message": "names the work code 'G6'",
    "line_sha256": "dca3a370a7f2a3b6",

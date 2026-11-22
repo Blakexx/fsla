@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from fsla.engine import BackwardNotImplemented, rules
 from fsla.engine.facts.operands import operands_of, requires_backward
+from fsla.ops._ext import KernelNotBuilt
 
 if TYPE_CHECKING:
     from fsla.routing.factors import RouteFactors
@@ -73,7 +74,8 @@ def require_envelope(routes: RouteFactors, values: Values, decay: Any = None,
             "a FSLA PREFILL carrying a gradient: the prefill has no reverse pass until the native backward is "
             "rebuilt, and running it would sever the graph silently. Run under torch.no_grad(), freeze the "
             "operands, or train through the fp64 oracle (fsla.ops.naive.naive_fsla).")
-    raise NotImplementedError(
-        f"fsla_op runs the BUILT envelope only and there is no kernel for this call: "
+    raise KernelNotBuilt(
+        f"the prefill kernel is not built on this line: fsla_op runs the BUILT envelope only and there is no kernel "
+        f"for this call: "
         f"{envelope_refusal(routes, values, decay, stateful=state is not None)}. Nothing else is reachable through "
         "this surface (docs/api.md §1).")

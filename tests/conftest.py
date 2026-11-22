@@ -1,6 +1,7 @@
 import inspect
 import os
 import pathlib
+import re
 import sys
 from unittest.mock import patch
 
@@ -54,6 +55,60 @@ device_torch_lib = torch.cuda
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
+
+
+def reference_produce(layer, x, plan=None):
+    """THE REFERENCE PRODUCER: ``(routes, values, masks)`` of a layer's producer by the torch composition
+    (`fsla.ops.produce._composition`, the fp64, host and gradient path), never the CUDA produce kernel. The masks come
+    in the layout of the consumer the plan names, so ``layer.step_plan`` is decode's. A test that makes operands for
+    a kernel it tests takes them from here; a test of the producer calls `layer._produce`."""
+    from fsla.ops.produce import _composition
+
+    return _composition(x, layer.plan if plan is None else plan, layer._weights(x))
+
+
+def _kernels_of(item) -> list[str]:
+    mark = item.get_closest_marker("requires_kernel")
+    return [] if mark is None else list(mark.args)
+
+
+def pytest_collection_modifyitems(items):
+    """`@pytest.mark.requires_kernel("carry", ...)`: the test needs kernels not built on this line, and is a STRICT XFAIL
+    on the not-built refusal (`fsla.ops._ext.KernelNotBuilt`), its reason naming the kernels: the refusal is the expected
+    failure, a pass is a failure (XPASS strict: the kernel is built, remove the marker), and any other exception is a
+    failure (:func:`_refusal_names_the_kernel` holds the refusal to the marker's own kernels)."""
+    from fsla.ops._ext import KernelNotBuilt
+
+    for item in items:
+        kernels = _kernels_of(item)
+        if kernels:
+            item.add_marker(pytest.mark.xfail(strict=True, raises=KernelNotBuilt,
+                                              reason=f"{', '.join(kernels)} not built"))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """A refusal that names a kernel other than the marker's is not the expected one: it becomes a failure."""
+    outcome = yield
+    kernels = _kernels_of(pyfuncitem)
+    refusal = outcome.excinfo[1] if outcome.excinfo else None
+    if kernels and refusal is not None:
+        from fsla.ops._ext import KernelNotBuilt
+
+        if isinstance(refusal, KernelNotBuilt) and not any(re.search(rf"\b{re.escape(k)}\b", str(refusal)) for k in kernels):
+            outcome.force_exception(AssertionError(f"the refusal names none of {kernels}: {refusal}"))
+
+
+def pytest_terminal_summary(terminalreporter):
+    """The strict xfails of `requires_kernel` counted by kernel: `owed (carry: a, produce: b)`."""
+    owed: dict[str, int] = {}
+    for report in terminalreporter.stats.get("xfailed", []):
+        reason = getattr(report, "wasxfail", "")
+        if reason.endswith(" not built"):
+            for kernel in reason[: -len(" not built")].split(", "):
+                owed[kernel] = owed.get(kernel, 0) + 1
+    if owed:
+        terminalreporter.write_sep("-", "owed (" + ", ".join(f"{k}: {n}" for k, n in sorted(owed.items())) + ")")
 
 
 def pytest_addoption(parser):

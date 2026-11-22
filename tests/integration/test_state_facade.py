@@ -19,7 +19,7 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from conftest import alternating_routing, build_layer  # noqa: E402
+from conftest import alternating_routing, build_layer, reference_produce  # noqa: E402
 
 import fsla  # noqa: E402
 
@@ -36,7 +36,7 @@ def _producer(seed=0, widths=_WIDTHS):
     torch.manual_seed(seed)
     layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, widths=widths, d_v=_DV,
                         routing=alternating_routing(len(widths))).cuda().eval()
-    return lambda x: layer._produce(x)[0]
+    return lambda x: reference_produce(layer, x)[0]
 
 
 def _inputs(seed=0, T=_T, B=2):

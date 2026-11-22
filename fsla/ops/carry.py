@@ -33,7 +33,7 @@ def same_split(carve: Carve) -> int:
                      f"{sorted(read_rows)}: no hand-off form carries them")
 
 
-def carry(launch, facts, *args, **kwargs):
+def carry(launch, *args, **kwargs):
     """THE LAUNCH: not built on this line (:func:`fsla.ops._ext.not_built`)."""
     not_built("carry")
 

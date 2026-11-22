@@ -47,6 +47,7 @@ def calls(spec, parts, paging=None):
 
 
 @pytest.mark.parametrize("name", CELLS)
+@pytest.mark.requires_kernel("prefill")
 def test_the_paged_backing_is_bit_identical_to_the_dense_one(name):
     spec = by_name(name)
     (y_paged,), paged = calls(spec, [slice(None)])
@@ -57,6 +58,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(name):
 
 
 @pytest.mark.parametrize("name", ("flagship-alt-k4-L4096", "flagship-cohort-k4-L4096"))
+@pytest.mark.requires_kernel("prefill")
 def test_a_continuation_is_bit_identical_across_the_two_backings(name):
     """The cell run as two calls through one state, once paged and once dense: the same readouts and the same
     state."""
@@ -69,12 +71,14 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(name):
     assert torch.equal(paged.materialize(), dense.materialize())
 
 
+@pytest.mark.requires_kernel("prefill")
 def test_a_stateless_call_carries_no_state():
     """The predicate is "a state was passed": a stateless call hands back ``None``."""
     _y, state = run(operands(by_name("flagship-alt-k4")), None)
     assert state is None
 
 
+@pytest.mark.requires_kernel("prefill")
 def test_an_idle_resident_page_is_neither_loaded_nor_stored():
     """The second call's writes reach a strict subset of the leaves the first call's wrote: every leaf outside that
     subset is bit for bit what the first call left, on both backings. A cohort draw (tokens of a cohort share their

@@ -77,16 +77,4 @@ __device__ __forceinline__ uint2 pack_lo8(const int (&m)[8]) {
                     pack_byte4(m[4], m[5], m[6], m[7], 0x0040u));
 }
 
-//: THE UNPORTED CARRY'S PAGE, split bf16 planes; the carry port deletes it. -- see docs/internals/common/state_page.md#split
-template <int DV>
-struct SplitBlocks {
-  static constexpr int kRows = 16;
-  static constexpr int kPairs = kRows * DV / 2;
-  static constexpr uint32_t kLo = (uint32_t)(kRows * DV * 2);
-  static constexpr uint32_t kMassHi = (uint32_t)(2 * kRows * DV * 2);
-  static constexpr uint32_t kMassLo = kMassHi + (uint32_t)(kRows * 2);
-  static constexpr uint32_t kBytes = kMassLo + (uint32_t)(kRows * 2);
-  static_assert(DV % 2 == 0, "a 32-bit access carries a PAIR of value columns");
-};
-
 }  // namespace fsla::state_page

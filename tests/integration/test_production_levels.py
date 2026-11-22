@@ -713,6 +713,7 @@ def _flat64(logits: torch.Tensor) -> torch.Tensor:
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
+@pytest.mark.requires_kernel("produce")
 def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, capsys):
     """`produce_routing` end to end: the shipped path against a wholly fp64 one.
 
