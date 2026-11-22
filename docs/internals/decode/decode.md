@@ -941,7 +941,7 @@ backings one addressing law rather than two.
 
 PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the descriptor. `N`
 comes from the level widths and must be a whole number of pages, which a lawful routing
-makes it by construction; a width outside the contract (so any ragged `N`) is REFUSED when the descriptor is made, naming the fact, never padded and never checked again at the entry, and
+makes it by construction; a width outside the contract (so any ragged `N`) is REFUSED when the descriptor is made, naming the fact, and again by the entry, which runs the contract's check on the descriptor's words it is handed; it is never padded, and
 decode carries no shape, tolerance or topology prefill does not. The dense plane is
 `[BH, N / 16, page_bytes]` — the same page sequence with every page resident.
 
