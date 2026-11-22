@@ -23,7 +23,7 @@ if ! command -v bazel >/dev/null 2>&1; then
 fi
 
 #: the changes not staged for the commit, set aside for the run; a failure to put them back names where they are
-patch="$(git rev-parse --path-format=absolute --git-common-dir)/rola-gate-unstaged.$$.patch"
+patch="$(git rev-parse --path-format=absolute --git-common-dir)/fsla-gate-unstaged.$$.patch"
 git diff --binary --no-color --no-ext-diff --ignore-submodules >"$patch"
 log="$(mktemp)"
 restore() {

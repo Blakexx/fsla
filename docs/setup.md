@@ -17,15 +17,15 @@ a box with no host of its own to set up, which runs the host's same loop.
 Everything this tree needs from a machine -- the CUDA toolkit, Nsight Compute,
 the host's compile slots, the lock files, the SM
 clock, the measurements store and the worktrees folder -- is one
-directory of JSON files, the dev config (`~/.config/rola/`,
+directory of JSON files, the dev config (`~/.config/fsla/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
 machine up and checks it (`docs/internals/tools/dev.md`):
 
 Every setup command is a `bazel run` target but one: `python3 tools/bootstrap.py`, by the machine's own python3,
 installs the pinned bazelisk and links `bazel` to it, since nothing can `bazel run` before `bazel` exists. The bootstrap and the
-graph's front door import the dev config's reader (`rola_devtools.config`, which also holds the machine's locks) from
-the rola-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
-targets run on the graph environment's interpreter, which carries rola-devtools from its module (`MODULE.bazel`'s pin, or
+graph's front door import the dev config's reader (`fsla_devtools.config`, which also holds the machine's locks) from
+the fsla-devtools checkout beside this tree, where `workspace.devtools` points by default: clone it there first. The
+targets run on the graph environment's interpreter, which carries fsla-devtools from its module (`MODULE.bazel`'s pin, or
 the checkout the front door overrides it with). A
 fresh machine runs on the reader's defaults until `init` writes its config.
 
@@ -70,7 +70,7 @@ tracked action hooks from any session, rooted by `workspace.hook_roots` in the d
 
 The devbox image (`//:image`) is a graph target and a thin wrapper around the bootstrap: what a host supplies itself
 before the graph, and nothing the graph or the bootstrap installs. rules_oci writes it as files in the standard image
-format, so Docker only runs it; `bazel run //:image_load` hands it to Docker as `rola-devbox:latest`. Its base is
+format, so Docker only runs it; `bazel run //:image_load` hands it to Docker as `fsla-devbox:latest`. Its base is
 `buildpack-deps:jammy` by digest (MODULE.bazel's `devbox_base`: a Docker Official Image, Ubuntu 22.04 with git, gcc,
 python3 and curl); on it, the OS packages the base lacks (vim, less, jq, fd, ctags, graphviz, sqlite3, clang-query),
 pinned: rules_distroless resolves them against Ubuntu's archive snapshot of the base image's day, its indexes' digests
@@ -90,8 +90,8 @@ new digest (KERNEL_STANDARDS §23 (3)). A commit that leaves the image alone nee
 a container) does not have.
 
 **Published:** after a green check that renames it, `bazel run //:image_push` publishes the image to Docker Hub as
-`blakeresearch/rola-devbox:<the digest's first 12 digits>`, public like the namespace's other images. A rented box
-starts from `blakeresearch/rola-devbox@<the digest tools/devbox_image.json names>` and runs the loop inside (§3).
+`blakeresearch/fsla-devbox:<the digest's first 12 digits>`, public like the namespace's other images. A rented box
+starts from `blakeresearch/fsla-devbox@<the digest tools/devbox_image.json names>` and runs the loop inside (§3).
 
 ## 3. Prove it, then open it
 
@@ -100,19 +100,19 @@ bazel run //:container_check
 ```
 
 is the clean room: the host's own loop, step by step, in the image on fresh volumes of its own, each step timed. The
-container clones the checkouts from their git directories, mounted read-only: rola-devtools, rola-results and
-rola-bench at their commits, and this checkout at its commit with its staged change applied, so its tree is the commit
+container clones the checkouts from their git directories, mounted read-only: fsla-devtools, fsla-results and
+fsla-bench at their commits, and this checkout at its commit with its staged change applied, so its tree is the commit
 as git will write it. Inside it then runs `python3 tools/bootstrap.py`, `bazel run //:init`, `bazel run //:dev_env`,
 `bazel run //:check` (init's own check runs before the checkout's venv exists, so its gate row is red by design; this
 one is the verdict) and the commit gate; then the GPU and a call through torch's flash backend, a lock the HOST holds
 seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum), and an iteration build of
 the library for the device's architecture, imported. The result, each step's time and the cold start (the clone, the
-bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `rola_results` at
+bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `fsla_results` at
 `environment` under the image's digest. A green
 run's volumes go with it; a red run's stay for a look until the next run.
 
 **What a container shares with the host:** the host's lock directory (`host.lock_dir`, the GPU lock inside it), at
-the one lock path every machine's config defaults to (`/tmp/rola-locks`), so the container's own default config names
+the one lock path every machine's config defaults to (`/tmp/fsla-locks`), so the container's own default config names
 the host's locks with nothing to detect, and under
 WSL the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only: the image's loader path starts at
 `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to initialize inside the container with
@@ -123,13 +123,13 @@ container's checkouts, tools, caches and environment are its own, a second copy 
 **VS Code / Claude Code:** "Reopen in Container". `.devcontainer/devcontainer.json` runs `bazel run
 //:container_compose` as its `initializeCommand`, which hands the image to Docker and writes
 `.devcontainer/compose.local.yaml` (never committed): the image's tag, the devbox's volumes and the mounts above. The
-`rola` service of `.devcontainer/compose.yaml` then runs on the devbox's own volumes, once a machine: `rola-devbox-home`
-at `/root` (the pinned tools, Bazel's caches, the environment store) and `rola-devbox-work` at `/workspace` (the
-checkouts). Inside, clone the checkouts into `/workspace` (rola beside rola-devtools, rola-results and rola-bench, where
-the reader's defaults look), then run the host's loop in `/workspace/rola`.
+`fsla` service of `.devcontainer/compose.yaml` then runs on the devbox's own volumes, once a machine: `fsla-devbox-home`
+at `/root` (the pinned tools, Bazel's caches, the environment store) and `fsla-devbox-work` at `/workspace` (the
+checkouts). Inside, clone the checkouts into `/workspace` (fsla beside fsla-devtools, fsla-results and fsla-bench, where
+the reader's defaults look), then run the host's loop in `/workspace/fsla`.
 
 **Without an editor:** `bazel run //:container_compose`, then
-`docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm rola bash`.
+`docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm fsla bash`.
 
 Inside, the SM clock is not locked: the lock is a host act (`bazel run //:clock`), and rows measured in the container
 record `clock_locked = false`.
@@ -142,7 +142,7 @@ the host link with the byte-identical binary and no machine installs one.
 
 ## 3c. The checkout's venv: many worktrees on one environment
 
-Each checkout needs its OWN `rola` (its own library, matching its own commit), but installing the whole
+Each checkout needs its OWN `fsla` (its own library, matching its own commit), but installing the whole
 `requirements.lock` for every worktree is minutes of identical bytes. The graph builds the environment once into the
 shared store, keyed by the lock (docs/build-graph.md#environment), and `bazel run //:dev_env` writes each checkout a
 venv over it, `venv-<checkout>` beside the checkout ([`internals/tools/dev.md`](internals/tools/dev.md)). It holds the
@@ -151,19 +151,19 @@ invariants that make it safe:
 - **It is the environment's interpreter**: the venv is made on the store's Python, so the packages it names are the
   ones that interpreter's ABI built.
 - **The `.pth` order puts the checkout first**: `site.py` reads `.pth` files in filename order, so the checkout's
-  `rola` and the co-developed sibling checkouts resolve before the environment's copy of anything with the same name.
+  `fsla` and the co-developed sibling checkouts resolve before the environment's copy of anything with the same name.
 - **Nothing is installed into it**: its packages are the environment's, and its bin carries the environment's
   commands, so an activated venv has `ruff`, `pytest` and the rest; the checkout's library is the one
   `bazel run //:library` copies into it.
 
 `bazel run //:worktree -- <name> <sha>` adds the worktree and runs both targets in it. It verifies from inside the
 new worktree: `python -c` puts its own working directory first on `sys.path`, so a check launched from another worktree
-imports that worktree's `rola`.
+imports that worktree's `fsla`.
 
 ## 4. First build of the SHIPPED set
 
 ```bash
-bazel run //:library         # every built architecture, every arm: the shipped build, into rola_cu13/
+bazel run //:library         # every built architecture, every arm: the shipped build, into fsla_cu13/
 bazel run //:ratify -- --census    # its registers and spills, read from the build's own compiles
 ```
 
@@ -187,10 +187,10 @@ measured 2026-08-06).
 ## 6. Measure this checkout
 
 ```bash
-bazel run //:measure -- run declare.py:all --only 'rola/phases' --only 'rola/sass'
+bazel run //:measure -- run declare.py:all --only 'fsla/phases' --only 'fsla/sass'
 ```
 
-rola-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library
+fsla-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library
 (`bazel run //:library`), SASS, and a timing
 session of the carry arms on the cell under the GPU and clock locks, each result stored. A timing entry this binary
 cannot run is recorded as that entry's failure in the session's output, not skipped — which is the check this step
@@ -220,4 +220,4 @@ that graphviz's `dot` from PATH.
 | `universal-ctags` | the image's package layer; a host's own | cross-referencing the `csrc/` tree |
 | `jq`, `fd` (via `fd-find`) | the image's package layer; a host's own | the shell one-liners this repo's own docs use |
 | `clang-tools-14` (clang-query) | the image's package layer; a host's own | AST queries the lints and an author use; clang-tidy is the graph's pinned one (`@clang_tidy`), run by the unit lints |
-| Python 3.11.13, `requirements.lock` | the graph's environment (`@rola_env`, the lock generated by `uv pip compile`, see `requirements.in`'s header), each checkout's venv over it (`bazel run //:dev_env`) | the tree's one Python environment, the tests' `pytest-timeout` and `hypothesis` among it |
+| Python 3.11.13, `requirements.lock` | the graph's environment (`@fsla_env`, the lock generated by `uv pip compile`, see `requirements.in`'s header), each checkout's venv over it (`bazel run //:dev_env`) | the tree's one Python environment, the tests' `pytest-timeout` and `hypothesis` among it |

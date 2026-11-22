@@ -1,0 +1,184 @@
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+
+"""Access to the compiled CUDA extension. **This module imports; it does not build.**
+
+That sentence is the whole point of the extraction. In the fork this file called
+``torch.utils.cpp_extension.load(...)`` at first use, which meant the binary a user
+ran was compiled by *their* toolchain, from source, at import time — the exact
+thing the closed-world codegen policy exists to forbid. The register and spill
+counts in ``tools/manifests/`` describe a binary that was *measured*; a JIT build
+produces a different binary every time the environment moves, and no manifest can
+speak for it.
+
+So the extension is built ahead of time by the build graph (``bazel run //:library``,
+which runs the binary gates on what it links; the wheels package that library) and is
+merely *imported* here. No build-environment knob lives in this file: a build's
+parameters are the graph's settings, where a build's environment belongs.
+
+There is deliberately **no pure-torch fallback**. ``fsla.ops.naive`` is an fp64
+oracle, not a fast path: silently routing to it when the wheel is missing would
+turn an installation problem into a ~100x slowdown that no test would catch.
+The import failure is loud and names the remedy instead.
+"""
+
+from __future__ import annotations
+
+import importlib
+from functools import lru_cache
+
+from fsla import __version__
+
+#: THE BINARY PLUGIN (wheel naming D, docs/build.md#wheels): `fsla` is pure Python and the build of each toolchain is
+#: its own distribution, `fsla-cu13`, whose package holds the extension and its build record. A
+#: checkout's in-place build lays out the same package, so an installed wheel and a checkout take this one import.
+PLUGIN, EXTRA = "fsla_cu13", "cu13"
+
+
+def _load():
+    """The extension module and None, or None and why not. The plugin's build record is read BEFORE its library
+    loads: a binary built for another `fsla` never registers its operators in this process."""
+    try:
+        built = importlib.import_module(f"{PLUGIN}._build_config").BUILD_CONFIG
+    except ImportError as e:
+        return None, f"no `{PLUGIN}` binary plugin is installed ({e})"
+    if built["version"] != __version__:
+        return None, (f"`{PLUGIN}` {built['version']} is not this `fsla` ({__version__}); the two are one version, "
+                      f"installed together")
+    try:
+        return importlib.import_module(f"{PLUGIN}._C"), None  # loading the library registers torch.ops.fsla
+    except ImportError as e:
+        return None, f"`{PLUGIN}`'s extension did not load ({e})"
+
+
+_C, _WHY = _load()
+
+
+class FSLAVmmOwner:
+    """The CUDA-driver VMM backing of a page arena (``csrc/fsla/src/paging/vmm_owner.cuh``), held by the extension under
+    an integer handle: the operators take the handle, and this object is the handle's Python face. Releasing it drops
+    the extension's reference; a tensor view of the arena keeps the owner alive past that."""
+
+    backing_kind = "cuda_driver_vmm"
+    _FACTS = ("closed", "mapped_capacity_pages", "dense_limit_pages", "committed_bytes", "virtual_bytes",
+              "allocation_granularity", "chunk_pages")
+
+    def __init__(self, ops, handle: int) -> None:
+        self._ops, self._handle = ops, handle
+
+    def _facts(self) -> dict:
+        return dict(zip(self._FACTS, self._ops.vmm_facts(self._handle), strict=True))
+
+    def base(self):
+        return self._ops.vmm_base(self._handle)
+
+    def grow(self, required_pages: int) -> None:
+        self._ops.vmm_grow(self._handle, required_pages)
+
+    def rollback_to(self, mapped_capacity_pages: int) -> None:
+        self._ops.vmm_rollback_to(self._handle, mapped_capacity_pages)
+
+    def reset(self) -> None:
+        self._ops.vmm_reset(self._handle)
+
+    def close(self) -> None:
+        self._ops.vmm_close(self._handle)
+
+    def __del__(self) -> None:
+        handle, self._handle = getattr(self, "_handle", None), None
+        if handle is not None:
+            self._ops.vmm_release(handle)
+
+    closed = property(lambda self: bool(self._facts()["closed"]))
+    mapped_capacity_pages = property(lambda self: self._facts()["mapped_capacity_pages"])
+    dense_limit_pages = property(lambda self: self._facts()["dense_limit_pages"])
+    committed_bytes = property(lambda self: self._facts()["committed_bytes"])
+    virtual_bytes = property(lambda self: self._facts()["virtual_bytes"])
+    allocation_granularity = property(lambda self: self._facts()["allocation_granularity"])
+    chunk_pages = property(lambda self: self._facts()["chunk_pages"])
+
+
+class _Extension:
+    """fsla's operators (``torch.ops.fsla``) under the names the package calls them by, and the VMM owner's handle as an
+    object."""
+
+    def __init__(self, ops) -> None:
+        self._ops = ops
+
+    def __getattr__(self, name: str):
+        return getattr(self._ops, name)
+
+    def fsla_vmm_probe(self, device: int) -> dict:
+        found_device, supported, granularity, reason = self._ops.vmm_probe(device)
+        return {"device": found_device, "supported": supported, "allocation_granularity": granularity,
+                "reason": reason}
+
+    def fsla_vmm_create(self, device: int, dense_limit_pages: int, page_rows: int, page_cols: int,
+                        target_chunk_bytes: int = 64 * 1024 * 1024) -> FSLAVmmOwner:
+        return FSLAVmmOwner(self._ops, self._ops.vmm_create(device, dense_limit_pages, page_rows, page_cols,
+                                                            target_chunk_bytes))
+
+
+_fsla_cuda: _Extension | None = None
+if _C is not None:
+    import torch
+
+    _fsla_cuda = _Extension(torch.ops.fsla)
+
+
+_MISSING = """\
+No FSLA kernel can run: {why}.
+
+Install the binary for your CUDA toolchain at this version:
+
+    pip install "fsla[{extra}]=={version}"
+
+It carries the kernels for every built architecture. A checkout builds
+the same package in place (`bazel run //:library`, docs/build.md), and refuses an architecture that
+is not built (docs/bringup.md).
+
+There is no CPU or pure-torch fallback by design: `fsla.ops.naive.naive_fsla` is a float64 reference for checking the
+kernel, not a substitute for it.\
+"""
+
+
+@lru_cache(maxsize=1)
+def extension():
+    """Return the compiled extension module, or raise with an actionable message."""
+    if _fsla_cuda is None:
+        raise ImportError(_MISSING.format(why=_WHY, extra=EXTRA, version=__version__))
+    return _fsla_cuda
+
+
+def is_available() -> bool:
+    """True when the compiled extension imported successfully.
+
+    For probing (tests, capability reporting). Never branch the math on this —
+    see the module docstring on why there is no fallback path.
+    """
+    return _fsla_cuda is not None
+
+
+def device_index(device) -> int:
+    """A CUDA device's index for an entry's device argument: an index as given, else the device's, the current one for
+    ``None`` or an unindexed ``cuda``."""
+    import torch
+
+    if isinstance(device, int):
+        return device
+    index = None if device is None else torch.device(device).index
+    return torch.cuda.current_device() if index is None else index
+
+
+class KernelNotBuilt(NotImplementedError):
+    """An op this line has no kernel for: its fp64 definition stands (`fsla.ops.naive`), its launch raises this."""
+
+
+def not_built(kernel: str):
+    """Raise :class:`KernelNotBuilt` for ``kernel``, by name."""
+    raise KernelNotBuilt(
+        f"the {kernel} kernel is not built on this line: no hopper or blackwell schedule of it is written yet, and the "
+        "ampere family's is the branch `ampere`'s. The op's fp64 definition is fsla.ops.naive.naive_fsla.")
+
+
+__all__ = ["KernelNotBuilt", "device_index", "extension", "is_available", "not_built"]

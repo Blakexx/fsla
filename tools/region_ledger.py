@@ -244,7 +244,7 @@ def main() -> int:
     ap.add_argument("--kernel", default=None,
                     help="the profiled kernel, a regex over the member's functions (needed where it holds several)")
     ap.add_argument("--arch", default=None, help="the cubin's architecture (default: this machine's GPU)")
-    ap.add_argument("--barrier", type=Path, default=Path("csrc/rola/src/common/atoms/barrier.cuh"),
+    ap.add_argument("--barrier", type=Path, default=Path("csrc/fsla/src/common/atoms/barrier.cuh"),
                     help="the atom whose `mbar_wait` frames mark a barrier spin")
     ap.add_argument("--budget", type=Path, default=None)
     ap.add_argument("--cell", default=None, help="the budget cell to compare against")

@@ -1,11 +1,11 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""RoLA'S LAYER CONSTRUCTIONS: what a RoLA layer is built as on a central layer cell.
+"""FSLA'S LAYER CONSTRUCTIONS: what a FSLA layer is built as on a central layer cell.
 
-A central layer cell (`rola_devtools.cells.layer`) is only an input: hidden states and values drawn from a seed. How a
-RoLA layer is built to read it -- the routing widths, the entmax alpha (none selects dense softmax routing) and the logit
-gain the producer's projection is scaled by -- is RoLA's, so it lives here as a named CONSTRUCTION with the input cells
-it was declared for. The names are the layer cells' names before the inputs moved to rola-devtools (each central
+A central layer cell (`fsla_devtools.cells.layer`) is only an input: hidden states and values drawn from a seed. How a
+FSLA layer is built to read it -- the routing widths, the entmax alpha (none selects dense softmax routing) and the logit
+gain the producer's projection is scaled by -- is FSLA's, so it lives here as a named CONSTRUCTION with the input cells
+it was declared for. The names are the layer cells' names before the inputs moved to fsla-devtools (each central
 layer cell's note names them), so a construction reads as the cell a published number cites.
 
 **A CONSTRUCTION ON A CELL IS DETERMINISTIC.** `build` seeds the parameters from the cell's own seed immediately before
@@ -44,7 +44,7 @@ CONSTRUCTIONS = {c.name: c for c in (
     _c("chunk-deep-D4-w8", (8, 8, 8, 8), 1.5, 8.0, "layer-B2-T512-H8-h512-dv64-bf16-s3", "D = 4 at N = 4096"),
     _c("chunk-decode-w16", (16, 16), 1.5, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8", "prefill + 8 carried steps"),
     _c("chunk-decode-la-w256", (256,), None, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s10-dec8",
-       "D = 1 flat dense: the LA control for the routed decode"),
+       "D = 1 flat dense: the LA control for the FSLA decode"),
     #: THE CAPACITY-FAIR LONG LAYER: T = N = 65,536 a head, four heads, the alternating split, at rising logit gains --
     #: the weights realize the support (`tools/realized_support.py`), so a layer reading spans it
     *(_c("nl64k-alt-h4" + ("" if gain == 1.0 else f"-g{gain:g}"), (256, 256), 1.5, gain,
@@ -60,7 +60,7 @@ def _levels(construction: Construction):
     """The construction's levels. Every side has a dense level (docs/api.md section 2.1), so an entmax construction is
     the ALTERNATING split: entmax on the write duty at the even levels (read-dense) and on the read duty at the odd
     (write-dense). A softmax construction, and any depth-one one, is dense on both sides."""
-    from rola import dense_routing, split_routing
+    from fsla import dense_routing, split_routing
 
     widths = construction.widths
     if construction.alpha is None or len(widths) == 1:
@@ -77,15 +77,15 @@ def build(cell, construction: Construction) -> dict:
     it is that subject's own business.
     """
     import torch
-    from rola_devtools.cells.layer import realize
+    from fsla_devtools.cells.layer import realize
 
-    from rola import RoLA, Routing
+    from fsla import FSLA, Routing
 
     if cell.name not in construction.cells:
         raise ValueError(f"{construction.name} is declared for {list(construction.cells)}, not {cell.name}")
     torch.manual_seed(cell.seed)
     routing = Routing(_levels(construction))
-    layer = RoLA(routing, hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
+    layer = FSLA(routing, hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
                  layer_idx=0).to("cuda", cell.torch_dtype).eval()
     if construction.logit_gain != 1.0:
         with torch.no_grad():

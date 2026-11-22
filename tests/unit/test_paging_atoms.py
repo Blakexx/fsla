@@ -16,7 +16,7 @@ from math import prod
 import pytest
 import torch
 
-from rola.ops.paging import (
+from fsla.ops.paging import (
     MMA_K_QUANTUM,
     AtomKeying,
     ExtentAllocator,

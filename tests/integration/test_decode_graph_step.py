@@ -48,11 +48,11 @@ from dataclasses import fields
 import pytest
 import torch
 
-from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
-from rola.ops.decode import _decode_step, _write_atom_bitmap
-from rola.ops.lattice import to_lattice
-from rola.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
-from rola.values import Values
+from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.lattice import to_lattice
+from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
+from fsla.values import Values
 from tests.integration.test_decode_paging import (
     _COLS,
     _DV,
@@ -246,7 +246,7 @@ _HIDDEN, _H, _T, _B = 64, 2, 128, 2
 def _sequence():
     """A prefilled paged state, the layer whose producer made it, and a stream of decode tokens.
 
-    The prefill leg ran on `rola.rola_op` until the K31 deletion batch removed
+    The prefill leg ran on `fsla.fsla_op` until the K31 deletion batch removed
     the arm (baseline = tag `baseline/pre-k31`). The state is now SEEDED the
     facade's own way minus the launch: `_kernel_entry` binds the arena and the
     fp64 oracle's `output_final_state` fills the committed pages, narrowed to
@@ -260,8 +260,8 @@ def _sequence():
     atom from a full plan. A partial seeding bitmap would be a second leaf-order
     authority for these cells to disagree with.
     """
-    import rola
-    from rola.ops.naive import naive_rola
+    import fsla
+    from fsla.ops.naive import naive_fsla
     from tests.conftest import alternating_routing, build_layer
 
     torch.manual_seed(7)
@@ -275,11 +275,11 @@ def _sequence():
         config = _config(_WIDTHS)
         bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
-        state = rola.state()
+        state = fsla.state()
         _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
                                            BC=64)
         arena.wait()
-        _y_ref, oracle_state = naive_rola(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
+        _y_ref, oracle_state = naive_fsla(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
         #: THE ARENA HOLDS THE STORED FORM (the int8 state pages).
@@ -446,12 +446,12 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
 
 @torch.no_grad()
 def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_admission():
-    """THE LAYER'S ONE-TOKEN STEP UNDER A GRAPH: `RoLA._step` -- the producer's launch, the gated step, the output
+    """THE LAYER'S ONE-TOKEN STEP UNDER A GRAPH: `FSLA._step` -- the producer's launch, the gated step, the output
     projection -- captured whole. Two identical sequences take the same warm-up steps and lose the same written atom;
     one replays the captured step, admits at the verdict and replays again, the other runs the eager one-token
     `forward` (step, verdict, admission, step). The pair advances each exactly once: the same state bytes, and `y`
     to its sums' order."""
-    from rola import LayerContinuation
+    from fsla import LayerContinuation
 
     warm, token = slice(_T + 4, _T + 5), slice(_T + 5, _T + 6)
 

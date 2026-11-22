@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 import torch
 
-import rola.engine.rules as rules_pkg
-from rola.engine.plan import PrefillPlan
-from rola.engine.rules import (
+import fsla.engine.rules as rules_pkg
+from fsla.engine.plan import PrefillPlan
+from fsla.engine.rules import (
     admission,
     decode_variant,
     envelope,
@@ -33,8 +33,8 @@ from rola.engine.rules import (
     run_table,
     variant,
 )
-from rola.engine.runner import Node
-from rola.engine.types import CallClass, Variant
+from fsla.engine.runner import Node
+from fsla.engine.types import CallClass, Variant
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,12 +44,12 @@ ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 
 def _rule_modules():
-    return [importlib.import_module(f"rola.engine.rules.{info.name}")
+    return [importlib.import_module(f"fsla.engine.rules.{info.name}")
             for info in pkgutil.iter_modules(rules_pkg.__path__)]
 
 
 def test_every_function_under_rules_is_a_declared_rule():
-    """THE MARKER IS THE INVENTORY. `rola/engine/rules/` holds band-2 folds and nothing
+    """THE MARKER IS THE INVENTORY. `fsla/engine/rules/` holds band-2 folds and nothing
     else, so an ordinary helper landing here -- one that could launch, allocate or
     read a tensor's contents unnoticed -- fails by being unmarked."""
     unmarked = []
@@ -62,7 +62,7 @@ def test_every_function_under_rules_is_a_declared_rule():
             if not isinstance(getattr(obj, "node", None), Node):
                 unmarked.append(f"{module.__name__}.{name}")
     assert not unmarked, (
-        f"{unmarked} live under rola/engine/rules/ without the `rule` marker; a rule "
+        f"{unmarked} live under fsla/engine/rules/ without the `rule` marker; a rule "
         "declares its facts and its band, and an unmarked function declares nothing")
 
 
@@ -84,7 +84,7 @@ def test_a_rule_declares_the_host_band_and_no_memo():
 def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
     """The adapter from the fact bag to the fold is a LOOKUP, so the parameter names
     are the fact names -- checked at declaration rather than at the walk."""
-    from rola.engine.runner import rule
+    from fsla.engine.runner import rule
 
     with pytest.raises(ValueError, match="parameter names are the FACT names"):
         @rule(gives=("arm",), needs=("widths", "manifest"))
@@ -95,8 +95,8 @@ def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
 def test_a_rule_runs_as_a_node_over_a_fact_bag():
     """Rules are NODES, not a phase: the same fold a caller invokes with values is
     what the walk runs, and `.node` is the one it walks."""
-    from rola.engine.carve import plan_carve
-    from rola.engine.runner import run
+    from fsla.engine.carve import plan_carve
+    from fsla.engine.runner import run
 
     plan = PrefillPlan(carve=plan_carve((256, 256), (False, True), (True, False), 64))
     facts = run((variant.node, paging_preference.node), {"call_class": CallClass(False, False, False, False),
@@ -157,7 +157,7 @@ def test_the_operand_envelope_names_the_activation_before_the_device():
 # ---------------------------------------------------------------------------
 
 def test_paging_is_the_default_and_the_plan_may_only_turn_it_off():
-    from rola.engine.carve import plan_carve
+    from fsla.engine.carve import plan_carve
 
     carve = plan_carve((256, 256), (False, True), (True, False), 64)
     assert paging_preference(PrefillPlan(carve=carve)) is True
@@ -277,7 +277,7 @@ def test_the_run_table_reads_presence_and_never_a_tensor():
 
 @pytest.fixture(scope="module", autouse=True)
 def _extension_calls_at_start():
-    from rola.ops._ext import extension
+    from fsla.ops._ext import extension
 
     info = extension.cache_info()
     return info.hits + info.misses
@@ -288,7 +288,7 @@ def test_no_rule_touched_the_extension(_extension_calls_at_start):
     battery must not have resolved the compiled extension at all. A DELTA from this
     module's start, because a shared pytest process may already have loaded the
     extension for another file's tests."""
-    from rola.ops._ext import extension
+    from fsla.ops._ext import extension
 
     info = extension.cache_info()
     assert info.hits + info.misses == _extension_calls_at_start, (

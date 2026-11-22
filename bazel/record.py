@@ -4,8 +4,8 @@
 """THE GRAPH LIBRARY'S BUILD GATES AND RECORD: rule 1 (`tools/toolchains.py`'s `rule1`: the graph's ptxas, cuobjdump and
 nvdisasm are the toolchain record's byte for byte -- the ties between that record and `MODULE.bazel`'s two mentions of
 the toolkit's manifest -- and the environment's torch is the toolchain's CUDA major), rule 3 (every architecture is a
-built one) and rule 5 (the vendored tree is its pin's), then `rola_cu13/_build_config.py` for one build's parameters
-(`tools/build_record.py`'s writer). Run by `bazel/defs.bzl`'s `rola_extension`.
+built one) and rule 5 (the vendored tree is its pin's), then `fsla_cu13/_build_config.py` for one build's parameters
+(`tools/build_record.py`'s writer). Run by `bazel/defs.bzl`'s `fsla_extension`.
 Docs: docs/build-graph.md#gates.
 """
 from __future__ import annotations
@@ -55,7 +55,7 @@ def main() -> int:
               for family, table in tables.items()}
     cutlass = build_record.vendored_pin(ROOT / "csrc" / "third_party" / "cutlass")
     a.out.write_text(build_record.render(build_record.config(
-        version=build_record.version(ROOT / "rola" / "__init__.py"), archs=archs,
+        version=build_record.version(ROOT / "fsla" / "__init__.py"), archs=archs,
         iteration=arms.is_iteration(scopes, archs, built),
         toolchain=toolchain.name,
         ptxas=ptxas, torch=a.torch, cxx11_abi=a.cxx11_abi == "True",

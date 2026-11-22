@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UNUSED-INSTANTIATION CHECK (gating).
 
-Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/rola/` must be instantiated in at least one unit the
+Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/fsla/` must be instantiated in at least one unit the
 graph compiled: its mangled name is among the entry functions `ptxas -v` reported for the build's units. The census
 (`bazel/defs.bzl`'s `ratify_census`, read through `tools/ratify.py`) is the source of truth, the build's own compiles --
 a template no unit instantiates is the closed world leaking, and that is the gating finding.
@@ -18,13 +18,13 @@ silently flagged as unused. A real `__device__` liveness check needs a symbol du
 cross-referenced against which are actually called -- out of scope for this check; named here as the gap.
 
 METHOD for `__global__` (heuristic, not a real C++ parser -- see LIMITS below):
-  1. Find every `__global__` qualifier in a `.cu`/`.cuh` under csrc/rola/ (excluding csrc/third_party), scan forward for
+  1. Find every `__global__` qualifier in a `.cu`/`.cuh` under csrc/fsla/ (excluding csrc/third_party), scan forward for
      the next `void <name>(` or `<type> <name>(` token to get the function's UNQUALIFIED name, and check the ~15 lines
      above it for a `template <` line -- only templates are in scope (a non-template kernel is either always present or
      is a one-off entry point this check does not classify).
   2. Read the census's entry functions, run `c++filt` once over the whole batch, and check whether the demangled
      signature contains `<name>` as a whole identifier (namespace nesting is not reconstructed; a name collision across
-     two `rola::` sub-namespaces would under-report, which is why this is a LINT a reviewer rules on, not a silent
+     two `fsla::` sub-namespaces would under-report, which is why this is a LINT a reviewer rules on, not a silent
      deletion).
   3. A template name with ZERO hits across the census is a finding.
 
@@ -34,7 +34,7 @@ English/C substring of an unrelated symbol (none observed: kernel names here are
 the build's: an iteration build (`--//:<family>_arms`, `--//:archs`) compiles a subset, and a template only the other arms
 instantiate reads as unused -- run the check on the default build.
 
-Usage: `bazel test //csrc/rola:unused_instantiations`, which runs it on the graph's census.
+Usage: `bazel test //csrc/fsla:unused_instantiations`, which runs it on the graph's census.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CSRC = ROOT / "csrc" / "rola"
+CSRC = ROOT / "csrc" / "fsla"
 
 GLOBAL_RE = re.compile(r"__global__")
 DEVICE_RE = re.compile(r"__device__")
@@ -140,7 +140,7 @@ def main() -> int:
     if a.test_fixtures:
         return self_test()
     if not (a.graph and a.runfiles):
-        raise SystemExit("this check reads the graph's census: `bazel test //csrc/rola:unused_instantiations`")
+        raise SystemExit("this check reads the graph's census: `bazel test //csrc/fsla:unused_instantiations`")
 
     sys.path.insert(0, str(ROOT / "tools"))
     import ratify

@@ -1,6 +1,6 @@
 # `common/atoms/copy.cuh` — the staged copies
 
-Mirrors `csrc/rola/src/common/atoms/copy.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): global to shared without the issuing thread, their groups and waits, and the 16-byte quantum moved synchronously.
+Mirrors `csrc/fsla/src/common/atoms/copy.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): global to shared without the issuing thread, their groups and waits, and the 16-byte quantum moved synchronously.
 
 - `stage_tile(dst, src)`: copy <a id="kstagebytes"></a>`kStageBytes` (16) bytes global -> shared without occupying
   the issuing thread. `kStageBytes` is a fact of the operation, the widest single asynchronous copy the staging

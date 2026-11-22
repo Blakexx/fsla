@@ -33,7 +33,7 @@ import kernels  # noqa: E402
 import sass  # noqa: E402
 import toolchains  # noqa: E402
 from csrc_stamp import digest as _csrc_digest  # noqa: E402
-from rola_devtools.locks import host  # noqa: E402
+from fsla_devtools.locks import host  # noqa: E402
 
 #: ONE toolchain location for nvcc and ptxas, the build's own (`dev_config.cuda_bin`): the version this gate reads is
 #: from the assembler that produced the numbers it parses.
@@ -67,7 +67,7 @@ def use_graph(census: Path, runfiles: Path) -> None:
     sass.use_graph(cuobjdump=_graph_bin("cuobjdump"), nvdisasm=_graph_bin("nvdisasm"))
 
 
-SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
+SRC = Path(__file__).resolve().parents[1] / "csrc" / "fsla" / "src"
 
 
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+a?)'")

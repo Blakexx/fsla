@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""Rola's guidance on the checker's rules (the `checker` section of docs/rules.json: an entry a checker rule, with `guidance`, `triggers`, `rules`): the lab prints a rule's line
+"""Fsla's guidance on the checker's rules (the `checker` section of docs/rules.json: an entry a checker rule, with `guidance`, `triggers`, `rules`): the lab prints a rule's line
 after the checker's fix in a refusal (tools/lab.py `guidance`), and the edit hook (.claude/hooks/guidance.py) injects the lines whose
 triggers an edit's new text matches into a kernel source. The two-way lint of the table against the checker's rules is
 tools/lint/rules_table.py's, with its own fixtures; these tests cover the lab's call and the hook."""
@@ -65,7 +65,7 @@ def test_an_edit_that_adds_a_branch_around_a_tensor_step_is_given_the_step_rules
 
 
 def test_an_edit_that_only_renames_a_variable_is_given_nothing():
-    assert hook("csrc/rola/src/common/ops.cuh", old_string="int slot = base;", new_string="int lane_slot = base;") is None
+    assert hook("csrc/fsla/src/common/ops.cuh", old_string="int slot = base;", new_string="int lane_slot = base;") is None
     assert hook("measure/lab/experiments/carry_token.cu", old_string="acc_a", new_string="acc_b") is None
 
 
@@ -76,7 +76,7 @@ def test_a_file_that_is_no_kernel_source_is_given_nothing_whatever_it_holds():
 
 def test_a_write_and_a_multi_edit_are_read_by_their_new_text():
     assert "step_rolled" in hook("measure/lab/experiments/new.cu", content=SAMPLES["step_rolled"])["additionalContext"]
-    out = hook("csrc/rola/src/common/ops.cuh", edits=[{"old_string": "a", "new_string": "int b;"}, {"old_string": "c", "new_string": SAMPLES["clock_uniform"]}])
+    out = hook("csrc/fsla/src/common/ops.cuh", edits=[{"old_string": "a", "new_string": "int b;"}, {"old_string": "c", "new_string": SAMPLES["clock_uniform"]}])
     assert "- clock_uniform" in out["additionalContext"]
 
 
@@ -95,7 +95,7 @@ def test_a_rule_whose_entry_has_no_triggers_names_no_source_text_for_it_and_is_n
 
 
 @needs_checker
-def test_the_lab_prints_the_checkers_fix_then_the_rola_note_after_a_refusal():
+def test_the_lab_prints_the_checkers_fix_then_the_fsla_note_after_a_refusal():
     notes = lab.guidance()
     assert set(notes) == set(checked.checker().declare.rule_names(checked.project_ledger()))
     refusal = SimpleNamespace(rule="step_rolled", kernel="k", count=4, allowed=0, message="", fix="write the steps a straight block",

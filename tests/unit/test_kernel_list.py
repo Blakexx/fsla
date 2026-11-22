@@ -31,8 +31,8 @@ def test_the_parser_reads_every_definition_and_nothing_in_comments_or_strings():
 
 
 def test_the_symbol_name_is_the_identifier_before_the_argument_list():
-    assert kernels.function_name("void rola::carry::carry_kernel<2, 64, 8>(rola::carry::CarryParams)") == "carry_kernel"
-    assert kernels.function_name("rola::stampdet::decode_stamp_kernel(long*)") == "decode_stamp_kernel"
+    assert kernels.function_name("void fsla::carry::carry_kernel<2, 64, 8>(fsla::carry::CarryParams)") == "carry_kernel"
+    assert kernels.function_name("fsla::stampdet::decode_stamp_kernel(long*)") == "decode_stamp_kernel"
     assert kernels.function_name("void ns::k<a::b<1>, 2>(x<3>)") == "k"
 
 

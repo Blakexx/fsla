@@ -4,6 +4,6 @@ __global__ void kern(int* x) { *x = 1; }
 }  // namespace
 
 // A named namespace must NOT fire (this is the shipped pattern).
-namespace rola_ok {
+namespace fsla_ok {
 __global__ void kern2(int* x) { *x = 1; }
-}  // namespace rola_ok
+}  // namespace fsla_ok

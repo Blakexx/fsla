@@ -1,6 +1,6 @@
-"""`rola` loads its kernels from the binary plugin at exactly its own version, and refuses otherwise by naming the extra.
+"""`fsla` loads its kernels from the binary plugin at exactly its own version, and refuses otherwise by naming the extra.
 
-No GPU: the plugin's modules are planted, so what is tested is the loader's decision (`rola.ops._ext._load`), never the
+No GPU: the plugin's modules are planted, so what is tested is the loader's decision (`fsla.ops._ext._load`), never the
 binary.
 """
 from __future__ import annotations
@@ -9,8 +9,8 @@ import types
 
 import pytest
 
-from rola import __version__
-from rola.ops import _ext
+from fsla import __version__
+from fsla.ops import _ext
 
 
 def _plant(monkeypatch, record_version=None, library_error=None):
@@ -48,6 +48,6 @@ def test_another_version_never_loads_its_library(monkeypatch):
 
 def test_the_refusal_names_the_extra_at_this_version():
     message = _ext._MISSING.format(why="no plugin", extra=_ext.EXTRA, version=__version__)
-    assert f'pip install "rola[{_ext.EXTRA}]=={__version__}"' in message
+    assert f'pip install "fsla[{_ext.EXTRA}]=={__version__}"' in message
     with pytest.raises(ImportError):
         raise ImportError(message)

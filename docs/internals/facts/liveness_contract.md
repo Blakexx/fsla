@@ -1,9 +1,9 @@
-# `rola/engine/facts/liveness.py` — the class-1 words' contract
+# `fsla/engine/facts/liveness.py` — the class-1 words' contract
 
 Mirror doc for the Python module that states the class-1 words: their layout, the two folds over them and the pure-torch
 MODEL of both, which `tests/unit/test_liveness_contract.py` gates. THE PRESENT FORM: no kernel writes the words on this
 line -- the facts pass was deleted whole (Blake, 2026-11-21: "lets just delete facts"; 2026-11-13: "With the gather pass
-there is no separate facts pass on hopper"), its entry raises `rola.ops._ext.KernelNotBuilt`, and the Hopper design
+there is no separate facts pass on hopper"), its entry raises `fsla.ops._ext.KernelNotBuilt`, and the Hopper design
 reads the digits in its gather pass. The layout stands as the model's definition, the engine's shape law and the
 reference a Hopper schedule is graded against; it carries no C++ twin. What is written down here is the shape of the
 words, the folds over them, and why each is the grain it is.
@@ -40,10 +40,10 @@ of what the pass already holds when it holds it.
 
 ## <a id="max"></a>The digits: each against its row's max
 
-Python's statement of the digits is `rola.routing.quant` (`AMP_LEVELS`, the `ROWS` form);
-the decode fold's `kRowMaxDigit` (`csrc/rola/src/decode/decode_fold.cuh`) is the same 255, which `tests/unit/test_api_contract.py` holds.
+Python's statement of the digits is `fsla.routing.quant` (`AMP_LEVELS`, the `ROWS` form);
+the decode fold's `kRowMaxDigit` (`csrc/fsla/src/decode/decode_fold.cuh`) is the same 255, which `tests/unit/test_api_contract.py` holds.
 
-Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`rola.routing.quant.AMP_LEVELS`), the row's max beside
+Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`fsla.routing.quant.AMP_LEVELS`), the row's max beside
 it as an fp32 scale. A digit `b` is the amplitude `b / 255 × scale`. An all-zero row, its scale 0, is a dead token at
 that level.
 
@@ -51,7 +51,7 @@ that level.
 
 Every level's rows start on 32 bytes and step batch, token and head by multiples of 32 bytes (a dimension of length one
 is free), in `RouteFactors`' check; `quant.ROW_ALIGN` states it. The producer and `RouteFactors.from_levels` pack each side's levels in 32-byte slots
-(`rola.routing.quant.row_slot`: a level's width rounded up), the slot's tail zero — at power-of-two widths of 32 and up
+(`fsla.routing.quant.row_slot`: a level's width rounded up), the slot's tail zero — at power-of-two widths of 32 and up
 the slots are the widths, so the law costs nothing there. It is what lets a kernel move a token's run as 16-byte
 asynchronous quanta whose source is 16-byte aligned and whose 32-byte run is one sector. A level whose width is not a multiple of 16 is copied whole
 up to its last digit and no further (a partial quantum zero-fills the rest).
@@ -98,7 +98,7 @@ u8 digits and lets a drawn call state its support from its floating levels (`-0`
 
 The words are the op's MASKS (ruled 2026-11-13, 2026-11-22; [`api.md` §2.6](../../api.md)): the producer emits a bit per side,
 level, digit and token beside the rows, token-packed in the layout the pass reads (bit `t % 32` of word `t // 32` at a digit,
-`[B, H, ceil(L / 32), w_l]` a level), and `rola.engine.facts.liveness.gather_words` lays them out in the pass's table -- the
+`[B, H, ceil(L / 32), w_l]` a level), and `fsla.engine.facts.liveness.gather_words` lays them out in the pass's table -- the
 model of the table the gather pass reads and no test of any value. There is no row test, no dense flag and no static width
 mask: a level whose activation has no exact zeros has an all-live mask like any other, a digit past a level's width holds
 a zero bit, and every fold (`box_activity`, `atom_activity`, `page_bits`) reads the words alone. A mask that does not cover a
@@ -148,7 +148,7 @@ schedule fact read off these same rows while walking, never a stored bit.
 
 through the box→page map the descriptor gives (a box's leaves are the product of its
 digit runs; the page is the trailing four canonical bits). The byte is the one
-`rola/engine/facts/planes.py` already publishes — `ATOM_READ | ATOM_WRITTEN`, never
+`fsla/engine/facts/planes.py` already publishes — `ATOM_READ | ATOM_WRITTEN`, never
 pre-ORed — so `plan_exact` allocates on the written half, residency checks read the
 read half, and a decode step consumes this set because its unit is the page. Being a
 box-grain OR it may over-report a page whose live leaves belong to a box that

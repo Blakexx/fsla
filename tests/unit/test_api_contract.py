@@ -22,16 +22,16 @@ from __future__ import annotations
 import pytest
 import torch
 
-import rola
-from rola.routing.factors import RouteFactors
-from rola.routing.masks import PREFILL
-from rola.values import Values
+import fsla
+from fsla.routing.factors import RouteFactors
+from fsla.routing.masks import PREFILL
+from fsla.values import Values
 
 
 def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
     """A layer over a declared routing: the producer is the layer's."""
-    levels = [rola.dense_routing(w) if routing is None else routing.at(w) for w in widths]
-    return rola.RoLA(rola.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=32)
+    levels = [fsla.dense_routing(w) if routing is None else routing.at(w) for w in widths]
+    return fsla.FSLA(fsla.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=32)
 
 
 def _x(layer, *, B=2, T=6, dtype=torch.float64):
@@ -46,7 +46,7 @@ def _factors(layer, **kwargs) -> RouteFactors:
 def _validate(routes, v) -> None:
     """One walk of the engine's fast-fail over `(routes, v)`: the prefill DAG's `validate_context`, which is where
     the bundle contract is gated, before any fact is found."""
-    from rola.engine.dags.prefill_dag import validate_context
+    from fsla.engine.dags.prefill_dag import validate_context
 
     values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
     validate_context(_context(routes, values))
@@ -55,9 +55,9 @@ def _validate(routes, v) -> None:
 def _context(routes, values):
     """The call's context: the bundle's own bits as the PREFILL-layout masks and a valid plan (validation reads neither's contents) (a
     non-bundle is the type refusal's, which speaks before either is read)."""
-    from rola.engine import PrefillPlan
-    from rola.engine.carve import plan_carve
-    from rola.engine.dags.prefill_dag import PrefillContext
+    from fsla.engine import PrefillPlan
+    from fsla.engine.carve import plan_carve
+    from fsla.engine.dags.prefill_dag import PrefillContext
     from tests.oracle.fixtures import masks_of
 
     if not isinstance(routes, RouteFactors):
@@ -75,10 +75,10 @@ def _admitted(routes, v) -> None:
 
 
 def _oracle(routes, v):
-    from rola.ops.naive import naive_rola
+    from fsla.ops.naive import naive_fsla
 
     _, write = routes.dequantized()
-    y, _ = naive_rola(v, routes.dequantized()[0], write, routes.topology, None)
+    y, _ = naive_fsla(v, routes.dequantized()[0], write, routes.topology, None)
     return y
 
 
@@ -174,19 +174,19 @@ def test_the_prefill_reads_groups_and_a_consumer_of_one_head_count_refuses_them_
 
 
 def test_the_decode_digit_mirrors_the_quantizer():
-    """`decode_fold.cuh` and `rola.routing.quant` state one format: the row max's digit."""
+    """`decode_fold.cuh` and `fsla.routing.quant` state one format: the row max's digit."""
     from pathlib import Path
 
-    from rola.routing import quant
+    from fsla.routing import quant
 
-    text = (Path(__file__).resolve().parents[2] / "csrc/rola/src/decode/decode_fold.cuh").read_text()
+    text = (Path(__file__).resolve().parents[2] / "csrc/fsla/src/decode/decode_fold.cuh").read_text()
     assert "constexpr float kRowMaxDigit = 255.0f;" in text and quant.AMP_LEVELS == 255.0
 
 
 def test_the_factory_refuses_an_entry_its_form_does_not_hold():
     """docs/CONSTITUTION.md#r23: a routing form is nonnegative and every form finite, and the factory refuses what its
     form does not hold -- a negative or non-finite routing level, a non-finite value -- where a signed value is held."""
-    from rola.routing import quant
+    from fsla.routing import quant
 
     topology = _factors(_routes()).topology
     good = tuple(torch.rand(1, 2, 2, w, dtype=torch.float64) for w in topology.widths)
@@ -207,7 +207,7 @@ def test_the_factory_refuses_an_entry_its_form_does_not_hold():
 def test_a_zero_digit_is_a_zero_at_every_level():
     """docs/CONSTITUTION.md#r23: a level's rows are u8 with no floor under them -- a zero digit dequantizes to an exact
     zero in a live row, and a dead row (scale 0) stays zero."""
-    from rola.routing import quant
+    from fsla.routing import quant
 
     scale = torch.tensor([2.0, 0.0])
     rows = quant.ROWS.dequantize(torch.tensor([[255, 0, 3], [0, 0, 0]], dtype=torch.uint8), scale)
@@ -216,9 +216,9 @@ def test_a_zero_digit_is_a_zero_at_every_level():
 
 def test_rows_are_u8_at_every_depth():
     """The producer writes u8 rows at every depth, each against its own max (a side with no dense level is the plan's
-    refusal, `rola.engine.carve.plan_carve`; the bundle carries no flag); a row of any other type is refused, and a deep bundle dequantizes to its levels within
+    refusal, `fsla.engine.carve.plan_carve`; the bundle carries no flag); a row of any other type is refused, and a deep bundle dequantizes to its levels within
     half a digit a row."""
-    from rola.routing.types import OpaqueRouting, Topology
+    from fsla.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
@@ -249,7 +249,7 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
 def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
     """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
     `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
-    from rola.engine.dags.prefill_dag import validate_context
+    from fsla.engine.dags.prefill_dag import validate_context
 
     producer = _routes()
     factors = _factors(producer)
@@ -304,7 +304,7 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     structure. Such levels reach the op through the format's utilities; the LAYER takes a declared routing, and a
     callable in its place is refused (ruled 2026-09-29: the producer is a declared configuration).
     """
-    from rola.routing.types import OpaqueRouting, Topology
+    from fsla.routing.types import OpaqueRouting, Topology
 
     class Uniform(torch.nn.Module):
         hidden_size, num_heads = 32, 2
@@ -323,7 +323,7 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     _admitted(factors, v)
     assert torch.isfinite(_oracle(factors, v)).all()
     with pytest.raises(TypeError, match="declared routing"):
-        rola.RoLA(producer, hidden_size=32, num_heads=2, d_v=8)
+        fsla.FSLA(producer, hidden_size=32, num_heads=2, d_v=8)
     with pytest.raises(TypeError):
         RouteFactors(topology=producer.topology, amp_read=factors.amp_read,
                      amp_write=factors.amp_write)  # the format's fields are not optional
@@ -336,7 +336,7 @@ def test_a_layer_without_a_declared_routing_is_refused_at_construction():
     PLANTED VIOLATION: a module where the declaration goes.
     """
     with pytest.raises(TypeError, match="declared routing"):
-        rola.RoLA(torch.nn.Identity(), hidden_size=32, num_heads=2)
+        fsla.FSLA(torch.nn.Identity(), hidden_size=32, num_heads=2)
 
 
 def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
@@ -363,7 +363,7 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     two layouts is the materialized one, by comparing `data_ptr()` against
     `routing_views`' folded view -- and `routing_views` is the TILED consumer's
     packing, deleted with it. The engine builds its own packed operands per call
-    (`rola/engine/facts/planes.py`), so there is no second standing layout left
+    (`fsla/engine/facts/planes.py`), so there is no second standing layout left
     to be the one that is materialized. What survives, and is what a caller of this surface is
     owed, is that the public tensors are views.
     """
@@ -388,14 +388,14 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
 @pytest.mark.parametrize("scope", ["state", "global"])
 def test_every_learned_decay_scope_emits_the_same_dial_shape(scope):
     """The scopes differ in degrees of freedom, never in what the recurrence reads."""
-    source = rola.LearnedDecay(2 ** -8, widths=(4, 6), num_heads=2, scope=scope)
+    source = fsla.LearnedDecay(2 ** -8, widths=(4, 6), num_heads=2, scope=scope)
     dials = source().dials
     assert [tuple(d.shape) for d in dials] == [(2, 4), (2, 6)]
     assert all(((d >= 0) & (d < 1)).all() for d in dials)
 
 
 def test_a_constant_decay_source_has_no_parameters_and_reaches_the_target_rate():
-    source = rola.ConstantDecay(2 ** -8, widths=(4, 4), num_heads=2)
+    source = fsla.ConstantDecay(2 ** -8, widths=(4, 4), num_heads=2)
     assert list(source.parameters()) == [], "a user-fixed rate must not be optimized"
     product = source().dials[0][0, 0] * source().dials[1][0, 0]
     assert torch.isclose(product, torch.tensor(2.0 ** -8))
@@ -405,9 +405,9 @@ def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
     """PLANTED VIOLATION: the right source, the wrong widths."""
     producer = _routes(widths=(4, 4))
     with pytest.raises(ValueError, match="widths"):
-        rola.RoLA(producer.routing, hidden_size=32, num_heads=2,
-                  decay=rola.LearnedDecay(widths=(4, 6), num_heads=2))
-    rola.RoLA(producer.routing, hidden_size=32, num_heads=2, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
+        fsla.FSLA(producer.routing, hidden_size=32, num_heads=2,
+                  decay=fsla.LearnedDecay(widths=(4, 6), num_heads=2))
+    fsla.FSLA(producer.routing, hidden_size=32, num_heads=2, decay=fsla.LearnedDecay(widths=(4, 4), num_heads=2))
 
 
 # ---------------------------------------------------------------------------
@@ -424,9 +424,9 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     #: and it does not move when the set does: launch geometry is behind the marked
     #: door, never at the top level.
     quarantined = {"PrefillPlan", "requires_backward", "envelope_refusal"}
-    import rola.expert as expert
+    import fsla.expert as expert
 
-    assert quarantined.isdisjoint(rola.__all__)
+    assert quarantined.isdisjoint(fsla.__all__)
     assert quarantined.issubset(set(expert.__all__))
 
 
@@ -434,7 +434,7 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
     """The constructor's shape IS the claim. A knob creeping back is what this catches."""
     import inspect
 
-    signature = inspect.signature(rola.RoLA.__init__)
+    signature = inspect.signature(fsla.FSLA.__init__)
     assert list(signature.parameters) == [
         "self", "routing", "hidden_size", "num_heads",
         "d_v", "decay", "layer_idx", "plan", "memory_budget"]
@@ -443,7 +443,7 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 
 
 #: RETIRED at P67 D2-b (ruling R-2): `test_an_expert_pin_shrinks_the_feasible_set_
-#: and_an_inadmissible_one_is_refused`. Its subject is `RoLA.feasible_BC` and the
+#: and_an_inadmissible_one_is_refused`. Its subject is `FSLA.feasible_BC` and the
 #: tiled ladder `derive.SUPPORTED_BC` behind it, both deleted with the tiled consumer: the chunk
 #: arm's `BC` belongs to the built arm the manifest carries for a topology and is
 #: not host-selectable, so there is no feasible SET for a pin to shrink. The pin
@@ -456,7 +456,7 @@ def test_the_plan_argument_refuses_a_lookalike():
     """PLANTED VIOLATION: a dict that happens to have the right keys."""
     producer = _routes()
     with pytest.raises(TypeError, match="PrefillPlan"):
-        rola.RoLA(producer.routing, hidden_size=32, num_heads=2, plan={"state_block": 16})
+        fsla.FSLA(producer.routing, hidden_size=32, num_heads=2, plan={"state_block": 16})
 
 
 # ---------------------------------------------------------------------------
@@ -465,10 +465,10 @@ def test_the_plan_argument_refuses_a_lookalike():
 
 
 def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
-    """The layer's prefill dispatch lands on `rola_op`, whose fast-fail speaks before any kernel could run: in
+    """The layer's prefill dispatch lands on `fsla_op`, whose fast-fail speaks before any kernel could run: in
     training mode the gradient clause (the prefill has no reverse pass yet), out of it the envelope's device
     clause for these CPU fp64 fixtures."""
-    from rola.engine import BackwardNotImplemented
+    from fsla.engine import BackwardNotImplemented
 
     layer = _routes().double().train()
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
@@ -496,12 +496,12 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 #: RETIRED at P67 D2-b, both rows of "The seam":
 #: `test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path`
 #: and `test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen`.
-#: Their subject is `rola.expert.{Plan, derive_plan, execute}` -- the plan-as-DATA
+#: Their subject is `fsla.expert.{Plan, derive_plan, execute}` -- the plan-as-DATA
 #: seam -- which the tiled consumer's deletion takes whole. The second is a real loss and is recorded as
 #: one: it was the adversarial handle a derive-then-immediately-use pipeline does
 #: not have, and the conformance family that used the same handle
 #: (`producer/stale-plan`) retired with it. What replaces the seam is that there is
-#: no plan: the chunk arm's geometry is the manifest's, and `rola_op` refuses a pin
+#: no plan: the chunk arm's geometry is the manifest's, and `fsla_op` refuses a pin
 #: over it rather than accepting one it cannot honor.
 
 
@@ -513,17 +513,17 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     """The release blocker this gate exists to close, gated FOREVER.
 
-    **THE DEFECT.** A module under `rola/` reached a package under `measure/`
+    **THE DEFECT.** A module under `fsla/` reached a package under `measure/`
     by inserting that directory onto `sys.path` RELATIVE TO ITS OWN FILE. That
-    resolves from a source checkout and from nowhere else: the `rola` wheel packages
-    the `rola/` package alone (`tools/wheels.py`), so an installed wheel has no
+    resolves from a source checkout and from nowhere else: the `fsla` wheel packages
+    the `fsla/` package alone (`tools/wheels.py`), so an installed wheel has no
     `measure/` sibling and every relocated name raised `ModuleNotFoundError`
     there.
 
     **WHY A SUBPROCESS OVER A SYNTHESIZED LAYOUT.** `tests/conftest.py` puts
     `measure/` on `sys.path` for the bench packages, so an in-process import
     proves nothing about a wheel. This builds the INSTALLED layout -- a directory
-    whose only entry is the `rola` package -- runs a fresh interpreter with exactly
+    whose only entry is the `fsla` package -- runs a fresh interpreter with exactly
     that on the path, and imports the whole prefill path there. A regression
     re-introducing a `measure/` reach fails here with the import error itself,
     and one that merely IMPORTS a measure module fails on the second assertion.
@@ -542,25 +542,25 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     root = pathlib.Path(__file__).resolve().parents[2]
     with tempfile.TemporaryDirectory() as tmp:
         site = pathlib.Path(tmp)
-        # The wheel's shape: `rola/` and nothing beside it. A symlink rather than a
+        # The wheel's shape: `fsla/` and nothing beside it. A symlink rather than a
         # copy so the built extension is the one under test and not a stale duplicate.
-        (site / "rola").symlink_to(root / "rola", target_is_directory=True)
+        (site / "fsla").symlink_to(root / "fsla", target_is_directory=True)
         assert not (site / "measure").exists()
 
         probe = (
             "import sys;"
             # Everything the CUDA prefill path resolves, imported by name.
-            "import rola;"
-            "from rola.layer import RoLA;"
-            "from rola.interface import rola_op;"
-            "from rola.ops.decode import step_plane;"
-            "from rola.engine.facts.call import require_envelope;"
-            "from rola.ops.facts import facts;"
-            "from rola.engine.rules.envelope import prefill_envelope;"
-            "from rola.engine.dags.prefill_dag import PrefillContext, run_prefill;"
-            "from rola.ops.prefill import prefill;"
-            "from rola.ops.decode import derive_decode_plan;"
-            "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
+            "import fsla;"
+            "from fsla.layer import FSLA;"
+            "from fsla.interface import fsla_op;"
+            "from fsla.ops.decode import step_plane;"
+            "from fsla.engine.facts.call import require_envelope;"
+            "from fsla.ops.facts import facts;"
+            "from fsla.engine.rules.envelope import prefill_envelope;"
+            "from fsla.engine.dags.prefill_dag import PrefillContext, run_prefill;"
+            "from fsla.ops.prefill import prefill;"
+            "from fsla.ops.decode import derive_decode_plan;"
+            "from fsla.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `measure/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"
             " if getattr(m, '__file__', None)"

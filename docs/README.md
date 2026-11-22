@@ -11,7 +11,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`rules.json`](rules.json) | the rules table: every rule of the two documents above, with the mechanism that enforces it and what that mechanism leaves unchecked ([`internals/tools/lint.md`](internals/tools/lint.md#rules-table)) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | what the family computes, the leaf lattice, the state format, the carve, each kernel, the launch policy, portability, and the index from mechanism to page |
 | [`architecture/`](architecture/README.md) | the permanent decisions and their arguments: the self-masking theorem, the affine recurrence, the factored representation, fp32 accumulation, closed-world codegen, the guarantee/choice/preference taxonomy |
-| [`api.md`](api.md) | the public surface and its envelope: `rola_op`, the bundle, the routing and producer, decay, the layer, the expert pins |
+| [`api.md`](api.md) | the public surface and its envelope: `fsla_op`, the bundle, the routing and producer, decay, the layer, the expert pins |
 | [`build.md`](build.md) | building: what the build checks, iteration subsets, the carry arm list, a kernel's identity, fatbin compression, the stable ABI, the wheels |
 | [`build-graph.md`](build-graph.md) | the build graph: Bazel through its front door (the machine's caches, the host budget), the environment's layers, the graph's rules |
 | [`ratification.md`](ratification.md) | the closed world (the declared targets and the per-build gates), the census, the derivation's goldens, the closed-world rules |
@@ -21,5 +21,5 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`bringup.md`](bringup.md) | bringing up a new architecture or toolkit |
 | [`provenance.md`](provenance.md) | where the code came from and the related repositories |
 | [`open-work.md`](open-work.md) | what is knowingly unfinished |
-| [`internals/`](internals/README.md) | the per-source mirror: one page a source file under `csrc/rola/src/` and the Python modules named there, each explaining why and how pieces connect; the tools' pages under `internals/tools/` |
+| [`internals/`](internals/README.md) | the per-source mirror: one page a source file under `csrc/fsla/src/` and the Python modules named there, each explaining why and how pieces connect; the tools' pages under `internals/tools/` |
 | [`lab/`](lab/README.md) | one page a lab experiment: the machine's measured facts the laws cite |

@@ -1,4 +1,4 @@
-# `csrc/rola/src/entmax/factor.{cuh,cu}` — the producer's independent (per-side) solves
+# `csrc/fsla/src/entmax/factor.{cuh,cu}` — the producer's independent (per-side) solves
 
 Hand CUDA over CUB warp primitives: the four kernels that turn one side's routing
 LOGITS into route VALUES, for the two activations a level can carry on its own —
@@ -49,7 +49,7 @@ store is `add_value`, which is a bf16 device atomic on the closed-world arch set
 
 ## <a id="provenance"></a>1. Why these are CUDA, and how they are judged
 
-These four kernels are CUDA so that `rola/` imports no Triton and the training path
+These four kernels are CUDA so that `fsla/` imports no Triton and the training path
 holds no Triton backward, which the CUDA-engine-first ruling forbids.
 
 **The solve is judged against the fp64 reference, never against another lowering.** A
@@ -173,14 +173,14 @@ largest, and the caller (`production.py`) is what groups the plan walk into tabl
 ## <a id="stored-form"></a>5. The stored form is what the solve WRITES
 
 The solve's levels have one consumer, the producer's torch path
-(`rola.ops.produce`'s reference, through `production_routing_factor_levels`), which folds
+(`fsla.ops.produce`'s reference, through `production_routing_factor_levels`), which folds
 them and quantizes them into the bundle's rows (`RouteFactors.from_levels`); it reads
 `bf16`. So `OutT` is `__nv_bfloat16` on that path and the solve writes the stored
 representation directly; there is no fp32 plane and no narrowing pass between them. The
 union arm and the independent/softmax arms are both instantiated for it
 (`entmax.cu::union_forward`, `factor.cu::check_values`), and the value dtype is read off
 the output tensor rather than templated at the host entry, so the choice is one
-allocation in `rola/routing/entmax/production.py`.
+allocation in `fsla/routing/entmax/production.py`.
 
 **Why writing bf16 is not the same as rounding to bf16.** The solve's amplitudes come
 from a closed form whose zeros are structural: an entry outside the support is assigned

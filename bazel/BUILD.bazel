@@ -52,7 +52,7 @@ exports_files([
 filegroup(
     name = "gate_sources",
     srcs = [
-        "//csrc/rola:sources",
+        "//csrc/fsla:sources",
         "//tools:python_sources",
     ],
 )
@@ -64,7 +64,7 @@ filegroup(
         "//:measure/__init__.py",
         "//:measure/hardware.py",
         "//bazel:arms.py",
-        "//csrc/rola:src/common/hardware.json",
+        "//csrc/fsla:src/common/hardware.json",
     ],
 )
 
@@ -72,8 +72,8 @@ filegroup(
 filegroup(
     name = "record_sources",
     srcs = [
-        "//:rola/__init__.py",
-        "//csrc/rola:sources",
+        "//:fsla/__init__.py",
+        "//csrc/fsla:sources",
         "//csrc/third_party:cutlass_tree",
         "//tools:build_record.py",
         "//tools:toolchain_records",

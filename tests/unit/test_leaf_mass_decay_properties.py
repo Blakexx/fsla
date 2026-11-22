@@ -1,12 +1,12 @@
 """Property-based validation of the ``LeafMassDecay`` contract.
 
-The migration-equivalence suite (``test_rola_v3_migration_equivalence.py``) only
+The migration-equivalence suite (``test_fsla_v3_migration_equivalence.py``) only
 exercises ``decay=None`` positively; its sole ``LeafMassDecay`` test is negative
 (records that this clock cannot reproduce the earlier matrix-level decay law -- spec
 ). As of that suite, the decay path has **no positive validation** at all.
 
 This file closes that gap by testing the recurrence's invariants directly against
-``naive_rola`` (and, where noted, its own leaf-materializing primitive
+``naive_fsla`` (and, where noted, its own leaf-materializing primitive
 ``_leaf_product``) -- never against a second, independently written reference
 implementation of the recurrence. A second reference would only prove
 self-consistency between two implementations of the same idea; these tests
@@ -33,7 +33,7 @@ Covered:
       state-continuation *is* that composition (the recurrence is affine in
       ``M``, the "no delta correction" consequence);
     - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
-      consumes: ``rola.ops.decay.leaf_rate_dials`` casts to fp32, where a
+      consumes: ``fsla.ops.decay.leaf_rate_dials`` casts to fp32, where a
       value strictly below 1 in fp64 can round to exactly ``1.0f``.
 """
 
@@ -42,10 +42,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.decay import leaf_rate_dials
-from rola.ops.naive import _leaf_product, naive_rola
-from rola.ops.paging import bytes_equal
-from rola.routing.types import (
+from fsla.ops.decay import leaf_rate_dials
+from fsla.ops.naive import _leaf_product, naive_fsla
+from fsla.ops.paging import bytes_equal
+from fsla.routing.types import (
     IndependentRouting,
     LeafMassDecay,
     SoftmaxActivation,
@@ -120,7 +120,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
 
     states = []
     for prefix in range(1, T + 1):
-        _, final_state = naive_rola(v[:, :prefix], (read_levels[0][:, :prefix], read_levels[1][:, :prefix]), with_gain((write_levels[0][:, :prefix], write_levels[1][:, :prefix]), g_write[:, :prefix]), topology, decay, output_final_state=True)
+        _, final_state = naive_fsla(v[:, :prefix], (read_levels[0][:, :prefix], read_levels[1][:, :prefix]), with_gain((write_levels[0][:, :prefix], write_levels[1][:, :prefix]), g_write[:, :prefix]), topology, decay, output_final_state=True)
         states.append(final_state[0, 0, 0, :].clone())  # leaf 0's value state
 
     # Leaf 0 is write-conditioned-quiescent at tokens 1,2,3 (c==0 there): its
@@ -216,7 +216,7 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     g_write_value = 1.7
     g_write = torch.full((B, T, H), g_write_value, dtype=torch.float64)
 
-    _, final_state = naive_rola(v, read_levels, with_gain(write_levels, g_write), topology, decay, initial_state=initial_state, output_final_state=True)
+    _, final_state = naive_fsla(v, read_levels, with_gain(write_levels, g_write), topology, decay, initial_state=initial_state, output_final_state=True)
     m1 = final_state[0, 0, 0, 0].item()
     w1 = g_write_value * 1.0  # write factor is exactly 1 (one-hot)
     keep_recovered = (m1 - w1 * 2.0) / m0
@@ -252,7 +252,7 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     v = torch.tensor([[[[3.0]], [[7.0]]]], dtype=torch.float64)
     g_write = torch.ones(B, T, H, dtype=torch.float64)
 
-    _, final_state = naive_rola(v, (read_l0,), with_gain((write_l0,), g_write), topology, decay, output_final_state=True)
+    _, final_state = naive_fsla(v, (read_l0,), with_gain((write_l0,), g_write), topology, decay, output_final_state=True)
     # With keep==1 always at digit0 (rate==0 regardless of c), the leaf-0
     # value state is a plain running sum: M = c_value*3.0 + c_value*7.0.
     expected = c_value * 3.0 + c_value * 7.0
@@ -332,13 +332,13 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(split_point):
         seed=42, B=B, T=T, H=H, dv=dv, widths=widths
     )
 
-    y_full, state_full = naive_rola(v, read_levels, with_gain(write_levels, g_write), topology, decay, output_final_state=True)
+    y_full, state_full = naive_fsla(v, read_levels, with_gain(write_levels, g_write), topology, decay, output_final_state=True)
 
     def _slice(levels, lo, hi):
         return tuple(level[:, lo:hi] for level in levels)
 
-    y1, state1 = naive_rola(v[:, :split_point], _slice(read_levels, 0, split_point), with_gain(_slice(write_levels, 0, split_point), g_write[:, :split_point]), topology, decay, output_final_state=True)
-    y2, state2 = naive_rola(v[:, split_point:], _slice(read_levels, split_point, T), with_gain(_slice(write_levels, split_point, T), g_write[:, split_point:]), topology, decay, initial_state=state1, output_final_state=True)
+    y1, state1 = naive_fsla(v[:, :split_point], _slice(read_levels, 0, split_point), with_gain(_slice(write_levels, 0, split_point), g_write[:, :split_point]), topology, decay, output_final_state=True)
+    y2, state2 = naive_fsla(v[:, split_point:], _slice(read_levels, split_point, T), with_gain(_slice(write_levels, split_point, T), g_write[:, split_point:]), topology, decay, initial_state=state1, output_final_state=True)
 
     y_chunked = torch.cat([y1, y2], dim=1)
     assert torch.equal(y_full, y_chunked), (
@@ -397,7 +397,7 @@ def test_affine_composition_algebra_matches_direct_recurrence():
 
 # ---------------------------------------------------------------------------
 # 7. The dial invariant AT THE CAST BOUNDARY the kernel reads it across
-#     (`rola.ops.decay.leaf_rate_dials`; docs/internals/decode/decode.md)
+#     (`fsla.ops.decay.leaf_rate_dials`; docs/internals/decode/decode.md)
 # ---------------------------------------------------------------------------
 
 

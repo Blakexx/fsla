@@ -2,7 +2,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE BUILD'S CARRIED BUILDS HEADER for one build's architectures (`measure/hardware.py`'s `builds_header`). Run by the
-graph's header action (`bazel/defs.bzl`'s `rola_headers`); the arm families' headers are `bazel/arms.bzl`'s.
+graph's header action (`bazel/defs.bzl`'s `fsla_headers`); the arm families' headers are `bazel/arms.bzl`'s.
 Docs: docs/build-graph.md#compile.
 """
 from __future__ import annotations

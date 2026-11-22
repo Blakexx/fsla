@@ -48,12 +48,12 @@ schedules. These land with the first of them, each red or an owed entry until th
 6. THE FAMILY'S TIMELINE, FIRST OF THESE (§22 addendum 2): the measured timeline of its composed kernel and the model
    that reproduces it -- until it exists, work on the composition stops at it.
 
-# <a id="craft"></a>ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
+# <a id="craft"></a>FSLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
 
 SCOPE. This document is about CRAFT: how a designed piece is realized at the hardware's grain. It is not
 about design. Design authority is Blake's rulings and `docs/ARCHITECTURE.md`; nothing cited here is an
 argument for or against a design choice. References are the local copies under a named sibling checkout,
-`rola_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
+`fsla_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
 
 Every brief points here. Every review applies it line by line. A gate every build runs (§9) is the backstop
 and should catch nothing.
@@ -80,7 +80,7 @@ The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpre
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
-RoLA: the fold's fp32 accumulators become the readout's bf16 operand narrowed in place
+FSLA: the fold's fp32 accumulators become the readout's bf16 operand narrowed in place
 (`docs/ARCHITECTURE.md`, section 9) -- unbuilt. `[MACHINE]` MEASURED (H100, 2026-11-11, `wgmma_regs`:
 `measure/lab/results/wgmma_regs/sm_90a.json`): wgmma's `m64n16` accumulator is its register operand A's layout, so
 the narrowing is one instruction a bf16 pair with no relayout -- four a thread a step, truncated or rounded at the same
@@ -99,7 +99,7 @@ RULE: every SMEM tile has a named layout with its swizzle derived from its acces
 reader's), and a ROUND-TRIP test proving bit-exactness and conflict-freedom (the existing plane gate).
 Changing an access pattern (e.g. 2-byte scattered stores) re-derives the swizzle and re-runs the gate.
 Primitives (a matrix load, an asynchronous copy, an MMA, a reduction) are wrapped ONCE, in their concern's atom
-(`csrc/rola/src/common/atoms/`, all included by `common/ops.cuh`); call sites use the wrapper.
+(`csrc/fsla/src/common/atoms/`, all included by `common/ops.cuh`); call sites use the wrapper.
 
 ## <a id="s4"></a>4. Pipelines: explicit stage state, release immediately after consumption, two stages in flight
 - FA3's producer acquires a stage before issuing, the consumer waits, issues the GEMM, waits for it, and
@@ -156,7 +156,7 @@ once per stage, after the last source edit. Each arm has a COMPILE BUDGET (wall 
 
 ## <a id="s8"></a>8. Arch mapping at the atom, closed-world at the arm
 Feature selection lives where the primitive is defined (`kernel_traits.h:40-44`'s `DefaultCopy` fallback),
-never as `#if` at call sites. RoLA adds: every structural decision states its hopper and blackwell mapping on the
+never as `#if` at call sites. FSLA adds: every structural decision states its hopper and blackwell mapping on the
 card (§4 of the architecture); only measured binaries run (the declared targets, the built architectures, the pinned toolchain, the device stamp).
 
 TWO LEVELS, ONE HOME EACH (2026-11-07, the family foundation; constitution R8). An INSTRUCTION difference is an atom:
@@ -186,7 +186,7 @@ or stop and name the gap; efficiency is correctness.
 ## <a id="s11"></a>11. Debugging a device hang or race (recorded 2026-08-26 after a stage burned 2.5 h reasoning blind)
 `cuda-gdb` works on this machine when the process is LAUNCHED under it; ATTACHING (`-p`) is refused by
 Yama `ptrace_scope=1` (a Linux setting, liftable with `sudo sysctl kernel.yama.ptrace_scope=0`).
-Recipe: `<venv>/bin/python -m rola_devtools.locks.gpu -- cuda-gdb -q --args <venv>/bin/python repro.py` (the GPU
+Recipe: `<venv>/bin/python -m fsla_devtools.locks.gpu -- cuda-gdb -q --args <venv>/bin/python repro.py` (the GPU
 lock's command form: the lock is the files beside `host.gpu_lock`, so a raw `flock` on its path serializes against
 nothing) → `run` → Ctrl-C on a
 hang → `info cuda kernels` / `info cuda warps` / `cuda kernel 0 block (..) thread (..)` / `bt` / `print`.
@@ -255,7 +255,7 @@ graph rule):
   does not choose and a rented host may refuse (Blake, 2026-11-07: "can we not start with vast, and then when we actually need to
   profile etc, we can find the best path forward"; §16 addendum 4 above: a gate that reads profiler counters runs on a host that grants them).
 - (b) MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as
-  machine-wide locks, which Bazel cannot give an action (`measure/executors.py`'s `pytest_tier`, and `rola_devtools.build`'s workers, which
+  machine-wide locks, which Bazel cannot give an action (`measure/executors.py`'s `pytest_tier`, and `fsla_devtools.build`'s workers, which
   `bazel run //:measure` triggers) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
   believe we made it that way for specific reaosn and gaps in bazel").
 - (c) THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own
@@ -331,12 +331,12 @@ script blowup: briefs, transcripts, per-session scripts and campaign journals st
 cited FROM the queue, not from repo files. Absolute paths under a home directory are a lint finding.
 Committed records carry repo-relative or host-keyed locations. Nothing under `.claude/` names a machine path: hooks
 resolve through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
-(`ROLA_SCRATCH`); `tools/lint/portable_claude.py` fails a commit that names one.
+(`FSLA_SCRATCH`); `tools/lint/portable_claude.py` fails a commit that names one.
 
 ## <a id="s14-addendum-containers"></a>§14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
 A lock file is per-filesystem: a lock taken inside a container serializes nothing on the host or in another
 container unless both see the same files. Every container that touches the GPU mounts the host's lock directory at
-the one lock path (`/tmp/rola-locks`, every machine's default), so one set of locks governs all. One gate container at a time: stop the previous run before
+the one lock path (`/tmp/fsla-locks`, every machine's default), so one set of locks governs all. One gate container at a time: stop the previous run before
 launching the next (three concurrent in-container probes turned a minutes-long gate into an hour).
 
 ## <a id="s18"></a>§18 — Tools refuse, they do not choose (law, 2026-08-28, from Blake's "why keep two linkers")
@@ -357,8 +357,8 @@ carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
 ## <a id="s14-addendum-2"></a>§14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
 Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
-brief-enforced: the graph's front door takes machine-wide slots for every build (`rola_devtools.graph.front_door` over
-`rola_devtools.locks.host`, §23) and waits when they are full — a brief cannot forget it. An agent checks
+brief-enforced: the graph's front door takes machine-wide slots for every build (`fsla_devtools.graph.front_door` over
+`fsla_devtools.locks.host`, §23) and waits when they are full — a brief cannot forget it. An agent checks
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
 LINK step only). Coordinator error recorded: two briefs omitted the build lock.
 
@@ -549,7 +549,7 @@ schedule) is a defect in the suite and is fixed before its numbers are used agai
 system, we keep expanding it to add more metrics and data, and any time we find we need more info we
 add more profilers, metrics, etc. to the gate -- so that it becomes a decision tree: any time the
 kernel isn't working, go look at this metric, it deterministically tells you what is going on."
-Consequence: the measurement suite (rola-bench's `measure`) is that tree's trunk. Every number computed by hand in a debug
+Consequence: the measurement suite (fsla-bench's `measure`) is that tree's trunk. Every number computed by hand in a debug
 session becomes a permanent step of it the same day; a node that cannot decide the question it was
 read for (two mechanisms fit the same numbers) is the signal to add the node that splits them, and
 until that node exists the question is OPEN, not answered by the likelier story.
@@ -571,7 +571,7 @@ A tree that measures itself is only as reproducible as the machine it runs on. B
 three per-machine files and fourteen hardcoded paths decided that machine, set by five scattered scripts and a page of
 manual steps, and the dev container had drifted for two weeks unnoticed.
 1. ONE LOCATION. Every value that depends on the machine is declared in `tools/dev_config.py` and read from the dev
-   config directory (`~/.config/rola/`, one JSON file a section) through that loader. A tool never reads a setting from
+   config directory (`~/.config/fsla/`, one JSON file a section) through that loader. A tool never reads a setting from
    the process environment and never spells a machine path; the environment variables that remain are the loader's
    listed HANDOFFS (a parent process passing a resolved value to a child); what one build is, is the graph's settings.
    `tools/lint/lint_standards.py` refuses any other read and any CUDA or Windows path spelled in tools or benchmarks. A replaced variable is deleted, never kept as a fallback (§18).

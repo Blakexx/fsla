@@ -1,6 +1,6 @@
 """THE ONE DERIVATION, against the PARENT KERNEL'S OWN COMPILE-TIME CENSUS.
 
-`csrc/rola/src/common/geom.cuh` computes at runtime what the shipped carry bodies compute
+`csrc/fsla/src/common/geom.cuh` computes at runtime what the shipped carry bodies compute
 in their templates (the parent's `BoxPlan`/`ModeOrder`/`StreamSpans`). No kernel on this
 branch consumes the runtime block -- the pipelined body is what will
 (`docs/internals/common/geom.md#on-the-tip`) -- so THIS FILE IS THE PROOF that the block is
@@ -12,7 +12,7 @@ census, transcribed, so the assertion survives the parent's deletion (the SKILLS
 FEEDBACK 3: the A-side of any parity claim is a pinned tip that will not always exist) --
 and C0 IS that deletion: `carry_build_stamp`/`carry_arms` are gone from the extension
 entirely (not merely some arms unbuilt). The refill has since landed under the FINAL
-`(D, DV, warps_per_cta)` key (`CARRY_ARMS` of `csrc/rola/src/carry/arms.bzl` was `[[2, 64, 8]]`, one shipped row),
+`(D, DV, warps_per_cta)` key (`CARRY_ARMS` of `csrc/fsla/src/carry/arms.bzl` was `[[2, 64, 8]]`, one shipped row),
 a different schema than the 13-field row this table's provenance names. There is
 therefore no live binary left to re-read against, on this line, ever again (the parent
 tip is never edited or retrofitted). `## C0`
@@ -43,7 +43,7 @@ import math
 
 import pytest
 
-from rola.ops import geometry as carry_ops
+from fsla.ops import geometry as carry_ops
 
 #: THE ARM ROWS THE PARENT BUILT, transcribed from the parent's `CARRY_ARMS` at
 #: `k31/k35-final` 335c2b9 (the tip `PARENT_CENSUS` below was read off), in that commit's
@@ -319,7 +319,7 @@ def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
 
 #: RETIRED (was `test_the_golden_table_is_the_binarys_own`): that test re-read the
 #: golden rows off `carry_ops.build_stamp`/`carry_ops.arms`, i.e. `extension().
-#: carry_build_stamp`/`carry_arms`. C0 removed BOTH bindings from `rola._C` entirely --
+#: carry_build_stamp`/`carry_arms`. C0 removed BOTH bindings from `fsla._C` entirely --
 #: not "some arms unbuilt", the entry points themselves are gone -- so there
 #: is no live parent binary left on this branch to re-derive against, and there will not
 #: be one again (the parent tip is never edited or retrofitted). `ARM_PARAMS` above is the
@@ -332,7 +332,7 @@ def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
 #: THE TALL OWNER SET: the state takes half the register file and a CTA holds one channel group of 32,
 #: so an owner set is 1024 leaves, 128 a warp -- `geom.md#tall-owner-set`. Derived here through the
 #: same binding at `bc = TALL_BOX_LEAVES`; the shipped kernel keeps its own box until the int8 body ships.
-from rola.engine import constants as engine_constants  # noqa: E402
+from fsla.engine import constants as engine_constants  # noqa: E402
 
 TALL = engine_constants.TALL_BOX_LEAVES
 #: D = 2 alternating: level 0 write-sparse (bit 1), level 1 read-sparse (bit 2): `(2 << 0) | (1 << 2)`.

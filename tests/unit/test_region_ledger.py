@@ -95,5 +95,5 @@ def test_a_barrier_file_without_mbar_wait_is_refused(tmp_path):
     bogus.write_text("__device__ __forceinline__ void rendezvous() {\n}\n")
     with pytest.raises(SystemExit, match="defines no `mbar_wait`"):
         region_ledger.Attribution(tmp_path / "none.so", "", "sm_86", [], bogus)
-    real = ROOT / "csrc" / "rola" / "src" / "common" / "atoms" / "barrier.cuh"
+    real = ROOT / "csrc" / "fsla" / "src" / "common" / "atoms" / "barrier.cuh"
     assert any(name == "mbar_wait" for _, name in region_ledger.function_map(real.read_text().splitlines()))

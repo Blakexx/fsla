@@ -1,6 +1,6 @@
 # `common/atoms/reduce.cuh` — the reductions
 
-Mirrors `csrc/rola/src/common/atoms/reduce.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): contributions into an accumulator others also add into, in global or shared memory.
+Mirrors `csrc/fsla/src/common/atoms/reduce.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): contributions into an accumulator others also add into, in global or shared memory.
 
 - <a id="fan-in-add"></a>`fan_in_add(p, x)`: ONE contribution into an accumulator other units also contribute to,
   fire and forget. Nothing is returned, and that is the substance: a returning atomic keeps the issuing thread

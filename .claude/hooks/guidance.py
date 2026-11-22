@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The checker's guidance, at the edit (Blake, 2026-11-20): when an edit's new text lands in a kernel source (`csrc/**/*.cu*`,
 `measure/lab/**/*.cu*`), inject the lines of the `checker` section of `docs/rules.json` whose `triggers` -- regexes over source -- that text
-matches, each the rule of warpline's checker (the entry's key) and rola's `guidance` for it: the atom or practice, the standards
+matches, each the rule of warpline's checker (the entry's key) and fsla's `guidance` for it: the atom or practice, the standards
 anchor, the lab page. Advisory context, never a refusal; a malformed table or an unreadable file injects nothing. The new text
 is an Edit's `new_string`, a MultiEdit's every `new_string` and a Write's `content`. Fired by the repo's dispatcher
 (`.claude/hooks/repo_hooks.py`); docs: docs/internals/tools/lint.md#action-hooks."""
@@ -59,7 +59,7 @@ def main() -> int:
     except Exception:
         return 0
     if lines:
-        context = ("This edit adds kernel code the checker holds to rules; rola's guidance (docs/rules.json, `checker` section):\n"
+        context = ("This edit adds kernel code the checker holds to rules; fsla's guidance (docs/rules.json, `checker` section):\n"
                    + "\n".join(lines))
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}))
     return 0

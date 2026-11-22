@@ -7,7 +7,7 @@ This is the `layer-dispatch-autograd-gap` gate, generalized to a SECOND kernel. 
 failure class it exists to close: a forward-only kernel reachable from a
 grad-requiring context does not raise — it returns a tensor with no ``grad_fn`` and the
 graph is silently severed at this layer (the fleet-smoke ``x.grad = None`` failure,
-fixed at ``fab325ae``). Both RoLA kernels are forward-only, so every row below asserts
+fixed at ``fab325ae``). Both FSLA kernels are forward-only, so every row below asserts
 **which branch actually ran**, read off ``last_execution_backend`` — a timing
 comparison would be an inference; the arm the layer recorded is a fact — or that the
 call was REFUSED, which is what everything outside the built envelope now is. Every row
@@ -32,10 +32,10 @@ import pytest
 import torch
 from conftest import build_layer
 
-import rola
-from rola import LayerContinuation
-from rola.expert import PlanOverrides
-from rola.interface import BackwardNotImplemented
+import fsla
+from fsla import LayerContinuation
+from fsla.expert import PlanOverrides
+from fsla.interface import BackwardNotImplemented
 from tests.oracle.fixtures import masks_of, with_gain
 
 #: `[16, 16]` at `d_v = 64`: a BUILT chunk arm, so the rows that must reach the
@@ -69,11 +69,11 @@ def _prime(layer, device, *, prefill=32, paged=True):
     set, because a dispatch gate has no business owning a second opinion about
     which leaf sits in which atom.
     """
-    from rola.engine.facts import planes
-    from rola.ops.paging import MMA_K_QUANTUM
+    from fsla.engine.facts import planes
+    from fsla.ops.paging import MMA_K_QUANTUM
 
     x = torch.randn(1, prefill, _HIDDEN, device=device)
-    state = rola.state()
+    state = fsla.state()
     with torch.no_grad():
         routes, _values = layer._produce(x)
         if paged:
@@ -149,7 +149,7 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
     device = "cuda"
     layer = _layer(device)
     layer.eval()
-    cache = _prime(layer, device) if carried else rola.state()
+    cache = _prime(layer, device) if carried else fsla.state()
     layer.train(training)
     before = layer.last_execution_backend
 
@@ -175,7 +175,7 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
 def test_a_continuation_round_trips_across_two_decode_steps():
     """K45: `LayerContinuation` is the container both directions of a chained call
     take -- what a forward RETURNS is exactly what the next forward ACCEPTS, and a
-    lookalike (a bare `RoLAState`, the retired `(state, conv_rings)` tuple) is
+    lookalike (a bare `FSLAState`, the retired `(state, conv_rings)` tuple) is
     refused by name rather than adopted."""
     device = "cuda"
     layer = _layer(device)
@@ -211,7 +211,7 @@ def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
     layer.eval()
     x = torch.randn(1, 32, _HIDDEN)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        layer(x, continuation=LayerContinuation(state=rola.state()))
+        layer(x, continuation=LayerContinuation(state=fsla.state()))
 
 
 @pytest.mark.cuda
@@ -223,10 +223,10 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     same class of failure (two implementations behind one call) that the layer's guard
     exists to prevent, pointed the other way.
     """
-    from rola.ops.decode import _decode_step
-    from rola.ops.paging import page_layout
-    from rola.ops.produce import decode_plan
-    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    from fsla.ops.decode import _decode_step
+    from fsla.ops.paging import page_layout
+    from fsla.ops.produce import decode_plan
+    from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
     from tests.oracle.fixtures import step_bundles
 
     device = "cuda"
@@ -302,7 +302,7 @@ def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     retirement), the envelope's first clause, and it must speak BEFORE a kernel."""
     device = "cuda"
     plain = _layer(device).eval()
-    cache = _prime(plain, device) if carried else rola.state()
+    cache = _prime(plain, device) if carried else fsla.state()
     layer = _layer(device, decay="leaf_mass").eval()
     with pytest.raises(NotImplementedError, match="decay is not implemented"):
         _step(layer, cache, device, L=L, grad_enabled=False)

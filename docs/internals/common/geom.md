@@ -1,6 +1,6 @@
 # `geom.cuh` — the addressing block
 
-The mirror of `csrc/rola/src/common/geom.cuh`. One derivation, computed once per launch
+The mirror of `csrc/fsla/src/common/geom.cuh`. One derivation, computed once per launch
 on the host, consumed by every kernel of the family.
 
 **Symbols.** `D` levels; `B_l` level `l`'s digit width; `BC` the leaves one owner (one
@@ -392,7 +392,7 @@ the innermost span is 8 is that a page holds two digits of the next level out, a
 consecutive canonical leaves. The warp-level atom floor stays off for the same reason as before:
 the shipped body's `## innermost-invariant` is its ldmatrix operand law, and the tall form's
 operands come through the transfer and the digit lists. ONE CONSEQUENCE IS OWED: the paged plane
-the decode family reads is laid out by `rola.ops.lattice` in the `(k, m)` form at
+the decode family reads is laid out by `fsla.ops.lattice` in the `(k, m)` form at
 `LATTICE_CAP_BC = 128`, and the two families write and read one plane, so the lattice
 module learns the tall owner law when the int8 carry ships.
 
@@ -424,7 +424,7 @@ carve order), not a template parameter, and the shipped kernel passes `false`.
 The decode step consumes this block's PLAIN-arithmetic half: `kAtomLeaves` (one definition, here) and `geom_ilog2`.
 The carry kernel does not include it. The GENERATED SUB-BOX SET machinery and the runtime addressing (`sub_boxes`,
 `SubBoxSet`, `sb_index`, `sb_shift`, `sb_matches_arch_law`, `derive_carry_geom`, `CarveOrder`, `CarryGeomRT`) are
-exercised only through the host entries (`rola.ops.geometry`) by `tests/unit/test_carry_geometry.py` and
+exercised only through the host entries (`fsla.ops.geometry`) by `tests/unit/test_carry_geometry.py` and
 `tests/unit/test_exchange_law.py`. The geometry test still checks the derivation as a PARITY claim against
 `ARM_PARAMS`/`PARENT_CENSUS`, a table transcribed from the pre-K31 parent tip (335c2b9) rather than re-derived from a
 live binary (the A-side of a parity claim is a pinned tip).

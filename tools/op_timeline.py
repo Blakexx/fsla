@@ -50,7 +50,7 @@ def main() -> int:
     args = ap.parse_args()
 
     import torch
-    from rola_devtools.locks.gpu import gpu_lock
+    from fsla_devtools.locks.gpu import gpu_lock
     from torch.profiler import ProfilerActivity, profile
 
     from measure.cells import by_name

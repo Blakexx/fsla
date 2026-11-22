@@ -8,7 +8,7 @@ message: >-
   an arm family's translation units take no torch include. This is the belt half; lint_standards.py's textual check on
   `#include <torch` covers macro-guarded forms this AST rule cannot see.
 files:
-  - "csrc/rola/src/decode/**"
+  - "csrc/fsla/src/decode/**"
   - "tools/lint/fixtures/**"
 rule:
   kind: preproc_include

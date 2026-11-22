@@ -31,7 +31,7 @@ THE REVIEWER: `claude -p` in the checkout, Opus by default (`--model`), its tool
 checks the touched files, their mirror pages and anything else before asserting, its output a fixed JSON schema (a
 summary and findings: rule, file, line, severity `block` or `warn`, claim, evidence). Slash commands, MCP servers and
 session persistence are off. A report is cached by everything it read -- the prompt's version, the model, the
-standards, the message, the diff -- and kept in the git common dir's `rola-review/`, shared by every worktree;
+standards, the message, the diff -- and kept in the git common dir's `fsla-review/`, shared by every worktree;
 `--show N` prints the last N.
 
 <a id="pipelined"></a>PIPELINED (Blake, 2026-11-08): nothing waits on a review. The next commit is made while it runs;
@@ -41,7 +41,7 @@ repository, `.github/workflows/mirror.yml`), waits until every review of its com
 
 AFTER THE COMMIT: `tools/git-hooks/post-commit` starts a review of `HEAD` detached after every commit, so no commit is
 slowed by its own review; it is skipped mid-rebase or without the `claude` CLI, and it runs from
-the checkout's own venv (git's rola.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
+the checkout's own venv (git's fsla.venv), saying so and skipping when that names none (`bazel run //:dev_env`). The first review
 (Opus, the carve planner's commit 4fbcf920) took 236 s and $1.65 and named two fair warnings.
 
 <a id="blocking"></a>A BLOCK STOPS THE NEXT COMMIT (Blake, 2026-11-17): the pipeline stands -- no commit waits on its own

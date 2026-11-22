@@ -34,10 +34,10 @@ import math
 import pytest
 import torch
 
-from rola.engine.plan import DecodeGeometry
-from rola.ops.decode import _decode_step
-from rola.ops.paging import bytes_equal
-from rola.ops.produce import decode_plan
+from fsla.engine.plan import DecodeGeometry
+from fsla.ops.decode import _decode_step
+from fsla.ops.paging import bytes_equal
+from fsla.ops.produce import decode_plan
 from tests.oracle.fixtures import assert_reordered_close, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 

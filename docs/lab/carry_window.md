@@ -275,7 +275,7 @@ THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the 
 the operands landed made with their coefficient tiles, and that form with every box its own stream from HBM -- each
 its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
 `measure/lab/results/carry_window/sm_90a.trace/` (warpline's native records, a row each), and at 8 CTAs `sm_90a.blocks8.trace/` beside it, that record
-rola 99807df0's; the full grid's are rola 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
+fsla 99807df0's; the full grid's are fsla 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): A FINE TRACE (every wait, arrival and issue beside
 the phases' starts) costs the first three some 15%, 25% and 22% of their windows and the own-stream row 2%, so its
 cycles are read for structure; A DETAIL ROW (the kernel `window_detail`: the coarse row's body with ONE group of waits and arrivals kept) spends a
@@ -316,7 +316,7 @@ steps' issue some 1,880 to 1,550 (59 to 48 cycles a step), its expansion some 75
 schedulers' issue, not the shared-memory pipe alone -- but the SM issues at some 46% of its slots (the issue count
 below), so what the read side takes from the fold is NOT ISOLATED: issue, the shared-memory pipe and the barriers it
 shares are each still open. The 16 registers the fold alone holds do not move its window: unclocked at 168 a thread it
-was 3,610 (the record at rola 1c811b5d), at 184 some 3,615. A slot's expansion is some 300-380 cycles a warp; the
+was 3,610 (the record at fsla 1c811b5d), at 184 some 3,615. A slot's expansion is some 300-380 cycles a warp; the
 traced phase of 2,700 a window is expansion, pads, operands, fence and the rendezvous wait together.
 
 THE HELD-STEP ROW (the fold alone, clocked, every step of a slot issued with the slot's first step's operands loaded
@@ -601,7 +601,7 @@ DUMP STAYS OUT OF THE TIMED CALLS, and one row restores it to price it in this s
 THE WALL TIME, measured on this box and immune to its clock (1.76 to 1.82 GHz, its rows' medians): the long call
 scaled to 65,536 tokens is 0.250 ms for the baseline, 0.237 ms for the winner's form, and 0.493 ms at the
 once-read bound (0.570 without the winner's changes). THE FLASH REFERENCES, from the session of instance 60450651 ON ANOTHER BOX (a different offer and driver)
-(`rola_bench.measure.attention`, causal, 1 head, dv 64, bf16; the records in rola-results at `flash/reference`):
+(`fsla_bench.measure.attention`, causal, 1 head, dv 64, bf16; the records in fsla-results at `flash/reference`):
 FlashAttention-3, built on the box at Dao's pinned commit, 1.775 ms at 65,536 tokens (0.300 at 16,384; 0.121 at
 1,024); torch's FlashAttention-2 3.072 ms (0.323; 0.040). THESE ARE ADJACENT MEASUREMENTS, NOT A COMPARISON: the
 carry's wall time is this lab's and the flash times the bench's attention entry's, two processes on a box with no

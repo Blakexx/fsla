@@ -1,8 +1,8 @@
 """The HOST dispatch primitive, exercised against a synthetic arm set.
 
-`csrc/rola/src/common/arm_switch.cuh` dispatches over the arm set the generated
+`csrc/fsla/src/common/arm_switch.cuh` dispatches over the arm set the generated
 selection header carries; this file never depends on which arms are actually shipped
-(a family's arms are declared in `csrc/rola/src/<family>/arms.bzl`).
+(a family's arms are declared in `csrc/fsla/src/<family>/arms.bzl`).
 This file runs a probe the graph compiled against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
 the graph's selection rule uses (`bazel/arms.bzl`'s `arm_selection`), so what is tested is what a build would emit --

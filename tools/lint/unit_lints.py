@@ -5,8 +5,8 @@
 the build graph (`bazel/defs.bzl`'s `unit_lints` aspect), and the editor's compile database from the same commands.
 
     unit_lints.py command --argv A.json --arch 90a --cuda-root DIR --out C.json   # the unit's clang command
-    unit_lints.py tidy --command C.json --clang-tidy BIN --config F --package csrc/rola --out V.json
-    unit_lints.py warnings --argv A.json --arch 90a --package csrc/rola --out V.json   # the host compile, warnings on
+    unit_lints.py tidy --command C.json --clang-tidy BIN --config F --package csrc/fsla --out V.json
+    unit_lints.py warnings --argv A.json --arch 90a --package csrc/fsla --out V.json   # the host compile, warnings on
     unit_lints.py verdicts [--expect PATTERN...] V.json...             # red on any finding, or a fixture's mismatch
     unit_lints.py database --anchor MODULE.bazel --out F C.json...     # compile_commands.json, from the action's execroot
 

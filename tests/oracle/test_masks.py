@@ -12,11 +12,11 @@ import pytest
 import torch
 from conftest import build_layer
 
-from rola.engine.carve import walks
-from rola.ops.naive import naive_rola
-from rola.ops.produce import ProducerPlan, activation_walks, prefill_plan, produce
-from rola.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
-from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.engine.carve import walks
+from fsla.ops.naive import naive_fsla
+from fsla.ops.produce import ProducerPlan, activation_walks, prefill_plan, produce
+from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
+from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
 _TOPOLOGY = Topology(levels=tuple(
     IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in (4, 6)))
@@ -152,10 +152,10 @@ def test_the_oracle_computes_r_times_m_and_a_masked_coefficients_gradient_is_zer
     assert any(not b.all() for b in bits["read"] + bits["write"])
     leaves = [[t.clone().requires_grad_() for t in side] for side in (read, write)]
     twin = [[t.clone().requires_grad_() for t in side] for side in (read, write)]
-    y, _ = naive_rola(v, tuple(leaves[0]), tuple(leaves[1]), _TOPOLOGY, None, masks=masks)
+    y, _ = naive_fsla(v, tuple(leaves[0]), tuple(leaves[1]), _TOPOLOGY, None, masks=masks)
     y.sum().backward()
     premasked = [tuple(t * b.double() for t, b in zip(twin[i], bits[side])) for i, side in enumerate(("read", "write"))]
-    want, _ = naive_rola(v, premasked[0], premasked[1], _TOPOLOGY, None)
+    want, _ = naive_fsla(v, premasked[0], premasked[1], _TOPOLOGY, None)
     want.sum().backward()
     torch.testing.assert_close(y, want, rtol=0, atol=0)
     for i, side in enumerate(("read", "write")):
@@ -163,7 +163,7 @@ def test_the_oracle_computes_r_times_m_and_a_masked_coefficients_gradient_is_zer
             torch.testing.assert_close(leaves[i][level].grad, twin[i][level].grad, rtol=0, atol=0)
             assert leaves[i][level].grad[~live].abs().max() == 0, "a masked coefficient has no gradient"
             assert leaves[i][level].grad[live].abs().max() > 0
-    unmasked, _ = naive_rola(v, tuple(read), tuple(write), _TOPOLOGY, None)
+    unmasked, _ = naive_fsla(v, tuple(read), tuple(write), _TOPOLOGY, None)
     assert (unmasked - y.detach()).abs().max() > 1e-3
 
 
@@ -171,6 +171,6 @@ def test_the_oracle_without_masks_is_every_bit_set():
     v, read, write, _bits, _masks = _draw(37, PREFILL)
     ones = Masks(PREFILL, tuple(pack_tokens(torch.ones_like(t, dtype=torch.bool)) for t in read),
                  tuple(pack_tokens(torch.ones_like(t, dtype=torch.bool)) for t in write))
-    a, _ = naive_rola(v, tuple(read), tuple(write), _TOPOLOGY, None)
-    b, _ = naive_rola(v, tuple(read), tuple(write), _TOPOLOGY, None, masks=ones)
+    a, _ = naive_fsla(v, tuple(read), tuple(write), _TOPOLOGY, None)
+    b, _ = naive_fsla(v, tuple(read), tuple(write), _TOPOLOGY, None, masks=ones)
     torch.testing.assert_close(a, b, rtol=0, atol=0)

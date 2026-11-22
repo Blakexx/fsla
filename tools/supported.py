@@ -5,7 +5,7 @@ they last edited it; this one is derived from the two artifacts that decide the
 answer, and the commit gate fails on drift (`//:readme`, which holds the committed README to what the graph writes,
 docs/build-graph.md#committed-files):
 
-* ``csrc/rola/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also gives
+* ``csrc/fsla/src/common/hardware.json``'s rows (``measure.hardware.tabulated``, which also gives
   ``common/hardware.cuh``'s ``tabulated``) -- the architectures the KERNEL knows how to size itself for: a
   ``static_assert`` at compile time and the card's admission a refusal at run time, so an arch missing from it
   cannot execute whatever the table says.
@@ -46,7 +46,7 @@ from measure import hardware  # noqa: E402 -- the architecture rows' own names
 #: script only places it, so there is still exactly one table in the codebase.
 BLOCKS = {
     "tools/supported.py": lambda: table(),
-    "rola.routing.activations.capability_table": lambda: _capability_table(),
+    "fsla.routing.activations.capability_table": lambda: _capability_table(),
 }
 
 
@@ -65,7 +65,7 @@ def block(text: str, marker: str) -> str | None:
 
 
 def _capability_table() -> str:
-    from rola.routing.activations import capability_table
+    from fsla.routing.activations import capability_table
 
     return capability_table().rstrip()
 

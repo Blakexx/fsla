@@ -1,8 +1,8 @@
-# THE PUBLIC MIRROR. A push to the default branch publishes: rola_devtools.mirror (`bazel run //:mirror`, on the graph
+# THE PUBLIC MIRROR. A push to the default branch publishes: fsla_devtools.mirror (`bazel run //:mirror`, on the graph
 # environment's interpreter, which carries it at its pinned commit) writes
 # HEAD's shipping files and refuses an export with an undeclared path, an agent file or a private-shaped string; the
 # export is then committed as one snapshot on the public repository's main, on top of the snapshots before it, naming
-# the commit it was taken from. What ships is .github/mirror/declarations.json; the tool is rola-devtools' README.
+# the commit it was taken from. What ships is .github/mirror/declarations.json; the tool is fsla-devtools' README.
 name: mirror-to-public
 
 on:

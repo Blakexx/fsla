@@ -21,7 +21,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from conftest import alternating_routing, build_layer  # noqa: E402
 
-import rola  # noqa: E402
+import fsla  # noqa: E402
 
 pytestmark = [
     pytest.mark.cuda,
@@ -46,32 +46,32 @@ def _inputs(seed=0, T=_T, B=2):
 
 
 def test_a_raw_tensor_is_not_a_state():
-    """The engine's fast-fail refuses a raw tensor where a RoLAState belongs.
+    """The engine's fast-fail refuses a raw tensor where a FSLAState belongs.
 
-    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `rola_op` itself is
+    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `fsla_op` itself is
     the deletion refusal and speaks before it reads its arguments.
     """
-    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
-    from rola.values import Values
+    from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
+    from fsla.values import Values
 
     producer, (x, v) = _producer(), _inputs()
-    with torch.no_grad(), pytest.raises(TypeError, match="rola.RoLAState"):
+    with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
         validate_context(PrefillContext(routes=producer(x), values=Values.from_projection(v),
                                       state=torch.zeros(1), want_state=True))
 
 
 def test_an_unbuilt_strategy_is_refused_by_name():
     with pytest.raises(NotImplementedError, match="cow"):
-        rola.state("cow")
+        fsla.state("cow")
     with pytest.raises(ValueError, match="strategy must be"):
-        rola.state("mutable-ish")
+        fsla.state("mutable-ish")
 
 
 def test_a_fresh_state_carries_nothing_and_decode_refuses_it():
     """`carries` is contents, not binding, and a decode step CONTINUES: with the
     prefill arm deleted there is nothing in production to charge a fresh state,
     and the decode entry's refusal must still say so by name."""
-    state = rola.state()
+    state = fsla.state()
     assert not state.bound and not state.carries
     with pytest.raises(RuntimeError, match="carries nothing"):
         state._require_carrying()

@@ -1,6 +1,6 @@
 # `common/build_stamp.cu` — the extension's freshness fact
 
-Mirrors `csrc/rola/src/common/build_stamp.{cu,cuh}`.
+Mirrors `csrc/fsla/src/common/build_stamp.{cu,cuh}`.
 
 A stale binary is the failure this repository has re-learned more times than any
 other, and every check that sits one level above it passes on the shape that keeps
@@ -12,11 +12,11 @@ compile put there.
 <a id="csrc-build-stamp"></a>
 ## `csrc_build_stamp()`
 
-A one-thread kernel returns `ROLA_CSRC_STAMP`: 60 bits of the sha256 of
-`csrc/rola/src`, the same digest `tools/ratify.py`'s `--json` census record carries as `csrc_sha256`.
+A one-thread kernel returns `FSLA_CSRC_STAMP`: 60 bits of the sha256 of
+`csrc/fsla/src`, the same digest `tools/ratify.py`'s `--json` census record carries as `csrc_sha256`.
 The value is written by the device out of a constant this translation unit compiled
 in, so it is a fact about the loaded fatbin and not about the host process that asks.
-The kernel is in a named namespace, `rola::stampdet`, and not an anonymous one: nvcc
+The kernel is in a named namespace, `fsla::stampdet`, and not an anonymous one: nvcc
 mangles an anonymous-namespace kernel with a hash of the build path, and a record
 keyed on that name would refuse the same kernel built in another directory.
 
@@ -36,13 +36,13 @@ only here rebuilds one unit, the one action that depends on it. A flag a build d
 key on is worse than either: the build reports success and the binary silently stays the
 previous variant.
 
-The digest covers `csrc/rola/src` and this header lives outside it, so the constant
+The digest covers `csrc/fsla/src` and this header lives outside it, so the constant
 never feeds back into its own input.
 
 ## What it is not
 
 It is not the families' footprint stamps (`intra_build_stamp`,
-`rola_decode_build_stamp`). Those fold struct sizes and launch widths into a value a
+`fsla_decode_build_stamp`). Those fold struct sizes and launch widths into a value a
 test decodes arithmetically, and they answer a different question: whether the loaded
 binary's shapes are the ones this source declares. Both are wanted, and neither
 subsumes the other — a footprint stamp cannot see a change that leaves the shapes

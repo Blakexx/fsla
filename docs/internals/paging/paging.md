@@ -1,6 +1,6 @@
-# `rola/ops/paging.py` — page commitment, keyed to the MMA atom
+# `fsla/ops/paging.py` — page commitment, keyed to the MMA atom
 
-Mirrors `rola/ops/paging.py`, whose docstring keeps the vocabulary and the one-sentence purpose.
+Mirrors `fsla/ops/paging.py`, whose docstring keeps the vocabulary and the one-sentence purpose.
 Companion: `vmm_owner.md` (the VMM backing).
 
 ## A page is the MMA atom, not a compute tile
@@ -70,7 +70,7 @@ predicate and the arena publishes exactly one of them (the table).
 
 `plan_exact` is a HOST call: the admission it performs is exactly what a paged decode
 step needs when it grows, and every growth step before this feature reached the host for
-it, once. `rola.state(pool_slack=...)` is the escape from that reach, and it is storage
+it, once. `fsla.state(pool_slack=...)` is the escape from that reach, and it is storage
 mechanics rather than a mode — the same class of fact as ``strategy`` or the backing
 itself.
 
@@ -114,7 +114,7 @@ always took. There is no new failure mode and no partial claim to unwind.
 
 **POOL-COVERED GROWTH RAISES NO VERDICT.** The step admitted itself, so there is nothing
 urgent for the host — `growth_pending` reads `False`. What a serving loop watches instead
-is `rola.engine.dags.decode_dag.pool_headroom(state)`: the MINIMUM free slots over
+is `fsla.engine.dags.decode_dag.pool_headroom(state)`: the MINIMUM free slots over
 batch-heads (the first one to run out is the one that will need the host). It IS a
 device-to-host read and it does synchronize, which is why it is not on the step's path
 and why the pool exists in the first place: the caller polls it on its own schedule,
@@ -148,7 +148,7 @@ a CUDA device whose driver cannot serve it, naming the driver's own reason. A me
 must not be able to quote the dense allocation as the feature.
 
 The capability is a device fact, proven once per device index by the driver round trip
-:func:`vmm_supported` runs and cached (``rola.ops.paging._VMM_PROBE``) — never re-asked per
+:func:`vmm_supported` runs and cached (``fsla.ops.paging._VMM_PROBE``) — never re-asked per
 arena.
 
 **COMMITMENT FOLLOWS THE CURSOR, NOT THE RESIDENCY.** The two differ: the residency is the

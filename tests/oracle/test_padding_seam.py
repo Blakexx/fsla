@@ -8,16 +8,16 @@ change and no oracle arithmetic change.
 pads; the kernel boundary accepts only its own strict shape and refuses the rest
 (`test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths`).
 
-**PREFILL (no kernel on this line, C_CLEAN_SLATE):** `naive_rola` is already
+**PREFILL (no kernel on this line, C_CLEAN_SLATE):** `naive_fsla` is already
 dimension-generic (it derives `N`/strides from whatever `Topology` it is handed and
 consumes whatever per-level tensors it is given), so the prefill-side proof is a pure
-fp64 equivalence: the SAME learned routing, padded with `rola.ops.padding.pad_routes`
+fp64 equivalence: the SAME learned routing, padded with `fsla.ops.padding.pad_routes`
 to the next power of two >= 16 per level, produces the identical `y` a model built
 directly at that padded width (with the extra digits simply never drawn on) would.
 
 **DECODE has a real kernel on this line**, so its half is graded on the stored state bit
 for bit, and on `y` to its sums' order, through
-`rola.ops.decode._decode_step`/`derive_decode_geometry`: a `d_v` decode's own arm table
+`fsla.ops.decode._decode_step`/`derive_decode_geometry`: a `d_v` decode's own arm table
 does not ship is padded to the smallest one that is, and the result must equal running
 the same weights directly at that shipped `DV` with the pad columns of `v` held at
 zero (K50: "Kernels never see a width other than their own").
@@ -30,13 +30,13 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step
-from rola.ops.lattice import box_shape, to_canonical, to_lattice
-from rola.ops.naive import naive_rola
-from rola.ops.padding import pad_routes, pad_v
-from rola.ops.paging import bytes_equal
-from rola.ops.produce import decode_plan
-from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.ops.decode import _decode_step
+from fsla.ops.lattice import box_shape, to_canonical, to_lattice
+from fsla.ops.naive import naive_fsla
+from fsla.ops.padding import pad_routes, pad_v
+from fsla.ops.paging import bytes_equal
+from fsla.ops.produce import decode_plan
+from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.fixtures import assert_reordered_close, logical_state, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
 
@@ -54,7 +54,7 @@ def _dense_topology(widths):
 def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):
     """`(y_logical, y_padded)`: the same learned routes, run at `widths`/`d_v` and
     again after `pad_routes`/`pad_v` widen them to the padded shape -- fp64 throughout,
-    CPU, no extension involved. `naive_rola` never sees the padding decision; it just
+    CPU, no extension involved. `naive_fsla` never sees the padding decision; it just
     consumes whichever tensors and `Topology` it is handed (K50: "no oracle arithmetic
     change")."""
     generator = torch.Generator().manual_seed(seed)
@@ -64,12 +64,12 @@ def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):
     g_write = torch.rand(B, T, H, dtype=torch.float64, generator=generator) + 0.5
     v = torch.randn(B, T, H, d_v, dtype=torch.float64, generator=generator)
 
-    y_logical, _ = naive_rola(v, read_levels, with_gain(write_levels, g_write), topology, decay=None)
+    y_logical, _ = naive_fsla(v, read_levels, with_gain(write_levels, g_write), topology, decay=None)
 
     padded_topology = topology.padded()
     padded_read = pad_routes(read_levels, padded_topology.widths)
     padded_write = pad_routes(write_levels, padded_topology.widths)
-    y_padded, _ = naive_rola(pad_v(v, d_v), padded_read, with_gain(padded_write, g_write), padded_topology, decay=None)
+    y_padded, _ = naive_fsla(pad_v(v, d_v), padded_read, with_gain(padded_write, g_write), padded_topology, decay=None)
     return y_logical, y_padded
 
 
@@ -129,7 +129,7 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
     model at the shipped DV=64 with the extra 16 value columns unreachable (zero):
     the stored state bit for bit, `y` to its sums' order.
 
-    Decode's own arm key is `(DV, D, decay)` only (`rola.ops.decode.arms`); per-level
+    Decode's own arm key is `(DV, D, decay)` only (`fsla.ops.decode.arms`); per-level
     widths carry no floor of their own (`derive_decode_geometry`'s own docstring) --
     `(64, 64)` is used here as an ALREADY-SHIPPED topology so the row isolates the
     ``d_v`` axis alone, rather than re-covering decode's any-width tolerance

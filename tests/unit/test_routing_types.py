@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError, fields
 import pytest
 import torch
 
-from rola.routing.types import (
+from fsla.routing.types import (
     READ_SUPPORT,
     ROUTE_DESCRIPTOR_VERSION,
     WRITE_SUPPORT,

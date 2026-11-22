@@ -17,9 +17,9 @@ anything stated here.
 
 ## 1. What the kernel computes
 
-The family computes a **gated linear-attention recurrence over a routed leaf address space**. Once the routing
+The family computes a **gated linear-attention recurrence over a factored sparse leaf address space**. Once the routing
 allocations are materialized it is textbook gated linear attention — one state row per leaf, a diagonal gate, a
-rank-one deposit, a linear readout — and the fp64 oracle (`rola/ops/naive.py`) is written as exactly that. The oracle
+rank-one deposit, a linear readout — and the fp64 oracle (`fsla/ops/naive.py`) is written as exactly that. The oracle
 is the executable specification; the kernels are optimizations of it, never a second definition.
 
 **Symbols, defined here and used unqualified below.** `B` batch, `H` heads, `T` tokens, `D` routing levels, `B_l` the
@@ -96,13 +96,13 @@ owner index is a bit-field extract and never a division chain
 in any kernel's addressing.
 
 **Routing is per head, and its shapes are one family.** Every routing weight, kernel and reference carries the head
-axis (the user, 2026-06-24: "there is no form of RoLA without per-head routing -- the whole point is it's a per-head
+axis (the user, 2026-06-24: "there is no form of FSLA without per-head routing -- the whole point is it's a per-head
 mechanism"); a variant checked against a reference that shares its assumption proves nothing. A routing is a tree of
 `D` levels: flat (`D = 1`, width `N`), square (`D = 2`, width `sqrt(N)`) and deeper trees are one family. The capacity
 `N` is invariant across the shapes; what the shape tunes is the routing projection's cost, the sum of the widths a side
 -- factoring makes the routing cheap, not the state, which is still `N` leaves.
 
-**The routing logits are the head's q/k, and a cost lever is depth or width.** RoLA has no q/k apart from them: each
+**The routing logits are the head's q/k, and a cost lever is depth or width.** FSLA has no q/k apart from them: each
 column of a head's projection scores the hidden state against one digit's weight vector, so a head projects the sum of
 both sides' level widths (a tied level counted once) plus `d_v` columns for the product of the widths in leaves. A
 cheaper projection is a narrower level or more levels, priced in the model's own declared knobs (level count, widths,
@@ -132,7 +132,7 @@ itself, and carries:
 | `order` | the canonical order of §2, as a field rather than an assumption |
 | `page_bits` | the page rectangle: the trailing four canonical bits, which may span levels |
 | `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
-| `dtype` | the stored form, `rola._state.STATE_DTYPE` (§3.2) |
+| `dtype` | the stored form, `fsla._state.STATE_DTYPE` (§3.2) |
 | `ids` | the page-table id space, `BH · N / 16` |
 
 **Later calls are CHECKED against it, and a mismatch is a refusal at the seam naming the field that differs.** The
@@ -181,7 +181,7 @@ never on a measured path, since allocating that tensor is exactly what paging ex
 
 Residency is the arena's fact; **activity is the facts' fact**, and only the second decides what a call touches
 (CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the facts
-pass's words (`rola.engine.facts.liveness.page_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
+pass's words (`fsla.engine.facts.liveness.page_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
 state sweep LOADS an atom iff it is resident and `(read ∨ written)` and STORES it iff `written`. Dense and paged touch
 the identical atom set, so the byte gate certifies the skip logic and not merely the addressing, and a resident but
 idle atom costs no state traffic. The price is the in-place law: an atom a sweep skips must already hold what it
@@ -230,7 +230,7 @@ The compiled key is the family's own:
 | family | compiled key | runtime addressing |
 |---|---|---|
 | carry | not built on this line: no arm is declared | the box's per-level extents, the depth, the widths |
-| decode | `DV × D × decay` (`csrc/rola/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
+| decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, facts pass | none: one instantiation each | every width, kind and offset, from the plan or the layout |
 | entmax solves | the padded width class, alpha, the operand dtypes | the level table |
@@ -266,7 +266,7 @@ solve and its unit-max rows, the write gain, and the values, compiled from the l
 width, kind and offset is a runtime field and the family is one instantiation. No producer kernel is built on this
 line (its hopper form: section 9); the solves are their own kernels
 ([`internals/entmax/entmax.md`](internals/entmax/entmax.md)), and the torch composition behind the same call is the
-fp64 reference and the path a gradient takes (`rola/ops/produce.py`).
+fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 
 ### 6.2 The gather pass
 
@@ -307,7 +307,7 @@ BLACKWELL: NOT STATED -- no blackwell intra is designed and no blackwell card me
 
 ### 6.5 Decode — the `T = 1` step
 
-At `T = 1` every tiling decision is degenerate, so decode is its own kernel: a routed gather-GEMV per step over the
+At `T = 1` every tiling decision is degenerate, so decode is its own kernel: a sparse gather-GEMV per step over the
 `(k, m)` lattice, its operands folded from the bundle by the step itself. One wave of resident CTAs VISITS heads from
 a work queue: a visit builds its head's factor tables in a three-phase prologue, the warps claim positions of the
 head's terms (the union of the read and write products as a disjoint sum), and each lane group walks a unit:
@@ -336,7 +336,7 @@ rather than at a threshold (R22).
 
 **A user of the Python package never registers an arm** (CONSTITUTION §R16). The shipped set is each family's
 compiled key above, per architecture, and every other shape a family serves is served by runtime addressing, checked
-at the seam: a call is either lawful and runs, or the refusal names the field (`rola.expert.envelope_refusal`).
+at the seam: a call is either lawful and runs, or the refusal names the field (`fsla.expert.envelope_refusal`).
 
 **Closed-world codegen** is the rule for the binaries — pinned assembler, ahead-of-time only, the declared targets and the gates every build runs, and a device-side stamp asserted before any gate
 ([`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md)).
@@ -379,13 +379,13 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 
 | mechanism | page |
 |---|---|
-| the recurrence and the ratio readout, as the executable spec | `rola/ops/naive.py` |
+| the recurrence and the ratio readout, as the executable spec | `fsla/ops/naive.py` |
 | the update is affine in the input and never in the state | [`architecture/no-delta-rule.md`](architecture/no-delta-rule.md) |
 | accumulation precision | [`architecture/precision.md`](architecture/precision.md) |
 | a schedule per family, atoms, plans, the one entry | [`architecture/families.md`](architecture/families.md) |
 | storing factors, expanding transiently | [`architecture/factored-representation.md`](architecture/factored-representation.md) |
 | dead routes are exact zeros | [`architecture/self-masking-theorem.md`](architecture/self-masking-theorem.md) |
-| the bundle, the public surface | [`api.md`](api.md), [`internals/rola_api.md`](internals/rola_api.md) |
+| the bundle, the public surface | [`api.md`](api.md), [`internals/fsla_api.md`](internals/fsla_api.md) |
 | the state contract, descriptor, backings | [`internals/state.md`](internals/state.md) |
 | the page's planes and its codec | [`internals/common/state_page.md`](internals/common/state_page.md) |
 | the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |

@@ -11,12 +11,12 @@
 
 namespace {
 
-ROLA_DEFINE_ARM_SET(FixtureArmSet, FIXTURE);
+FSLA_DEFINE_ARM_SET(FixtureArmSet, FIXTURE);
 
 void probe(const char* label, FixtureArmSet::Key k) {
   int index = -1, d_v = -1, levels = -1, decay = -1;
   try {
-    rola::arm_switch<FixtureArmSet>(k, [&](auto arm) {
+    fsla::arm_switch<FixtureArmSet>(k, [&](auto arm) {
       index = decltype(arm)::index;
       d_v = decltype(arm)::values[0];
       levels = decltype(arm)::values[1];

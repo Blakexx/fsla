@@ -1,5 +1,5 @@
 // tests/unit/fixtures/structure_switch_probe.cu -- the toy kernel that exercises
-// `rola::uniform_switch`'s four layers, including the trapping default.
+// `fsla::uniform_switch`'s four layers, including the trapping default.
 // Driven by tests/unit/test_structure_switch.py; not part of the extension.
 #include <cstdio>
 #include <cstring>
@@ -18,7 +18,7 @@ __host__ __device__ constexpr int member_value(int a) { return 1 << (2 * a); }
 //: all 32 lanes of the warp ran the same member and differ only by their lane id.
 __global__ void probe(const int* sel, int* out, int n) {
   for (int i = 0; i < n; ++i) {
-    rola::uniform_switch<kNA>(sel[i], [&](auto Ac) {
+    fsla::uniform_switch<kNA>(sel[i], [&](auto Ac) {
       constexpr int a = decltype(Ac)::value;
       out[i * 32 + (int)threadIdx.x] = member_value(a) + (int)threadIdx.x;
     });

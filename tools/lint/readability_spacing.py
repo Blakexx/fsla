@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """READABILITY SPACING LINT (gating). Two checks, csrc (`.cu`/`.cuh`/`.cpp`/`.h`/`.hpp`, excluding
-csrc/third_party) AND Python (`rola/`, `tools/`, `tests/`, `measure/`):
+csrc/third_party) AND Python (`fsla/`, `tools/`, `tests/`, `measure/`):
 
 1. A function/kernel BODY >= 40 LINES with ZERO BLANK LINES inside it. This
    does not dictate WHERE to segment (declarations / loops / branches, this
@@ -12,7 +12,7 @@ csrc/third_party) AND Python (`rola/`, `tools/`, `tests/`, `measure/`):
 2. MORE THAN ONE CONSECUTIVE BLANK LINE, CSRC ONLY (>= 2 blank lines in a
    row) -- the textual mirror of `.clang-format`'s `MaxEmptyLinesToKeep: 1`
    (this stage, config only), scoped exactly the same way that setting is
-   (`.clang-format`'s own header: "Scope: csrc/rola only"). NOT applied to
+   (`.clang-format`'s own header: "Scope: csrc/fsla only"). NOT applied to
    Python: PEP8/pycodestyle's convention is 2 blank lines between top-level
    defs, which `>1` would flag as a violation of a style Python does not
    have -- ruff's `E303` ("too many blank lines", default max 2) is Python's
@@ -44,8 +44,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CSRC = ROOT / "csrc" / "rola"
-PY_ROOTS = [ROOT / "rola", ROOT / "tools", ROOT / "tests", ROOT / "measure"]
+CSRC = ROOT / "csrc" / "fsla"
+PY_ROOTS = [ROOT / "fsla", ROOT / "tools", ROOT / "tests", ROOT / "measure"]
 CSRC_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
 
 MIN_BODY_LINES = 40

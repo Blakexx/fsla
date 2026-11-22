@@ -50,12 +50,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.decode import (
+from fsla.ops.decode import (
     DecodeScratch,
     _decode_step,
     _write_atom_bitmap,
 )
-from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal
+from fsla.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal
 from tests.integration.test_decode_paging import (
     _ARMS,
     _bundles,

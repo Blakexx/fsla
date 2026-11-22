@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""ROLA'S EXECUTORS: what rola's declared targets (`declare.py`) run, in this checkout's environment.
+"""FSLA'S EXECUTORS: what fsla's declared targets (`declare.py`) run, in this checkout's environment.
 
 The build system's worker runs them from this checkout's directory with `.`, `measure` and `tools` on the path.
-Each takes the target's context (`rola_devtools.build.context.Context`) and returns its JSON output, keeping raw files
+Each takes the target's context (`fsla_devtools.build.context.Context`) and returns its JSON output, keeping raw files
 in its workspace:
 
     compile_kernel      the extension, by the build graph (`bazel run //:library`: the gated build, copied into the
@@ -31,7 +31,7 @@ BUILD_TIMEOUT_S = 6 * 3600
 
 
 def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
-    from rola_devtools.process import run
+    from fsla_devtools.process import run
 
     return run(cmd, cwd=CHECKOUT, timeout=timeout)
 
@@ -41,14 +41,14 @@ def _portable(text: str) -> str:
 
 
 def binary() -> Path:
-    sos = sorted(CHECKOUT.glob("rola_*/_C*.so"))
+    sos = sorted(CHECKOUT.glob("fsla_*/_C*.so"))
     if not sos:
-        raise RuntimeError(f"no built extension in {CHECKOUT.name} (rola_<toolchain>/_C*.so)")
+        raise RuntimeError(f"no built extension in {CHECKOUT.name} (fsla_<toolchain>/_C*.so)")
     return sos[0]
 
 
 def compile_kernel(ctx) -> dict:
-    from rola_devtools.build.identity import digest
+    from fsla_devtools.build.identity import digest
 
     done = _run(["bazel", "run", "--noshow_progress", "//:library"], BUILD_TIMEOUT_S)
     (ctx.workspace / "build.log").write_text(_portable(done.stdout[-50000:] + done.stderr[-50000:]))
@@ -151,6 +151,6 @@ def timed(cell, params):
 
 
 def read_clock() -> float | None:
-    from rola.ops import carry
+    from fsla.ops import carry
 
     return carry.sm_clock_ghz()

@@ -211,7 +211,7 @@ def profile_failures(csv_path: Path, kernel: str, declarations: list, lines_at: 
     """The checker's profile rules on a kernel's SourceCounters dump (`ledger`), under the experiment's declarations (a count of a
     CTA-window of the profiled launch, zero where none names the kernel; where the `unit` is no CTA-window none can be read): a
     refusal names the kernel, then each source line that issues the excess with its wavefronts a `unit` (`div` the launch's units),
-    the checker's fix and rola's note. `lines_at` maps an instruction's
+    the checker's fix and fsla's note. `lines_at` maps an instruction's
     offset from the kernel's first to its line in the experiment's source."""
     lines = csv_path.read_text().splitlines()
     start = next((i for i, line in enumerate(lines) if line.startswith('"Kernel Name"')), None)
@@ -312,7 +312,7 @@ _RULE_HAZARDS = {rule: hazard for hazard, rule in HAZARD_RULES.items()}
 
 @functools.cache
 def guidance() -> dict[str, str]:
-    """ROLA'S GUIDANCE, a line a rule of the checker (Blake, 2026-11-20): each entry of the `checker` section of `docs/rules.json`,
+    """FSLA'S GUIDANCE, a line a rule of the checker (Blake, 2026-11-20): each entry of the `checker` section of `docs/rules.json`,
     keyed by the checker rule's name, carries `guidance`, the atom or practice, the standards anchor and the lab page with the
     evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
     entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
@@ -329,7 +329,7 @@ def is_notice_rule(rule: str) -> bool:
 
 def render_refusal(r, experiment: str = "the build") -> list[str]:
     """A checker refusal as the lab's failure lines: the hazard's name the experiment declares, the kernel (the experiment's name for a
-    notice that names none), the count found and declared, and the lab's own words for it, then the checker's fix and rola's note."""
+    notice that names none), the count found and declared, and the lab's own words for it, then the checker's fix and fsla's note."""
     place = experiment if r.kernel == "the build" else r.kernel
     note = getattr(r, "note", None)
     tail = f"\n    note: {note}" if note else ""

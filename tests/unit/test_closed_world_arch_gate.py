@@ -7,7 +7,7 @@ Unlike the build-time rules it cannot be enforced at build time, because the dev
 not present then; it is enforced in C++ by a pair of clauses, and this file gates that
 the pair is intact.
 
-**THE PAIR.** The compile-time half is ``csrc/rola/src/common/arch_caps.cuh``'s
+**THE PAIR.** The compile-time half is ``csrc/fsla/src/common/arch_caps.cuh``'s
 ``static_assert(tabulated(kArch))``, which fixes the capability row every plan's sizes are
 DERIVED from (its shared memory, its registers). The runtime half is
 ``check_arch_table()``, which refuses -- on the first launch, per device -- an
@@ -42,14 +42,14 @@ import torch
 from measure import hardware
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SRC = REPO / "csrc" / "rola" / "src"
+SRC = REPO / "csrc" / "fsla" / "src"
 ARCH_CAPS = SRC / "common" / "arch_caps.cuh"
 
 #: THE ENTRY LIST IS THE REGISTRATION TRANSLATION UNIT'S OWN. Every operator the extension
 #: offers is an ``m.impl`` here and nowhere else, so a family cannot join the library
 #: without appearing in this scan -- which a per-header glob could not promise, since a
 #: family may declare its entries in its kernel header rather than in an ``*_api.cuh``.
-REGISTRATION_TU = REPO / "csrc" / "rola" / "rola_api.cpp"
+REGISTRATION_TU = REPO / "csrc" / "fsla" / "fsla_api.cpp"
 
 #: The device translation units an entry's definition may live in.
 DEVICE_TUS = tuple(sorted(SRC.glob("*/*.cu")))
@@ -59,15 +59,15 @@ DEVICE_TUS = tuple(sorted(SRC.glob("*/*.cu")))
 #: does launch acquires an exemption.
 _LAUNCHLESS = {
     "intra_footprint": "a host derivation over the widths; no device work",
-    "rola_decode_arms": "reads the built arm set out of compile-time constants",
+    "fsla_decode_arms": "reads the built arm set out of compile-time constants",
     "carry_build_stamp": "returns a compiled-in stamp",
     "intra_build_stamp": "returns a compiled-in stamp",
-    "rola_decode_build_stamp": "returns a compiled-in stamp",
+    "fsla_decode_build_stamp": "returns a compiled-in stamp",
     "csrc_build_stamp": "returns a compiled-in stamp",
     "carry_geometry": "a host derivation over the descriptor; no device work",
     "carry_sub_boxes": "a host derivation over the descriptor; no device work",
-    "rola_decode_capacity": "a host derivation over the descriptor; no device work",
-    "rola_decode_producer_width_mirror": "returns a compiled-in width",
+    "fsla_decode_capacity": "a host derivation over the descriptor; no device work",
+    "fsla_decode_producer_width_mirror": "returns a compiled-in width",
     "segment_tokens": "a host query of the card it is asked about (card_of admits it); no device work",
     "vmm_create": "a driver allocation, not a kernel launch",
     "vmm_probe": "a driver capability probe, not a kernel launch",
@@ -78,7 +78,7 @@ _LAUNCHLESS = {
     "vmm_reset": "a logical reset of a driver allocation",
     "vmm_close": "releases a driver allocation",
     "vmm_facts": "reads a driver allocation's bookkeeping",
-    "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
+    "fsla_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
     "device_card": "admits the device's card (the closed-world checks, common/select.cu) and reads it; no device work",
 }
 
@@ -125,7 +125,7 @@ def test_the_runtime_half_refuses_an_untabulated_architecture():
         f"none at all is the runtime half of the closed-world arch rule missing")
     assert "void check_arch_table() { (void)current_card(); }" in defs[0].read_text(), (
         "the runtime half is the card's admission, one definition of it")
-    text = (REPO / "csrc" / "rola" / "src" / "common" / "select.cu").read_text()
+    text = (REPO / "csrc" / "fsla" / "src" / "common" / "select.cu").read_text()
     body = text[text.index("Card admit(int device) {"):]
     body = body[:body.index("\n}\n") + 3]
     assert "carried(build)" in body, "the admission refuses a device whose build the binary does not carry"
@@ -175,8 +175,8 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     launch takes no arm and no state, so what this cell exercises is the gate and
     nothing else.
     """
+    from fsla.ops._ext import extension
     from measure import hardware
-    from rola.ops._ext import extension
 
     #: refuses by name where the capability table carries no row for this device: the row is then the one to add
     hardware.device_arch(*torch.cuda.get_device_capability())

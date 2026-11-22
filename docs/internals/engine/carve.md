@@ -1,4 +1,4 @@
-# `rola/engine/carve.py` — the carve planner
+# `fsla/engine/carve.py` — the carve planner
 
 Mirror of the planner the `carve` rule calls ([`rules.md`](rules.md#carve) says what the
 carve is and why one descriptor). This page explains how producer v1 builds a carve and how

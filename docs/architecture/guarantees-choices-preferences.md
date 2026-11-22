@@ -17,7 +17,7 @@ same week.
 
 **Semantics**
 
-- **The fp64 oracle is the specification.** `rola/ops/naive.py` is the artifact
+- **The fp64 oracle is the specification.** `fsla/ops/naive.py` is the artifact
   future maintainers trust when everything else has been rewritten. It and the
   kernel-vs-oracle quality-diff test are a **protected class**: exempt from test
   trimming, re-run under falsification whenever touched, and — critically —
@@ -33,7 +33,7 @@ same week.
   straight-through estimator, no thresholded skip. A skip is exact by
   construction or it does not ship.
 - **Membership is decided by the realized support bits and by nothing else.**
-  A digit is live exactly when it is nonzero (`rola.engine.facts.liveness`'s
+  A digit is live exactly when it is nonzero (`fsla.engine.facts.liveness`'s
   rule), and the words carry that bit to every consumer
   ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). An
   amplitude comparison in a kernel is only ever a *performance* skip on a value where
@@ -110,7 +110,7 @@ uncertainty in the performance record.
   moves or renames, so a revert is surgical — each recorded in
   `docs/internals/DELETIONS.md`.
 - **Linear, single-purpose commits on `master`.**
-- **`csrc/rola` is formatted once, mechanically** (clang-format, pinned, Google
+- **`csrc/fsla` is formatted once, mechanically** (clang-format, pinned, Google
   base, 100 columns, comment reflow off), enforced by the commit gate and CI so that
   every later diff is content.
 - **Names follow the architectural mental model** — the reduction-theorem

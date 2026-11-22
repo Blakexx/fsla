@@ -1,17 +1,17 @@
 # THE GRAPH ON A FRESH RUNNER: what a machine supplies before `bazel` can run, as docs/setup.md's loop has it --
-# rola-devtools beside the checkout at the commit the tree pins (the dev config's reader and the front door import it
+# fsla-devtools beside the checkout at the commit the tree pins (the dev config's reader and the front door import it
 # from there), room for the graph's environment, and the pinned bazelisk on PATH. Both workflows start here.
 name: the graph on a fresh runner
-description: rola-devtools at its pin beside the checkout, room for the environment, the pinned bazelisk on PATH
+description: fsla-devtools at its pin beside the checkout, room for the environment, the pinned bazelisk on PATH
 runs:
   using: composite
   steps:
-    - name: rola-devtools beside the checkout, at the commit the tree pins
+    - name: fsla-devtools beside the checkout, at the commit the tree pins
       shell: bash
       run: |
         read -r url commit < <(python3 tools/bootstrap.py --devtools-pin)
-        git clone -q "$url" ../rola-devtools
-        git -C ../rola-devtools checkout -q "$commit"
+        git clone -q "$url" ../fsla-devtools
+        git -C ../fsla-devtools checkout -q "$commit"
     # the graph's environment (torch and its CUDA libraries) is several GB: the runner image's unused toolchains go
     - name: room for the graph's environment
       shell: bash

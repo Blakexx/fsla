@@ -1,4 +1,4 @@
-"""rola's runner (measure/provider.py): it reads central cells, names an arm by its subject, its call count
+"""fsla's runner (measure/provider.py): it reads central cells, names an arm by its subject, its call count
 and a layer arm's construction, offers the arms this binary carries at the cell's shape, and refuses a cell by name --
 an iteration build of a declared arm family, a cell of another kind -- while the unbuilt carry leaves `prefill` unoffered. No GPU: nothing here builds an arm, and the binary's
 arm tables are planted (the decode family's, and the declared tables the graph generates)."""
@@ -25,7 +25,7 @@ DECODE_CELL = "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"
 @pytest.fixture
 def binary(monkeypatch):
     """A binary carrying every decode arm (the intra reads its widths by rule)."""
-    import rola.ops.decode as decode
+    import fsla.ops.decode as decode
 
     tables = SimpleNamespace(decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     declared_decode = tuple(tables.decode)
@@ -67,7 +67,7 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
 
 def test_a_cell_is_refused_by_name(binary):
     assert "prefill" not in provider.arms(by_name("deep3-dense"))
-    with pytest.raises(TypeError, match="rola's runner takes a central carry cell or layer cell"):
+    with pytest.raises(TypeError, match="fsla's runner takes a central carry cell or layer cell"):
         provider.arms(by_name("qkv-L1024-dv64"))
     binary.decode = []
     with pytest.raises(RuntimeError, match="iteration build"):

@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from rola.routing.projection import packed_router_logits
-from rola.routing.types import (
+from fsla.routing.projection import packed_router_logits
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     ResolvedRouting,
@@ -174,7 +174,7 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(untied_lev
     Swept over the three tie states (which decide whether the two sides are one GEMM,
     two, or a concatenation) and the bias (a different broadcast per layout).
     """
-    from rola.routing.projection import _packed_router_logits
+    from fsla.routing.projection import _packed_router_logits
 
     torch.manual_seed(23)
     heads, batch, tokens, hidden = 3, 2, 5, 4

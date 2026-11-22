@@ -4,7 +4,7 @@
 """THE ARM GATE FOR THE GRAPH'S LIBRARY: the built arm table against the declared arms, and the coverage sweep
 (`bazel/arms.py`'s `check_built_arm_table` and `sweep_binary`) -- the binary asked
 what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
-binary's on any machine, GPU or none. Run by `bazel/defs.bzl`'s `rola_extension`; writes its verdict to `--out`.
+binary's on any machine, GPU or none. Run by `bazel/defs.bzl`'s `fsla_extension`; writes its verdict to `--out`.
 Docs: docs/build-graph.md#gates.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ def main() -> int:
     headers, tables, specs = (arms.by_family(a.header, "--header"), arms.by_family(a.table, "--table"),
                               arms.by_family(a.arms, "--arms"))
     report = []
-    with tempfile.TemporaryDirectory(prefix="rola_arm_gate_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="fsla_arm_gate_") as tmp:
         #: the stub under its soname, the one the binary's NEEDED names
         (Path(tmp) / "libcuda.so.1").symlink_to(a.driver_stub.absolute())
         for family in sorted(tables):

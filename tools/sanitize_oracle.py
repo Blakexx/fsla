@@ -26,7 +26,7 @@ Invoked BARE: this script takes `gpu_lock()` itself, once, for the whole
 run, exactly the way every
 other GPU entry point does -- never wrap it in an external `flock` on the
 lock path, which serializes against nothing (the lock is the files beside it;
-`rola_devtools.locks.gpu`'s module docstring).
+`fsla_devtools.locks.gpu`'s module docstring).
 
 Exit code is 0 iff every (family, tool) pair is CLEAN or DECLARED. DECLARED is
 the one adjudicated exception, not a skip: the pair still runs and its whole
@@ -48,8 +48,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import toolchains
-from rola_devtools.locks import host
-from rola_devtools.locks.gpu import gpu_lock
+from fsla_devtools.locks import host
+from fsla_devtools.locks.gpu import gpu_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,17 +89,17 @@ _FAMILIES = {
     "carry_call": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
-        kernel="rola::carry::carry_forward", present=False),
+        kernel="fsla::carry::carry_forward", present=False),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"
              "test_g1_the_state_is_byte_reproducible_against_itself[widths0-64]",
-        kernel="rola::decode::rola_decode_forward", present=True),
+        kernel="fsla::decode::fsla_decode_forward", present=True),
     #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
     "entmax": Family(
         test="tests/oracle/test_entmax_cuda_gates.py::"
              "test_teeth_B_values_reject_beyond_tolerance[1.5]",
-        kernel="rola::entmax::union_forward", present=True),
+        kernel="fsla::entmax::union_forward", present=True),
 }
 
 _FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}
@@ -290,7 +290,7 @@ def main() -> int:
         ap.error(f"--sanitizer {args.sanitizer}: an absolute path to an executable, never a name PATH resolves -- the "
                  "lane passes the toolkit's own: bazel test //tests:sanitizer")
     #: the release the toolchain record pins, byte for byte (normalized), as rule 1 pins the assembler and the readers
-    record = toolchains.named(toolchains.built_extension(ROOT).parent.name.removeprefix("rola_"))
+    record = toolchains.named(toolchains.built_extension(ROOT).parent.name.removeprefix("fsla_"))
     here = toolchains.normalize(toolchains.version_text(str(sanitizer)))
     if here != record.sanitizer:
         ap.error(f"--sanitizer {sanitizer} is not toolchain {record.name}'s compute-sanitizer:\n  record: "

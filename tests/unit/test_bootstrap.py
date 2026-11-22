@@ -1,5 +1,5 @@
-"""`tools/bootstrap.py`'s one restated rule -- the dev config's directory and the rola-devtools checkout its workspace
-section names -- agrees with the reader's (`rola_devtools.config`): the graph's front door finds the checkout the dev
+"""`tools/bootstrap.py`'s one restated rule -- the dev config's directory and the fsla-devtools checkout its workspace
+section names -- agrees with the reader's (`fsla_devtools.config`): the graph's front door finds the checkout the dev
 config names, before the reader is importable."""
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import bootstrap  # noqa: E402
 import dev_config  # noqa: E402
-from rola_devtools import config as reader  # noqa: E402
+from fsla_devtools import config as reader  # noqa: E402
 
 
 def test_the_pointer_is_the_readers():

@@ -1,11 +1,11 @@
 # THE WHEELS' METADATA (`bazel run //:wheels`, tools/wheels.py, docs/build.md#wheels): no build backend reads this
-# table, since rola builds through the graph alone and a source install is not supported. The version is
-# `rola/__init__.py`'s `__version__`, and the wheel's one extra, `cu13` (`rola-cu13` at exactly that version), is the wheels tool's.
+# table, since fsla builds through the graph alone and a source install is not supported. The version is
+# `fsla/__init__.py`'s `__version__`, and the wheel's one extra, `cu13` (`fsla-cu13` at exactly that version), is the wheels tool's.
 # The environment's tools and test dependencies are `requirements.in`'s alone: no wheel carries a test, bench or dev extra.
 [project]
-name            = "rola"
+name            = "fsla"
 dynamic         = ["version"]
-description     = "Routed Linear Attention — fused CUDA kernels with a built supported matrix"
+description     = "Factored Sparse Linear Attention — fused CUDA kernels with a built supported matrix"
 readme          = "README.md"
 license         = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -28,7 +28,7 @@ backend-path  = ["tools"]
 [tool.ruff]
 # Carried from the fork's `pyproject.toml` so that "ruff clean" means the same
 # thing on both sides of the extraction; `known-first-party` is the one edit
-# (`fla` -> `rola`).
+# (`fla` -> `fsla`).
 target-version = "py310"
 line-length     = 127
 
@@ -56,8 +56,8 @@ ignore = [
 #: `bench` and `probe` are this repository's benchmark packages under `measure/`,
 #: reached by the sys.path insert their drivers and `tests/conftest.py` perform. They
 #: are first-party by ownership; without saying so, isort files them as third-party
-#: and every module that imports both `rola` and `bench` is unsortable.
-known-first-party        = ["rola", "bench", "probe"]
+#: and every module that imports both `fsla` and `bench` is unsortable.
+known-first-party        = ["fsla", "bench", "probe"]
 force-sort-within-sections = false
 
 [tool.ruff.lint.per-file-ignores]
@@ -67,17 +67,17 @@ force-sort-within-sections = false
 #: own directory on `sys.path` before importing it. The import is deliberately after
 #: that line and cannot be moved above it.
 "measure/*.py" = ["E402"]
-# RUF022 -- REASON: `rola/__init__.py`'s `__all__` is GROUPED BY CONCEPT with a
+# RUF022 -- REASON: `fsla/__init__.py`'s `__all__` is GROUPED BY CONCEPT with a
 # comment per group (the op, the layer, the state, the configuration objects). That
 # grouping is how a reader learns the shape of the public API; alphabetical order
 # would interleave the four groups and delete the only documentation the list has.
-"rola/__init__.py" = ["RUF022"]
+"fsla/__init__.py" = ["RUF022"]
 
 # E30x (pycodestyle's blank-line-spacing family, E301-E306) is not in `[tool.ruff.lint].select` above: ruff gates the
 # family behind `--preview`, and turning preview on there would gate every other family's preview rules too. This table
 # is read only by `tools/lint/run_ruff_e3.sh`, which runs `ruff check --select E3 --preview` and fails the commit on any
-# finding; ruff itself ignores it (`[tool.rola_lint]` is not a ruff key).
-[tool.rola_lint.preview]
+# finding; ruff itself ignores it (`[tool.fsla_lint]` is not a ruff key).
+[tool.fsla_lint.preview]
 ruff_preview_select = ["E3"]
 
 [tool.pytest.ini_options]
@@ -88,7 +88,7 @@ markers = [
   "bench: per-(cell, arm) latency against the committed baseline",
   # K39: a hypothesis-drawn (widths, k_tok, seed, cohort, d_v) sweep over the
   # oracle's `Cell` space, with shrinking. A SUPPLEMENT to the fixed named
-  # cells (`rola-oracle-tests`: "never invent a new one ad hoc"), not a
+  # cells (`fsla-oracle-tests`: "never invent a new one ad hoc"), not a
   # replacement -- opt-in for the same reason `bench` is: an unbounded search
   # has no place in the default battery's runtime budget.
   "hypothesis_cells: hypothesis-drawn oracle cell sweep (opt-in, deselected by default)",

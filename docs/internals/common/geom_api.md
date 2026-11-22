@@ -1,6 +1,6 @@
 # `geom.cu` / `geom_api.cuh` — the addressing block's host seam
 
-Mirrors `csrc/rola/src/common/geom.cu` and `csrc/rola/src/common/geom_api.cuh`. The block's
+Mirrors `csrc/fsla/src/common/geom.cu` and `csrc/fsla/src/common/geom_api.cuh`. The block's
 arithmetic is header-only and lives in `geom.cuh` (`geom.md` is its page); this TU is the
 part that has to exist somewhere ONCE — the launch-time refusals, and the two entries that
 let a test read the SHIPPED derivation rather than a Python mirror of it.
@@ -46,7 +46,7 @@ SIDES' TRANSIT ROW MAPS evaluated over the whole region (`streams × leaf` entri
 The maps are in the vector because a bijection claim is about the map's whole image, and
 the test must not re-implement `geom_xch_row` to make it.
 
-The layout is positional and the reader is `rola/ops/carry.py::geometry`, which names every
+The layout is positional and the reader is `fsla/ops/carry.py::geometry`, which names every
 field once; nothing else parses it. `interleave` (0 or 1) selects the stream placement at
 every carved level (`geom.md#interleaved-placement`) and is echoed in each side's block;
 `atom_floor` (0 or 1) is the warp-level page floor on the canonical innermost level, the shipped

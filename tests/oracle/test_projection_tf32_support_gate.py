@@ -31,10 +31,10 @@ import pytest
 import torch
 from conftest import build_layer, resolved_routing_from_topology
 
-from rola import entmax, softmax
-from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.projection import packed_router_logits, packed_router_logits_reference
-from rola.routing.types import IndependentRouting
+from fsla import entmax, softmax
+from fsla.routing.entmax.production import production_routing_factor_levels
+from fsla.routing.projection import packed_router_logits, packed_router_logits_reference
+from fsla.routing.types import IndependentRouting
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 

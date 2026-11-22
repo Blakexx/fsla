@@ -1,5 +1,5 @@
-"""THE LEAF GEOMETRY'S REGISTER SHAPE, in two places that must agree: ``csrc/rola/src/common/geom.cuh``'s constants and
-their Python mirror, ``rola.engine.constants`` -- the header's literals parsed out of the source text and checked equal,
+"""THE LEAF GEOMETRY'S REGISTER SHAPE, in two places that must agree: ``csrc/fsla/src/common/geom.cuh``'s constants and
+their Python mirror, ``fsla.engine.constants`` -- the header's literals parsed out of the source text and checked equal,
 and the derived counts checked against the numbers they are stated as.
 
 No device, no build: this reads source text and calls pure Python.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from rola.engine import constants as py
+from fsla.engine import constants as py
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +25,7 @@ def test_the_leaves_per_sm_numerator_agrees():
 
 
 # --------------------------------------------------------------------------- the tall owner set
-GEOM_HEADER = ROOT / "csrc" / "rola" / "src" / "common" / "geom.cuh"
+GEOM_HEADER = ROOT / "csrc" / "fsla" / "src" / "common" / "geom.cuh"
 
 
 def _geom_constexpr_int(name: str) -> int:

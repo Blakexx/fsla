@@ -26,7 +26,7 @@ comparison refuses is red, in the checker's own lines. The lab judges through th
   the build's notices -- each counted under its row's rule at the function it names (`register_spill`, `mma_serialized`, ...)
 On a whole binary it also reds a PTX image (closed-world rule 2), and on a whole extension every kernel
 the source defines (`tools/kernels.py`) that no cubin carries and every arm the declarations name (`arms`, each arm's exact kernel pattern)
-that the binary does not carry once: a gate that cannot see a kernel has not gated it. A library of PROBES (`rola_instrument`) owes none of the source's kernels; a
+that the binary does not carry once: a gate that cannot see a kernel has not gated it. A library of PROBES (`fsla_instrument`) owes none of the source's kernels; a
 probe that keeps a signature on purpose (a global reduction between its HMMAs, the cost it measures) declares it, with that cost; a
 declaration that allows a count its architecture's SASS never shows is red, so the declarations only say what is so. It prints the
 counts it reads, the same way `ratify` prints registers and spills, so a clean run is a line of zeros and a red names the signature.

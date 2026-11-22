@@ -6,7 +6,7 @@ own module docstring. A tool that nothing runs is a tool to delete (`DELETIONS.m
 column that matters.
 
 **No tool writes a measurement record except through a declared target.** A measurement is a target of
-`declare.py` (`rola_devtools.build`), its result is stored by a store target beside it, and the tool itself prints or
+`declare.py` (`fsla_devtools.build`), its result is stored by a store target beside it, and the tool itself prints or
 writes `--json`. A tool run by hand prints or writes `--json` and stores nothing; a stored reading is its `declare.py`
 target ([`measurement.md`](../../measurement.md)).
 
@@ -19,17 +19,17 @@ target ([`measurement.md`](../../measurement.md)).
 | [`build_flags.py`](../../build.md) | THE ONE SOURCE of the nvcc flag list | the graph (`bazel/flags.py`) | — |
 | `build_record.py` | the build record `_build_config.py`, rule 3 (every architecture a built one) and rule 5 (the vendored tree's pin) | the graph (`bazel/record.py`), `wheels.py` | the record |
 | `csrc_stamp.py` | the csrc content hash and the header that compiles it into the binary as the device stamp | `ratify.py` (`--json`), the graph's stamp action | the stamp header |
-| [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the rola-devtools checkout; run, the machine's one step outside the graph (the pinned bazelisk) | `dev_config.py`, the graph's front door, a person setting up a machine | the `bazel` link |
+| [`bootstrap.py`](dev_config.md#bootstrap) | what a tool knows before the dev config's reader is importable: the sibling checkouts, the fsla-devtools checkout; run, the machine's one step outside the graph (the pinned bazelisk) | `dev_config.py`, the graph's front door, a person setting up a machine | the `bazel` link |
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built under | `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`wheels.py`](wheels.md) | the graph's library of a clean commit, packaged as the pure-Python wheel and the binary plugin | a person, at a release (`bazel run //:wheels`) | the wheels |
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
 | `supported.py` | the README's supported-configuration table — a REPORT, not a claim | a person, after an arm change | the table |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `ratify.py`, every kernel gate | — |
-| `build/dag_to_dot.py` | a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change: `rola/engine/runner.py` pushes one NVTX range per DAG node, so one `nsys` run settles what a host-side span is, and `--dot` checks a page's diagram against the DAG | the `.svg` beside its page |
+| `build/dag_to_dot.py` | a DAG tuple (`fsla.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change: `fsla/engine/runner.py` pushes one NVTX range per DAG node, so one `nsys` run settles what a host-side span is, and `--dot` checks a page's diagram against the DAG | the `.svg` beside its page |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
 | `git-hooks/post-commit` | THE REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |
 | `git-hooks/commit-msg` | A REVIEW'S BLOCK STOPS THE NEXT COMMIT: `review_gate.py --unanswered` on the commit's message ([`review_gate.md`](review_gate.md#blocking)) | git, every commit | — |
-| [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; a landed `block` refuses the next commit until a message answers it, a `warn` is advisory | the post-commit and commit-msg hooks, a person | `rola-review/` in the git common dir |
+| [`review_gate.py`](review_gate.md) | a commit, range or staged diff reviewed by an LLM against CONSTITUTION and KERNEL_STANDARDS, each finding citing a rule and a line; a landed `block` refuses the next commit until a message answers it, a `warn` is advisory | the post-commit and commit-msg hooks, a person | `fsla-review/` in the git common dir |
 
 ## The census and the assembled code
 
@@ -44,12 +44,12 @@ target ([`measurement.md`](../../measurement.md)).
 | `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py`, `phase_ledger.py` | — |
 | [`arith_model.py`](arith_model.md) | the bf16 family's arithmetic (u8 rows, bf16 values and operands, fp32 sums) modelled against the fp64 recurrence on a cell's draw, each rounding alone and all together | a person (a precision form's design) | prints, `--json` |
 | [`carry_floor.py`](carry_floor.md) | the hopper carry's floor a token for a routing shape, a box and a cluster, term by term, from the H100 labs' records and stated estimates | a shape, a box, a cluster | the terms, their total, the call's time beside FlashAttention's floor |
-| `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | `declare.py` (`support`) | `rola/support` |
+| `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | `declare.py` (`support`) | `fsla/support` |
 | `checked.py` | THE CHECKER'S SEAM: warpline's checker imported from the directory the graph hands in, and what both callers ask of it: the model of a binary's kernels (or of the texts its disassembly wrote), the rules, the profile rule (`sass_gate.md#checker`) | `sass_gate.py`, `lab.py` | -- (a module) |
 | `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them (a stack frame and the convergence calls the checker's, the step signatures its own); guarded convergence fallbacks counted; an unchanged cubin's verdict replayed (`sass_gate.md`) | every iteration build; the graph's SASS gate action (`--cuobjdump`/`--nvdisasm`, its toolkit); the `sass` instrument | `--json`, `--loops` (each step loop's reading and the lines its lints count), `--no-cache` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `sass_control.py` | the SASS control words (stall count, yield, scoreboards, reuse) and the loop a function compiles to; its `MACHINES` table is the static simulator's per-architecture model | `pipe_sim.py`, `burst_gate.py` | — |
-| `header_selfcheck.py` | every header has its compiled unit: the test over the graph's compile of each header alone (`bazel test //csrc/rola:header_selfcheck`) | the gate's lints | — |
+| `header_selfcheck.py` | every header has its compiled unit: the test over the graph's compile of each header alone (`bazel test //csrc/fsla:header_selfcheck`) | the gate's lints | — |
 
 ## The instruments (each a target of `declare.py`)
 

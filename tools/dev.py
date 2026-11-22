@@ -51,11 +51,11 @@ PINS = {"bazelisk": ROOT / "tools" / "bazelisk_pin.json",
         **{name: ROOT / "tools" / f"{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)}}
 #: THE DEVBOX IMAGE (`//:image`, docs/setup.md#the-devbox-image): the name Docker knows it by, and the digest the tree
 #: names, which a commit changing it carries a passing container check for (KERNEL_STANDARDS §23 (3))
-DEVBOX_REPO = "rola-devbox"
+DEVBOX_REPO = "fsla-devbox"
 DEVBOX_DIGEST = ROOT / "tools" / "devbox_image.json"
 #: the clean room's container and the prefix of its volumes
-CHECK_VOLUMES = "rola-devbox-check"
-#: the `rola_results` location of the container checks, one record per image digest
+CHECK_VOLUMES = "fsla-devbox-check"
+#: the `fsla_results` location of the container checks, one record per image digest
 RESULTS_ENVIRONMENT = "environment"
 
 
@@ -152,7 +152,7 @@ def install_pinned(name: str) -> str:
     root, rel = pin["archive_root"], pin["binary_path"]
     dest, binary = Path(dev_config.get("host.tools_dir")), dev_config.pinned(name)
     dest.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"fsla_{name}_") as tmp:
         asset = Path(tmp) / pin["release_asset"]
         _download([pin["release_url"], *pin.get("mirror_urls", [])], asset)
         _verify(f"{name} release", asset, pin["asset_sha256"])
@@ -182,13 +182,13 @@ def site_packages(venv: Path) -> Path:
     return Path(out.stdout.strip())
 
 
-#: the shared checkouts every venv here imports, by a one-line `.pth` naming each: the store's `rola_results` and
-#: rola-devtools' `rola_devtools`
-LINKED = {"rola_results.pth": "store.root", "rola_devtools.pth": "workspace.devtools"}
+#: the shared checkouts every venv here imports, by a one-line `.pth` naming each: the store's `fsla_results` and
+#: fsla-devtools' `fsla_devtools`
+LINKED = {"fsla_results.pth": "store.root", "fsla_devtools.pth": "workspace.devtools"}
 
 
 def link_packages() -> list[Path]:
-    """`rola_results` and `rola_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
+    """`fsla_results` and `fsla_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
     each checkout's own venv (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth
     files). Never the machine's own python: nothing here runs from it."""
     sites = [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
@@ -201,18 +201,18 @@ def link_packages() -> list[Path]:
 
 def wire_hooks(checkout: Path) -> None:
     """The commit gate as a property of the checkout: `core.hooksPath` set per worktree to the tracked hooks (the gate
-    is `bazel test //:gate`), and `rola.venv` naming the checkout's own venv, which the post-commit review runs from, so
+    is `bazel test //:gate`), and `fsla.venv` naming the checkout's own venv, which the post-commit review runs from, so
     no hook reaches the host's python. Refuses a checkout with no venv of its own."""
     venv = checkout_venv(checkout)
     if venv is None:
         raise SystemExit(f"{checkout} has no venv of its own: bazel run //:dev_env in it")
     subprocess.run(["git", "-C", str(checkout), "config", "extensions.worktreeConfig", "true"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "core.hooksPath", "tools/git-hooks"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "rola.venv", str(venv)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "fsla.venv", str(venv)], check=True)
 
 
 #: the marker of a venv `dev-env` wrote: its `.pth` naming the graph's environment
-ENV_PTH = "zz_rola_env.pth"
+ENV_PTH = "zz_fsla_env.pth"
 
 
 def dev_venv(checkout: Path) -> Path:
@@ -307,7 +307,7 @@ def _refuse_unwired() -> None:
                                  capture_output=True, text=True, check=True).stdout.strip())
     hook = common / "hooks" / "pre-commit"
     hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/usr/bin/env bash\n# Written by rola's tools/dev.py init: a checkout reaches this hook only when "
+    hook.write_text("#!/usr/bin/env bash\n# Written by fsla's tools/dev.py init: a checkout reaches this hook only when "
                     "its own commit gate\n# (core.hooksPath -> tools/git-hooks) is not wired, so it refuses.\n"
                     'echo "pre-commit: refusing -- this checkout\'s commit gate is not wired: bazel run //:dev_env" >&2\n'
                     "exit 1\n")
@@ -315,8 +315,8 @@ def _refuse_unwired() -> None:
 
 
 def gate_venv(checkout: Path | str) -> str:
-    """The venv a checkout's commit hooks run from (`git config rola.venv`), or "" when none is named."""
-    done = subprocess.run(["git", "-C", str(checkout), "config", "--get", "rola.venv"], capture_output=True, text=True)
+    """The venv a checkout's commit hooks run from (`git config fsla.venv`), or "" when none is named."""
+    done = subprocess.run(["git", "-C", str(checkout), "config", "--get", "fsla.venv"], capture_output=True, text=True)
     return done.stdout.strip()
 
 
@@ -327,7 +327,7 @@ def cmd_init(a) -> int:
     for name in DEV_TOOLS:
         ensure_pinned(name)
     for site in link_packages():
-        print(f"rola_results, rola_devtools: linked into {site}")
+        print(f"fsla_results, fsla_devtools: linked into {site}")
     for checkout in _worktrees():
         if not os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
             continue
@@ -424,26 +424,26 @@ def cmd_check(a) -> int:
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")
     suite = Path(dev_config.get("workspace.suite"))
-    row((suite / "declare.py").is_file() and (suite / "rola_bench").is_dir(),
+    row((suite / "declare.py").is_file() and (suite / "fsla_bench").is_dir(),
         f"workspace.suite holds the measurement suite's root: {suite}",
-        "point workspace.suite at a rola-bench checkout carrying its root declare.py")
+        "point workspace.suite at a fsla-bench checkout carrying its root declare.py")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     root = Path(dev_config.get("store.root"))
-    row((root / "rola_results" / "store.py").is_file(), f"store.root is a rola-results checkout: {root}",
-        "clone rola-results to store.root, or point store.root at a checkout")
+    row((root / "fsla_results" / "store.py").is_file(), f"store.root is a fsla-results checkout: {root}",
+        "clone fsla-results to store.root, or point store.root at a checkout")
     devtools = Path(dev_config.get("workspace.devtools"))
-    row((devtools / "rola_devtools" / "mirror.py").is_file(), f"workspace.devtools is a rola-devtools checkout: {devtools}",
-        "clone rola-devtools to workspace.devtools, or point workspace.devtools at a checkout")
+    row((devtools / "fsla_devtools" / "mirror.py").is_file(), f"workspace.devtools is a fsla-devtools checkout: {devtools}",
+        "clone fsla-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in the checkout's own venv (its hooks, `container`)
     if readable and own is not None:
         python = own / "bin" / "python"
-        found = subprocess.run([str(python), "-c", "import rola_results, rola_devtools; "
-                                "print(rola_results.ROOT); print(rola_devtools.__file__)"], capture_output=True, text=True)
+        found = subprocess.run([str(python), "-c", "import fsla_results, fsla_devtools; "
+                                "print(fsla_results.ROOT); print(fsla_devtools.__file__)"], capture_output=True, text=True)
         lines = found.stdout.split()
-        row(lines[:1] == [str(root / "records")], f"rola_results imports from store.root in {python}",
+        row(lines[:1] == [str(root / "records")], f"fsla_results imports from store.root in {python}",
             "bazel run //:init")
-        row(lines[1:2] == [str(devtools / "rola_devtools" / "__init__.py")],
-            f"rola_devtools imports from workspace.devtools in {python}", "bazel run //:init")
+        row(lines[1:2] == [str(devtools / "fsla_devtools" / "__init__.py")],
+            f"fsla_devtools imports from workspace.devtools in {python}", "bazel run //:init")
     return _report(rows)
 
 
@@ -479,7 +479,7 @@ def _clock_wsl(mhz: int) -> dict:
     smi, ps = _windows("nvidia-smi.exe"), _windows("WindowsPowerShell/v1.0/powershell.exe")
     appdata = subprocess.run([str(ps), "-NoProfile", "-Command", "$env:LOCALAPPDATA"],
                              capture_output=True, text=True, check=True).stdout.strip()
-    home = Path(f"/mnt/{appdata[0].lower()}{appdata[2:].replace(chr(92), '/')}") / "rola"
+    home = Path(f"/mnt/{appdata[0].lower()}{appdata[2:].replace(chr(92), '/')}") / "fsla"
     home.mkdir(parents=True, exist_ok=True)
 
     def to_windows(path: Path) -> str:
@@ -549,17 +549,17 @@ def cmd_dev_env(a) -> int:
     checkout = Path(a.checkout).resolve()
     venv = dev_venv(checkout)
     if venv.exists():
-        if not list(venv.glob("lib/python*/site-packages/zz_rola_*.pth")):
+        if not list(venv.glob("lib/python*/site-packages/zz_fsla_*.pth")):
             raise SystemExit(f"refusing: {venv} exists and is not a venv this tool wrote")
         shutil.rmtree(venv)
     subprocess.run([a.uv, "venv", "--no-config", "--python", a.python, str(venv)], check=True)
     site = site_packages(venv)
-    (site / f"aa_rola_{checkout.name}.pth").write_text(f"{checkout}\n")
+    (site / f"aa_fsla_{checkout.name}.pth").write_text(f"{checkout}\n")
     for pth, key in LINKED.items():
         (site / pth).write_text(f"{dev_config.get(key)}\n")
     (site / ENV_PTH).write_text(f"{site_packages(Path(a.env))}\n")
     prefix = Path(dev_config.get("host.build_cache")) / "pycache"
-    (site / "zz_rola_pycache.pth").write_text(f"import sys; sys.pycache_prefix = {str(prefix)!r}\n")
+    (site / "zz_fsla_pycache.pth").write_text(f"import sys; sys.pycache_prefix = {str(prefix)!r}\n")
 
     #: the environment's commands (ruff, pytest, ast-grep, ...) on the venv's own bin, run by its interpreter: a Python
     #: entry script copied with this venv's interpreter on its first line, a native one linked; never pip, which would
@@ -581,19 +581,19 @@ def cmd_dev_env(a) -> int:
         (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_config.pinned(name))
 
     wire_hooks(checkout)
-    found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, rola, rola_devtools, rola_results, torch; "
-                            "print(json.dumps({m.__name__: m.__file__ for m in (rola, rola_devtools, rola_results, torch)}))"],
+    found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, fsla, fsla_devtools, fsla_results, torch; "
+                            "print(json.dumps({m.__name__: m.__file__ for m in (fsla, fsla_devtools, fsla_results, torch)}))"],
                            capture_output=True, text=True, cwd=venv.parent)
     if found.returncode:
         raise SystemExit(f"{venv}: its interpreter cannot import the tree's packages:\n{found.stderr[-2000:]}")
     origins = json.loads(found.stdout)
-    want = {"rola": checkout, "rola_devtools": Path(dev_config.get("workspace.devtools")),
-            "rola_results": Path(dev_config.get("store.root")), "torch": site_packages(Path(a.env))}
+    want = {"fsla": checkout, "fsla_devtools": Path(dev_config.get("workspace.devtools")),
+            "fsla_results": Path(dev_config.get("store.root")), "torch": site_packages(Path(a.env))}
     wrong = [f"{name} from {origins[name]}, not {root}" for name, root in want.items()
              if not Path(origins[name]).resolve().is_relative_to(root.resolve())]
     if wrong:
         raise SystemExit(f"{venv}: " + "; ".join(wrong))
-    print(f"venv {venv}: rola from {checkout}, the environment {a.env}; the commit hooks run from it")
+    print(f"venv {venv}: fsla from {checkout}, the environment {a.env}; the commit hooks run from it")
     return 0
 
 
@@ -613,8 +613,8 @@ def cmd_worktree(a) -> int:
     for target in ("//:dev_env", "//:library"):
         subprocess.run(["bazel", "run", target], cwd=worktree, check=True)
     venv = dev_venv(worktree)
-    subprocess.run([str(venv / "bin" / "python"), "-c", "import importlib, rola; from rola.ops._ext import PLUGIN, extension; "
-                    "extension(); print('rola:', rola.__file__, 'archs:', "
+    subprocess.run([str(venv / "bin" / "python"), "-c", "import importlib, fsla; from fsla.ops._ext import PLUGIN, extension; "
+                    "extension(); print('fsla:', fsla.__file__, 'archs:', "
                     "importlib.import_module(PLUGIN + '._build_config').BUILD_CONFIG['archs'])"], cwd=worktree, check=True)
     print(f"worktree {worktree}  venv {venv}")
     return 0
@@ -657,8 +657,8 @@ def _mounts() -> list[str]:
 
 #: the checkouts a container clones, by the dev config key that names each on the host, and the folder it clones into
 #: (beside the checkout, where the reader's defaults look); this checkout's own is `CONTAINER_CHECKOUT`
-CLONED = {"workspace.devtools": "rola-devtools", "store.root": "rola-results", "workspace.suite": "rola-bench"}
-CONTAINER_CHECKOUT = Path("/workspace/rola")
+CLONED = {"workspace.devtools": "fsla-devtools", "store.root": "fsla-results", "workspace.suite": "fsla-bench"}
+CONTAINER_CHECKOUT = Path("/workspace/fsla")
 #: the checkout's venv in the container, by the rule a host's follows
 CONTAINER_PYTHON = dev_venv(CONTAINER_CHECKOUT) / "bin" / "python"
 
@@ -693,7 +693,7 @@ with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
     F.scaled_dot_product_attention(q, q, q, is_causal=True)
 print(torch.cuda.get_device_name(0), torch.__version__)
 PY""",
-    "a host-held lock is held here": f"""{CONTAINER_PYTHON} - {LOCK_PATH}/rola_container_probe.lock <<'PY'
+    "a host-held lock is held here": f"""{CONTAINER_PYTHON} - {LOCK_PATH}/fsla_container_probe.lock <<'PY'
 import fcntl, sys
 f = open(sys.argv[1], "w")
 try:
@@ -707,7 +707,7 @@ PY""",
     "the library builds and imports": f"""set -e
 arch=$({CONTAINER_PYTHON} -c 'import torch; from measure import hardware; print(hardware.device_arch(*torch.cuda.get_device_capability()).removeprefix("sm_"))')
 bazel run //:library --//:archs=$arch --//:decode_arms=0
-{CONTAINER_PYTHON} -c 'import rola; from rola_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
+{CONTAINER_PYTHON} -c 'import fsla; from fsla_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
 }
 #: the steps a fresh machine takes before it can work: the cold start a rented box pays
 COLD_START = ("clone the checkouts", "bootstrap", "init", "dev_env")
@@ -732,18 +732,18 @@ def _git_mounts(staging: Path) -> list[str]:
 
 
 def _container_check(digest: str, tag: str) -> int:
-    from rola_results import Store, checkout, portable
+    from fsla_results import Store, checkout, portable
 
     volumes = {f"{CHECK_VOLUMES}-home": "/root", f"{CHECK_VOLUMES}-work": str(CONTAINER_CHECKOUT.parent)}
     for volume in volumes:
         subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
-    lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"
+    lock = Path(dev_config.get("host.lock_dir")) / "fsla_container_probe.lock"
     holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'w'); "
                                "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", str(lock)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     holder.stdout.readline()
     rows = []
-    with tempfile.TemporaryDirectory(prefix="rola_check_") as staging:
+    with tempfile.TemporaryDirectory(prefix="fsla_check_") as staging:
         args = [x for mount in [*_git_mounts(Path(staging)), *_mounts()] for x in ("-v", mount)]
         args += [x for volume, at in volumes.items() for x in ("-v", f"{volume}:{at}")]
         subprocess.run(["docker", "rm", "-f", CHECK_VOLUMES], capture_output=True)
@@ -794,7 +794,7 @@ def cmd_container(a) -> int:
         return _container_check(digest, tag)
     local = ROOT / ".devcontainer" / "compose.local.yaml"
     volumes = [f"{DEVBOX_REPO}-home:/root", f"{DEVBOX_REPO}-work:{CONTAINER_CHECKOUT.parent}"]
-    doc = {"services": {"rola": {"image": tag, "volumes": [*volumes, *_mounts()]}}}
+    doc = {"services": {"fsla": {"image": tag, "volumes": [*volumes, *_mounts()]}}}
     local.write_text(json.dumps(doc, indent=1) + "\n")
     print(f"wrote {local} ({tag})")
     return 0
@@ -804,8 +804,8 @@ def _container_gate() -> int:
     """KERNEL_STANDARDS §23 (3): a commit that changes the devbox image the tree names (`tools/devbox_image.json`, which
     the graph writes: `//:devbox_image` holds it to the image the graph builds) carries a passing container check for the
     new digest. So a commit that leaves the image alone needs no Docker (a rented box is itself a container)."""
-    from rola_results import Store
-    from rola_results import key as record_key
+    from fsla_results import Store
+    from fsla_results import key as record_key
 
     def named(rev: str) -> str | None:
         blob = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{DEVBOX_DIGEST.relative_to(ROOT)}"],
@@ -863,7 +863,7 @@ BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
 
 def _from_own_venv() -> None:
     """Every other command runs from this checkout's own venv, re-executing this file there when another python started
-    it: the container reads `rola_results`, which the venv links, never the host's own python."""
+    it: the container reads `fsla_results`, which the venv links, never the host's own python."""
     own = checkout_venv(ROOT)
     if own is None:
         raise SystemExit(f"{ROOT.name} has no venv of its own to run this from: bazel run //:dev_env")

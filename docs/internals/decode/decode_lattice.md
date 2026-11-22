@@ -1,7 +1,7 @@
-# `csrc/rola/src/decode/decode_lattice.cuh` — the `(k, m)` box lattice and the T=1 factor tables
+# `csrc/fsla/src/decode/decode_lattice.cuh` — the `(k, m)` box lattice and the T=1 factor tables
 
 <a id="note-l3"></a>The leaf order for `T = 1` decode IS the `(k, m)` box lattice, in the ONE order
-`rola/ops/lattice.py` defines: a leaf is
+`fsla/ops/lattice.py` defines: a leaf is
 named by its owner coordinate `o_l` at every level and by its per-level RUN
 OFFSET `r_l = d_l - o_l * s_l`, composed in MIXED RADIX most significant level
 first,
@@ -22,16 +22,16 @@ reason is the atom: an interleaved order that made a sub-box `k^D` contiguous st
 atoms at 25% occupancy for a token's run over a level DENSE for its side, at either span
 vector, where mixed radix with `s_{D-1} >= kAtomLeaves` FILLS them; where the level is
 narrower than an atom the rectangle spans two levels and the fill is partial
-(`rola/ops/lattice.py`).
+(`fsla/ops/lattice.py`).
 
 Symbols, restated from the spec at first use here: `D` the number of routing
 levels; `B_l` level `l`'s width; `k = 2^kappa` the uniform per-level sub-box
 span; `m = prod_l m_l` the capacity multiplier, distributed innermost-first to
 the atom floor, capped by the level's own width and balanced over the rest
-(spec §2.5 as the atom-rectangle law generalizes it, `rola/ops/lattice.py`);
+(spec §2.5 as the atom-rectangle law generalizes it, `fsla/ops/lattice.py`);
 `s_l = k * m_l` an owner's span at level `l`; `g_l = B_l / s_l` the owner-grid
 extent; `BC = prod_l s_l` the leaves one owner holds; `atom` the 16-leaf page
-granule (`rola::carry::kAtomLeaves`).
+granule (`fsla::carry::kAtomLeaves`).
 
 `decode.cuh` carries the box's fields on `DecodeParams` under the lattice's own
 names (`lat_k`, `lat_s[]`, `lat_g[]`, `lat_gsuf[]`, `lat_run_shift[]`,
@@ -359,7 +359,7 @@ into; neither reads the mask or owner-list arrays through any other route.
 span `s_l` is read as a SINGLE 32-bit slice — both when a level's owner grid is
 built (§1) and when a unit's innermost run is resolved (§3) — so the span is a
 gate the host refuses past, never a slower fallback, at
-[`fill_lattice`](#the-refusals). `rola.ops.lattice` mirrors it (`_MAX_SPAN`) so
+[`fill_lattice`](#the-refusals). `fsla.ops.lattice` mirrors it (`_MAX_SPAN`) so
 a topology the device would refuse is refused on the host, once, before a
 launch, rather than negotiated at one; the decode build stamp carries it, so a
 host that outgrew the device's box fails a device-side check
@@ -371,7 +371,7 @@ from the run offsets and no sub-box scan to bound: the span is the one capacity.
 ## <a id="the-refusals"></a>5. `fill_lattice` — the box's constraints, as runtime checks
 
 Decode takes its lattice as DATA, not as a template arm, so every constraint
-`rola/ops/lattice.py`'s `box_shape` refuses is a `STD_TORCH_CHECK` in
+`fsla/ops/lattice.py`'s `box_shape` refuses is a `STD_TORCH_CHECK` in
 `decode.cu::fill_lattice`:
 
 - `k` and `m` are exact powers of two;
@@ -380,7 +380,7 @@ Decode takes its lattice as DATA, not as a template arm, so every constraint
   owner sits inside a level — `m_l` is spec §2.5 as the atom-rectangle law
   generalizes it, innermost first to the atom floor, capped by the level's own
   width and balanced over the rest, restated in `fill_lattice`'s loop and in
-  `rola.ops.lattice.box_shape`);
+  `fsla.ops.lattice.box_shape`);
 - `owners * BC == N` — the lattice PARTITIONS the leaf space exactly, with no
   remainder leaf and no double-covered one.
 
@@ -392,22 +392,22 @@ atom then spans more than one level. What IS refused is a capacity no span
 vector can carry — `sum_l a_l != log2 m`.
 
 A PAGED backing adds ONE more, checked only where `page_table` is present
-(`rola_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
+(`fsla_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
 `BC >= kAtomLeaves`, i.e. an owner holds a whole number of atoms. That is what
 makes an atom and a unit nest one way or the other, which is what makes the
 candidate enumeration a PARTITION. Mixed radix needs nothing more: an atom is 16
 consecutive `local` values at a multiple of 16, hence an aligned digit rectangle
-for EVERY admissible span vector (`rola/ops/lattice.py`). A DENSE backing never asks an atom a liveness question and
+for EVERY admissible span vector (`fsla/ops/lattice.py`). A DENSE backing never asks an atom a liveness question and
 carries no constraint.
 
-`rola.ops.lattice.derive_lattice` and `box_shape` are the SAME arithmetic,
+`fsla.ops.lattice.derive_lattice` and `box_shape` are the SAME arithmetic,
 host-side and static, and are what choose `(k, m)` for a topology before any of
 this runs — `fill_lattice` re-derives nothing; it validates the pair the host
 already committed to and fills the suffix products and shift widths
-`resolve_unit` reads (§3). `rola.ops.carry` reads its box from the same module,
+`resolve_unit` reads (§3). `fsla.ops.carry` reads its box from the same module,
 so the two families cannot disagree about where a leaf is.
 
-## <a id="the-seam"></a>6. `rola.ops.lattice` — the oracle and test seam, and nowhere else
+## <a id="the-seam"></a>6. `fsla.ops.lattice` — the oracle and test seam, and nowhere else
 
 `permutation(widths, k, m)` builds `pi`, an `[N]` int64 tensor with
 `pi[canonical_leaf] = lattice_leaf` — spec §2.4's theorem that `pi` is a FIXED

@@ -41,7 +41,7 @@ constexpr int kDenseBytes = kRun * 16, kCellBytes = kMaxSteps * 128, kLandBytes 
 constexpr int kHeaderBytes = 8192, kPacketBytes = kLandBytes + kHeaderBytes, kTileSparse = 32, kTileDense = kTileSparse + 384,
               kTileToken = kTileDense + 384 * 16;
 static_assert(kTileToken + 384 * 2 <= kHeaderBytes);
-//: THE LEVEL, for the form that fetches its dense lines itself: 65,536 tokens' rows as the bundle holds them (rola
+//: THE LEVEL, for the form that fetches its dense lines itself: 65,536 tokens' rows as the bundle holds them (fsla
 //: docs/ARCHITECTURE.md section 1), TILE-MAJOR -- a tile of 64 tokens its 16 blocks one after another, a block a
 //: token's 16 bytes a line: 16 MB
 constexpr int kLevelTokens = 65536;

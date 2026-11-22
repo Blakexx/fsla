@@ -26,7 +26,7 @@ def support(routes) -> list[dict]:
     """Each level's and side's nonzero digits a token, over every batch row, token and head."""
     import torch
 
-    from rola.ops.produce import activation_walks
+    from fsla.ops.produce import activation_walks
 
     walks = activation_walks(routes.topology)
     out = []
@@ -49,7 +49,7 @@ def main() -> int:
     ap.add_argument("--json", type=Path, default=None)
     a = ap.parse_args()
 
-    from rola_devtools.locks.gpu import gpu_lock
+    from fsla_devtools.locks.gpu import gpu_lock
 
     from measure.cells import by_name
     from measure.cells.layer import CONSTRUCTIONS, build

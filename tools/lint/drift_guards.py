@@ -30,13 +30,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CSRC = ROOT / "csrc" / "rola"
-PYPKG = ROOT / "rola"
+CSRC = ROOT / "csrc" / "fsla"
+PYPKG = ROOT / "fsla"
 TESTS = ROOT / "tests"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 #: THE DECLARED ARM KEYS, read from the declarations rather than restated: one `arms.bzl` beside each family's kernel
-#: (`csrc/rola/src/<family>/arms.bzl`, the family `bazel/arms.bzl`'s `arm_family` instantiates). A lint that
+#: (`csrc/fsla/src/<family>/arms.bzl`, the family `bazel/arms.bzl`'s `arm_family` instantiates). A lint that
 #: hard-codes the key it enforces is a second declaration of it.
 ARM_DECLARATIONS = sorted((CSRC / "src").glob("*/arms.bzl"))
 
@@ -406,7 +406,7 @@ from lint_standards import _WORK_CODE_RE as _WORK_CODE  # noqa: E402
 
 
 def rule_comments_describe_the_present(files=None) -> list[str]:
-    """A comment in `csrc/` or `rola/` describes the code AS IT IS.
+    """A comment in `csrc/` or `fsla/` describes the code AS IT IS.
 
     A comment about what the code used to be, what it replaced, or which stage changed
     it, is background: it ages into a false statement the moment the next change lands

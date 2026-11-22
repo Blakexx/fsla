@@ -18,7 +18,7 @@ def test_scratch_is_stable_for_one_root(tmp_path, monkeypatch):
 def test_scratch_differs_for_two_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(dev_config, "get", lambda key: str(tmp_path))
     here = dev_config.scratch("lab")
-    monkeypatch.setattr(dev_config, "ROOT", Path("/somewhere/else/rola"))
+    monkeypatch.setattr(dev_config, "ROOT", Path("/somewhere/else/fsla"))
     there = dev_config.scratch("lab")
     assert here != there
     assert here.parent.parent == there.parent.parent == tmp_path

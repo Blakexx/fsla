@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # RUFF BLANK-LINE SPACING, GATING (a finding fails the commit):
 # pycodestyle's blank-line-spacing family, preview-gated in ruff
-# 0.16.5 (see pyproject.toml's `[tool.rola_lint.preview]` comment for the
+# 0.16.5 (see pyproject.toml's `[tool.fsla_lint.preview]` comment for the
 # measurement). Reads the code list from THAT table rather than hardcoding
 # "E3" a second time, so the two stay in one place.
 set -euo pipefail

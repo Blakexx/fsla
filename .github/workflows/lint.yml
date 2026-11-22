@@ -14,7 +14,7 @@ on:
   pull_request:
 
 concurrency:
-  group: rola-cpu-${{ github.ref }}
+  group: fsla-cpu-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -18,10 +18,10 @@ import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from fsla.engine.carve import plan_carve
 from measure.cells import CarryCell
 from measure.cells import carry_cells as registry_cells
 from measure.subjects import bundle_of
-from rola.engine.carve import plan_carve
 from tests.oracle.test_carry_vs_oracle import check, run
 
 pytestmark = [
@@ -39,7 +39,7 @@ _SPARSE_SHAPES = sorted({(cell.widths, cell.tokens, cell.dv) for cell in registr
 @st.composite
 def drawn_cells(draw) -> CarryCell:
     """One drawn `CarryCell` on the central registry's own record shape, so a shrunk failure is reportable by name
-    and can be pasted into rola-devtools' `carry.json` as a fixed cell."""
+    and can be pasted into fsla-devtools' `carry.json` as a fixed cell."""
     widths, tokens, dv = draw(st.sampled_from(_SHAPES))
     k_tok = draw(st.sampled_from([2, 4, 8, 16, None]) if (widths, tokens, dv) in _SPARSE_SHAPES else st.none())
     seed = draw(st.integers(min_value=0, max_value=2 ** 16))

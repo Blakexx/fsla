@@ -1,6 +1,6 @@
 # The rule layer
 
-Mirror of `rola/engine/rules/`. This page explains WHY the layer exists and how its folds
+Mirror of `fsla/engine/rules/`. This page explains WHY the layer exists and how its folds
 connect to the DAGs; the code is the authoritative statement of what each one decides.
 
 Symbols: `BC` the carry's box in leaves, `D` routing depth, `B` uniform level
@@ -34,7 +34,7 @@ band-2 node a DAG walks it as. The function keeps its ordinary signature, and it
 PARAMETER NAMES are the fact names, refused at declaration if they disagree, so the
 adapter from the fact bag to the fold is a lookup rather than a convention.
 
-Everything in `rola/engine/rules/` carries that marker, and `tests/unit/test_facts_rules.py`
+Everything in `fsla/engine/rules/` carries that marker, and `tests/unit/test_facts_rules.py`
 is what makes "everything" a fact: a function landing here unmarked fails the battery.
 The contract the marker stands for cannot be machine-checked, which is exactly why it
 is declared —
@@ -50,8 +50,8 @@ reads exactly whether each is there.
 
 What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
 the import graph: `paging_preference`'s `plan` is a `PrefillPlan` from `plan.py`,
-imported from `rola.engine` like every other core name, so no module here names
-`rola.expert` or `rola.interface` ([`engine.md` §8](engine.md#refusals)). The
+imported from `fsla.engine` like every other core name, so no module here names
+`fsla.expert` or `fsla.interface` ([`engine.md` §8](engine.md#refusals)). The
 alternative shape — a rule reaching up into the facade for the type of a value it was
 handed — survives an import-graph check only while the import hides in a function body.
 
@@ -122,8 +122,8 @@ validates the carve it is handed and refuses one it was not built for; it never 
 a carve. So the planner can change -- a cost model in place of fixed rules -- and every
 kernel keeps working for whatever it returns.
 
-The carve is no rule of the engine: it is the PRODUCER's plan rule (`rola.ops.produce.prefill_plan`: the pinned carve after the same
-check the planner's own passes, else the planner's (`rola/engine/carve.py`, [`carve.md`](carve.md))). It reads the declaration's
+The carve is no rule of the engine: it is the PRODUCER's plan rule (`fsla.ops.produce.prefill_plan`: the pinned carve after the same
+check the planner's own passes, else the planner's (`fsla/engine/carve.py`, [`carve.md`](carve.md))). It reads the declaration's
 widths and which levels each side walks by lists, never an operand. That is the standing rule for every launch-static axis: it is a function of
 launch-static facts (shapes, declared flags, the binary's arms) and never of a routing
 statistic, because the routing distribution moves step to step and a layout chosen from it
@@ -165,7 +165,7 @@ The liveness facts are three bits per `(bh, block)`: `READ`, `WRITE`, `STATE`. T
 no verdict, because the verdict is not a property of the routing. What a skipped block would
 have cost differs by call class and by backing, and a call class here is the PRESENCE of the
 three launch arguments — the entry-state plane, the exit-state plane and the page table —
-never the engagement bits the facade classifies with (`rola/engine/types.py`'s `CallClass`),
+never the engagement bits the facade classifies with (`fsla/engine/types.py`'s `CallClass`),
 because it is the argument that decides the cost:
 
 | call class | `s_in` | `s_out` | `page_tbl` | rule |
@@ -178,7 +178,7 @@ because it is the argument that decides the cost:
 | continued state-out, dense | present | present | absent | `R \| W` |
 | fresh state-out, dense | absent | present | absent | `W` |
 
-`rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
+`fsla/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
 `uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
 eight values, so the rule is written once in readable form and the variant is derived, never
 hand-authored. The kernel's whole predicate is then one shift and one AND, with no branching
@@ -222,7 +222,7 @@ which is precisely what having no residency map means.
 
 **The dense FRESH row skips like its paged twin.** The exit sweep stores the atoms this call
 WRITES and no others, in EITHER backing, so no call writes its plane whole, and the fresh
-dense plane is ZEROED at bind (`rola/engine/facts/nodes.py`'s backing node, one fill per
+dense plane is ZEROED at bind (`fsla/engine/facts/nodes.py`'s backing node, one fill per
 SEQUENCE). An unwritten atom then reads back the same zero an unmapped paged atom does, which
 is what lets this row collapse to `W`. The paged backing needs no fill: an unmapped atom is a
 no-op in the epilogue, and a mapped slot either was zero-initialised on admission or is

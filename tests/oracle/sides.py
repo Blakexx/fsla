@@ -2,24 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE CROWN JEWELS AS DIFF SIDES: what a comparison of two checkouts runs, one cell at a time.
 
-The oracle pair -- `rola/ops/naive.py` and the routing references it composes with -- is what every Tier 1 gate is
+The oracle pair -- `fsla/ops/naive.py` and the routing references it composes with -- is what every Tier 1 gate is
 anchored to, and a change to it cannot be reviewed by reading the diff: the question is never "is the new code
 reasonable" but "does it compute the same function". So both versions are RUN, over the central cells, and compared
-(`rola_devtools.diff`, declared in `declare.py`).
+(`fsla_devtools.diff`, declared in `declare.py`).
 
 Each function here is a SIDE: it takes one cell's record and returns the quantities that side has to show. Nothing
 here compares anything or states a tolerance -- the rule is the diff node's (`bit-identical` for the oracle,
 `support-equal` for the producer) and the two checkouts' functions are the only things that differ.
 
 THE OLD SIDE IS A SECOND CHECKOUT, not an import alias: the build system runs each side in its own environment, and
-the side declares the library it must be running (`binds="rola"`), which the node proves rather than arranges for.
-The oracle pair's sides are CPU and fp64 -- pure torch, no build and no device. The carry's pair is rola's own
+the side declares the library it must be running (`binds="fsla"`), which the node proves rather than arranges for.
+The oracle pair's sides are CPU and fp64 -- pure torch, no build and no device. The carry's pair is fsla's own
 kernel-vs-oracle diff: the kernel's ``num`` in the recurrence's units against the fp64 inter term and its envelope.
 
     producer    the routing reference: the solve's amplitudes, its SUPPORT SET, tau, and the VJP through the public
                 entry point. The support set is the claim with teeth: a threshold that moves by one entry is a routing
                 change, not rounding, which is why the rule here is support equality and not bit-identity.
-    oracle      `naive_rola` itself, FORWARD AND BACKWARD, on a carry cell's own draw. Compared BY BIT-IDENTITY: both
+    oracle      `naive_fsla` itself, FORWARD AND BACKWARD, on a carry cell's own draw. Compared BY BIT-IDENTITY: both
                 sides run fp64 on identical inputs, so a rewrite that only nearly reproduces the old one has changed
                 the definition.
     carry-kernel the carry over a whole call against the fp64 inter term, per slot under the output kind's clauses
@@ -33,9 +33,9 @@ and never random, so a generator's state cannot depend on how many cells ran bef
 from __future__ import annotations
 
 import torch
-from rola_devtools.cells import build as build_cell
-from rola_devtools.cells import carry as carry_cells
-from rola_devtools.cells import producer as producer_cells
+from fsla_devtools.cells import build as build_cell
+from fsla_devtools.cells import carry as carry_cells
+from fsla_devtools.cells import producer as producer_cells
 
 from tests.oracle.fixtures import with_gain
 
@@ -60,8 +60,8 @@ def _flatten(**named) -> dict:
 
 def producer(record: dict, **_params) -> dict:
     """The routing reference on one producer cell: the solve, its support, and the VJP through the public entry."""
-    from rola.routing.entmax.reference import entmax, entmax_forward
-    from rola.routing.reference import _union_split_with_support, union_split
+    from fsla.routing.entmax.reference import entmax, entmax_forward
+    from fsla.routing.reference import _union_split_with_support, union_split
 
     cell = build_cell(record)
     drawn = producer_cells.realize(cell)
@@ -84,13 +84,13 @@ def producer(record: dict, **_params) -> dict:
 
 
 def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
-    """`naive_rola` on one carry cell, forward and backward, in fp64 on the CPU.
+    """`naive_fsla` on one carry cell, forward and backward, in fp64 on the CPU.
 
     The cell's own draw is the input -- the same record the kernel's own oracle gate runs on -- upcast to fp64,
     because what is being compared here is the REFERENCE's arithmetic and not a kernel's rounding.
     """
-    from rola.ops.naive import naive_rola
-    from rola.routing.types import IndependentRouting, LeafMassDecay, SoftmaxActivation, Topology
+    from fsla.ops.naive import naive_fsla
+    from fsla.routing.types import IndependentRouting, LeafMassDecay, SoftmaxActivation, Topology
 
     cell = build_cell(record)
     drawn = carry_cells.realize(cell, B=batch, H=heads, device="cpu")
@@ -112,7 +112,7 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
     #: a CARRIED cell enters with its own state, which is the cell's claim and not this comparison's
     #: the draw's entry is `[B H, N, cols]`, the oracle's `[B, H, N, cols]` (`bh = b H + h`)
     entry = None if drawn.entry is None else drawn.entry.double().reshape(batch, heads, *drawn.entry.shape[1:])
-    y, state = naive_rola(v, read, with_gain(write, g_write), topology, decay, initial_state=entry, output_final_state=True)
+    y, state = naive_fsla(v, read, with_gain(write, g_write), topology, decay, initial_state=entry, output_final_state=True)
     out = {"y": y.detach(), "state": state.detach()}
     dy = torch.linspace(-1.0, 1.0, y.numel(), dtype=torch.float64).reshape(y.shape)
     dstate = torch.linspace(0.25, -0.75, state.numel(), dtype=torch.float64).reshape(state.shape)
@@ -124,7 +124,7 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
 
 
 def carry_kernel(record: dict, **_params) -> dict:
-    """THE CARRY on one carry cell, its ``num`` in the recurrence's units -- the left side of rola's own
+    """THE CARRY on one carry cell, its ``num`` in the recurrence's units -- the left side of fsla's own
     kernel-vs-oracle diff, the same call `test_carry_vs_oracle.py` makes."""
     from tests.oracle.test_carry_vs_oracle import in_truth, run
 

@@ -1,7 +1,7 @@
 # The hardware configuration (the generated `hardware.cuh`)
 
 The hardware a kernel runs on, mapped to the constants its code and its choices read, in one file:
-`csrc/rola/src/common/hardware.json`. `hardware.cuh` is generated from it by the build graph (`//csrc/rola:hardware_header`, `python -m measure.hardware --header`)
+`csrc/fsla/src/common/hardware.json`. `hardware.cuh` is generated from it by the build graph (`//csrc/fsla:hardware_header`, `python -m measure.hardware --header`)
 into the units' include path and is checked in nowhere; `measure/hardware.py` reads it, resolves it and checks it, and
 `tools/lint/lint_standards.py` gates the check on every commit.
 
@@ -57,7 +57,7 @@ while a class template carrying it compiles -- so host templates and plans take 
 <a id="traits"></a>
 `traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
 chosen per architecture) and the architecture's `Caps`. An architecture is BUILT when its build chooses a window
-(`measure.hardware.built`: the graph's default `--//:archs`, `BUILT_ARCHS` in `@rola_env//:flags.bzl`); a tabulated
+(`measure.hardware.built`: the graph's default `--//:archs`, `BUILT_ARCHS` in `@fsla_env//:flags.bzl`); a tabulated
 architecture that is not built leaves it unchosen. sm_90a's is 1,024, provisional until the sm_90 carry's design
 picks it (Blake, 2026-11-09). The check
 (`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside

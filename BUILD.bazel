@@ -1,7 +1,7 @@
 """THE ROOT PACKAGE: the build's parameters and the extension (docs/build-graph.md#compile).
 
-    bazel build //:library                      # rola_cu13/_C.abi3.so and its build record, the shipped build
-    bazel run //:library                        # the same, copied into this checkout's rola_cu13/
+    bazel build //:library                      # fsla_cu13/_C.abi3.so and its build record, the shipped build
+    bazel run //:library                        # the same, copied into this checkout's fsla_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3    # an iteration build
     bazel test //:derivation                    # tools/manifests/derivation.json is what the graph's harness writes
     bazel run //:derivation_update              # write it (and //:readme_update, //:devbox_image_update: docs/build-graph.md#committed-files)
@@ -9,10 +9,10 @@
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
-load("@rola_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
+load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "lock_update", "ratify_census", "ratify_run", "rola_extension", "rola_instrument", "rola_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
-load("@rola_tree//:tree.bzl", "TRACKED")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
 
@@ -22,7 +22,7 @@ exports_files([
     "MODULE.bazel",
     "requirements.lock",
     "sgconfig.yml",
-    "rola/__init__.py",
+    "fsla/__init__.py",
     "measure/__init__.py",
     "measure/hardware.py",
     "docs/rules.json",
@@ -43,25 +43,25 @@ string_list_flag(
     visibility = ["//visibility:public"],
 ) for family in ARM_FAMILIES]
 
-rola_extension(
+fsla_extension(
     name = "library",
     cxx11_abi = CXX11_ABI,
     toolchain = TOOLCHAIN,
     torch = TORCH,
     torch_cuda = TORCH_CUDA,
-    shared_libraries = ["@rola_env//:torch_libraries"],
+    shared_libraries = ["@fsla_env//:torch_libraries"],
     #: the unit lints read the units it links; the test tiers import it
     visibility = [
-        "//csrc/rola:__pkg__",
+        "//csrc/fsla:__pkg__",
         "//tests:__pkg__",
     ],
     deps = [
-        "//csrc/rola:decode_declarations",
-        "//csrc/rola:entmax_units",
-        "//csrc/rola:registration",
-        "//csrc/rola:runtime",
-        "//csrc/rola:stamp_unit",
-        "//csrc/rola:units",
+        "//csrc/fsla:decode_declarations",
+        "//csrc/fsla:entmax_units",
+        "//csrc/fsla:registration",
+        "//csrc/fsla:runtime",
+        "//csrc/fsla:stamp_unit",
+        "//csrc/fsla:units",
     ],
 )
 
@@ -89,7 +89,7 @@ dev_run(
     command = ["dev-env"],
     env = True,
     tools = {
-        "@rola_env//:python": "--python",
+        "@fsla_env//:python": "--python",
         "@uv//:uv": "--uv",
     },
 )
@@ -99,7 +99,7 @@ ratify_census(
     name = "census",
     library = ":library",
     #: the template lint reads the units the library compiled
-    visibility = ["//csrc/rola:__pkg__"],
+    visibility = ["//csrc/fsla:__pkg__"],
 )
 
 #: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
@@ -120,10 +120,10 @@ genrule(
         "README.md",
         "measure/__init__.py",
         "measure/hardware.py",
-        "//csrc/rola:src/common/hardware.json",
+        "//csrc/fsla:src/common/hardware.json",
         "//tools:toolchain_records",
         "//tools:toolchains.py",
-    ] + glob(["rola/**/*.py"]),
+    ] + glob(["fsla/**/*.py"]),
     outs = ["readme/README.md"],
     cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath README.md) --out $@",
     tags = ["no-sandbox"],
@@ -140,10 +140,10 @@ genrule(
     name = "devbox_image_record",
     srcs = [":image"],
     outs = ["devbox_image/devbox_image.json"],
-    cmd = "$(execpath @rola_env//:python) $(execpath //tools:oci_layout.py) --record $(execpath :image) > $@",
+    cmd = "$(execpath @fsla_env//:python) $(execpath //tools:oci_layout.py) --record $(execpath :image) > $@",
     tools = [
         "//tools:oci_layout.py",
-        "@rola_env//:python",
+        "@fsla_env//:python",
     ],
 )
 
@@ -153,31 +153,31 @@ committed_file(
     generated = ":devbox_image_record",
 )
 
-#: THE WHEELS (docs/build.md#wheels): `rola` and its plugin `rola-cu13` from this library, on a clean commit;
+#: THE WHEELS (docs/build.md#wheels): `fsla` and its plugin `fsla-cu13` from this library, on a clean commit;
 #: `bazel run //:wheels` writes dist/
-rola_wheels(
+fsla_wheels(
     name = "wheels",
     library = ":library",
 )
 
-#: THE MEASUREMENTS (docs/measurement.md): rola-devtools' build system running this checkout's declarations, and the
+#: THE MEASUREMENTS (docs/measurement.md): fsla-devtools' build system running this checkout's declarations, and the
 #: store's own command line, each in the checkout on its own venv
 tool_run(
     name = "measure",
-    module = "rola_devtools.build",
+    module = "fsla_devtools.build",
 )
 
 tool_run(
     name = "results",
-    module = "rola_results",
+    module = "fsla_results",
 )
 
 #: the public mirror's export (`.github/mirror/declarations.json`), on the environment's interpreter, which carries
-#: rola-devtools at its pin: what CI's mirror job runs
+#: fsla-devtools at its pin: what CI's mirror job runs
 tool_run(
     name = "mirror",
     environment = True,
-    module = "rola_devtools.mirror",
+    module = "fsla_devtools.mirror",
 )
 
 ratify_run(
@@ -209,12 +209,12 @@ genrule(
         "@devbox_base_linux_amd64",
     ],
     outs = ["devbox_debs.tar"],
-    cmd = "$(execpath @rola_env//:python) $(execpath //tools:usrmerge_layer.py) --base $(execpath @devbox_base_linux_amd64) " +
+    cmd = "$(execpath @fsla_env//:python) $(execpath //tools:usrmerge_layer.py) --base $(execpath @devbox_base_linux_amd64) " +
           "--in $(execpath @devbox//:flat) --out $@",
     tools = [
         "//tools:oci_layout.py",
         "//tools:usrmerge_layer.py",
-        "@rola_env//:python",
+        "@fsla_env//:python",
     ],
 )
 
@@ -260,19 +260,19 @@ tool_test(
 oci_load(
     name = "image_load",
     image = ":image",
-    repo_tags = ["rola-devbox:latest"],
+    repo_tags = ["fsla-devbox:latest"],
 )
 
-#: `bazel run //:image_push` publishes the image to Docker Hub (`blakeresearch/rola-devbox`, public like the namespace's
+#: `bazel run //:image_push` publishes the image to Docker Hub (`blakeresearch/fsla-devbox`, public like the namespace's
 #: other images), where a rented box pulls it by the digest the tree names; tagged by the digest's first 12 digits
 genrule(
     name = "image_tag",
     srcs = [":image"],
     outs = ["image_tag.txt"],
-    cmd = "$(execpath @rola_env//:python) $(execpath //tools:oci_layout.py) --tag $(execpath :image) > $@",
+    cmd = "$(execpath @fsla_env//:python) $(execpath //tools:oci_layout.py) --tag $(execpath :image) > $@",
     tools = [
         "//tools:oci_layout.py",
-        "@rola_env//:python",
+        "@fsla_env//:python",
     ],
 )
 
@@ -280,7 +280,7 @@ oci_push(
     name = "image_push",
     image = ":image",
     remote_tags = ":image_tag",
-    repository = "index.docker.io/blakeresearch/rola-devbox",
+    repository = "index.docker.io/blakeresearch/fsla-devbox",
 )
 
 #: the image as Docker loads it, which the container commands hand it
@@ -304,7 +304,7 @@ filegroup(
     ("container_compose", "compose"),
 ]]
 
-#: THE TREE: every tracked file, each package's part (`git ls-files`, @rola_tree), as the checks read it; and its
+#: THE TREE: every tracked file, each package's part (`git ls-files`, @fsla_tree), as the checks read it; and its
 #: Python files
 tree_part()
 
@@ -374,7 +374,7 @@ tree_test(
     data = [
         "//tools/lint:tracked",
         ":tree_python",
-        "//csrc/rola:tracked",
+        "//csrc/fsla:tracked",
     ],
 )
 
@@ -389,7 +389,7 @@ tree_test(
 tree_test(
     name = "mirror_declarations",
     size = "small",
-    cmd = ["python3", "-m", "rola_devtools.mirror", "--check"],
+    cmd = ["python3", "-m", "fsla_devtools.mirror", "--check"],
     data = [":tree"],
     git = True,
 )
@@ -435,7 +435,7 @@ tree_test(
 )
 
 #: EVERY RULE HAS A ROW (KERNEL_STANDARDS, the preamble): docs/rules.json names the mechanism of every rule of both documents,
-#: and a row for every rule of the pinned checker (`@warpline`, the module the lab's check calls) carrying rola's guidance on it
+#: and a row for every rule of the pinned checker (`@warpline`, the module the lab's check calls) carrying fsla's guidance on it
 tree_test(
     name = "rules_table",
     size = "small",
@@ -512,7 +512,7 @@ test_suite(
         ":ratchet_rules_owed",
         ":ratchet_vulture",
         ":ratchet_work_codes",
-        "//csrc/rola:lints",
+        "//csrc/fsla:lints",
         "//tools/lint:primitives_census",
     ],
 )

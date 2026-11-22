@@ -75,3 +75,14 @@ def test_head_is_read_through_the_rekeys_so_a_rename_is_not_growth_and_an_added_
     assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 1}), head)[2] == Counter()
     assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 2}), head)[2] == Counter({NEW_ENTRY: 1})
     assert ratchet.verdict(Counter(), Counter({NEW_ENTRY: 1}), Counter({OLD_ENTRY: 1}))[2] == Counter({NEW_ENTRY: 1})
+
+
+def test_a_follow_carries_an_entry_to_its_new_digest_and_head_is_read_through_it():
+    """A reworded line changes its digest; the recorded follow maps HEAD's entry to the new key, so the move is not
+    growth, while a follow cannot add to a count."""
+    old, new = ("a.py", "m", "1" * 16), ("b.py", "m", "2" * 16)
+    follows = [{"path": "a.py", "from_sha256": "1" * 16, "to_sha256": "2" * 16, "count": 2}]
+    head = ratchet.followed(Counter({old: 2}), follows)
+    assert head == Counter({("a.py", "m", "2" * 16): 2})
+    assert ratchet.verdict(Counter(), Counter({new: 2}), head)[2] == Counter()
+    assert ratchet.verdict(Counter(), Counter({new: 3}), head)[2] == Counter({new: 1})

@@ -1,7 +1,7 @@
 # ESSENTIALS — injected after every compaction / resume. Read before acting.
 
 Everything here is IN THIS REPO. A site's own notes (scratch, memory, the queue) are appended by
-the hook only when the environment names them (`ROLA_SCRATCH`); the repo never references out.
+the hook only when the environment names them (`FSLA_SCRATCH`); the repo never references out.
 
 ## The constitution and the laws
 `docs/CONSTITUTION.md` — the owner's standing rulings; `docs/KERNEL_STANDARDS.md` — the LAWS. Before touching a

@@ -1,4 +1,4 @@
-# `csrc/rola/src/entmax/entmax.{cuh,cu}` — the producer's union entmax solve
+# `csrc/fsla/src/entmax/entmax.{cuh,cu}` — the producer's union entmax solve
 
 Hand CUDA over CUB warp primitives: the α-entmax solve that turns per-token read
 and write LOGITS into route VALUES, a midpoint amplitude, and §4.1's packed
@@ -160,11 +160,11 @@ same machine over a different phase set and a second copy would be a second thin
 keep in step.
 
 <a id="near-line-33"></a>They sit behind `#ifdef __CUDACC__`. That guard is load-bearing and not defensive:
-`csrc/rola/rola_api.cpp` includes this header to reach the host declarations below,
+`csrc/fsla/fsla_api.cpp` includes this header to reach the host declarations below,
 and it is compiled by the HOST compiler, which knows nothing of `__device__` or
 `__nv_bfloat16`.
 
-<a id="reductions"></a>**The row reductions are rola's, not CCCL's.** `Max`, `Min` and `Sum` carry the exact
+<a id="reductions"></a>**The row reductions are fsla's, not CCCL's.** `Max`, `Min` and `Sum` carry the exact
 bodies and signatures CCCL 2.x shipped as `cub::Max` (`(b > a) ? b : a`), `cub::Min` (`(b < a) ? b : a`) and
 `cub::Sum` (`a + b`): forwarding references, `common_type` results. CCCL 3 (CUDA 13) removed those three in favor of
 `cuda::maximum`, `cuda::minimum` and `cuda::std::plus`, and `cuda::minimum` is `(a < b) ? a : b`: on a tie (`-0.0`
@@ -178,7 +178,7 @@ were unchanged. Timed, the port costs 3-5% on a few entmax cells (deep-D4-w8, de
 13.0 alike, and CCCL 3's own functors move the cost between cells without removing it. No identity-preserving spelling
 exists once CCCL 3 deleted the originals. Accepted for the CUDA 13 move.
 
-The namespace is NAMED (`rola::entmax::detail`), so moving these out of `entmax.cu`
+The namespace is NAMED (`fsla::entmax::detail`), so moving these out of `entmax.cu`
 moved no mangled symbol and changed no generated code — the SASS-body hashes
 (`bazel run //tools:sass_bodies`) of all 380 bodies were equal across the
 move, which is the check that says so rather than the claim that it should.
@@ -223,7 +223,7 @@ The `saturated` flag it returns is not cosmetic: the backward zeroes `d_delta`
 wherever it fires, because at saturation the difference is no longer a
 differentiable function of the two logits.
 
-<a id="logwritegate"></a>`csrc/rola/src/entmax/entmax.cuh`'s `log_write_gate` is the companion:
+<a id="logwritegate"></a>`csrc/fsla/src/entmax/entmax.cuh`'s `log_write_gate` is the companion:
 `log(sigmoid(-delta)) == -softplus(delta)`,
 finite for every finite input, computed as `-(max(d,0) + log1p(exp(-|d|)))`.
 **`log1pf` rather than `logf(1+x)`** because the governing baseline is the fp64

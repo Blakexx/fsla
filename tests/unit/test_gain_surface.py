@@ -18,26 +18,26 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.layer import RoLA
-from rola.routing.producer import Routing, split_routing
-from rola.routing.side_gain import GainConfig
+from fsla.layer import FSLA
+from fsla.routing.producer import Routing, split_routing
+from fsla.routing.side_gain import GainConfig
 
 _H, _DV = 2, 32
 _HIDDEN = _H * _DV
 
 
-def _layer(*, gain: bool, **kwargs) -> RoLA:
+def _layer(*, gain: bool, **kwargs) -> FSLA:
     #: the alternating scheme: every side has a dense level (docs/api.md section 2.1)
     levels = [split_routing(4, 1.5, sparse_duty="write"), split_routing(4, 1.5, sparse_duty="read")]
-    return RoLA(Routing(levels, gain=gain, **kwargs), hidden_size=_HIDDEN,
+    return FSLA(Routing(levels, gain=gain, **kwargs), hidden_size=_HIDDEN,
                 num_heads=_H, d_v=_DV).double()
 
 
-def _factors(layer: RoLA, x: torch.Tensor):
+def _factors(layer: FSLA, x: torch.Tensor):
     return layer._produce(x)[0]
 
 
-def _gain(layer: RoLA, x: torch.Tensor):
+def _gain(layer: FSLA, x: torch.Tensor):
     """``(gain, with, without)``: the layer's bundle, its gain-free twin's (the same routing columns, the gain column
     removed) and the write gain between them -- write level 0's scale over the twin's, since the producer folds its
     gain into that scale and nowhere else (docs/CONSTITUTION.md#r23)."""
@@ -62,11 +62,11 @@ def test_the_public_flag_is_the_only_gain_parameter_on_the_routing():
     signature. The fine-grained combinations stay reachable via `gain_config`.
 
     The gain is a fact about the routing's side gains, not about the layer wrapping
-    it, so it sits on the declared `Routing` (`RoLA`'s own signature carries no gain
+    it, so it sits on the declared `Routing` (`FSLA`'s own signature carries no gain
     knob at all)."""
     import dataclasses
 
-    layer_parameters = __import__("inspect").signature(RoLA.__init__).parameters
+    layer_parameters = __import__("inspect").signature(FSLA.__init__).parameters
     assert not any(name in layer_parameters for name in ("gain", "write_gain", "read_gain"))
 
     fields = {f.name: f for f in dataclasses.fields(Routing)}

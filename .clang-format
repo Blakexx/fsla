@@ -1,11 +1,11 @@
-# RoLA .clang-format — survey-calibrated codification of the existing style
+# FSLA .clang-format — survey-calibrated codification of the existing style
 # (P03, 2026-08-04). Base is Google because the measured tree already IS
 # Google's core: 2-space indent, attached braces, left pointer alignment.
-# Every override below codifies a MEASURED dominant habit of csrc/rola, not
+# Every override below codifies a MEASURED dominant habit of csrc/fsla, not
 # taste; the survey evidence is in the coordinator's P03 stage record.
 #
-# Scope: csrc/rola only. csrc/third_party is vendored and never formatted;
-# the pre-commit hook and CI scope their file lists to csrc/rola.
+# Scope: csrc/fsla only. csrc/third_party is vendored and never formatted;
+# the pre-commit hook and CI scope their file lists to csrc/fsla.
 #
 # Pinned tool: clang-format 19.1.7 (pip package `clang-format==19.1.7`).
 # `SkipMacroDefinitionBody` requires >= 18.
@@ -32,8 +32,8 @@ BreakBeforeBinaryOperators: NonAssignment
 # must never rewrap them.
 ReflowComments: false
 
-# The ROLA_* dispatch-chain macros (ROLA_CONSUMER_*, ROLA_DECODE_*,
-# ROLA_ENTMAX_*) are hand-laid tables: single-line `if` arms and aligned
+# The FSLA_* dispatch-chain macros (FSLA_CONSUMER_*, FSLA_DECODE_*,
+# FSLA_ENTMAX_*) are hand-laid tables: single-line `if` arms and aligned
 # backslash continuations. Formatting their bodies would explode them.
 SkipMacroDefinitionBody: true
 

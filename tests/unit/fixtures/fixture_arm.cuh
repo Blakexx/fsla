@@ -12,5 +12,5 @@ __global__ void arm_kernel(int* out) {
 
 }  // namespace fixture
 
-#define ROLA_FIXTURE_ARM_DEFINE(I, DV, LV, DC) \
+#define FSLA_FIXTURE_ARM_DEFINE(I, DV, LV, DC) \
   template __global__ void fixture::arm_kernel<I, DV, LV, DC>(int*);

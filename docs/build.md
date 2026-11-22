@@ -2,7 +2,7 @@
 
 What the build is and what it guarantees: the closed-world rules it enforces, the iteration builds it allows, the arm
 lists, the flags' measured decisions, the stable ABI and the two wheels. The build is the graph's; its targets,
-parameters, rules and gates are [`build-graph.md`](build-graph.md). rola does not build from source: `pip install .`
+parameters, rules and gates are [`build-graph.md`](build-graph.md). fsla does not build from source: `pip install .`
 refuses, naming the targets below (`pyproject.toml`'s backend, `tools/no_source_build.py`).
 
 ## The governing constraint
@@ -22,7 +22,7 @@ silently.
 ## <a id="building"></a>Building
 
 ```bash
-bazel run //:library                                   # every built architecture and arm, into rola_cu13/
+bazel run //:library                                   # every built architecture and arm, into fsla_cu13/
 bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (below)
 bazel run //:wheels                                    # the two wheels of a clean commit (below)
 ```
@@ -32,7 +32,7 @@ of `ARM_FAMILIES` (`--//:decode_arms`) ([`build-graph.md`](build-graph.md#compil
 `host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets: beyond the target count it buys
 nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
 machine-wide host budget, which the front door takes for it ([`build-graph.md`](build-graph.md#front-door)); any other
-CPU-heavy command runs under the same pool with `python -m rola_devtools.locks.host [--exclusive] -- <cmd>`.
+CPU-heavy command runs under the same pool with `python -m fsla_devtools.locks.host [--exclusive] -- <cmd>`.
 
 ## What the build checks
 
@@ -60,7 +60,7 @@ closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rul
 5. **The SASS gate.** `tools/sass_gate.py` on the linked library (KERNEL_STANDARDS §20): local memory, convergence
    subroutines, predicated HMMA, the step lints, a PTX image (R2 on the binary itself), and a kernel the source
    defines that no cubin carries. It runs on every build, iteration builds included.
-6. **`rola_cu13/_build_config.py`**, the record: the archs, the assembler, the torch version and ABI flag, the
+6. **`fsla_cu13/_build_config.py`**, the record: the archs, the assembler, the torch version and ABI flag, the
    vendored pin, whether it is an iteration build, and
    `ptx_jit_fallback: False`.
 
@@ -87,7 +87,7 @@ states), and three properties make it safe to have:
 * **The default is every declared arm and every built architecture.** An empty arm setting expands to the whole
   list, so a plain build and every wheel are the closed-world one. There is no configuration in which a subset is the
   default.
-* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `rola.ops.<family>.arms()` (`rola.ops.decode.arms()`)
+* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `fsla.ops.<family>.arms()` (`fsla.ops.decode.arms()`)
   returns the rows the fatbin actually carries, read off the same list the build compiled
   from; asking a launch for any other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
 * **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
@@ -132,12 +132,12 @@ on the argv and the content of every input the compiler reported reading.
 
 ## <a id="arm-lists"></a>The arm lists
 
-`csrc/rola/src/<family>/arms.bzl` declares a family's arms and `bazel/arms.bzl` instantiates them
+`csrc/fsla/src/<family>/arms.bzl` declares a family's arms and `bazel/arms.bzl` instantiates them
 ([`build-graph.md#arms`](build-graph.md#arms)); the shipped families are `ARM_FAMILIES` there. The decode's arm is
 `d_v × levels × decay`; the box's per-level extents, the depth and the widths are runtime addressing. A declaration has
 one list, `<FAMILY>_ARMS`: every declared row is built by a default build and shipped.
 
-A binary answers which arms it carries itself (`rola.ops.decode.arms()`), never the source tree. A launch whose key
+A binary answers which arms it carries itself (`fsla.ops.decode.arms()`), never the source tree. A launch whose key
 selects an arm the binary does not carry is refused by name.
 
 ## <a id="kernel-identity"></a>A kernel's code is a function of its source and toolchain
@@ -194,8 +194,8 @@ codegen-affecting flag change is one edit in one file ([`ratification.md`'s clos
 ## Verifying a built binary
 
 ```bash
-python -c "from rola_cu13 import _build_config; print(_build_config.show())"
-bazel run //tools:sass_gate -- rola_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
+python -c "from fsla_cu13 import _build_config; print(_build_config.show())"
+bazel run //tools:sass_gate -- fsla_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
 bazel run //:ratify -- --census                        # its registers and spills
 ```
 
@@ -205,8 +205,8 @@ side effect; it is R2, checked by the SASS gate on every build (`cuobjdump --lis
 ## <a id="stable-abi"></a>The binary targets torch's stable ABI
 
 The extension is built against torch's **stable** C shim and header-only types and against nothing of torch's C++ ABI:
-every kernel's host code goes through `csrc/rola/src/common/torch_seam.cuh`, and the registration TU declares operators
-(`torch.ops.rola.*`) instead of binding a pybind module ([`internals/rola_api.md`](internals/rola_api.md)).
+every kernel's host code goes through `csrc/fsla/src/common/torch_seam.cuh`, and the registration TU declares operators
+(`torch.ops.fsla.*`) instead of binding a pybind module ([`internals/fsla_api.md`](internals/fsla_api.md)).
 `tools/build_flags.py` pins the targeted minimum (`TORCH_MIN = (2, 13)`, passed as `-DTORCH_TARGET_VERSION`, so any
 stable call newer than the minimum fails to compile), and every unit compiles against Python's limited API
 (`-DPy_LIMITED_API`, torch's minimum CPython; the `_C.abi3.so` name). One binary therefore loads under every torch from 2.13 on and every CPython from 3.10 on.
@@ -216,31 +216,31 @@ piece is the native handle of the current CUDA stream. Raising the minimum is a 
 it needs every call above the new minimum replaced first, and the compiler names each one. The gate for a change here is
 a build against the minimum torch and the battery on the minimum and on the newest.
 
-## <a id="wheels"></a>Two wheels: `rola` and its binary plugin `rola-cu13`
+## <a id="wheels"></a>Two wheels: `fsla` and its binary plugin `fsla-cu13`
 
 ```bash
-pip install "rola[cu13]"
+pip install "fsla[cu13]"
 ```
 
-installs two distributions at one version. **`rola`** is pure Python (`py3-none-any`): the layer, the routing, the
-decay, the refusals. **`rola-cu13`** (`cp310-abi3-linux_x86_64`) is the binary plugin of the cu13 toolchain: the package
-`rola_cu13` holding the fatbin `_C.abi3.so` for every built architecture and the build record `_build_config.py`. A future toolchain is a second plugin
-beside it, never a rebuild of `rola`.
+installs two distributions at one version. **`fsla`** is pure Python (`py3-none-any`): the layer, the routing, the
+decay, the refusals. **`fsla-cu13`** (`cp310-abi3-linux_x86_64`) is the binary plugin of the cu13 toolchain: the package
+`fsla_cu13` holding the fatbin `_C.abi3.so` for every built architecture and the build record `_build_config.py`. A future toolchain is a second plugin
+beside it, never a rebuild of `fsla`.
 
-`rola` loads the plugin when a kernel is first called (`rola/ops/_ext.py`). It reads the plugin's build record BEFORE
+`fsla` loads the plugin when a kernel is first called (`fsla/ops/_ext.py`). It reads the plugin's build record BEFORE
 its library, and a record of another version refuses without registering an operator: the two are one version. With no
-plugin, or a mismatched one, the first kernel call raises, naming `pip install "rola[cu13]==<version>"`; the pure-Python
+plugin, or a mismatched one, the first kernel call raises, naming `pip install "fsla[cu13]==<version>"`; the pure-Python
 parts (the oracle, the configuration objects) still import. The `cu13` extra, the wheel's only one, is the wheels tool's, not
-`pyproject.toml`'s, because it pins `rola`'s own version; every other field of the metadata is `pyproject.toml`'s `[project]`.
+`pyproject.toml`'s, because it pins `fsla`'s own version; every other field of the metadata is `pyproject.toml`'s `[project]`.
 
-A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `rola_cu13/_C.abi3.so`, so a
+A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `fsla_cu13/_C.abi3.so`, so a
 checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
 
 **The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes, then refuses the build unless its record names this
 version and the toolchain and is no iteration build. It writes
-`dist/rola-<v>-py3-none-any.whl` and `dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl`, byte-reproducible for a commit
+`dist/fsla-<v>-py3-none-any.whl` and `dist/fsla_cu13-<v>-cp310-abi3-linux_x86_64.whl`, byte-reproducible for a commit
 (fixed member order and timestamps). `bazel run //tools:wheels -- --check dist` installs them into a scratch venv over
-the environment's torch and requires `rola` alone to refuse naming the extra, and both together to load and name
+the environment's torch and requires `fsla` alone to refuse naming the extra, and both together to load and name
 their decode arms ([`internals/tools/wheels.md`](internals/tools/wheels.md)).
 
 The platform tag is the build host's, `linux_x86_64`: the wheels install on a machine whose glibc is at least the build

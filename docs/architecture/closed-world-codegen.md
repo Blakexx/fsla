@@ -57,7 +57,7 @@ are real: an AOT matrix over `(tile shape × dtype × head dim × architecture �
 grows multiplicatively, compile times grow with it, and a JIT path compiles
 exactly the one kernel a user's call needs.
 
-**RoLA does not follow it.** The AOT-only build is a decision taken against that
+**FSLA does not follow it.** The AOT-only build is a decision taken against that
 alternative — not an oversight and not an un-revisited default — and this page is
 its record.
 

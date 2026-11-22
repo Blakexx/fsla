@@ -1,6 +1,6 @@
 """THE ORACLE'S ADDRESS MAP IS ITS OWN, AND THIS IS WHERE THAT STOPS BEING A CLAIM.
 
-Every Tier 1 gate compares the kernel against `rola/ops/naive.py`. The kernel's leaf
+Every Tier 1 gate compares the kernel against `fsla/ops/naive.py`. The kernel's leaf
 addressing comes from `Topology.radix_strides`; the oracle used to import the same
 property, so a wrong stride convention would have been invisible to every one of
 those gates -- oracle and kernel wrong together, agreeing perfectly. That is the
@@ -25,8 +25,8 @@ import itertools
 import pytest
 import torch
 
-from rola.ops.naive import _leaf_capacity, _radix_strides, naive_rola
-from rola.routing.types import (
+from fsla.ops.naive import _leaf_capacity, _radix_strides, naive_fsla
+from fsla.routing.types import (
     IndependentRouting,
     SoftmaxActivation,
     Topology,
@@ -97,7 +97,7 @@ def test_the_convention_is_msb_first_and_the_last_level_varies_fastest():
 # ---------------------------------------------------------------------------
 
 def _oracle_outputs(topology):
-    """One small deterministic `naive_rola` call, forward and state."""
+    """One small deterministic `naive_fsla` call, forward and state."""
     torch.manual_seed(11)
     B, T, H, d_v = 1, 5, 2, 32
     widths = topology.widths
@@ -110,7 +110,7 @@ def _oracle_outputs(topology):
     write = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, d_v, dtype=torch.float64)
     g_write = torch.rand(B, T, H, dtype=torch.float64) + 0.5
-    return naive_rola(v, read, with_gain(write, g_write), topology, None, output_final_state=True)
+    return naive_fsla(v, read, with_gain(write, g_write), topology, None, output_final_state=True)
 
 
 def test_perturbing_productions_strides_makes_the_oracle_disagree(monkeypatch):
@@ -148,7 +148,7 @@ def test_a_perturbed_oracle_derivation_does_move_the_oracle(monkeypatch):
     """The other direction, which is what makes the test above non-vacuous: the
     oracle's outputs DO depend on its own strides, so "unchanged" was a fact about
     the source of the map and not about the map being ignored."""
-    import rola.ops.naive as naive
+    import fsla.ops.naive as naive
 
     topology = _topology((2, 3, 4))
     before = _oracle_outputs(topology)

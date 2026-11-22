@@ -1,6 +1,6 @@
 # `common/structure_switch.cuh` — the structure switch as one primitive
 
-Mirrors `csrc/rola/src/common/structure_switch.cuh`.
+Mirrors `csrc/fsla/src/common/structure_switch.cuh`.
 
 Constitution R9 permits a CTA-uniform branch on STRUCTURE — a tile count, a mode, an arm
 axis — and forbids one on a measured statistic. The enforcement addendum (Blake,

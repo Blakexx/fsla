@@ -10,10 +10,10 @@ to open a pull request.
 
 ## 1. Tabulate the architecture's resources
 
-`csrc/rola/src/common/hardware.json` carries, per architecture, one `caps` row -- the
+`csrc/fsla/src/common/hardware.json` carries, per architecture, one `caps` row -- the
 INSTRUCTION flags its atoms read plus the FACT fields its plans and the admission read (`smem_per_sm`,
 `smem_per_cta_max`, `regs_per_sm`, `max_threads_per_sm`) -- and its rates; the graph generates
-the header's `Caps`, `tabulated(cc)` and `caps_of(cc)` from it (`//csrc/rola:hardware_header`; nothing checks the header in)
+the header's `Caps`, `tabulated(cc)` and `caps_of(cc)` from it (`//csrc/fsla:hardware_header`; nothing checks the header in)
 ([`hardware.md`](internals/common/hardware.md)).
 
 Take the FACT fields (`smem_per_sm` from `cudaDevAttrMaxSharedMemoryPerMultiprocessor`,
@@ -23,7 +23,7 @@ Take the FACT fields (`smem_per_sm` from `cudaDevAttrMaxSharedMemoryPerMultiproc
 ones with their document, the undocumented ones measured by `smem_rates` and the other labs on the
 card), and regenerate the header. **Do not guess**: an overstated resource makes `ptxas`
 silently discard the launch bound, which is a silent occupancy loss on the architecture
-nobody checked. `check_arch_table()` (`csrc/rola/src/common/arch_runtime.cu`, called from
+nobody checked. `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`, called from
 every family's launching entry, carry included) checks every row against the driver at run
 time, so a wrong number is caught — but it is caught by a user unless you check it first.
 

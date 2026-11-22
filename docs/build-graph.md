@@ -10,7 +10,7 @@ test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are
 [`build.md`](build.md#wheels)); the census reads the graph's compiles and compiles nothing
 ([below](#census)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
 (`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
-`rola_devtools.build`'s
+`fsla_devtools.build`'s
 ([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
 semaphores, which Bazel cannot do for an action.
 
@@ -23,10 +23,10 @@ semaphores, which Bazel cannot do for an action.
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
 | the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache, unpacked once in Bazel's repo contents cache and linked from every checkout |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (rola-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and rola-devtools from its module's source, by rola-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@rola_env`; `rola_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, rola-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@rola_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment; the store is bounded by `host.store_max_gb` and `host.store_max_age_days`: each environment build sweeps the idle or oversized environments and wheels, and a swept environment is rebuilt, never read wrong |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (fsla-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and fsla-devtools from its module's source, by fsla-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@fsla_env`; `fsla_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, fsla-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@fsla_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment; the store is bounded by `host.store_max_gb` and `host.store_max_age_days`: each environment build sweeps the idle or oversized environments and wheels, and a swept environment is rebuilt, never read wrong |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
-| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree (`@cuda_tools`, the toolkit every tool outside the graph's rules reads too, through `dev_config.cuda_home()`): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`ROLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
+| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree (`@cuda_tools`, the toolkit every tool outside the graph's rules reads too, through `dev_config.cuda_home()`): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`FSLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
@@ -35,12 +35,12 @@ semaphores, which Bazel cannot do for an action.
 bazelisk runs `bazel/bazel` (`bazel/front_door.py`; the wrapper directory `.bazeliskrc` names, in place of
 bazelisk's default `tools/`) in place of the Bazel it downloaded, so every Bazel command
 in a checkout -- typed, or run by a tool -- goes through it. It runs under the machine's `python3` before any venv
-exists: a stub that runs rola-devtools' front door (`rola_devtools.graph.front_door`, every RoLA repository's) from the
-rola-devtools checkout `tools/bootstrap.py` finds.
+exists: a stub that runs fsla-devtools' front door (`fsla_devtools.graph.front_door`, every FSLA repository's) from the
+fsla-devtools checkout `tools/bootstrap.py` finds.
 
 - THE LAB'S IN-KERNEL STAMP AND ITS CHECKER ARE WARPLINE'S MODULE: `MODULE.bazel` pins it at a public commit (`git_override`, the one pin
   of warpline), and `bazel run //tools:lab` (bazel/defs.bzl's `lab_run`) hands `tools/lab.py` the directory of the `warpline` Python package
-  (`@warpline//:warpline`) as `ROLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with and `tools/lab.py`'s `check` calls the checker
+  (`@warpline//:warpline`) as `FSLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with and `tools/lab.py`'s `check` calls the checker
   (`warpline.checker`) through, for every hazard one of its rules computes (the CPU test
   tier and `unit_cuda` carry the same target as data). The stamp's headers (`@warpline//:stamp`, `@warpline//:host`, the writer of the record of
   a traced row) are the lab experiments' compile dependencies, compile-time only: a `lab pack` binary carries
@@ -49,11 +49,11 @@ rola-devtools checkout `tools/bootstrap.py` finds.
   units (`cuda_unit`) for sm_90a and linked into its binary, read once by the graph's disassemblers (`tools/lab_facts.py`), and checked by
   a validation action (`tools/lab_check.py`) whose refusal fails the build; no tool runs nvcc, cuobjdump or nvdisasm for the lab outside the
   graph's actions. The front door
-  overrides only rola-devtools' pin with a local checkout; warpline is always the pinned commit.
-- THE SHARED MACHINERY IS ROLA-DEVTOOLS' MODULE: its environment extension and generic rules (`tree_test`,
+  overrides only fsla-devtools' pin with a local checkout; warpline is always the pinned commit.
+- THE SHARED MACHINERY IS FSLA-DEVTOOLS' MODULE: its environment extension and generic rules (`tree_test`,
   `checkout_test`, `tool_test`, `tool_run`, `tree_part`, `pytest_tier`, `device_lane`; `bazel/defs.bzl` hands each
-  rola's environment). `MODULE.bazel` pins the module at a public commit (`git_override`), the one pin of
-  rola-devtools; the front door overrides that pin with the checkout it found, in an rc file of this workspace's own
+  fsla's environment). `MODULE.bazel` pins the module at a public commit (`git_override`), the one pin of
+  fsla-devtools; the front door overrides that pin with the checkout it found, in an rc file of this workspace's own
   (`--override_module`), so a change made there is the one the graph runs. A machine with no checkout clones one at
   the pin first (`tools/bootstrap.py --devtools-pin`), so every graph runs on an override and `MODULE.bazel.lock` is
   the overridden resolution's (Bazel records one extension digest differently under the bare pin).
@@ -61,7 +61,7 @@ rola-devtools checkout `tools/bootstrap.py` finds.
 - THE MACHINE'S SETTINGS come from the dev config: the shared disk and repository caches under `host.build_cache`
   (`bazel/disk`, `bazel/repository`), in an rc file it regenerates on every run and hands Bazel after the workspace's
   (`--bazelrc`). Nothing in the checkout names a machine.
-- EVERY BUILD RUNS UNDER THE HOST BUDGET (`rola_devtools.locks.host`): a command's build phase holds the slots free
+- EVERY BUILD RUNS UNDER THE HOST BUDGET (`fsla_devtools.locks.host`): a command's build phase holds the slots free
   when it starts, at least one, and runs `slots / host.nvcc_threads` jobs (nvcc runs one cicc an architecture). A
   `test` command builds under the budget, then runs its tests holding none; a `run` command writes its
   launch script under the budget (`--script_path`), then runs it holding none. A test or a measurement takes its own
@@ -72,18 +72,18 @@ rola-devtools checkout `tools/bootstrap.py` finds.
 
 ## <a id="compile"></a>The extension's compile
 
-`//:library` is `rola_cu13/_C.abi3.so` and its build record `rola_cu13/_build_config.py`; `bazel run //:library` copies
-both into the checkout's `rola_cu13/` (a copy: the library is imported from the checkout), and the build's generated
+`//:library` is `fsla_cu13/_C.abi3.so` and its build record `fsla_cu13/_build_config.py`; `bazel run //:library` copies
+both into the checkout's `fsla_cu13/` (a copy: the library is imported from the checkout), and the build's generated
 headers into `build/generated`. `common/hardware.cuh` is one of the graph's generated headers and is checked in nowhere:
-the genrule `//csrc/rola:hardware_header` writes it from `common/hardware.json` (`python -m measure.hardware --header`) into
-the include path every unit reads (`//csrc/rola:headers`), whatever the build's parameters
+the genrule `//csrc/fsla:hardware_header` writes it from `common/hardware.json` (`python -m measure.hardware --header`) into
+the include path every unit reads (`//csrc/fsla:headers`), whatever the build's parameters
 ([`internals/common/hardware.md`](internals/common/hardware.md)).
 
-- THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@rola_env//:flags.bzl`'s
+- THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@fsla_env//:flags.bzl`'s
   `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
   [`architecture/families.md`](architecture/families.md)), one `--//:<family>_arms` for each family of `ARM_FAMILIES` in `bazel/arms.bzl` (the registry: `--//:decode_arms`; arm
   indices; empty is every arm). Any value but a default makes an iteration build, which its record says.
-- THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@rola_env//:flags.bzl` from it
+- THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@fsla_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
   none of its own. rules_cuda's own additions are off on every unit (its extended lambdas, compilation-mode flags,
   random seed and host toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`,
@@ -105,14 +105,14 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   for the one unit that reads it), then torch's, Python's and the toolkit's, so a repository header wins any name
   collision (`bazel/defs.bzl`'s `include_root`).
 - THE GENERATED HEADERS are actions over their generators: the arm families' selection headers and Python tables
-  (`bazel/arms.bzl`, [below](#arms)), the carried builds (`rola_headers`, `bazel/headers.py`, from the settings) and the
-  device stamp (`tools/csrc_stamp.py` over every file under `csrc/rola/src` but its markdown). Only `build_stamp.cu`'s unit reads the stamp
+  (`bazel/arms.bzl`, [below](#arms)), the carried builds (`fsla_headers`, `bazel/headers.py`, from the settings) and the
+  device stamp (`tools/csrc_stamp.py` over every file under `csrc/fsla/src` but its markdown). Only `build_stamp.cu`'s unit reads the stamp
   and depends on it (`stamp_unit`): a digest of every source, as any unit's input it would recompile every unit on
   any edit.
-- THE UNIT LIST: every `.cu` under `csrc/rola/src` is a hand unit (`//csrc/rola:units`), the runtime's among them
-  (`csrc/rola/units.bzl`'s `RUNTIME_UNITS`, `//csrc/rola:runtime`, held to `tools/kernels.py`'s `runtime_units` by
+- THE UNIT LIST: every `.cu` under `csrc/fsla/src` is a hand unit (`//csrc/fsla:units`), the runtime's among them
+  (`csrc/fsla/units.bzl`'s `RUNTIME_UNITS`, `//csrc/fsla:runtime`, held to `tools/kernels.py`'s `runtime_units` by
   `tests/unit/test_units_list.py`); a family's arm units are the next section's.
-- <a id="arms"></a>A KERNEL'S ARMS are Bazel targets declared in Starlark: `csrc/rola/src/<kernel>/arms.bzl` holds the arm
+- <a id="arms"></a>A KERNEL'S ARMS are Bazel targets declared in Starlark: `csrc/fsla/src/<kernel>/arms.bzl` holds the arm
   key (`<FAMILY>_KEY`), each field's domain and the arms, one row of the key each in canonical order (the decode's holds its sixteen;
   a kernel not built on this line declares no family). `bazel/arms.bzl`'s `arm_family` reads
   that one list and makes the family's pieces: one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
@@ -126,14 +126,14 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
   `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's flags, parameters, record and
   gates are made for each name in it, so a family joins by being named there and declared beside its kernel.
-- `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`ROLA_NVCC_THREADS`): the
+- `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`FSLA_NVCC_THREADS`): the
   cicc a job runs is the count its job budget divides by.
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
-- AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `rola_instrument`): a measurement's own kernels as
-  `rola_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
+- AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `fsla_instrument`): a measurement's own kernels as
+  `fsla_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
   none of the source's kernels, and its probes keep only the signatures their units' declarations name,
   [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#probes)), for the architectures `--//:archs` names; never shipped, so no record or arm gate. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
   the rule's user, with the family's first schedule.
@@ -141,7 +141,7 @@ the include path every unit reads (`//csrc/rola:headers`), whatever the build's 
   a non-arm unit's) or its arms (`<FAMILY>_KERNEL`, the arm's demangled name with `@field@` for its template arguments, and `<FAMILY>_DECLARATIONS`: `arm_family` generates each arm's exact pattern for each
   built arm and architecture). The library rule writes them, with the arm patterns, as one file per target (`<label>_declarations.json`, by architecture), and the SASS gate reads it with the units' ptxas reports
   and the project's notice ledger (`tools/notice_ledger.json`): [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#declarations).
-- A UNIT'S SASS AS TEXT: `bazel build //csrc/rola:<unit>_sass` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#sass-text)).
+- A UNIT'S SASS AS TEXT: `bazel build //csrc/fsla:<unit>_sass` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#sass-text)).
 
 ## <a id="gates"></a>The library's gates
 
@@ -171,7 +171,7 @@ compiles ([`ratification.md`](ratification.md)): `tools/ratify.py --graph` in th
 record. The census (`//:census`, `bazel/defs.bzl`'s `ratify_census`) is each unit's ptxas report and object (the
 `cuda_unit` rule's) with the graph's assembler and disassemblers; the scope is
 the build's parameters, and the census's disassemblers run a unit a host-budget slot (the machine's budget under
-`bazel run`, a pool of the sandbox's own under a sandboxed test). `bazel test //csrc/rola:unused_instantiations` reads the census for
+`bazel run`, a pool of the sandbox's own under a sandboxed test). `bazel test //csrc/fsla:unused_instantiations` reads the census for
 the template kernels no unit instantiates.
 
 THE CLOSED WORLD IS THE DECLARED TARGETS AND THE GATES EVERY BUILD RUNS: a kernel's arms (`arms.bzl`), the built
@@ -182,12 +182,12 @@ whose record is no iteration build.
 ## <a id="checks"></a>The checks
 
 `bazel test //:gate` runs every check the graph holds -- `//:lints`, the checks over files (the repo's own and
-`//csrc/rola:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; `//tests:lab`, the lab's unit
+`//csrc/fsla:lints`); `//tools/lint:lint_fixtures`, each lint firing on its own fixture; `//tests:lab`, the lab's unit
 tests; and `//:commit_checks`, the checks of the commit -- and is the commit gate:
 `tools/git-hooks/pre-commit` runs it with the changes not staged for the commit set aside, and the tree the commit's
-index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
+index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
 
-- THE TREE is `//:tree`: every tracked file (`git ls-files`, read by the environment extension's `@rola_tree`, which
+- THE TREE is `//:tree`: every tracked file (`git ls-files`, read by the environment extension's `@fsla_tree`, which
   reads again when git's index moves), each package's part its `tracked` filegroup (`bazel/defs.bzl`'s `tree_part`,
   which names its Python files `tracked_python` and the parts a check reads); `//:tree_python` is every Python file.
   A file is in the tree once git tracks it.
@@ -198,13 +198,13 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   PATH and no machine's dev config; a check that asks git what is tracked gets the copy as a git index of exactly
   those files. Cached on what it reads, it reruns only when one of those files changes.
 - THE LINTS live beside what they check, and the linters in `tools/lint` (its package: the scripts, their
-  configuration, the modes a person runs by hand and each linter's self-test on its fixtures). `//csrc/rola:lints` are
+  configuration, the modes a person runs by hand and each linter's self-test on its fixtures). `//csrc/fsla:lints` are
   the kernel tree's own: clang-format, ast-grep (`tools/lint/ast_grep_gate.py`), the template kernels no unit instantiates and the
   unit lints below. `//:lints` adds the repo's policies over the whole tree: ruff and its blank-line spacing, the
   standards lint (`tools/lint/lint_standards.py`), the readability spacing, the agent files' portability
-  (`tools/lint/portable_claude.py`), the mirror's declarations (`rola_devtools.mirror --check`), and each ratchet
+  (`tools/lint/portable_claude.py`), the mirror's declarations (`fsla_devtools.mirror --check`), and each ratchet
   (`tools/lint/ratchet.py <lint>`: the lint's findings against its baseline, a new finding and a fixed one each red).
-- THE UNIT LINTS (`//csrc/rola:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
+- THE UNIT LINTS (`//csrc/fsla:clang_tidy_device`, `clang_tidy_host`, `host_warnings`; `bazel/defs.bzl`'s `unit_lints`
   aspect and `unit_lint_test`): clang-tidy's two profiles and the host warnings, each run on one unit's own compile
   action -- its command line and its inputs -- so a lint reads what the build compiled
   ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
@@ -215,11 +215,11 @@ index (`GIT_INDEX_FILE`, which `@rola_tree` reads when the hook hands it in).
   `pytest_tier`; `//tests:lab`, the lab's and the dev config's unit tests on their own, is in the gate, its checker the
   `@warpline` module's): each tier one target, as pytest runs it ([`testing.md`](testing.md#running-it)), over the tree and the
   built library copied into a real tree, outside the sandbox (the machine's locks live in `/tmp`). The CPU tier is
-  sharded by Bazel's protocol (`rola_devtools.graph.pytest_shards`), each shard drawing a host slot, and sees no device; a device
+  sharded by Bazel's protocol (`fsla_devtools.graph.pytest_shards`), each shard drawing a host slot, and sees no device; a device
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config
   (its locks), and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a
-  new toolkit reruns it) as `ROLA_CUDA_HOME`, which `dev_config.cuda_home()` returns; outside a tier it asks the graph for the same repository (`bazel query --output=location @cuda_tools//:bin/nvcc`). The sanitizer lane (`//tests:sanitizer`,
+  new toolkit reruns it) as `FSLA_CUDA_HOME`, which `dev_config.cuda_home()` returns; outside a tier it asks the graph for the same repository (`bazel query --output=location @cuda_tools//:bin/nvcc`). The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
 - THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
@@ -249,12 +249,12 @@ image's name still carries a passing container check (`tools/dev.py container ga
 ## <a id="packages"></a>The packages
 
 The tree keeps the layout of a Python package with a native extension, as FlashAttention and PyTorch do (ruled
-2026-11-08): `rola/` beside `csrc/`, and the tests that drive the kernels through the op against the oracle in `tests/`,
+2026-11-08): `fsla/` beside `csrc/`, and the tests that drive the kernels through the op against the oracle in `tests/`,
 since the kernels serve the op alone and those tests grade the two as one. A BUILD file sits beside what it describes,
 its lints among it, and `bazel/` holds only the graph's own machinery:
 - the root package: the build's parameters, the extension, the devbox image, the
   repo-wide checks and the gate;
-- `csrc/rola`: the kernel tree, its units and its own lints; `csrc/third_party`: the vendored trees;
+- `csrc/fsla`: the kernel tree, its units and its own lints; `csrc/third_party`: the vendored trees;
 - `tools`: the pins and records the graph reads, the generators it runs, and each tool's run target; `tools/lint`: the
   linters, the modes a person runs by hand and each linter's self-test;
 - `tests`: the tiers.
@@ -323,14 +323,14 @@ names one).
     bazel test //:gate                                              # every check the graph holds
     bazel build //:compile_commands                                 # the editor's .bazel/bin/compile_commands.json
     bazel test //:lane                                              # every test tier
-    bazel run //:library                                            # the shipped build, into rola_cu13/
+    bazel run //:library                                            # the shipped build, into fsla_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3           # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub
     bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv
     bazel run //tools/lint:ratchet -- <lint> --shrink               # a ratchet's baseline, shrunk with its fixes
     bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
-    bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (rola-devtools' build system)
+    bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (fsla-devtools' build system)
     bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
     bazel run //:mirror -- --check                                  # the public mirror's export (CI's mirror job)
 

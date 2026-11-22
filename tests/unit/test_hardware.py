@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE HARDWARE CONFIGURATION (`measure/hardware.py` over `csrc/rola/src/common/hardware.json`): every source holds and a tampered rate is
+"""THE HARDWARE CONFIGURATION (`measure/hardware.py` over `csrc/fsla/src/common/hardware.json`): every source holds and a tampered rate is
 caught; a product's override wins over its architecture's default; and each product's build variant follows its traits."""
 from __future__ import annotations
 

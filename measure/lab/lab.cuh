@@ -27,18 +27,18 @@
 namespace lab {
 
 //: THE BUILD an experiment compiles at: its one architecture's own, the same in both passes (`tools/lab.py` passes
-//: `ROLA_LAB_CC`; docs/internals/tools/lab.md#build)
-constexpr denseref::arch::Build kLabBuild{ROLA_LAB_CC, 0};
+//: `FSLA_LAB_CC`; docs/internals/tools/lab.md#build)
+constexpr denseref::arch::Build kLabBuild{FSLA_LAB_CC, 0};
 
 // ------------------------------------------------------------------------------------------------- device
 
-//: THE PRODUCTION CONTROL ATOMS, included not copied (`tools/lab.py` puts `csrc/rola/src` on the include path): a branch
+//: THE PRODUCTION CONTROL ATOMS, included not copied (`tools/lab.py` puts `csrc/fsla/src` on the include path): a branch
 //: on a per-thread value is serialized, so a switch over a CTA-uniform value is `uniform_switch<N>(v, body)`
 //: (`common/structure_switch.cuh`), a warp's index as a value ptxas knows uniform is `uniform_warp<Warps>()`, and a
 //: value made opaque at its use is `opaque(v)` (`common/atoms/warp.cuh`, docs/internals/common/atoms/warp.md)
 using denseref::ops::opaque;
 using denseref::ops::uniform_warp;
-using rola::uniform_switch;
+using fsla::uniform_switch;
 
 //: THE WARP'S INDEX as the thread index shifted: PER-THREAD to ptxas's analysis, which `uniform_warp` is not -- a loop
 //: or switch bounded by this one is divergent. Kept beside `uniform_warp` because it differs in meaning; a kernel that

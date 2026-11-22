@@ -1,6 +1,6 @@
 """THE OP ON ONE SEGMENT, AND THE LAYER'S SEGMENTS.
 
-`rola_op` runs the prefill DAG over the segment it is handed and continues the state it is handed; the layer
+`fsla_op` runs the prefill DAG over the segment it is handed and continues the state it is handed; the layer
 splits a sequence into segments by a declared memory budget, so its projections are bounded with the op.
 Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
 readout to fp32 ULPs, the layer's through its bf16 output projection), the budget's derivation and refusal, and
@@ -13,8 +13,8 @@ import dataclasses
 import pytest
 import torch
 
-import rola
-from rola.ops.window import window_of
+import fsla
+from fsla.ops.window import window_of
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT
 
@@ -29,28 +29,28 @@ _STATEFUL_PREFILL = pytest.mark.xfail(strict=True, raises=Exception,
                                       reason="the carry refuses the int8 state format until its port")
 
 
-def _routing() -> rola.Routing:
-    return rola.Routing([rola.split_routing(WIDTHS[0], sparse_duty="write"),
-                         rola.split_routing(WIDTHS[1], sparse_duty="read")])
+def _routing() -> fsla.Routing:
+    return fsla.Routing([fsla.split_routing(WIDTHS[0], sparse_duty="write"),
+                         fsla.split_routing(WIDTHS[1], sparse_duty="read")])
 
 
-def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> rola.RoLA:
+def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> fsla.FSLA:
     torch.manual_seed(0)
-    return rola.RoLA(_routing(), hidden_size=hidden, num_heads=heads, d_v=64, **kwargs)
+    return fsla.FSLA(_routing(), hidden_size=hidden, num_heads=heads, d_v=64, **kwargs)
 
 
 def _bundles(tokens: int, heads: int = 2):
     layer = _layer(heads=heads).cuda().eval()
     with torch.no_grad():
         routes, _values, masks = layer._produce(torch.randn(1, tokens, 64, device="cuda"))
-        values = rola.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
+        values = fsla.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
     return routes, values, masks, layer.prefill_plan
 
 
 def _cut_masks(masks, span: slice):
     """One stretch of a call's masks: the token-packed words of the stretch, whole 32-token words (a window is)."""
     first, last = span.start // 32, -(-span.stop // 32)
-    return rola.Masks(masks.consumer, tuple(m[:, :, first:last] for m in masks.read),
+    return fsla.Masks(masks.consumer, tuple(m[:, :, first:last] for m in masks.read),
                       tuple(m[:, :, first:last] for m in masks.write))
 
 
@@ -70,11 +70,11 @@ def _cut(bundle, span: slice):
 def test_the_op_matches_the_fp64_oracle_per_slot():
     routes, values, masks, plan = _bundles(2 * window_of())
     with torch.no_grad():
-        y, state = rola.rola_op(routes, values, masks, plan=plan)
+        y, state = fsla.fsla_op(routes, values, masks, plan=plan)
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
     ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
-    assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="rola_op readout")
+    assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="fsla_op readout")
 
 
 @pytest.mark.parametrize("paging", [True, False])
@@ -82,16 +82,16 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
 def test_segments_carried_through_a_state_are_the_whole_call(paging):
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
     one state are the whole call to fp32 ULPs, in either backing."""
-    from rola.engine import PrefillPlan
+    from fsla.engine import PrefillPlan
 
     routes, values, masks, plan = _bundles(4 * window_of())
     plan = plan if paging else PrefillPlan(carve=plan.carve, paging=False)
     with torch.no_grad():
-        whole, _ = rola.rola_op(routes, values, masks, plan=plan)
-        state = rola.state()
+        whole, _ = fsla.fsla_op(routes, values, masks, plan=plan)
+        state = fsla.state()
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
-            y, state = rola.rola_op(_cut(routes, span), _cut(values, span), _cut_masks(masks, span), plan=plan,
+            y, state = fsla.fsla_op(_cut(routes, span), _cut(values, span), _cut_masks(masks, span), plan=plan,
                                     state=state)
             parts.append(y)
     assert state.paged is paging
@@ -119,9 +119,9 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
-        _, whole = layer(x, continuation=rola.LayerContinuation(state=rola.state()))
+        _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
         layer.memory_budget = layer.state_bytes(1) + window_of() * 4096
-        _, segmented = layer(x, continuation=rola.LayerContinuation(state=rola.state()))
+        _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 
@@ -129,7 +129,7 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
 def test_the_budget_takes_its_per_token_bytes_from_the_launch_builder_and_refuses_by_name():
     """No budget: one segment. A budget asks the prefill launch builder's own allocation for the per-token bytes, which
     refuses by name until the prefill kernel exists."""
-    from rola.ops._ext import KernelNotBuilt
+    from fsla.ops._ext import KernelNotBuilt
 
     layer = _layer()
     assert layer.segment_tokens(2, 3 * window_of()) == 3 * window_of(), "no budget: one segment"

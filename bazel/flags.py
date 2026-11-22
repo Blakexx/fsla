@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE GRAPH'S COMPILE FLAGS AND FACTS, as Starlark: `@rola_env//:flags.bzl`, written by the environment repository
+"""THE GRAPH'S COMPILE FLAGS AND FACTS, as Starlark: `@fsla_env//:flags.bzl`, written by the environment repository
 with the environment's own interpreter from `tools/build_flags.py` -- the one source of the flag list -- so the graph
 states no flag of its own.
 
@@ -33,7 +33,7 @@ def main() -> int:
     ap.add_argument("toolchain", type=Path, help="the toolchain record (tools/toolchains/<name>.json)")
     a = ap.parse_args()
     #: host.nvcc_threads, the cicc an nvcc job runs, which the front door hands the environment's repository
-    nvcc_threads = int(os.environ["ROLA_NVCC_THREADS"])
+    nvcc_threads = int(os.environ["FSLA_NVCC_THREADS"])
     import torch
 
     archs = [arch.removeprefix("sm_") for arch in hardware.built()]

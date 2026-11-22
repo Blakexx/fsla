@@ -3,11 +3,11 @@
 
 """The producer/decode capacity relation, pinned across the language boundary.
 
-``csrc/rola/src/decode/decode.cuh`` carries a ``static_assert`` that the decode path's
+``csrc/fsla/src/decode/decode.cuh`` carries a ``static_assert`` that the decode path's
 level-width capacity is at least the producer's ``MAX_BRANCH_WIDTH``. That assertion is
 only half the gate: **a C++ ``static_assert`` cannot read a Python constant**, so the
 C++ side compares against its own mirrored copy of the number, and a change to
-``rola/routing/topology.py`` would move the producer's real limit while leaving the
+``fsla/routing/topology.py`` would move the producer's real limit while leaving the
 mirror — and therefore the assertion — silently satisfied.
 
 This file is the other half: it compares the SHIPPED BINARY's capacity against the
@@ -21,21 +21,21 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.routing.topology import MAX_BRANCH_WIDTH
+from fsla.routing.topology import MAX_BRANCH_WIDTH
 
 pytestmark = pytest.mark.cuda
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="reads the compiled extension")
 def test_decode_capacity_covers_the_producer_max_branch_width():
-    from rola.ops._ext import extension
+    from fsla.ops._ext import extension
 
-    capacity = extension().rola_decode_capacity()
+    capacity = extension().fsla_decode_capacity()
     assert capacity >= MAX_BRANCH_WIDTH, (
         f"the decode path's level-width capacity is {capacity} but the producer emits "
         f"levels up to MAX_BRANCH_WIDTH={MAX_BRANCH_WIDTH}. A topology the producer can "
         "build would over-read the decode kernel's staged amplitude row. Raise "
-        "kDecodeMaxLevelWidth in csrc/rola/src/decode/decode.cuh (and re-check the GEMV's SMEM "
+        "kDecodeMaxLevelWidth in csrc/fsla/src/decode/decode.cuh (and re-check the GEMV's SMEM "
         "ledger, which scales with sum_l width_l).")
 
 
@@ -48,11 +48,11 @@ def test_the_cxx_mirror_of_max_branch_width_has_not_drifted():
     mirror stayed put, which is not. Pinning equality catches the second case at the
     only place both numbers are visible at once.
     """
-    from rola.ops._ext import extension
+    from fsla.ops._ext import extension
 
-    assert extension().rola_decode_producer_width_mirror() == MAX_BRANCH_WIDTH, (
-        "csrc/rola/src/decode/decode.cuh's kProducerMaxBranchWidth mirror has drifted from "
-        f"rola/routing/topology.py's MAX_BRANCH_WIDTH={MAX_BRANCH_WIDTH}; update the "
+    assert extension().fsla_decode_producer_width_mirror() == MAX_BRANCH_WIDTH, (
+        "csrc/fsla/src/decode/decode.cuh's kProducerMaxBranchWidth mirror has drifted from "
+        f"fsla/routing/topology.py's MAX_BRANCH_WIDTH={MAX_BRANCH_WIDTH}; update the "
         "mirror in the same commit that moves the producer's limit")
 
 
@@ -64,14 +64,14 @@ def test_the_binary_under_test_is_this_tree():
     ENUMERATION SHAPE (``kKinds * kMaxTerms``), ``sizeof(DecodeParams)``,
     ``sizeof(Unit<4>)`` and ``kDecodeMaxSpan`` — facts a path check, a hash check and an
     import check are all blind to. The SPAN ceiling is the half with teeth here: it is the
-    same number ``rola.ops.lattice`` refuses candidate boxes against, so a host that
+    same number ``fsla.ops.lattice`` refuses candidate boxes against, so a host that
     outgrew the device's box fails here. The shape field is what moves the stamp when the
     walk's index space is redefined without either struct changing size.
     """
-    from rola.ops._ext import extension
-    from rola.ops.lattice import _MAX_SPAN
+    from fsla.ops._ext import extension
+    from fsla.ops.lattice import _MAX_SPAN
 
-    stamp = extension().rola_decode_build_stamp()
+    stamp = extension().fsla_decode_build_stamp()
     assert stamp > 0, "the decode build stamp is not a device-side fact"
     high, remainder = divmod(stamp, 1000003)
     shape, params_bytes = divmod(high, 4096)

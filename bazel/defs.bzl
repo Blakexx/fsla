@@ -1,12 +1,12 @@
 """THE GRAPH'S RULES: the generated headers for a build's parameters, and the library
--- `rola_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel run` copies into the checkout
+-- `fsla_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel run` copies into the checkout
 (docs/build-graph.md#compile); and the checks -- over the tree's files, of the commit, and over each unit's own compile
 (docs/build-graph.md#checks)."""
 
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load(
-    "@rola_devtools//bazel:rules.bzl",
+    "@fsla_devtools//bazel:rules.bzl",
     _checkout_test = "checkout_test",
     _device_lane = "device_lane",
     _pytest_tier = "pytest_tier",
@@ -15,8 +15,8 @@ load(
     _tree_part = "tree_part",
     _tree_test = "tree_test",
 )
-load("@rola_env//:flags.bzl", "BUILT_ARCHS", "VENV")
-load("@rola_tree//:tree.bzl", "TRACKED")
+load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "VENV")
+load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
@@ -51,7 +51,7 @@ def _headers_impl(ctx):
         arguments = [args],
         inputs = ctx.files._sources + [ctx.file._script],
         outputs = [builds],
-        mnemonic = "RolaHeaders",
+        mnemonic = "FslaHeaders",
         progress_message = "Writing the build's carried builds",
     )
     #: each family's selection header and Python table (bazel/arms.bzl's `arm_family`), beside it
@@ -60,13 +60,13 @@ def _headers_impl(ctx):
     compilation = cc_common.create_compilation_context(headers = depset(headers), includes = depset([builds.dirname]))
     return [DefaultInfo(files = depset([builds] + arm_files)), CcInfo(compilation_context = compilation)]
 
-rola_headers = rule(
+fsla_headers = rule(
     implementation = _headers_impl,
     attrs = _setting_attrs() | {
         "arm_families": attr.label_list(allow_files = True, doc = "each arm family's selection header and Python table (`arm_selection`, `arm_table`)"),
         "_script": attr.label(default = "//bazel:headers.py", allow_single_file = True),
         "_sources": attr.label(default = "//bazel:generator_sources"),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
     },
     doc = "The carried builds for the build's architectures, and the arm families' selection headers and tables beside them.",
 )
@@ -116,7 +116,7 @@ _INSTALL = """\
 # tree's units read them (build/generated: tools/life_ranges.py): copies, never links into
 # Bazel's output tree, each through a temporary file renamed into place, so a reader never sees half a header
 set -euo pipefail
-dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
+dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/fsla_cu13"
 for f in {files}; do
   install -m 0644 "$f" "$dest/$(basename "$f")"
 done
@@ -177,7 +177,7 @@ def _gated(ctx):
 
 def _sass_gate(ctx, so, verdict_path, flags = []):
     """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers and the
-    checker it reads the code with (warpline's, `ROLA_WARPLINE_PYTHON`): its facts of every function and of the build's notices (the units'
+    checker it reads the code with (warpline's, `FSLA_WARPLINE_PYTHON`): its facts of every function and of the build's notices (the units'
     ptxas reports, read against the project's ledger), compared with the declarations stated beside the kernels (`_gated`), `flags` its own;
     its verdict, `verdict_path`, the action's output."""
     package = [f for f in ctx.files._warpline if f.path.endswith("/warpline/__init__.py")]
@@ -199,9 +199,9 @@ def _sass_gate(ctx, so, verdict_path, flags = []):
         executable = ctx.file._python,
         arguments = [args],
         inputs = ctx.files._gate_sources + ctx.files._warpline + reports + [declared, so, ctx.file._sass_gate, ctx.file._ledger, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt],
-        env = {"ROLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
+        env = {"FSLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
         outputs = [verdict],
-        mnemonic = "RolaSassGate",
+        mnemonic = "FslaSassGate",
         progress_message = "The SASS gate on %{label}'s library",
     )
     return verdict
@@ -215,15 +215,15 @@ _SASS_GATE_ATTRS = {
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
-    "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+    "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
 }
 
 def _extension_impl(ctx):
-    so = ctx.actions.declare_file("rola_cu13/_C.abi3.so")
+    so = ctx.actions.declare_file("fsla_cu13/_C.abi3.so")
     _link(ctx, so)
 
     #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5, then the record (bazel/record.py)
-    record = ctx.actions.declare_file("rola_cu13/_build_config.py")
+    record = ctx.actions.declare_file("fsla_cu13/_build_config.py")
     tables = {f.basename.removesuffix("_arms.py"): f for f in ctx.files._headers if f.basename.endswith("_arms.py")}
     ptxas = [f for f in ctx.files._nvcc if f.basename == "ptxas"][0]
     args = ctx.actions.args()
@@ -244,14 +244,14 @@ def _extension_impl(ctx):
         arguments = [args],
         inputs = ctx.files._record_sources + ctx.files._sources + tables.values() + [ctx.file._record, ptxas, ctx.file._cuobjdump, ctx.file._nvdisasm],
         outputs = [record],
-        mnemonic = "RolaRecord",
+        mnemonic = "FslaRecord",
         progress_message = "Gating the build (rules 1, 3, 5) and writing its record",
     )
 
     #: THE BINARY GATES, on the linked library: the SASS gate, and the arm table with its coverage sweep (the binary
     #: asked what it carries)
-    sass_verdict = _sass_gate(ctx, so, "rola_cu13/sass_gate.json")
-    arm_verdict = ctx.actions.declare_file("rola_cu13/arm_gate.txt")
+    sass_verdict = _sass_gate(ctx, so, "fsla_cu13/sass_gate.json")
+    arm_verdict = ctx.actions.declare_file("fsla_cu13/arm_gate.txt")
     headers = {family: [f for f in ctx.files._headers if f.basename == "%s_selection.inc" % family][0] for family in ARM_FAMILIES}
     stub = [f for f in ctx.files._cudart if f.path.endswith("stubs/libcuda.so")][0]
     arm_args = ctx.actions.args()
@@ -270,7 +270,7 @@ def _extension_impl(ctx):
         arguments = [arm_args],
         inputs = ctx.files._sources + [so, stub, ctx.file._arm_gate] + headers.values() + [tables[family] for family in ARM_FAMILIES],
         outputs = [arm_verdict],
-        mnemonic = "RolaArmGate",
+        mnemonic = "FslaArmGate",
         progress_message = "The arm table and its coverage sweep on %{label}'s library",
         #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; its store
         #: path on the command line keys the action by the environment
@@ -294,7 +294,7 @@ def _extension_impl(ctx):
         ),
     ]
 
-rola_extension = rule(
+fsla_extension = rule(
     implementation = _extension_impl,
     cfg = _archs_transition,
     executable = True,
@@ -303,7 +303,7 @@ rola_extension = rule(
     attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
         "deps": attr.label_list(providers = [CcInfo], doc = "the units and the arm set"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries the extension links"),
-        "torch": attr.string(mandatory = True, doc = "the environment's torch version (@rola_env//:flags.bzl)"),
+        "torch": attr.string(mandatory = True, doc = "the environment's torch version (@fsla_env//:flags.bzl)"),
         "torch_cuda": attr.string(mandatory = True, doc = "the CUDA release the environment's torch was built for"),
         "toolchain": attr.string(mandatory = True, doc = "the toolchain's name (its record)"),
         "cxx11_abi": attr.bool(mandatory = True, doc = "the environment's torch ABI flag"),
@@ -314,40 +314,40 @@ rola_extension = rule(
         "_record_sources": attr.label(default = "//bazel:record_sources"),
         "_sources": attr.label(default = "//bazel:generator_sources"),
         "_arm_gate": attr.label(default = "//bazel:gates.py", allow_single_file = True),
-        "_headers": attr.label(default = "//csrc/rola:generated"),
+        "_headers": attr.label(default = "//csrc/fsla:generated"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
-    doc = "The extension `rola_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
+    doc = "The extension `fsla_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
 )
 
 _INSTALL_INSTRUMENT = """\
 #!/bin/bash
-# writes an instrument library into the checkout's rola_cu13/, beside the extension (bazel/defs.bzl's rola_instrument)
+# writes an instrument library into the checkout's fsla_cu13/, beside the extension (bazel/defs.bzl's fsla_instrument)
 set -euo pipefail
-dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/rola_cu13"
+dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/fsla_cu13"
 install -m 0755 {so} "$dest/$(basename {so})"
 echo "installed $(basename "$dest")/$(basename {so}) from the graph"
 """
 
 def _instrument_impl(ctx):
-    so = ctx.actions.declare_file("rola_cu13/%s.abi3.so" % ctx.attr.module)
+    so = ctx.actions.declare_file("fsla_cu13/%s.abi3.so" % ctx.attr.module)
     _link(ctx, so)
     #: the SASS gate, as on the extension, its probes keeping only the signatures their units' declarations name; its
     #: verdict a runfile, so `bazel run` installs nothing it has not passed
-    verdict = _sass_gate(ctx, so, "rola_cu13/%s.sass_gate.json" % ctx.attr.module, ["--probes"])
+    verdict = _sass_gate(ctx, so, "fsla_cu13/%s.sass_gate.json" % ctx.attr.module, ["--probes"])
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
     return [DefaultInfo(files = depset([so, verdict]), executable = install, runfiles = ctx.runfiles(files = [so, verdict]))]
 
-rola_instrument = rule(
+fsla_instrument = rule(
     implementation = _instrument_impl,
     cfg = _archs_transition,
     executable = True,
     fragments = ["cpp"],
     toolchains = use_cc_toolchain(),
     attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
-        "module": attr.string(mandatory = True, doc = "the module's name in rola_cu13 (`_C_parts`)"),
+        "module": attr.string(mandatory = True, doc = "the module's name in fsla_cu13 (`_C_parts`)"),
         "deps": attr.label_list(providers = [CcInfo], doc = "its units, whose declarations are the signatures its probes keep on purpose (docs/internals/tools/sass_gate.md#probes)"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
         "_linker": attr.label(default = "@mold//:linker"),
@@ -355,7 +355,7 @@ rola_instrument = rule(
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
-    doc = "An instrument's library, `rola_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
+    doc = "An instrument's library, `fsla_cu13/<module>.abi3.so`, linked as the extension is, for the architectures " +
           "`--//:archs` names, and SASS-gated as it is, its probes keeping the signatures its units declare; never " +
           "shipped, so no record or arm gate; `bazel run` copies it into the checkout.",
 )
@@ -372,7 +372,7 @@ unit_sass = rule(
         "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library that links the unit"),
         "unit": attr.string(mandatory = True, doc = "the unit's source, by its name without `.cu`"),
     },
-    doc = "One unit's SASS as text, by the graph's own disassembler, for every architecture the build carries: `bazel build //csrc/rola:<unit>_sass`, " +
+    doc = "One unit's SASS as text, by the graph's own disassembler, for every architecture the build carries: `bazel build //csrc/fsla:<unit>_sass`, " +
           "so a SASS diff never needs a disassembler typed by hand (the file is `_objs/<target>/<unit>.sass` under `.bazel/bin`).",
 )
 
@@ -417,7 +417,7 @@ tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
 rm -f "$tree/$TEST_BINARY"
 cd "$tree"
-unset ROLA_DEV_CONFIG
+unset FSLA_DEV_CONFIG
 export PATH={venv}/bin:/usr/bin:/bin
 exec python3 tools/{script} --graph {census} --runfiles "$TEST_SRCDIR/_main" {args}
 """
@@ -470,7 +470,7 @@ ratify_run = rule(
 
 _WHEELS = """\
 #!/bin/bash
-# the wheels of the graph's library (bazel/defs.bzl's rola_wheels): `tools/wheels.py` in the checkout, on a clean
+# the wheels of the graph's library (bazel/defs.bzl's fsla_wheels): `tools/wheels.py` in the checkout, on a clean
 # commit; the library's and the record's paths are relative to the runfiles
 set -euo pipefail
 runfiles="$PWD"
@@ -486,11 +486,11 @@ def _wheels_impl(ctx):
     ctx.actions.write(script, _WHEELS.format(venv = shell.quote(VENV), so = so.short_path, record = record.short_path), is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [so, record]))]
 
-rola_wheels = rule(
+fsla_wheels = rule(
     implementation = _wheels_impl,
     executable = True,
     attrs = {
-        "library": attr.label(mandatory = True, doc = "the extension (`rola_extension`), its library and record"),
+        "library": attr.label(mandatory = True, doc = "the extension (`fsla_extension`), its library and record"),
     },
     doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
           "clean commit, the record a shippable build's.",
@@ -574,7 +574,7 @@ def committed_file(name, committed, generated):
         tool = Label("//tools:committed_file.py"),
     )
 
-#: THE GENERIC RULES are rola-devtools' (`@rola_devtools//bazel:rules.bzl`), each handed this workspace's environment:
+#: THE GENERIC RULES are fsla-devtools' (`@fsla_devtools//bazel:rules.bzl`), each handed this workspace's environment:
 #: its store venv (VENV), its interpreter, the tracked tree (TRACKED), the pinned toolkit and the devices' identity
 
 def tree_test(**kwargs):
@@ -583,7 +583,7 @@ def tree_test(**kwargs):
 
 def tool_test(**kwargs):
     """A check that is one run of a tree tool over files the graph names, on the environment's base interpreter."""
-    _tool_test(python = Label("@rola_env//:python"), **kwargs)
+    _tool_test(python = Label("@fsla_env//:python"), **kwargs)
 
 def checkout_test(name, cmd, **kwargs):
     """A check of the commit, run in the checkout, outside the sandbox, never cached."""
@@ -641,13 +641,13 @@ _LAB_RUN = """\
 set -euo pipefail
 checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
 package="$(readlink -f {package})"
-venv="$(git -C "$checkout" config --get rola.venv || true)"
+venv="$(git -C "$checkout" config --get fsla.venv || true)"
 if [ ! -x "$venv/bin/python" ]; then
-  echo "$checkout has no venv of its own (git config rola.venv)" >&2
+  echo "$checkout has no venv of its own (git config fsla.venv)" >&2
   exit 1
 fi
 cd "$checkout"
-export ROLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"
+export FSLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"
 exec "$venv/bin/python" {tool} "$@"
 """
 
@@ -667,11 +667,11 @@ lab_run = rule(
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
     },
     doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the directory of " +
-          "warpline's `warpline` package as `ROLA_WARPLINE_PYTHON`: its arguments follow `--`.",
+          "warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 
 def tree_part(parts = {}):
-    """This package's part of the tree (`git ls-files`, @rola_tree): `tracked`, `tracked_python` and each of `parts`."""
+    """This package's part of the tree (`git ls-files`, @fsla_tree): `tracked`, `tracked_python` and each of `parts`."""
     _tree_part(TRACKED, parts)
 
 #: THE UNIT LINTS (docs/build-graph.md#checks): clang-tidy's device and host profiles and the host warnings, each read
@@ -711,7 +711,7 @@ def _cuda_root_impl(ctx):
         env = {"OUT": root.path},
         inputs = cuda_h + ctx.files.curand + [note],
         outputs = [root],
-        mnemonic = "RolaCudaRoot",
+        mnemonic = "FslaCudaRoot",
     )
     return [DefaultInfo(files = depset([root]))]
 
@@ -772,7 +772,7 @@ def _unit_lints_impl(target, ctx):
             arguments = [tool.path, "command", "--argv", argv.path, "--arch", arch, "--cuda-root", ctx.file._cuda_root.path, "--out", command.path],
             inputs = [argv, tool],
             outputs = [command],
-            mnemonic = "RolaUnitCommand",
+            mnemonic = "FslaUnitCommand",
             progress_message = "The clang command of %s (sm_%s)" % (unit, arch),
         )
         device = action.mnemonic == "CudaCompile"
@@ -783,7 +783,7 @@ def _unit_lints_impl(target, ctx):
             arguments = [tool.path, "tidy", "--command", command.path, "--clang-tidy", ctx.file._clang_tidy.path, "--config", config.path, "--package", target.label.package, "--out", verdict.path],
             inputs = depset([command, tool, config, ctx.file._clang_tidy, ctx.file._cuda_root] + ctx.files._clang_tidy_resources, transitive = [reads]),
             outputs = [verdict],
-            mnemonic = "RolaClangTidy",
+            mnemonic = "FslaClangTidy",
             progress_message = "clang-tidy on %s (sm_%s)" % (unit, arch),
         )
         found["device" if device else "host"].append(depset([verdict]))
@@ -796,7 +796,7 @@ def _unit_lints_impl(target, ctx):
                 arguments = [tool.path, "warnings", "--argv", argv.path, "--arch", arch, "--package", target.label.package, "--out", warnings.path],
                 inputs = depset([argv, tool], transitive = [reads]),
                 outputs = [warnings],
-                mnemonic = "RolaHostWarnings",
+                mnemonic = "FslaHostWarnings",
                 progress_message = "The host warnings of %s (sm_%s)" % (unit, arch),
             )
             found["warnings"].append(depset([warnings]))
@@ -813,7 +813,7 @@ unit_lints = aspect(
     attr_aspects = list(_CARRIERS),
     attrs = {
         "_archs": attr.label(default = "//:archs"),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
         "_clang_tidy": attr.label(default = "@clang_tidy//:clang_tidy", allow_single_file = True, cfg = "exec"),
         "_clang_tidy_resources": attr.label(default = "@clang_tidy//:resources", cfg = "exec"),
@@ -846,7 +846,7 @@ unit_lint_test = rule(
         "units": attr.label_list(mandatory = True, cfg = _each_built_arch, aspects = [unit_lints], doc = "the library, or a fixture's unit"),
         "lint": attr.string(mandatory = True, values = ["device", "host", "warnings"], doc = "which verdicts it reads"),
         "expect": attr.string_list(doc = "a fixture's: the findings (patterns) each of its verdicts holds exactly"),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
     },
     doc = "A unit lint over every unit the library links, for each built architecture: red on any unit's finding " +
@@ -865,7 +865,7 @@ def _compile_database_impl(ctx):
         arguments = [ctx.file._tool.path, "database", "--anchor", ctx.file._anchor.path, "--out", out.path] + [c.path for c in commands],
         inputs = depset(commands + [ctx.file._tool], transitive = [built]),
         outputs = [out],
-        mnemonic = "RolaCompileDatabase",
+        mnemonic = "FslaCompileDatabase",
         execution_requirements = {"no-sandbox": "1", "no-cache": "1", "no-remote": "1"},
     )
     return [DefaultInfo(files = depset([out]))]
@@ -874,7 +874,7 @@ compile_database = rule(
     implementation = _compile_database_impl,
     attrs = {
         "units": attr.label_list(mandatory = True, cfg = _first_built_arch, aspects = [unit_lints]),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
         "_tool": attr.label(default = "//tools/lint:unit_lints.py", allow_single_file = True),
         "_anchor": attr.label(default = "//:MODULE.bazel", allow_single_file = True),
         "_cuda_root": attr.label(default = "//bazel:cuda_root", cfg = _first_built_arch, allow_single_file = True),

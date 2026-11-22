@@ -8,7 +8,7 @@ library only, so a build action runs it with the environment's base interpreter.
 Docs: docs/internals/tools/ratify.md#graph.
 
     derivation.py --cases tools/manifests/derivation_cases.json --out derivation_harness.cu
-    derivation.py --cases tools/manifests/derivation_cases.json --src csrc/rola/src --binary derivation_harness \
+    derivation.py --cases tools/manifests/derivation_cases.json --src csrc/fsla/src --binary derivation_harness \
         --record derivation.json
 """
 from __future__ import annotations
@@ -44,11 +44,11 @@ def harness(cases: dict) -> str:
         widths = ", ".join(str(w) for w in c["widths"])
         out += ["  {\n",
                 f"    const int w[] = {{{widths}}};\n",
-                "    rola::carry::CarryGeomRT g{};\n",
-                "    rola::carry::CarveOrder o{};\n",
-                f"    rola::carry::carve_order_of_modes({len(c['widths'])}, "
+                "    fsla::carry::CarryGeomRT g{};\n",
+                "    fsla::carry::CarveOrder o{};\n",
+                f"    fsla::carry::carve_order_of_modes({len(c['widths'])}, "
                 f"{c['level_modes']}u, o);\n",
-                f"    const char* err = rola::carry::derive_carry_geom("
+                f"    const char* err = fsla::carry::derive_carry_geom("
                 f"{len(c['widths'])}, w, {c['bc']}, {c['dv']}, "
                 f"o, {c['nsr']}, {c['nsw']}, {'true' if c.get('interleave', 0) else 'false'}, "
                 f"{'true' if c.get('atom_floor', 1) else 'false'}, g, {c['level_modes']}u);\n",
@@ -58,7 +58,7 @@ def harness(cases: dict) -> str:
                 "  }\n"]
     for c in cases["sub_boxes"]:
         out += ["  {\n",
-                f"    const rola::carry::SubBoxSet set = rola::carry::sub_boxes("
+                f"    const fsla::carry::SubBoxSet set = fsla::carry::sub_boxes("
                 f"{c['depth']}, {c['box_leaves']}, {c['workers']});\n",
                 f'    dump("{c["name"]}", &set, sizeof(set));\n',
                 "  }\n"]

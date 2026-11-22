@@ -59,7 +59,7 @@ LAUNCHES: dict = {}
 
 
 def counters(row: Row) -> dict[str, float]:
-    from rola_devtools import process
+    from fsla_devtools import process
 
     cmd = [dev_config.ncu(), "--target-processes", "all", "-k", f"regex:{row.kernel}",
            "--launch-skip", str(row.warmup), "-c", "1", "--metrics", ",".join(COUNTERS), "--csv",
@@ -135,7 +135,7 @@ def main() -> int:
     if a.launch:
         LAUNCHES[a.launch](a.cell, a.heads, a.repeat)
         return 0
-    from rola_devtools.locks.gpu import gpu_lock
+    from fsla_devtools.locks.gpu import gpu_lock
 
     with gpu_lock(mode="exclusive"):
         passed = [judge(name) for name in (a.row or sorted(ROWS))]

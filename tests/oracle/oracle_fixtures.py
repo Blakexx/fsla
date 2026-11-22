@@ -1,6 +1,6 @@
 """SHARED ORACLE FIXTURES — the tensors every oracle gate draws.
 
-Every tier that compares a kernel launch to `rola.ops.naive.naive_rola` builds
+Every tier that compares a kernel launch to `fsla.ops.naive.naive_fsla` builds
 the same three things: unit-sum simplex routing at a chosen density, a
 `Topology` over some widths, and (on the decay arm) per-level rate dials. The
 comparison itself is `tests.oracle.fixtures.assert_slots_close`, per slot.
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.routing.types import (
+from fsla.routing.types import (
     IndependentRouting,
     SoftmaxActivation,
     Topology,

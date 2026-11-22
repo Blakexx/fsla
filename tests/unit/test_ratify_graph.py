@@ -42,7 +42,7 @@ def graph(tmp_path, monkeypatch):
             (runfiles / "objs" / "b.ptxas.txt").write_text(REPORT)
         census = runfiles / "census.json"
         census.write_text(json.dumps({
-            "units": [{"source": f"csrc/rola/src/{u}.cu", "report": f"objs/{u}.ptxas.txt", "object": f"objs/{u}.pic.o"}
+            "units": [{"source": f"csrc/fsla/src/{u}.cu", "report": f"objs/{u}.ptxas.txt", "object": f"objs/{u}.pic.o"}
                       for u in ("a", "b")],
             "tools": {"ptxas": "../cuda+/bin/ptxas", "cuobjdump": "../cuda_tools+/bin/cuobjdump",
                       "nvdisasm": "../cuda_tools+/bin/nvdisasm"},

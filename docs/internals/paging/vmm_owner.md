@@ -1,4 +1,4 @@
-# `csrc/rola/src/paging/vmm_owner.{cuh,cu}` — the CUDA driver VMM backing
+# `csrc/fsla/src/paging/vmm_owner.{cuh,cu}` — the CUDA driver VMM backing
 
 `VmmOwner` reserves one virtual address range at the dense limit up front and commits
 physical memory into it in chunks, so a long-lived page pool can grow without ever moving
@@ -142,7 +142,7 @@ The `shared_from_this` capture keeps the driver allocation alive for every tenso
 **This prevents a caller holding a slice from outliving the native owner and observing an
 unmapped raw pointer.** It is the reason `VmmOwner` derives from `enable_shared_from_this`
 and the reason the extension's handle registry holds it by `std::shared_ptr` (see
-[`../rola_api.md`](../rola_api.md#vmm-binding)). It is also the whole answer to "can torch
+[`../fsla_api.md`](../fsla_api.md#vmm-binding)). It is also the whole answer to "can torch
 view driver memory without a copy?": `torch::stable::from_blob` over the reservation, with a deleter
 that owns the lifetime, is the mechanism — no pluggable allocator, no copy, and nothing the
 caching allocator can undo.

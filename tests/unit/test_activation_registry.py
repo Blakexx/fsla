@@ -17,9 +17,9 @@ import pathlib
 import pytest
 import torch
 
-import rola
-import rola.expert
-from rola.routing.activations import (
+import fsla
+import fsla.expert
+from fsla.routing.activations import (
     ACTIVATION_COLUMNS,
     ACTIVATION_REGISTRY,
     ActivationProperties,
@@ -28,7 +28,7 @@ from rola.routing.activations import (
     properties_for,
     ratified_entmax_alphas,
 )
-from rola.routing.types import (
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     LeafMassDecay,
@@ -67,7 +67,7 @@ def test_the_declared_properties_are_the_ones_the_maps_actually_have():
     """The table is only worth reading if it is true. Checked against the reference
     implementations, not against the docstrings that describe them."""
     logits = torch.tensor([[3.0, 0.5, -2.0, -4.0]], dtype=torch.float64)
-    from rola.routing.entmax.reference import entmax as entmax_reference
+    from fsla.routing.entmax.reference import entmax as entmax_reference
 
     dense = torch.softmax(logits, dim=-1)
     assert (dense > 0).all(), "softmax declares exact_zeros=False"
@@ -234,8 +234,8 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
         assert topology.unratified_activations == (
             (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
 
-        refusal = rola.expert.envelope_refusal(
-            _StubBundle(topology), rola.Values.from_projection(torch.zeros(1, 1, 1, 64)))
+        refusal = fsla.expert.envelope_refusal(
+            _StubBundle(topology), fsla.Values.from_projection(torch.zeros(1, 1, 1, 64)))
         assert "unratified activations" in refusal and "entmax" in refusal
     finally:
         del ACTIVATION_REGISTRY[tag]
@@ -249,9 +249,9 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
 #: the autograd node, asserted structurally in `tests/unit/test_interface.py`), and
 #: the path the check guarded is closed at BOTH ends by rows that already exist:
 #: the GATEWAY refuses to produce an unratified activation's routing at all
-#: (`rola/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
+#: (`fsla/routing/entmax/production.py` raises -- MEASURED here while re-anchoring:
 #: registering `("entmax", 1.75)` does not make the producer able to emit it), and
-#: `rola_op` refuses any bundle the producer did not derive
+#: `fsla_op` refuses any bundle the producer did not derive
 #: (`tests/unit/test_api_contract.py`), so no bundle carrying an unratified
 #: activation can reach any arm. The DISPATCH half -- an unratified activation goes
 #: to the reference arm and is named in `Dispatch.not_kerneled` -- is the row
@@ -288,7 +288,7 @@ def test_no_module_outside_the_registry_branches_on_an_activation_type():
     The exemptions are the modules that lower a tag to an implementation -- that is a
     dispatch, not a rule, and it is exactly what a registry column cannot express.
     """
-    package = pathlib.Path(rola.__path__[0])
+    package = pathlib.Path(fsla.__path__[0])
     names = {"SoftmaxActivation", "EntmaxActivation"}
     offenders = []
     for path in sorted(package.rglob("*.py")):

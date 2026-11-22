@@ -11,7 +11,7 @@ constant from its caller's header and compiled only because that caller had
 included the constant's home four lines earlier.
 
 **HOW.** One translation unit per header, containing that header twice and nothing
-else (`csrc/rola/BUILD.bazel`'s `header_selfcheck_sources`). Twice, because the second
+else (`csrc/fsla/BUILD.bazel`'s `header_selfcheck_sources`). Twice, because the second
 inclusion is what proves the include guard: a header without `#pragma once` passes the
 single-inclusion form and fails here. The graph's CUDA rule compiles each unit with the
 SAME flag list and include roots the extension is built with (`header_selfcheck_units`), so
@@ -20,7 +20,7 @@ that needs one the build does NOT supply is; a unit that does not compile fails 
 this test depends on, naming the header. This tool is the test over what the graph built:
 every header has its unit, and its object is there.
 
-    bazel test //csrc/rola:header_selfcheck --test_output=all
+    bazel test //csrc/fsla:header_selfcheck --test_output=all
 
 ONE BUILD, the library's: this asks a question about NAMES, not about codegen. Neither
 does `--ptxas-options=-v` matter: there are no entry points in these translation units.
@@ -32,14 +32,14 @@ from pathlib import Path
 
 
 def unit_stem(header: Path) -> str:
-    """The unit's stem for a header (`csrc/rola/src/common/x.cuh` -> `common__x_selfcheck`), as the BUILD file names it."""
+    """The unit's stem for a header (`csrc/fsla/src/common/x.cuh` -> `common__x_selfcheck`), as the BUILD file names it."""
     parts = header.parts[header.parts.index("src") + 1:]
     return "__".join(parts).removesuffix(".cuh").replace("/", "__") + "_selfcheck"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--headers", nargs="+", type=Path, required=True, help="every header under csrc/rola/src")
+    ap.add_argument("--headers", nargs="+", type=Path, required=True, help="every header under csrc/fsla/src")
     ap.add_argument("--objects", nargs="+", type=Path, required=True, help="the units' objects, the graph's compile of them")
     args = ap.parse_args()
 

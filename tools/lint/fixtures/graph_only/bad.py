@@ -29,7 +29,7 @@ def getter(binary):
 
 
 def scratch():
-    return tempfile.mkdtemp(prefix="rola_nvcc_")
+    return tempfile.mkdtemp(prefix="fsla_nvcc_")
 
 
 def via_bash():

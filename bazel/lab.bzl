@@ -18,7 +18,7 @@ _CC = "900"
 _COPTS = [
     "-O3",
     "-std=c++20",
-    "-DROLA_LAB_CC=" + _CC,
+    "-DFSLA_LAB_CC=" + _CC,
     "-lineinfo",
     "-Xptxas",
     "--warn-on-spills,--warn-on-local-memory-usage,--verbose",
@@ -83,7 +83,7 @@ def _lab_experiment_impl(ctx):
         arguments = [check],
         inputs = [binary, ctx.file.source, ctx.file._check, ctx.file._ledger, ctx.file._rules] + parts.values() + ctx.files._lab_sources + ctx.files._warpline,
         outputs = [verdict],
-        env = {"ROLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
+        env = {"FSLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
         mnemonic = "LabCheck",
         progress_message = "Checking %s's code against what it declares" % ctx.label.name,
     )
@@ -110,7 +110,7 @@ _lab_experiment = rule(
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
         "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
         "_nvcc": attr.label(default = "@cuda_tools//:bin/nvcc", allow_single_file = True, cfg = "exec"),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
     },
     doc = "One lab experiment's outputs: its binary, and beside it what the graph's disassemblers read of it (the cubin, the " +
           "listings, the demangled names, the toolkit's version) and the compile's diagnostics; its checks are the target's validation.",
@@ -127,7 +127,7 @@ def lab_experiment(name, src, includes = []):
         copts = _COPTS,
         host_cc = "@host_cc//:identity.txt",
         deps = [
-            "//csrc/rola:headers",
+            "//csrc/fsla:headers",
             ":lab_headers",
             "@warpline//:host",
             "@warpline//:stamp",

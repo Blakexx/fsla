@@ -1,6 +1,6 @@
 # `tools/pipe_counters.py` — the profiler's pipe and resource counters for one launch
 
-KERNEL_STANDARDS §22. One untimed launch of a cell of a kernel family (`--kernel`, `tools/kernel_targets.py`: the carry by default) through rola's runner (`measure.provider`'s `oneshot_argv`, the arm a comparison times), under
+KERNEL_STANDARDS §22. One untimed launch of a cell of a kernel family (`--kernel`, `tools/kernel_targets.py`: the carry by default) through fsla's runner (`measure.provider`'s `oneshot_argv`, the arm a comparison times), under
 `ncu --metrics` with the counters in `COUNTERS`:
 - HMMAs and instructions executed;
 - scheduler cycles, elapsed and active;

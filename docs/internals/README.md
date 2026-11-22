@@ -1,15 +1,15 @@
 # `docs/internals/` — the source mirror
 
-**Two mirror roots.** One markdown file here per source file under `csrc/rola/`, at the same relative path minus the
-`src/` component the mirror does not repeat (`csrc/rola/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
-`csrc/rola/rola_api.cpp` → `docs/internals/rola_api.md`); a `.cu` and its `.cuh` share one doc, since they are one
-component. And one page a Python module group the kernels' host side is built from: `engine/` mirrors `rola/engine/`
-(the package, the rule layer, the carve planner, the two DAGs), `state.md` mirrors `rola/_state.py`, `paging/paging.md`
-mirrors `rola/ops/paging.py` and `padding.md` mirrors `rola/ops/padding.py`. `tools/` mirrors `tools/`, one page a
+**Two mirror roots.** One markdown file here per source file under `csrc/fsla/`, at the same relative path minus the
+`src/` component the mirror does not repeat (`csrc/fsla/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
+`csrc/fsla/fsla_api.cpp` → `docs/internals/fsla_api.md`); a `.cu` and its `.cuh` share one doc, since they are one
+component. And one page a Python module group the kernels' host side is built from: `engine/` mirrors `fsla/engine/`
+(the package, the rule layer, the carve planner, the two DAGs), `state.md` mirrors `fsla/_state.py`, `paging/paging.md`
+mirrors `fsla/ops/paging.py` and `padding.md` mirrors `fsla/ops/padding.py`. `tools/` mirrors `tools/`, one page a
 script with something to say ([the tools map](tools/README.md)).
 
 **No exemptions.** The per-arm units are the graph's, generated into its output tree from each family's `arms.bzl`
-([`docs/build-graph.md`](../build-graph.md#arms)); no source in `csrc/rola/` is generated, so every source file has its page.
+([`docs/build-graph.md`](../build-graph.md#arms)); no source in `csrc/fsla/` is generated, so every source file has its page.
 
 The mirror rule runs SOURCE → DOC, so a deleted source leaves an orphan doc unless the doc is deleted with it: deleting
 the doc is part of deleting the source, and the removal is recorded in `DELETIONS.md` like any other.
@@ -53,7 +53,7 @@ Naming what is GONE is often the fact worth keeping: an entry that was unbound, 
 mechanism that retired, another project's file the convention was borrowed from. Declare
 those names on one line beside the prose that explains them,
 
-    <!-- ABSENT: rola_consumer_forward rola_page_admit_mask -->
+    <!-- ABSENT: fsla_consumer_forward fsla_page_admit_mask -->
 
 and the check reads the declaration in BOTH directions — a declared-absent name the tree
 actually carries fails too, because the passage is then telling a reader the opposite of

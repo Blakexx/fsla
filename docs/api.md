@@ -1,6 +1,6 @@
 # The API
 
-RoLA is linear attention under a structured feature map. That is not a slogan about the
+FSLA is linear attention under a structured feature map. That is not a slogan about the
 paper; it is the specification of this API. A head's recurrent state is expanded into
 many sub-states that share the head's projections, and a learned routing decides which
 sub-states each token reads and writes — so the public contract is *linear attention's*
@@ -9,20 +9,20 @@ contract, with exactly **one** new concept: the feature map.
 A user who knows linear attention should find one unfamiliar thing on this page.
 
 ```python
-import rola
+import fsla
 
-routing = rola.Routing(rola.uniform(2, rola.union_routing(64, alpha=1.5)))
-decay   = rola.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
+routing = fsla.Routing(fsla.uniform(2, fsla.union_routing(64, alpha=1.5)))
+decay   = fsla.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
 
-layer = rola.RoLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
 or, without the layer, from levels you computed yourself -- the format's own utilities build the bundles:
 
 ```python
-factors = rola.RouteFactors.from_levels(topology, read_levels, write_levels)
-y, _ = rola.rola_op(factors, rola.Values.from_projection(v), masks, decay(), plan=plan)
+factors = fsla.RouteFactors.from_levels(topology, read_levels, write_levels)
+y, _ = fsla.fsla_op(factors, fsla.Values.from_projection(v), masks, decay(), plan=plan)
 ```
 
 ---
@@ -30,7 +30,7 @@ y, _ = rola.rola_op(factors, rola.Values.from_projection(v), masks, decay(), pla
 ## 1. The op
 
 ```python
-rola_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay | None = None, *,
+fsla_op(routes: RouteFactors, values: Values, masks: Masks, decay: LeafMassDecay | None = None, *,
         plan: PrefillPlan, state=None) -> (y, state)
 ```
 
@@ -41,7 +41,7 @@ internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection 
 what to do, never what you are giving, and it changes at most rounding within the oracle's tolerance, never the
 mathematical output -- the data does.
 
-`state` is `None` (a stateless call, returning `(y, None)`) or a `rola.state()` object,
+`state` is `None` (a stateless call, returning `(y, None)`) or a `fsla.state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
 is no second flag, because a stateless call runs a kernel variant with no state I/O
 compiled into it at all. Read the carried state with
@@ -49,19 +49,19 @@ compiled into it at all. Read the carried state with
 capacity; that is a bridge for the oracle and for a test, never a measured path. See
 [`docs/internals/state.md`](internals/state.md).
 
-`rola.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
+`fsla.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
 a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
 step can admit into itself, with no host round trip. `0.0` — the default — is exact
 commitment. Two calls read and refill it off the
-step's own path: `rola.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
+step's own path: `fsla.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
 thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
 [`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
 
 The plan is a frozen, hashable `PrefillPlan` -- what to do (the carve and the state's backing mapping) and
-nothing else, built once from the declaration by the producer's plan rule (`rola.expert.prefill_plan`); the layer
+nothing else, built once from the declaration by the producer's plan rule (`fsla.expert.prefill_plan`); the layer
 holds its own. There is no configuration argument and no statistics argument: those are not model facts -- they are
-how the op RUNS. The plan type lives behind [`rola.expert`](#5-the-expert-surface).
+how the op RUNS. The plan type lives behind [`fsla.expert`](#5-the-expert-surface).
 
 **Any level width, any `d_v`.** A `Routing` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's
@@ -72,9 +72,9 @@ decode step pad below the op, and the intra reads the rows at their own widths.
 ### 1.1 The built envelope IS the surface
 
 The prefill is the carry and the intra (the facts pass is deleted: its node raises `KernelNotBuilt`) over a BUILT MATRIX
-(`rola.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
+(`fsla.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
 fp64 oracle
-(`rola.ops.naive.naive_rola`) is the executable spec — what tests and measurements
+(`fsla.ops.naive.naive_fsla`) is the executable spec — what tests and measurements
 call directly — and it is not reachable by dispatch, because a dispatch to it at
 inference is a silent ~1000x-slower route shipping unnoticed, which is the exact thing
 the no-fallback rule forbids.
@@ -84,22 +84,22 @@ the no-fallback rule forbids.
 | a gradient anywhere in the operands | none | `BackwardNotImplemented` |
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
-| `d_v` | the intra's value width (`rola.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
-| widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`rola.ops.intra.admits`) | refused |
+| `d_v` | the intra's value width (`fsla.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
+| widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`fsla.ops.intra.admits`) | refused |
 | `T` | any (a partial last window runs inside the kernels; the layer's segments are whole windows, §4.2) | — |
 | `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |
 
-Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the
+Ask before calling: `fsla.expert.envelope_refusal(routes, v, decay)` returns the
 sentence the refusal will carry. IT ALWAYS REFUSES while no carry arm is built (it never returns `None`: the
 sentence names the first clause the call fails, and a call that passes them all is refused for want of a carry arm).
-`rola.expert.require_envelope(...)` is the raising form the op itself uses, and likewise always raises.
+`fsla.expert.require_envelope(...)` is the raising form the op itself uses, and likewise always raises.
 
 **The envelope is narrow, and that is stated rather than softened.** Shapes outside the
 matrix are refused, and there is NO TRAINING PATH through this surface until the native
 backward lands; what widens it is in [`docs/open-work.md`](open-work.md).
 
-`rola_op` is the **single autograd boundary**, and it is a refusal rather than a
+`fsla_op` is the **single autograd boundary**, and it is a refusal rather than a
 branch: the failure it prevents — a forward-only kernel reached from a gradient
 context returns a tensor with no `grad_fn` and severs the graph silently — is
 structural, not a bug in any one call site. The prefill's autograd node, whose backward
@@ -112,12 +112,12 @@ The op's state is the paged tensor and nothing else
 OWN thin bundle, and the rule is a membership test:
 
 > **An object holds exactly the recurrences ITS level introduced.**
-> Op: the routed state. Layer: `LayerContinuation`. Model: the per-layer bundles.
+> Op: the factored sparse state. Layer: `LayerContinuation`. Model: the per-layer bundles.
 
-So `RoLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
+So `FSLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
 one back. `LayerContinuation.state` is the op's paged tensor; it is the container's
 only field today, and any future layer-level recurrence is a field ON IT, never on the
-op's state. The container is the contract in both directions: a bare `RoLAState` or a
+op's state. The container is the contract in both directions: a bare `FSLAState` or a
 `(state, conv_rings)` tuple is refused by name, because accepting a lookalike would make
 the layer's own fields silently optional to carry. Keeping each level's object pure is
 what leaves layer luggage nowhere to land inside the op's state.
@@ -130,8 +130,8 @@ are stated apart.
 
 | | what it accepts | what it does with the rest |
 |---|---|---|
-| **the API** (this page: `rola_op`, `RoLA`, `rola.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` to the next shipped `DV` with zero columns |
-| **the kernel** (`rola.ops.carry`, `rola.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
+| **the API** (this page: `fsla_op`, `FSLA`, `fsla.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` to the next shipped `DV` with zero columns |
+| **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
 
 **The seam is the only translator.** A padded digit gets amplitude *exactly* zero
 (`-inf` before the entmax or softmax solve), so it is never live, never read, never
@@ -150,16 +150,16 @@ would refuse it is owed ([`CONSTITUTION.md` R13](CONSTITUTION.md#r13)).
 
 **What the descriptor fixes.** A state binds its format at its first call — `D`, the
 per-level `B_l`, the canonical leaf order, the page rectangle, `DV`, and the stored form
-(`rola._state.STATE_DTYPE`, [`internals/common/state_page.md`](internals/common/state_page.md)) — and every later call
+(`fsla._state.STATE_DTYPE`, [`internals/common/state_page.md`](internals/common/state_page.md)) — and every later call
 is *checked* against it rather than assumed
 to fit. A call that disagrees is refused at the seam, naming the field, instead of
 addressing somebody else's bytes inside a kernel. Re-laying out a state is an explicit
 op, never a side effect of a call. See
 [`internals/state.md`](internals/state.md#format).
 
-**Status.** `rola_op` validates the call against the envelope and walks the prefill DAG.
-The DAG's carry leg (`rola.ops.prefill`) is not yet re-pointed at the rebuilt carry's
-launch surface (`rola.ops.carry.carry`), so a prefill does not yet run end to end
+**Status.** `fsla_op` validates the call against the envelope and walks the prefill DAG.
+The DAG's carry leg (`fsla.ops.prefill`) is not yet re-pointed at the rebuilt carry's
+launch surface (`fsla.ops.carry.carry`), so a prefill does not yet run end to end
 ([`docs/open-work.md`](open-work.md)).
 
 ## 2. The feature map
@@ -190,7 +190,7 @@ today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`)
 `RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it
 over, whatever its sum ([§2.2](#22-the-scaled-block-and-the-gain)). This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
-alone: the fused kernel's epilogue, and the reference's (`rola/routing/quant.py`, `RouteFactors.from_levels`),
+alone: the fused kernel's epilogue, and the reference's (`fsla/routing/quant.py`, `RouteFactors.from_levels`),
 the first gated against the second where it is built. The op's oracle takes the
 bundle itself as its input.
 
@@ -238,7 +238,7 @@ A level is numbers in a representation, not a distribution (ruled 2026-11-07,
 [`CONSTITUTION.md` R23](CONSTITUTION.md#r23)). `q` (read), `k` (write) and `v` are each a
 SCALED BLOCK: unit-max rows in a FORM that states its storage type and its signedness -- u8
 nonnegative at 255 (a routing level, dense or sparse, a zero a zero), bf16 signed in `[-1, 1]` (the values) --
-with the row's max as its fp32 scale. The forms are `rola.routing.quant`'s `Form` (`ROWS`, `VALUES`),
+with the row's max as its fp32 scale. The forms are `fsla.routing.quant`'s `Form` (`ROWS`, `VALUES`),
 quantizing into and dequantizing out of each written once on it, and the factory refuses an entry its form does not
 hold -- a negative or non-finite routing level, a non-finite value -- with one host read a call. A side's shared scale is the product of its levels'
 scales, STORED FACTORED: each level's scale is written by the producer job that quantizes that
@@ -256,9 +256,9 @@ their scales, `RouteFactors.from_levels` quantizing each against its own max and
 
 **The read scales are kept, for the floor.** A per-token read factor common to every leaf
 cancels in the ratio everywhere but the floor, so the read scales' product `r` is read only
-there: the prefill readout is `num' / (den' + eps / r)` (`rola/ops/prefill.py`'s `readout`),
+there: the prefill readout is `num' / (den' + eps / r)` (`fsla/ops/prefill.py`'s `readout`),
 which is the formula above exactly, and it is what makes `eps` mean the same thing on every
-routing. `READOUT_EPS` is a DEFINITION constant (`rola/ops/constants.py`). Decode computes the
+routing. `READOUT_EPS` is a DEFINITION constant (`fsla/ops/constants.py`). Decode computes the
 same `y`: neither normalizes a read level.
 
 **The decay computes its own shares** ([§3](#3-the-decay-source-slot)): its clock is each leaf's
@@ -278,16 +278,16 @@ rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 
 ```python
 Routing(levels, *, gain=True, gain_bias_init=None, gain_config=None, bias=False)
-RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, ...)
+FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, ...)
 ```
 
 RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data -- the levels, the write gain and
 the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
 packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
-call (`rola.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
+call (`fsla.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
 entmax/softmax solves, the write gain, the unit-max rows and the bf16 values -- and on CUDA with no gradient
 that call is ONE LAUNCH of the fused producer kernel, the bundle's rows and scales views of the planes it writes --
-a kernel not built on this line, so the call raises `rola.ops._ext.KernelNotBuilt` there
+a kernel not built on this line, so the call raises `fsla.ops._ext.KernelNotBuilt` there
 ([`open-work.md`](open-work.md)). The torch composition behind the same call is the reference: fp64, the host,
 and -- until the native backward -- the path a gradient takes. Construction validates the whole declaration --
 widths in range, a buildable topology, a gain layout -- so an unbuildable model fails on the line that built it.
@@ -327,7 +327,7 @@ the call.
 
 **Every level, every head and the values are one launch by design** -- a model pays one launch for the whole
 topology, whatever its levels' operators, alphas and widths. That kernel is not built on this line: the no-grad
-CUDA call raises `rola.ops._ext.KernelNotBuilt`, and the torch composition behind the same call serves fp64, the host and a gradient.
+CUDA call raises `fsla.ops._ext.KernelNotBuilt`, and the torch composition behind the same call serves fp64, the host and a gradient.
 
 <a id="projection-weight"></a>**The projection reads a laid-out copy of `route_W` when no gradient flows.** The GEMM's
 operands are bf16 and the kernel reads each column's hidden run contiguous (`hidden_contiguous`), so an inference
@@ -339,10 +339,10 @@ moves the version and so the copy. A step that trains casts inside the graph, si
 gradient must reach the parameter and the parameter changes every step anyway. (Writing
 through `route_W.data` bypasses the version counter, as it does for every autograd cache.)
 The layer's value and output projections read their bf16 weights the same way (another ~6 us
-a step and two launches at `H = 16`); the one mechanism is `rola/_inference_copy.py`.
+a step and two launches at `H = 16`); the one mechanism is `fsla/_inference_copy.py`.
 
 Activation *properties* are never supplied by a caller — they come from the closed
-registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller could
+registry in `fsla/routing/activations.py`, keyed on the tag. Metadata a caller could
 supply is metadata a caller could supply wrong, and a validator reading it would be
 checking a claim instead of a fact. Activations stay width-free: an activation is a
 function on a row of any length, so a width on one would be a second place the same
@@ -377,11 +377,11 @@ is a choice a level's author is making, so it is stated here rather than buried.
 A mask is a bit per side, per level, per digit, per token -- true where the digit is live (ruled 2026-11-13) -- and it
 is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22): the op computes with `r * m`, the product under the
 mask. The masks are validated for shape, dtype and device, never for their values, and used blindly: a bit under a
-nonzero row drops that digit's term, a bit over a zero row adds nothing, and the oracle (`rola.naive_rola(..., masks=)`)
+nonzero row drops that digit's term, a bit over a zero row adds nothing, and the oracle (`fsla.naive_fsla(..., masks=)`)
 is the result the data fixes. The backward saves the masks and they carry no gradient: a masked coefficient's gradient is zero.
 
 ```python
-rola.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
+fsla.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
 ```
 
 The producer emits them in the layout of the consumer its plan names (`ProducerPlan.consumer`, a static field), so no
@@ -389,7 +389,7 @@ conversion stands between the producer and the op, and each op documents the lay
 
 | consumer | a level's mask | bit |
 |---|---|---|
-| `"prefill"` (`rola_op`, `RoLA.forward`) | int32 `[B, H, ceil(T / 32), width_l]` (`H_w` on the write side), TOKEN-packed: the entmax kernels' `support_words` as they are | bit `t % 32` of word `t // 32` = token `t` live at that digit; the solve's stream axis is `B * H` with `H` inner, so its `[B * H, ...]` words are this shape as a view |
+| `"prefill"` (`fsla_op`, `FSLA.forward`) | int32 `[B, H, ceil(T / 32), width_l]` (`H_w` on the write side), TOKEN-packed: the entmax kernels' `support_words` as they are | bit `t % 32` of word `t // 32` = token `t` live at that digit; the solve's stream axis is `B * H` with `H` inner, so its `[B * H, ...]` words are this shape as a view |
 | `"decode"` (`decode_step_gated`) | int32 `[B, H, ceil(width_l / 32)]`, DIGIT-packed, one token | bit `d % 32` of word `d // 32` = digit `d` live |
 
 Bits past `T` (prefill) or past `width_l` (decode) are zero. A level whose activation has no exact zeros carries an
@@ -402,8 +402,8 @@ Where the recurrence's forgetting rates come from is a CHOICE, and the recurrenc
 tell the answers apart:
 
 ```python
-rola.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fixed
-rola.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'global'
+fsla.ConstantDecay(rate, widths=..., num_heads=...)                    # user-fixed
+fsla.LearnedDecay(rate, widths=..., num_heads=..., scope='state')      # 'state' | 'global'
 ```
 
 Both emit a `LeafMassDecay` whose `dials[l]` is `[H, width_l]` in `[0, 1)`, `H` the write heads (the decay is the
@@ -430,9 +430,9 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, plan=None, memory_budget=None)
+FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, plan=None, memory_budget=None)
 
-y, continuation = layer(hidden_states, continuation=LayerContinuation(state=rola.state()))
+y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.state()))
 y, continuation = layer(next_tokens, continuation=continuation)
 y, _ = layer(hidden_states)                            # stateless -> (y, LayerContinuation(state=None))
 ```
@@ -444,7 +444,7 @@ the container (§1.2).
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
 default, 64, is the intra's value width.
 
-<a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `RoLA._step(x, state)`
+<a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `FSLA._step(x, state)`
 is the whole token with no host read inside it -- the producer's one launch, the gated decode
 step, the output projection -- so a caller can capture it in a CUDA graph and replay it a
 token. A batch-head whose write atoms the state can neither address nor admit skips itself;
@@ -470,14 +470,14 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 
 `v_proj` and `o_proj` run as bf16 GEMMs (their weights read through the inference copy when no
 gradient flows, §2.3), and the projection
-is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
+is written to the value format at the layer: `Values.from_projection(v)` (`fsla/values.py`)
 holds each token's values `v` in bf16 against its largest channel (at 1); that magnitude is
 the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
 what the kernels read; `Values.dequantized()` is
 the fp32 view a consumer still computing on floating values takes at its seam, with the
 projection's gradient stepped straight through when the projection requires one. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
-non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
+non-CUDA forward refuses at `fsla_op` and no call off CUDA ever observes a projected
 value. Round-tripping
 it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
 downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
@@ -491,14 +491,14 @@ environment the FlashAttention comparison arm runs in.
 ### 4.2 Segments: the layer bounds its own working set
 
 A prefill runs as SEGMENTS of `T` tokens (ruled 2026-09-29): per segment the layer projects that
-stretch's routes and values, runs `rola_op` on it and carries the state to the next, so the projections
+stretch's routes and values, runs `fsla_op` on it and carries the state to the next, so the projections
 are bounded along with the op -- which an op-level split cannot do once the whole call's bundle exists.
 The op runs one segment and knows nothing of segmentation.
 
 `T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
 whole number of the device's windows whose working set (the per-token bytes of the prefill launch builder's own
-allocation, `rola.ops.prefill.launch_bytes_per_token`, which refuses by name until the prefill kernel exists) fits beside the state
-(`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
+allocation, `fsla.ops.prefill.launch_bytes_per_token`, which refuses by name until the prefill kernel exists) fits beside the state
+(`FSLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
 `memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
 no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
 `tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
@@ -506,13 +506,13 @@ state and hands none back.
 
 ## 5. The expert surface
 
-`rola.expert` holds everything BELOW the contract line — the dispatch's own answer,
+`fsla.expert` holds everything BELOW the contract line — the dispatch's own answer,
 the pins over axes the op otherwise decides, and the fine-grained gain layout behind
 the layer's one public flag:
 
 ```python
-from rola.expert import PrefillPlan, prefill_plan, envelope_refusal
-layer = rola.RoLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
+from fsla.expert import PrefillPlan, prefill_plan, envelope_refusal
+layer = fsla.FSLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
 ```
 
 | name | what it is |
@@ -541,14 +541,14 @@ checks a pinned carve against the declaration exactly as it checks its own
 the same way -- and the plan is what to do, hashable, the arm and the cache key. Inside, one launch bundle per kernel
 family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the `plan`, the `operands` (the data, masks included)
 and the `workspace` (scratch, pool) -- built at a DAG's terminal node and never public. A conformance family drives the
-envelope's own rule (`rola.engine.rules.envelope`) directly and declares the refusal
+envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and `envelope_refusal` answers the same question before a call.
 
 ## 6. What is deliberately not here
 
 - **No dict or JSON configuration surface.** Raw configuration belongs to consumers. The
   library type-checks structured objects and parses nothing.
-- **No pluggable recurrence.** RoLA *is* the feature map, not a framework for
+- **No pluggable recurrence.** FSLA *is* the feature map, not a framework for
   recurrences. The state update is not an extension point and must never be presented as
   one.
 - **No silent second path.** Every arm is chosen from a property of the configuration or

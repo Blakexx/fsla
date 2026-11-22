@@ -5,13 +5,13 @@
 THE GATE IS THE TRUTH, NOT A DECLARED ARITHMETIC: this file holds the kernel to `tests/oracle/reference.py`'s inter
 term on the bundle's own dequantized operands, so a shared misreading of the math by a kernel and a fidelity reference
 has nowhere to hide. ``num`` and ``den`` are compared in the recurrence's units -- the kernel's fp32 sums leave each
-token's reader factor ``r`` out (`rola.ops.prefill`), so each is multiplied by it (:func:`in_truth`) -- against each
+token's reader factor ``r`` out (`fsla.ops.prefill`), so each is multiplied by it (:func:`in_truth`) -- against each
 slot's envelope (the same reference on ``|v|``).
 
 RED BY PLAN: no carry kernel is built on this line, so every launch here fails by name
-(`rola.ops._ext.KernelNotBuilt`) until a hopper schedule lands; the decomposition test runs no kernel and holds.
+(`fsla.ops._ext.KernelNotBuilt`) until a hopper schedule lands; the decomposition test runs no kernel and holds.
 
-Symbols: ``W`` the window (`rola.ops.window.window_of`, the device's), ``L`` tokens, ``C`` value channels.
+Symbols: ``W`` the window (`fsla.ops.window.window_of`, the device's), ``L`` tokens, ``C`` value channels.
 """
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ import dataclasses
 import pytest
 import torch
 
+from fsla.ops import carry as carry_ops
+from fsla.ops import facts as facts_ops
+from fsla.ops.prefill import reader_factor
+from fsla.ops.window import window_of
 from measure.cells import carry_cells, realize
 from measure.subjects import bundle_of, cell_carve
-from rola.ops import carry as carry_ops
-from rola.ops import facts as facts_ops
-from rola.ops.prefill import reader_factor
-from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, relative, with_gain
 from tests.oracle.tolerances import CARRY_DEN, CARRY_NUM
@@ -109,9 +109,9 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
 def test_the_decomposition_is_exact():
     """``inter(W) + intra(W)`` is the SAME full recurrence for every ``W``, and equals the canonical fp64 oracle: the
     no-double-count claim, and the reason an inter-only kernel can be gated at all. It runs no kernel."""
-    from rola.ops.constants import READOUT_EPS
-    from rola.ops.naive import naive_rola
-    from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    from fsla.ops.constants import READOUT_EPS
+    from fsla.ops.naive import naive_fsla
+    from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
     spec = next(c for c in ORACLE_CELLS if c.name == "flat-small-dense")
     read, write, gain, v = realize(spec).doubles()
@@ -127,5 +127,5 @@ def test_the_decomposition_is_exact():
             assert relative(cur[1], tot[1]) < 1e-12
     routing = IndependentRouting(width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in spec.widths))
-    y, _ = naive_rola(v, read, with_gain(write, gain), topology, None, output_final_state=False)
+    y, _ = naive_fsla(v, read, with_gain(write, gain), topology, None, output_final_state=False)
     assert relative(tot[0] / (tot[1][..., None] + READOUT_EPS), y) < 1e-10

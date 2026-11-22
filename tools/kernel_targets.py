@@ -38,7 +38,7 @@ class Target:
 
 
 def _windows(cell) -> int:
-    from rola.ops.window import window_of
+    from fsla.ops.window import window_of
 
     return -(-cell.tokens // window_of())
 

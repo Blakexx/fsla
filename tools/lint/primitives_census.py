@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SASS-SHAPE CENSUS for arch-selected primitives.
 
-**WHAT THIS CATCHES.** `csrc/rola/src/common/ops.cuh` names a primitive by its
+**WHAT THIS CATCHES.** `csrc/fsla/src/common/ops.cuh` names a primitive by its
 CONTRACT (KERNEL_STANDARDS section 8: "feature selection lives where the
 primitive is defined ... never as `#if` at call sites") and picks a NATIVE
 instruction per architecture behind an `arch::Caps` flag. The failure mode this

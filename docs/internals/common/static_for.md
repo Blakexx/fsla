@@ -1,6 +1,6 @@
 # `common/static_for.cuh` — the family's compile-time loop
 
-Mirrors `csrc/rola/src/common/static_for.cuh`.
+Mirrors `csrc/fsla/src/common/static_for.cuh`.
 
 <a id="static-for"></a>
 ## `static_for<N>(f)`

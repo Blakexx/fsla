@@ -1,8 +1,8 @@
 """Producer tests -- the feature map's own stage.
 
-Validates `rola.routing.producer` against the ONE canonical
+Validates `fsla.routing.producer` against the ONE canonical
 ground truth this branch authorizes: the Stage 1 fp64 oracle
-(`rola.ops.naive.naive_rola`). Per the "matching-the-naive
+(`fsla.ops.naive.naive_fsla`). Per the "matching-the-naive
 anti-pattern" standing rule, nothing here is checked against a second,
 freshly written reference -- every assertion either (a) feeds the producer's
 output through the oracle and checks numerical properties the oracle itself
@@ -22,8 +22,8 @@ import pytest
 import torch
 from conftest import produce_routing, raw_side_gain, resolved_routing_from_topology
 
-from rola.ops.naive import naive_rola
-from rola.routing.types import (
+from fsla.ops.naive import naive_fsla
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     SoftmaxActivation,
@@ -33,7 +33,7 @@ from rola.routing.types import (
 )
 
 #: THE FORMAT'S ROUNDING BUDGET on a row's sum: each digit is within half a u8 step of its row max, so a
-#: width-w row's sum is within w / 510 of its own sum times its max (`rola.routing.quant`).
+#: width-w row's sum is within w / 510 of its own sum times its max (`fsla.routing.quant`).
 _ROW_BUDGET = 16 / 510 + 1e-4
 #: the fixtures' value width; it is the LAYER's fact, so a topology no longer carries one and these gates state their
 #: own.
@@ -82,7 +82,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
             assert side[level].shape == (B, L, H, width)
             assert torch.isfinite(side[level]).all() and bool((side[level] >= 0).all())
 
-    y, _ = naive_rola(v, out.read_levels, out.write_levels, topology, None)
+    y, _ = naive_fsla(v, out.read_levels, out.write_levels, topology, None)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
@@ -109,7 +109,7 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dty
         assert out.read_levels[level].shape == (B, L, H, width)
         assert torch.isfinite(out.read_levels[level]).all() and bool((out.read_levels[level] >= 0).all())
 
-    y, _ = naive_rola(v, out.read_levels, out.write_levels, topology, None)
+    y, _ = naive_fsla(v, out.read_levels, out.write_levels, topology, None)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
@@ -148,8 +148,8 @@ def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
     pieces (`raw_side_gain`). Checked against the machinery the producer wraps -- NOT against a second
     implementation of routing (the "matching-the-naive" standing rule).
     """
-    from rola.routing.projection import _packed_router_logits
-    from rola.routing.reference import routing_factor_levels
+    from fsla.routing.projection import _packed_router_logits
+    from fsla.routing.reference import routing_factor_levels
 
     topology = Topology(
         levels=(
@@ -177,7 +177,7 @@ def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
     read_mass = unfold(reads_raw[0]).sum(-1)
     assert float((read_mass - 1).abs().max()) > 1e-3
 
-    #: THE FORMAT ROUNDS EACH LEVEL'S ROW against its max (`rola.routing.quant`): |delta| <= m / 510 a digit, so a
+    #: THE FORMAT ROUNDS EACH LEVEL'S ROW against its max (`fsla.routing.quant`): |delta| <= m / 510 a digit, so a
     #: level holds to that and a leaf product to m_0 * m_1 / 255 (+ the second order term).
     for level in range(topology.D):
         raw = unfold(reads_raw[level])

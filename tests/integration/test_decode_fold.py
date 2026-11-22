@@ -4,7 +4,7 @@
 """THE DECODE FOLD: the declared arithmetic, held to BIT-IDENTITY.
 
 The step's operand pass lives INSIDE the step kernel
-(``csrc/rola/src/decode/decode_fold.cuh``), so what this file gates it gates through the
+(``csrc/fsla/src/decode/decode_fold.cuh``), so what this file gates it gates through the
 step's own output. The fold reads a level's stored row -- u8 digits against the row's fp32
 max -- as RAW values (a u8 digit as its integer, exact), and makes an amplitude
 ``raw * (scale / 255)``: the level as stored, on either side, whatever its sum
@@ -27,15 +27,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.constants import READOUT_EPS
-from rola.ops.decode import _decode_step, fold_levels
-from rola.ops.lattice import permutation
-from rola.ops.paging import decode_pages
-from rola.ops.produce import decode_plan
-from rola.routing import quant
-from rola.routing.factors import RouteFactors
-from rola.routing.types import Topology, UnionRouting
-from rola.values import Values
+from fsla.ops.constants import READOUT_EPS
+from fsla.ops.decode import _decode_step, fold_levels
+from fsla.ops.lattice import permutation
+from fsla.ops.paging import decode_pages
+from fsla.ops.produce import decode_plan
+from fsla.routing import quant
+from fsla.routing.factors import RouteFactors
+from fsla.routing.types import Topology, UnionRouting
+from fsla.values import Values
 from tests.oracle.fixtures import masks_of, state_pages
 
 pytestmark = [

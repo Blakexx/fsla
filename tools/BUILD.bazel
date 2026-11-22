@@ -35,10 +35,10 @@ genrule(
     name = "derivation_harness_source",
     srcs = ["manifests/derivation_cases.json"],
     outs = ["derivation/derivation_harness.cu"],
-    cmd = "$(execpath @rola_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) --out $@",
+    cmd = "$(execpath @fsla_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) --out $@",
     tools = [
         "derivation.py",
-        "@rola_env//:python",
+        "@fsla_env//:python",
     ],
 )
 
@@ -51,7 +51,7 @@ cuda_unit(
         "-O0",
     ],
     host_cc = "@host_cc//:identity.txt",
-    deps = ["//csrc/rola:headers"],
+    deps = ["//csrc/fsla:headers"],
 )
 
 cc_binary(
@@ -69,19 +69,19 @@ genrule(
     srcs = [
         "manifests/derivation_cases.json",
         ":derivation_harness",
-        "//csrc/rola:sources",
+        "//csrc/fsla:sources",
     ],
     outs = ["derivation/derivation.json"],
-    cmd = "$(execpath @rola_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) " +
-          "--src csrc/rola/src --binary $(execpath :derivation_harness) --record $@",
+    cmd = "$(execpath @fsla_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) " +
+          "--src csrc/fsla/src --binary $(execpath :derivation_harness) --record $@",
     tools = [
         "derivation.py",
-        "@rola_env//:python",
+        "@fsla_env//:python",
     ],
 )
 
 #: THE LAB, a run target of its own: it hands the tool the directory of warpline's Python package, which
-#: `tools/lab_trace.py` reads the traced rows with and the lab's checks read the code with (`ROLA_WARPLINE_PYTHON`). The experiments are
+#: `tools/lab_trace.py` reads the traced rows with and the lab's checks read the code with (`FSLA_WARPLINE_PYTHON`). The experiments are
 #: targets of the graph (`//measure/lab`, bazel/lab.bzl): the lab builds the one it reads, and compiles nothing itself
 lab_run(
     name = "lab",

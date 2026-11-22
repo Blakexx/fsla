@@ -253,6 +253,98 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "@@fsla_devtools+//bazel:environment.bzl%environment": {
+      "general": {
+        "bzlTransitiveDigest": "fWnz4VEUK1f2i7SoVPWoX+jUPEjYcsA3snToJt8FN/M=",
+        "usagesDigest": "kodINLLpIndUmc+etpm53JdiDcdj6CNxP77AL7wyn/8=",
+        "recordedInputs": [
+          "REPO_MAPPING:,fsla_devtools fsla_devtools+",
+          "REPO_MAPPING:,uv fsla_devtools++environment+uv"
+        ],
+        "generatedRepoSpecs": {
+          "fsla_env": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_python_repo",
+            "attributes": {
+              "lock": "@@//:requirements.lock",
+              "uv": "@@fsla_devtools++environment+uv//:uv",
+              "uv_pin": "@@fsla_devtools+//pins:uv_pin.json",
+              "index": "",
+              "index_from": "@@//tools:toolchains/cu13.json",
+              "index_field": "torch_index",
+              "devtools": true,
+              "packages": [],
+              "isolated_builds": true,
+              "post": "@@//bazel:flags.py",
+              "post_args": [
+                "@@//tools:toolchains/cu13.json"
+              ],
+              "post_env": [
+                "FSLA_NVCC_THREADS"
+              ],
+              "watch": [
+                "@@//:measure/__init__.py",
+                "@@//:measure/hardware.py",
+                "@@//csrc/fsla:src/common/hardware.json",
+                "@@//tools:build_flags.py"
+              ],
+              "watch_trees": [],
+              "build": "",
+              "build_file": "@@//bazel:env.BUILD"
+            }
+          },
+          "uv": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@fsla_devtools+//pins:uv_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:uv.BUILD"
+            }
+          },
+          "mold": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:mold_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:mold.BUILD"
+            }
+          },
+          "clang_tidy": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_pinned_repo",
+            "attributes": {
+              "pin": "@@//tools:clang_tidy_pin.json",
+              "build": "",
+              "build_file": "@@//bazel:clang_tidy.BUILD"
+            }
+          },
+          "host_cc": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_host_cc_repo",
+            "attributes": {}
+          },
+          "host_gpu": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_host_gpu_repo",
+            "attributes": {}
+          },
+          "cuda_tools": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_cuda_toolkit_repo",
+            "attributes": {
+              "pin": "@@//tools:cuda_toolkit_pin.json",
+              "beside": {
+                "libcurand": "curand"
+              },
+              "delete": [
+                "curand/lib"
+              ],
+              "build": "",
+              "build_file": "@@//bazel:cuda_tools.BUILD"
+            }
+          },
+          "fsla_tree": {
+            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_tree_repo",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "@@pybind11_bazel+//:internal_configure.bzl%internal_configure_extension": {
       "general": {
         "bzlTransitiveDigest": "BsgERqYptkJeeC8wFaLj251IoTZTSy/58WA6kVp0q8I=",
@@ -275,102 +367,10 @@
         }
       }
     },
-    "@@rola_devtools+//bazel:environment.bzl%environment": {
-      "general": {
-        "bzlTransitiveDigest": "rdpfjwH/zvN6fSlu1+tgbqVU4uaTrU51Z9FuoX5z6WQ=",
-        "usagesDigest": "l0qVvkXeicVYiJXxXhEsz/3z/isyZHN/PSM5uOsX4HI=",
-        "recordedInputs": [
-          "REPO_MAPPING:,rola_devtools rola_devtools+",
-          "REPO_MAPPING:,uv rola_devtools++environment+uv"
-        ],
-        "generatedRepoSpecs": {
-          "rola_env": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_python_repo",
-            "attributes": {
-              "lock": "@@//:requirements.lock",
-              "uv": "@@rola_devtools++environment+uv//:uv",
-              "uv_pin": "@@rola_devtools+//pins:uv_pin.json",
-              "index": "",
-              "index_from": "@@//tools:toolchains/cu13.json",
-              "index_field": "torch_index",
-              "devtools": true,
-              "packages": [],
-              "isolated_builds": true,
-              "post": "@@//bazel:flags.py",
-              "post_args": [
-                "@@//tools:toolchains/cu13.json"
-              ],
-              "post_env": [
-                "ROLA_NVCC_THREADS"
-              ],
-              "watch": [
-                "@@//:measure/__init__.py",
-                "@@//:measure/hardware.py",
-                "@@//csrc/rola:src/common/hardware.json",
-                "@@//tools:build_flags.py"
-              ],
-              "watch_trees": [],
-              "build": "",
-              "build_file": "@@//bazel:env.BUILD"
-            }
-          },
-          "uv": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@rola_devtools+//pins:uv_pin.json",
-              "build": "",
-              "build_file": "@@//bazel:uv.BUILD"
-            }
-          },
-          "mold": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:mold_pin.json",
-              "build": "",
-              "build_file": "@@//bazel:mold.BUILD"
-            }
-          },
-          "clang_tidy": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_pinned_repo",
-            "attributes": {
-              "pin": "@@//tools:clang_tidy_pin.json",
-              "build": "",
-              "build_file": "@@//bazel:clang_tidy.BUILD"
-            }
-          },
-          "host_cc": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_host_cc_repo",
-            "attributes": {}
-          },
-          "host_gpu": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_host_gpu_repo",
-            "attributes": {}
-          },
-          "cuda_tools": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_cuda_toolkit_repo",
-            "attributes": {
-              "pin": "@@//tools:cuda_toolkit_pin.json",
-              "beside": {
-                "libcurand": "curand"
-              },
-              "delete": [
-                "curand/lib"
-              ],
-              "build": "",
-              "build_file": "@@//bazel:cuda_tools.BUILD"
-            }
-          },
-          "rola_tree": {
-            "repoRuleId": "@@rola_devtools+//bazel:environment.bzl%_tree_repo",
-            "attributes": {}
-          }
-        }
-      }
-    },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
         "bzlTransitiveDigest": "f7SJRLlpWWrc2uQYRHAsLVfbu9zdaXB8JF23LER2H+s=",
-        "usagesDigest": "jM2ybW/IOgK8iuUmoqUD2Nuy0UCeBgRW82s+kkNS1yA=",
+        "usagesDigest": "4PYGT3UgMslFqUsTPNzbwQxCUvxMIc789GWjUFWLWYk=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
           "REPO_MAPPING:bazel_features+,bazel_features_version bazel_features++version_extension+bazel_features_version",
@@ -484,7 +484,7 @@
     "@@rules_distroless+//apt:extensions.bzl%apt": {
       "general": {
         "bzlTransitiveDigest": "pAfSlLirXAHo2maWESOQNX5HZU63EyZvoTv9P2iB6nw=",
-        "usagesDigest": "EsFs7yRAbPYNztnTPEj7MyPSnVjWZW9ga+QsMra5F4E=",
+        "usagesDigest": "n2B3/q1nqGa1iyOMLf7W7UT+IcxaKC+pozyqlunZ5tQ=",
         "recordedInputs": [
           "REPO_MAPPING:rules_distroless+,bazel_lib bazel_lib+",
           "REPO_MAPPING:rules_distroless+,bazel_tools bazel_tools"

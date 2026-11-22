@@ -1,6 +1,6 @@
 # `common/window.cuh` -- the window W, a build's
 
-Mirrors `csrc/rola/src/common/window.cuh`.
+Mirrors `csrc/fsla/src/common/window.cuh`.
 
 A call's token axis is cut into windows of W tokens, global to every box and every kernel: the carry reads each
 window's state out to the window's readers and folds its writes, the intra takes the pairs inside one window, the facts

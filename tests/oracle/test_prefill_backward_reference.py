@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.constants import READOUT_EPS
+from fsla.ops.constants import READOUT_EPS
 from tests.oracle.backward_reference import (
     carry_backward_reference,
     intra_backward_reference,

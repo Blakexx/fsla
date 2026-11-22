@@ -1,10 +1,10 @@
-# RoLA — Routed Linear Attention
+# FSLA — Factored Sparse Linear Attention
 
-RoLA is a linear-attention layer whose recurrent state is a **set of addressable
+FSLA is a linear-attention layer whose recurrent state is a **set of addressable
 slots**, and whose per-token routing decides which slots each token reads from and
 writes to. The state is a fixed size chosen by the topology, not a cache that grows
 with the sequence — so the memory footprint at token *T* is the same as at token 1.
-This repository ships the CUDA consumer kernel that executes that routed
+This repository ships the CUDA consumer kernel that executes that factored sparse
 recurrence, the layer around it, and the evidence for both.
 
 Paper: *(link on publication)* · Citation: [below](#citation)
@@ -70,11 +70,11 @@ cannot drift apart.
 
 | Mode | Command | Notes |
 |---|---|---|
-| Wheel | `pip install "rola[cu13]"` | `rola` (pure Python) and `rola-cu13` (the fatbin for the built matrix), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
+| Wheel | `pip install "fsla[cu13]"` | `fsla` (pure Python) and `fsla-cu13` (the fatbin for the built matrix), at one version ([docs/build.md#wheels](docs/build.md#wheels)) |
 | Development | `bazel run //:library` | The graph's build, into the checkout: rules 1, 3 and 5, the SASS gate and the arm gate on every build |
 | Release | `bazel run //:wheels` | The two wheels of a clean commit ([docs/build.md#wheels](docs/build.md#wheels)) |
 
-`pip install .` refuses: rola builds through its graph alone, so a source install, which would build a package
+`pip install .` refuses: fsla builds through its graph alone, so a source install, which would build a package
 without its kernels, is not supported.
 
 The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, never
@@ -108,19 +108,19 @@ brought up. Bringing up a new architecture is a measurement, and
 ### Routing activations
 
 Also generated, from the one registry every validator reads
-(`rola/routing/activations.py`). `kerneled` is what decides dispatch: an
+(`fsla/routing/activations.py`). `kerneled` is what decides dispatch: an
 unratified activation routes to the differentiable reference path carrying an
 explicit `not_kerneled` flag, and the kernel entry refuses it outright — a labelled
 research surface, never a silent fallback.
 
-<!-- BEGIN GENERATED: rola.routing.activations.capability_table -->
+<!-- BEGIN GENERATED: fsla.routing.activations.capability_table -->
 | activation | exact_zeros | kerneled |
 | --- | --- | --- |
 | entmax(alpha=1.5) | yes | yes |
 | entmax(alpha=2) | yes | yes |
 | opaque | yes | yes |
 | softmax | no | yes |
-<!-- END GENERATED: rola.routing.activations.capability_table -->
+<!-- END GENERATED: fsla.routing.activations.capability_table -->
 
 ## Usage
 
@@ -130,16 +130,16 @@ the feature map. `docs/api.md` is the contract in full.
 ### The op
 
 ```python
-import rola
+import fsla
 
-routes   = rola.RouteProducer(rola.uniform(2, rola.union_routing(8, alpha=1.5)),
+routes   = fsla.RouteProducer(fsla.uniform(2, fsla.union_routing(8, alpha=1.5)),
                               hidden_size=512, num_heads=8)
 
 factors = routes(hidden_states)          # the (q, k) pair, after the feature map
-y, state = rola.rola_op(factors, v, masks, plan=plan)
+y, state = fsla.fsla_op(factors, v, masks, plan=plan)
 ```
 
-`rola_op` runs the BUILT ENVELOPE and refuses everything else, by name — including
+`fsla_op` runs the BUILT ENVELOPE and refuses everything else, by name — including
 every call that carries a gradient, because the backward arrives with the native
 backward. There is no second arm behind it: the fp64 oracle is the executable spec,
 called directly (below), never dispatched to, since a silent ~1000x-slower route is
@@ -150,12 +150,12 @@ from the routing it was actually given.
 ### The layer
 
 ```python
-from rola import LayerContinuation, LearnedDecay, RoLA
+from fsla import LayerContinuation, LearnedDecay, FSLA
 
-layer = RoLA(routes, d_v=64,
+layer = FSLA(routes, d_v=64,
              decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
              layer_idx=0).cuda()
-y, continuation = layer(x, continuation=LayerContinuation(state=rola.state()))
+y, continuation = layer(x, continuation=LayerContinuation(state=fsla.state()))
 ```
 
 One positional argument, because everything else was either a fact about the feature
@@ -165,20 +165,20 @@ launch decision (which the op makes). `d_v` is the layer's: it sizes
 
 ### The state
 
-`rola.state()` builds one, and `rola.RoLAState` is a **fixed-size recurrent state,
+`fsla.state()` builds one, and `fsla.FSLAState` is a **fixed-size recurrent state,
 not a KV cache**: a PAGED TENSOR — storage, page table, `[B, H, N, cols]`, device,
 dtype, strategy — and nothing else, paged by default so what stays resident scales
 with the leaves the routing REALIZES. Continuation is LAYERED: the layer returns
 `(y, LayerContinuation)`, a frozen container the layer owns (`.state` is the op's paged
 tensor, its only field today). Every `transformers` cache abstraction is built for the
-GROWING case, which this is not, so RoLA owns its object outright
+GROWING case, which this is not, so FSLA owns its object outright
 (docs/internals/state.md).
 
 ### The launch geometry
 
 There is no planner and no cost model. The runtime geometry — `BC`, the CTA's
 resident state tile — belongs to the BUILT ARM: the op looks the topology up in the
-binary's own arm list and runs it, or names the clause that refuses. `rola.expert` is
+binary's own arm list and runs it, or names the clause that refuses. `fsla.expert` is
 the marked door for a caller that must ask whether a call has an arm at all
 (`envelope_refusal`) or pin the state's backing; the axes that are
 not host-selectable refuse by name rather than being ignored. The kernel's
@@ -187,7 +187,7 @@ correctness does not depend on which arm a topology lands on, and that is what T
 
 ### The oracle
 
-`rola.naive_rola` is the fp64 definition, and it **ships in the wheel**. A user who
+`fsla.naive_fsla` is the fp64 definition, and it **ships in the wheel**. A user who
 suspects a numerical problem can run the definition against the kernel on their own
 shapes, on their own hardware, with no repository checkout. That is what makes the
 tolerance claims auditable rather than asserted.
@@ -243,15 +243,15 @@ CI auto-commit. See [`docs/bringup.md`](docs/bringup.md).
 
 | Repository | What lives there |
 |---|---|
-| `flash-linear-attention` | The fla fork: its `rola` branch holds the RoLA layer and HF model over this package |
-| `rola-zoology` | Synthetic capability evaluations (MQAR and friends) |
-| `rola-bench` | The benchmarks and the local measurement suite |
-| `rola-results` | The measurement records every reported number is read from |
-| `rola-devtools` | The development tools every RoLA repository shares: the public mirror's export, the central cells, the declared build system and its timing system |
-| `rola-paper` | The paper source |
+| `flash-linear-attention` | The fla fork: its `fsla` branch holds the FSLA layer and HF model over this package |
+| `fsla-zoology` | Synthetic capability evaluations (MQAR and friends) |
+| `fsla-bench` | The benchmarks and the local measurement suite |
+| `fsla-results` | The measurement records every reported number is read from |
+| `fsla-devtools` | The development tools every FSLA repository shares: the public mirror's export, the central cells, the declared build system and its timing system |
+| `fsla-paper` | The paper source |
 
 Each is developed in a private `-dev` repository and published here by a mirror job: a push to the development
-default branch publishes its declared files as one snapshot commit (`.github/mirror/declarations.json`; the export is [rola-devtools](https://github.com/Blakexx/rola-devtools)').
+default branch publishes its declared files as one snapshot commit (`.github/mirror/declarations.json`; the export is [fsla-devtools](https://github.com/Blakexx/fsla-devtools)').
 
 ## Changelog
 
@@ -265,8 +265,8 @@ what is deliberately not in it.
 ## Citation
 
 ```bibtex
-@misc{rola,
-  title  = {Routed Linear Attention},
+@misc{fsla,
+  title  = {Factored Sparse Linear Attention},
   author = {Bottum, Blake},
   year   = {2026},
 }

@@ -35,11 +35,11 @@ nothing and *changes* nothing, down to the last bit.
 
 ## 2. Proof by citation — the oracle
 
-The normative reference implementation is `rola/ops/naive.py`
-(`naive_rola`, fp64, the eternal spec). Three lines carry the theorem.
+The normative reference implementation is `fsla/ops/naive.py`
+(`naive_fsla`, fp64, the eternal spec). Three lines carry the theorem.
 
 **(a) The clock is the write levels' shares, not a time counter.** The docstring at
-`rola/ops/naive.py:138` states the spec's definition:
+`fsla/ops/naive.py:138` states the spec's definition:
 
 ```
 ``c[t,s] = stop_gradient(prod_l k_l[d_l(s)] / sum_d k_l[d])``
@@ -107,7 +107,7 @@ to `6e-39`, a *small* number rather than a zero. The rule binds every kernel
 **(b) The other factor is finite by construction.** `0 * finite == 0` exactly;
 `0 * inf == NaN`. Every multiplicand a kernel reads is bounded by its format: a u8
 digit at every level, a bf16
-value at most 1 against its token's largest channel (`rola/values.py`). Finiteness is
+value at most 1 against its token's largest channel (`fsla/values.py`). Finiteness is
 a property of the bundle's format, not a read-side clamp. So rule 4's
 zero-route annihilation is satisfied *branchlessly and structurally* because the
 coefficient is a product of amplitudes, the factor it multiplies is finite by
@@ -123,7 +123,7 @@ untouched states would decay and the update would not be the identity. The whole
 theorem rests on `c` being the *write* product.
 
 This precondition is not luck: mass decay is fixed by the semantics authority
-(the fp64 oracle's clock, `keep = (1 - rate) ** c` in `rola/ops/naive.py`) and time
+(the fp64 oracle's clock, `keep = (1 - rate) ** c` in `fsla/ops/naive.py`) and time
 decay is outside the sanctioned design. But the dependency must travel with the theorem,
 because several other decisions now rest on the theorem.
 

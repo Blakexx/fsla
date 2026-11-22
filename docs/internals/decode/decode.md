@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode/decode.cuh` + `csrc/rola/src/decode/decode.cu` — the `T = 1` decode path
+# `csrc/fsla/src/decode/decode.cuh` + `csrc/fsla/src/decode/decode.cu` — the `T = 1` decode path
 
 <a id="note-l3"></a>This doc covers **two** source files, because they are one component: the header
 carries the parameter block and the objects both decode translation units share,
@@ -77,7 +77,7 @@ big one.
 ## <a id="bc-absent"></a>3. `BC` is the lattice's owner, never a launch shape or an address term
 
 With one token there is nothing to amortize across a block of leaves, so `DecodePlan`
-carries no launch-shape `BC` ([`engine/plan.py`](../../../rola/engine/plan.py)). The `(k, m)`
+carries no launch-shape `BC` ([`engine/plan.py`](../../../fsla/engine/plan.py)). The `(k, m)`
 lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
 walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
 construction). No address in either backing is computed from it: both are keyed to the
@@ -92,7 +92,7 @@ consecutive leaves in LATTICE leaf order, spec §4.5's
 consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
 every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
 level straddling it keeps an aligned contiguous sub-run, and the levels below are free
-(`rola/ops/lattice.py`). One condition survives, `16 | BC` (an atom lies inside one
+(`fsla/ops/lattice.py`). One condition survives, `16 | BC` (an atom lies inside one
 owner), checked at [`fill_lattice`](decode_lattice.md#the-refusals) where a page table is
 present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
 membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
@@ -149,7 +149,7 @@ so the residency test is a pass over the WRITE list's candidate atoms
 fold and no second factor pass exist at all. There is nothing left for a probe kernel to be.
 
 So the order per step is ONE kernel, and then, only where the answer was yes and no pool
-covered it, `rola_op`'s order at `L = 1`:
+covered it, `fsla_op`'s order at `L = 1`:
 
 ```
 decode_step        ->  fold, expand, THE VERDICT, walk, and the write-ATOM set,
@@ -213,10 +213,10 @@ The leaf-granular map is published by NOTHING. The factor tables live and die in
 CTA that built them ([§12](#factor-tables)); the step's one leaf-level output is this
 16-deep condensation of the write side's.
 
-`rola.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
+`fsla.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
 condensation — the same set derived from the Cartesian-product definition in torch,
 wired into the engine DAG as `write_atom_bitmap`'s `reference_only=True` node
-(`rola/engine/dags/decode_dag.py`) and exercised directly by the paging/growth
+(`fsla/engine/dags/decode_dag.py`) and exercised directly by the paging/growth
 integration tests (`tests/integration/test_decode_growth_trigger.py`,
 `test_decode_graph_step.py`, `test_decode_paging.py`, `test_page_arena_vmm.py`). It
 is not a fallback and not a second path a caller may select — `reference_only` is what
@@ -309,7 +309,7 @@ host-admitted one reach the same state and the same `y`.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
-With no host read inside it the step is capturable, and `rola.engine.dags.decode_dag.decode_step_gated`
+With no host read inside it the step is capturable, and `fsla.engine.dags.decode_dag.decode_step_gated`
 is the decode entry. The CALLER owns the verdict, at whatever synchronization it already has
 (a decode loop syncs once per token to sample):
 
@@ -327,7 +327,7 @@ step it had skipped — for the batch-heads that had skipped it, and for no othe
 counter and flag is reset by the last CTA that reads it, and the arena's base address and
 page table are objects an admission writes IN PLACE (the reservation never moves), so a
 graph captured over them survives growth. The layer's one-token `forward` runs this loop
-eagerly; `RoLA._step` -- the producer's launch, the gated step and the output projection --
+eagerly; `FSLA._step` -- the producer's launch, the gated step and the output projection --
 is the same step whole, and a caller that captures it replays one graph a token
 (`tests/integration/test_decode_graph_step.py`); capture is an optimization the caller
 selects, not a fallback either way.
@@ -357,7 +357,7 @@ surfaces to the host exactly as it always did.
 admission, through the admission's barrier), WALK (the claims and the leaves) and COMBINE (the
 fold, the head's sums and its finish, and the choice of the next head) -- with the shared
 `PhaseClock` (`common/phase_clock.md`), summed over every head the CTA visits; every warp
-publishes its row at the CTA's exit. The ledger is bound by `rola_decode_ledger_bind` as
+publishes its row at the CTA's exit. The ledger is bound by `fsla_decode_ledger_bind` as
 `[ctas][warps][kDecodePhases]` int64 (`warps` the plan's, `DecodePlan<B>::kWarps` at the card's build), a row per CTA; unbound, nothing is written and the
 clock's cost is its reads.
 
@@ -366,25 +366,25 @@ clock's cost is its reads.
 `1 <= D <= 4`. `decode.cuh` states that bound itself rather than including it from another
 family's header: the spec is the shared authority, and a one-way include would imply a
 dependency on objects decode does not share. The page granule and an owner's shape come from
-the box (`rola/ops/lattice.py`, where the lattice's addressing constants and `box_shape` live),
+the box (`fsla/ops/lattice.py`, where the lattice's addressing constants and `box_shape` live),
 so the two families write and read ONE plane in ONE order; what decode adds is a RUNTIME carrier,
 the lattice's fields as scalars under the lattice's own names (§9).
 
 <a id="kproducermaxbranchwidth"></a>
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
-The CEILING below is the producer's; the FLOOR is `rola.ops.decode._admit`, which
-refuses a `B_l` below the one admission law's floor through `rola._state.StateFormat`,
+The CEILING below is the producer's; the FLOOR is `fsla.ops.decode._admit`, which
+refuses a `B_l` below the one admission law's floor through `fsla._state.StateFormat`,
 the same check prefill's seam runs, before a call reaches this capacity check at all.
 
-`rola/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the
+`fsla/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the
 PRODUCER will emit. A decode path whose capacity were narrower would accept a
 topology the producer can build and then read past the end of a staged amplitude
 row. So the relation `kDecodeMaxLevelWidth >= kProducerMaxBranchWidth` is
 enforced in two halves:
 
 - The **compile-time** half is the `static_assert` in `decode.cuh`;
-- The **runtime** half is `rola_decode_capacity()`, bound into the extension so
+- The **runtime** half is `fsla_decode_capacity()`, bound into the extension so
   `tests/unit/test_decode_capacity.py` can assert the two constants agree.
 
 A C++ assertion cannot read a Python constant. The pair is what makes this
@@ -428,7 +428,7 @@ as the `(owner, fixed run offsets, innermost digit)` decomposition the `(k, m)` 
 ([`decode_lattice.md`](decode_lattice.md), and `lat_*` fields on this same struct).
 
 <a id="decodeparams-note-l174"></a><a id="gsuf"></a><a id="near-line-129"></a><a id="near-line-132"></a>The box's
-fields are runtime scalars under `rola/ops/lattice.py`'s names: `lat_s[l] = k * m_l` an owner's span, `lat_g[l] = B_l /
+fields are runtime scalars under `fsla/ops/lattice.py`'s names: `lat_s[l] = k * m_l` an owner's span, `lat_g[l] = B_l /
 lat_s[l]` its owner-grid extent, `lat_gsuf` the grid's suffix products, and `lat_run_shift[l] = log2 prod_{l' > l}
 s_l'` the run offset's place in the owner-local index, re-based on the innermost run for the unit index. Every span is
 a power of two, so every suffix product is a SHIFT and no device division exists on this path. `mask_off[l]` /
@@ -781,14 +781,14 @@ matrix for a few hundred bytes of gather,
 shared memory unconditionally, at
 every shipped topology, so there is no second arm for a template parameter to select
 between. `d_v` is restricted to `{32, 64}` by a `STD_TORCH_CHECK`, and `D` outside `[1, 4]` is
-refused by name. The kernels live in a NAMED namespace (`rola::decode::detail`): nvcc mangles an
+refused by name. The kernels live in a NAMED namespace (`fsla::decode::detail`): nvcc mangles an
 anonymous-namespace kernel with a hash of the build path, so a record made in one worktree
 would name a kernel no other checkout's build produces.
 
-<a id="rola-decode-producer-width-mirror"></a>
+<a id="fsla-decode-producer-width-mirror"></a>
 ## <a id="producer-width-mirror"></a>33. Why the producer-width mirror is bound separately
 
-`rola_decode_producer_width_mirror()` exposes `kProducerMaxBranchWidth` separately
+`fsla_decode_producer_width_mirror()` exposes `kProducerMaxBranchWidth` separately
 from the capacity because the two are different claims:
 
 - `capacity >= producer` is the SAFETY property, and the `static_assert`
@@ -821,7 +821,7 @@ there is no second address space for the factor tables to fall back to either.
 
 ---
 
-# Part C — the host side (`rola/ops/decode.py`, `rola/engine/dags/decode_dag.py`)
+# Part C — the host side (`fsla/ops/decode.py`, `fsla/engine/dags/decode_dag.py`)
 
 The step's ORDER, the two memo disciplines and the capturability declaration are the
 DAG's page ([`engine/decode_dag.md`](../engine/decode_dag.md)); what follows is what the
@@ -868,7 +868,7 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `rola.engine.facts.liveness.page_bits` folds from the facts pass's words and the same
+object `fsla.engine.facts.liveness.page_bits` folds from the facts pass's words and the same
 one the step condenses, reached by neither's route.
 
 ## <a id="elsewhere"></a>40. Declarations whose reasoning lives on another page
@@ -878,7 +878,7 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="decode-stamp-kernel-note-l63"></a>`decode_stamp_kernel`'s footprint fields:
   [`decode_api.md#build-stamp`](decode_api.md#build-stamp)
 - <a id="decodestampkernel"></a>`decode_stamp_kernel`: [`decode_api.md#build-stamp`](decode_api.md#build-stamp)
-- <a id="roladecodebuildstamp"></a>`rola_decode_build_stamp`: [`decode_api.md#build-stamp`](decode_api.md#build-stamp)
+- <a id="fsladecodebuildstamp"></a>`fsla_decode_build_stamp`: [`decode_api.md#build-stamp`](decode_api.md#build-stamp)
 - <a id="decode-step-kernel-note-l137"></a>the packed term table, one word a (term, level):
   [`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)
 - <a id="units-2"></a>the term's row of the packed table, hoisted once a term:
@@ -903,7 +903,7 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="floor-inner"></a>`floor_inner`, the innermost-first capacity:
   [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)
 - <a id="decode-arm-0"></a>the declared arm list: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
-- <a id="roladecodearms"></a>`rola_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
+- <a id="fsladecodearms"></a>`fsla_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
 - <a id="note-l1083"></a>the two backings' validation: [`decode_api.md#paged-state`](decode_api.md#paged-state)
 - <a id="note-l1131"></a>the admission buffers: [`decode_api.md#the-step`](decode_api.md#the-step)
 - <a id="launch"></a>the one launch site: [`dispatch_switch.md#one-launch`](../dispatch_switch.md#one-launch)
@@ -997,7 +997,7 @@ instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 
 ## The write term by whole atoms
 
 When the innermost level's WRITE side is dense by declaration (its activation has no exact
-zeros; `DecodePlan.write_dense`, chosen by the producer's plan rule `rola.ops.produce.decode_plan` from `Topology.activation_properties`) and the innermost
+zeros; `DecodePlan.write_dense`, chosen by the producer's plan rule `fsla.ops.produce.decode_plan` from `Topology.activation_properties`) and the innermost
 run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
 takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
 (leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a

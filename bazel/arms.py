@@ -71,14 +71,14 @@ def check_built_arm_table(header: str | None, want: list[int], table: Table, fam
     up = family.upper()
     if header is None:
         return [f"the build has no {family} selection header: the arm units compiled against something else"]
-    named = sorted(int(m) for m in re.findall(rf"^#define ROLA_{up}_BUILD_(\d+) 1$", header, re.MULTILINE))
+    named = sorted(int(m) for m in re.findall(rf"^#define FSLA_{up}_BUILD_(\d+) 1$", header, re.MULTILINE))
     if named != list(want):
         return [f"the selection header names {family} arms {named}, the build selected {list(want)}: the binary carries "
                 "the header's set and not the build's"]
-    count = re.search(rf"^#define ROLA_{up}_ARM_COUNT (\d+)$", header, re.MULTILINE)
-    declared = re.search(rf"^#define ROLA_{up}_ARM_DECLARED (\d+)$", header, re.MULTILINE)
+    count = re.search(rf"^#define FSLA_{up}_ARM_COUNT (\d+)$", header, re.MULTILINE)
+    declared = re.search(rf"^#define FSLA_{up}_ARM_DECLARED (\d+)$", header, re.MULTILINE)
     if count is None or declared is None:
-        return [f"the selection header carries no ROLA_{up}_ARM_COUNT/ROLA_{up}_ARM_DECLARED: `arm_switch` has no "
+        return [f"the selection header carries no FSLA_{up}_ARM_COUNT/FSLA_{up}_ARM_DECLARED: `arm_switch` has no "
                 "set to dispatch over and no way to tell an unbuilt arm from an undeclared one"]
     if int(count.group(1)) != len(want) or int(declared.group(1)) != len(table.arms):
         return [f"the selection header declares {count.group(1)} built / {declared.group(1)} declared arms; the build "
@@ -91,7 +91,7 @@ def check_built_arm_table(header: str | None, want: list[int], table: Table, fam
 
 
 #: THE COVERAGE SWEEP'S PROBE, run in its own interpreter against a built extension LOADED BY PATH: the fact wanted is
-#: a property of that artifact, and `import rola` would resolve through whatever the environment has installed
+#: a property of that artifact, and `import fsla` would resolve through whatever the environment has installed
 _ARM_SWEEP_PROBE = """
 import importlib.util, json, sys
 from pathlib import Path
@@ -99,15 +99,15 @@ import torch  # noqa: F401 -- the extension links against it and must load first
 name = Path(sys.argv[1]).name.split(".")[0]  # the module's init symbol is PyInit_<name>
 spec = importlib.util.spec_from_file_location(name, sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)  # loading the library registers torch.ops.rola
-print(json.dumps([list(row) for row in getattr(torch.ops.rola, f"rola_{sys.argv[2]}_arms")()]))
+spec.loader.exec_module(mod)  # loading the library registers torch.ops.fsla
+print(json.dumps([list(row) for row in getattr(torch.ops.fsla, f"fsla_{sys.argv[2]}_arms")()]))
 """
 
 
 def sweep_binary(python: str, so: Path, family: str, want: list[int], table: Table, cwd: Path,
                  env: dict | None = None) -> int:
     """R9's fourth layer, host side: the binary is asked what it carries (`python`, an interpreter with torch, loads it
-    by path in `cwd`; the family's own op, `rola_<family>_arms`), and the answer must be exactly the rows the build selected -- the table, the selection header and
+    by path in `cwd`; the family's own op, `fsla_<family>_arms`), and the answer must be exactly the rows the build selected -- the table, the selection header and
     the binary are three statements of one set. The count swept; raises on any difference."""
     import subprocess
 

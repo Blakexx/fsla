@@ -1,6 +1,6 @@
 # `common/atoms/address.cuh` — the addresses
 
-Mirrors `csrc/rola/src/common/atoms/address.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): shared addresses, gathered and pinned bases, the state plane's page translation and the facts' per-atom bits.
+Mirrors `csrc/fsla/src/common/atoms/address.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): shared addresses, gathered and pinned bases, the state plane's page translation and the facts' per-atom bits.
 
 - `smem_addr(p)`: the CTA-local address of a shared object, the address type every shared operation consumes.
 

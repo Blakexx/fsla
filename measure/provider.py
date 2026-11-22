@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""ROLA'S RUNNER: this checkout's bench subjects as timed arms, built on central cells for the timing system.
+"""FSLA'S RUNNER: this checkout's bench subjects as timed arms, built on central cells for the timing system.
 
 `arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
 and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
@@ -12,13 +12,13 @@ through `oneshot_argv`.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
 binary carries at the cell's shape (the carry arm the cell's carve selects for `prefill`, the decode arm for
 `decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
-(`Subject.calls`), and on a layer cell `@layer=C` for each RoLA construction declared for that input
+(`Subject.calls`), and on a layer cell `@layer=C` for each FSLA construction declared for that input
 (`measure.cells.layer.CONSTRUCTIONS`). Only the arm asked for is built.
 Building one proves two things before anything is timed, and refuses the arm by name when either fails: from a fact the
 device produces, that this binary carries the subject's family (its stamp entry; a path or a hash cannot catch a stale
-binary), and that `import rola` resolved inside this checkout.
+binary), and that `import fsla` resolved inside this checkout.
 
-A built arm is a `rola_devtools.timing.Timed`: its call times one launch between two CUDA events (the canonical
+A built arm is a `fsla_devtools.timing.Timed`: its call times one launch between two CUDA events (the canonical
 instrument, `cuda_events`) and returns milliseconds; its reset is the launch's (a carried state restored, a decode state
 re-seeded), run untimed before every call. What an arm reports is the cell's facts beside the arm's call count and the
 binary's: the family stamp, the device, torch, the assembler, and the SM clock read when the arm
@@ -30,7 +30,7 @@ import sys
 from functools import partial
 from pathlib import Path
 
-#: this checkout: `import rola` must resolve inside it
+#: this checkout: `import fsla` must resolve inside it
 CHECKOUT = Path(__file__).resolve().parents[1]
 
 
@@ -43,8 +43,8 @@ def arms(data) -> dict:
     """Every arm this checkout runs on a cell's data, each as a builder; raises to refuse the cell."""
     from itertools import product
 
-    from rola_devtools.cells.carry import CarryCell
-    from rola_devtools.cells.layer import LayerCell
+    from fsla_devtools.cells.carry import CarryCell
+    from fsla_devtools.cells.layer import LayerCell
 
     from measure.cells.layer import CONSTRUCTIONS
     from measure.subjects import SUBJECTS, applicable
@@ -55,9 +55,9 @@ def arms(data) -> dict:
     elif isinstance(data, LayerCell):
         kind, constructions = "layer", [c for c in CONSTRUCTIONS.values() if data.name in c.cells]
         if not constructions:
-            raise LookupError(f"{data.name}: no RoLA construction is declared for this layer cell")
+            raise LookupError(f"{data.name}: no FSLA construction is declared for this layer cell")
     else:
-        raise TypeError(f"rola's runner takes a central carry cell or layer cell, got {type(data).__name__}")
+        raise TypeError(f"fsla's runner takes a central carry cell or layer cell, got {type(data).__name__}")
     out = {}
     for subject in SUBJECTS.values():
         for construction, calls in product(constructions, subject.calls):
@@ -84,7 +84,7 @@ def _declared(family: str) -> tuple:
 
 def _declared_families() -> list[str]:
     """The families this tree declares: `ARM_FAMILIES` in `bazel/arms.bzl`, the one registry (a literal read by AST), each
-    answering what the binary carries through its op module (`rola.ops.<family>`)."""
+    answering what the binary carries through its op module (`fsla.ops.<family>`)."""
     from tools.arm_families import arm_families
 
     return sorted(arm_families(CHECKOUT))
@@ -95,7 +95,7 @@ def _refuse_a_partial_binary() -> None:
 
     for family in _declared_families():
         declared = {tuple(int(x) for x in row) for row in _declared(family)}
-        built = {tuple(int(x) for x in arm) for arm in importlib.import_module(f"rola.ops.{family}").arms()}
+        built = {tuple(int(x) for x in arm) for arm in importlib.import_module(f"fsla.ops.{family}").arms()}
         if declared - built:
             raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the declared arms "
                                f"{sorted(declared - built)}: an iteration build (--//:{family}_arms) measures a subset of the "
@@ -105,9 +105,9 @@ def _refuse_a_partial_binary() -> None:
 def _kernel_carried(subject: str, spec, construction) -> bool:
     """Whether this binary carries the kernel `subject` launches at the cell's shape, or a layer cell's construction
     (the cell's own facts are `measure.subjects.applicable`'s)."""
-    from rola.ops import decode
+    from fsla.ops import decode
 
-    #: the carry is not built on this line (`rola.ops.carry`): no arm of it is carried, so the op's prefill is never offered
+    #: the carry is not built on this line (`fsla.ops.carry`): no arm of it is carried, so the op's prefill is never offered
     if subject == "prefill":
         return False
     if subject == "decode_step":
@@ -119,27 +119,27 @@ def _kernel_carried(subject: str, spec, construction) -> bool:
 
 def _build(name: str, kind: str, spec, calls: int, construction):
     import torch
-    from rola_devtools.timing import Timed
+    from fsla_devtools.timing import Timed
 
-    import rola
+    import fsla
+    from fsla.ops import carry as carry_ops
+    from fsla.ops._ext import extension
     from measure import hardware
     from measure.subjects import SUBJECTS
-    from rola.ops import carry as carry_ops
-    from rola.ops._ext import extension
 
     subject = SUBJECTS[name]
     stamp = getattr(extension(), subject.stamp, None)
     if stamp is None:
         raise RuntimeError(f"this binary carries no {subject.stamp} entry, so it cannot state that it has {name}'s family")
-    rola_file = Path(rola.__file__).resolve()
-    if not rola_file.is_relative_to(CHECKOUT):
-        raise RuntimeError(f"`import rola` resolved outside this checkout ({CHECKOUT.name}); the arm would time another "
+    fsla_file = Path(fsla.__file__).resolve()
+    if not fsla_file.is_relative_to(CHECKOUT):
+        raise RuntimeError(f"`import fsla` resolved outside this checkout ({CHECKOUT.name}); the arm would time another "
                            "tree's binary under this tree's name")
     fx = {"cell": spec} if kind == "carry" else _layer_fixture(spec, construction)
     fx.update(calls=calls)
     launch = subject.build(fx)
     try:
-        from rola_cu13._build_config import BUILD_CONFIG
+        from fsla_cu13._build_config import BUILD_CONFIG
     except ImportError:
         BUILD_CONFIG = {}
     props = torch.cuda.get_device_properties(0)
@@ -161,7 +161,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
             "ptxas": BUILD_CONFIG.get("ptxas"),
             "family_stamp": int(stamp()), "device": torch.cuda.get_device_name(0),
             "sm": hardware.device_arch(props.major, props.minor),
-            "torch": torch.__version__, "rola_file": rola_file.relative_to(CHECKOUT).as_posix(),
+            "torch": torch.__version__, "fsla_file": fsla_file.relative_to(CHECKOUT).as_posix(),
             "sm_ghz_at_build": carry_ops.sm_clock_ghz()}
     return Timed(call=call, built=cell, instrument="cuda_events", reset=launch.reset,
                  outside_allocator=launch.outside_allocator)
@@ -183,12 +183,12 @@ def oneshot_argv(cell: str, arm: str) -> list[str]:
 
 def _oneshot(cell: str, arm: str) -> None:
     import torch
-    from rola_devtools.cells import central
+    from fsla_devtools.cells import central
 
     from measure.cells import by_name
 
     if cell not in central().cells:
-        raise SystemExit(f"{cell!r} is not a central cell (rola_devtools.cells)")
+        raise SystemExit(f"{cell!r} is not a central cell (fsla_devtools.cells)")
     offered = arms(by_name(cell))
     if arm not in offered:
         raise SystemExit(f"{cell}: this checkout runs no arm {arm}; it runs {sorted(offered)}")

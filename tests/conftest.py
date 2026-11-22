@@ -13,18 +13,18 @@ import torch
 from hypothesis import settings
 
 # no `.hypothesis` example database in the tree the tests run in
-settings.register_profile("rola", database=None)
-settings.load_profile("rola")
+settings.register_profile("fsla", database=None)
+settings.load_profile("fsla")
 
 # `measure/` on the path, so the bench PACKAGES import by their own names -- the
 # repository's existing convention (`measure/bench_regression.py` inserts the same
 # directory and imports `bench.cells`). What still needs it is `bench.cells` and the
 # bench drivers; the planner CALIBRATION package no longer does -- it moved to
-# `rola/planner/calibration/` (post-merge, 2026-08-02) because an installed wheel has
+# `fsla/planner/calibration/` (post-merge, 2026-08-02) because an installed wheel has
 # no `measure/` sibling and every relocated name raised `ModuleNotFoundError` there.
-# The runtime still imports none of it: `rola.planner.schedule` holds lazy call
+# The runtime still imports none of it: `fsla.planner.schedule` holds lazy call
 # proxies, and the subprocess probe in `tests/unit/test_planner.py` asserts
-# `import rola` leaves `sys.modules` free of the package.
+# `import fsla` leaves `sys.modules` free of the package.
 _BENCHMARKS = pathlib.Path(__file__).resolve().parents[1] / "measure"
 if _BENCHMARKS.is_dir() and str(_BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(_BENCHMARKS))
@@ -47,7 +47,7 @@ except ImportError:
         return False
 
 # The device's torch submodule (`torch.cuda`), resolved without depending on the
-# fork's `fla.utils`: `rola` supports NVIDIA CUDA only, and the ratification gate
+# fork's `fla.utils`: `fsla` supports NVIDIA CUDA only, and the ratification gate
 # is what decides which CUDA devices at that.
 device_torch_lib = torch.cuda
 
@@ -74,7 +74,7 @@ _ORIGINAL_NEW_EMPTY = torch.Tensor.new_empty
 
 
 def _is_called_from_fla():
-    """Check if the call is from the `rola` package."""
+    """Check if the call is from the `fsla` package."""
     frame = inspect.currentframe()
     try:
         # Skip the current frame and go up the call stack
@@ -95,8 +95,8 @@ def _is_called_from_fla():
 
             module = inspect.getmodule(frame)
             if module and hasattr(module, '__name__'):
-                # If call is from the `rola` package, apply guard
-                if module.__name__.split('.')[0] == 'rola':
+                # If call is from the `fsla` package, apply guard
+                if module.__name__.split('.')[0] == 'fsla':
                     return True
     finally:
         del frame
@@ -161,7 +161,7 @@ def _guarded_new_empty(self, *args, **kwargs):
     return _poison(_ORIGINAL_NEW_EMPTY(self, *args, **kwargs))
 
 
-#: The tiers whose tests exercise `rola`'s tensor math directly. The unit tier is
+#: The tiers whose tests exercise `fsla`'s tensor math directly. The unit tier is
 #: host-side logic and is deliberately outside the guard. A directory named here that
 #: does not exist silently disables the guard, which is what
 #: `tests/integration/test_poison_guard_vacuity_probe.py` exists to catch.
@@ -170,7 +170,7 @@ _POISON_TIERS = ('tests/oracle/', 'tests/integration/')
 
 @pytest.fixture(scope="function", autouse=True)
 def poison_torch_memory(request):
-    # Only apply the guard to the tiers that reach rola's tensor math.
+    # Only apply the guard to the tiers that reach fsla's tensor math.
     path = str(request.node.fspath)
     if not any(tier in path for tier in _POISON_TIERS):
         yield
@@ -191,7 +191,7 @@ def poison_torch_memory(request):
 #
 # Which tests need it: `_POISON_TIERS` above is already the tier/marker split
 # this repo draws between host-side logic (`tests/unit/`) and tests that reach
-# `rola`'s CUDA kernels (`tests/oracle/`, `tests/integration/`) -- reused here
+# `fsla`'s CUDA kernels (`tests/oracle/`, `tests/integration/`) -- reused here
 # rather than re-derived, since marker coverage alone (the `cuda` marker) is
 # NOT exhaustive: only 6 of 21 files under `tests/oracle/` carry it today, the
 # rest rely on the DIRECTORY being GPU work by convention. So a test takes the
@@ -213,7 +213,7 @@ def _touches_gpu(request) -> bool:
 
 @pytest.fixture(scope="session")
 def _gpu_lock_held():
-    from rola_devtools.locks.gpu import gpu_lock
+    from fsla_devtools.locks.gpu import gpu_lock
 
     #: SHARED mode: a pytest battery is correctness
     #: work (oracle/integration/cuda-marked unit tests), not a measurement --
@@ -228,7 +228,7 @@ def _gpu_lock_held():
 #: THE HOST-COMPUTE BUDGET, PER PARALLEL PROCESS ("a pytest tier that forks
 #: workers draws 1 per worker"): an xdist worker (`PYTEST_XDIST_WORKER`, never
 #: the controller) or one of a sharded tier's shards (`--bazel-shard`,
-#: rola_devtools.graph.pytest_shards) competes with compiles, sanitizer runs and clang-tidy
+#: fsla_devtools.graph.pytest_shards) competes with compiles, sanitizer runs and clang-tidy
 #: passes for the shared pool; a single process draws nothing.
 @pytest.fixture(scope="session", autouse=True)
 def _host_budget_worker_slot(request):
@@ -236,7 +236,7 @@ def _host_budget_worker_slot(request):
     if worker is None:
         yield
         return
-    from rola_devtools.locks import host
+    from fsla_devtools.locks import host
 
     with host.acquire(1, label=f"pytest-worker:{worker}"):
         yield
@@ -265,7 +265,7 @@ def alternating_routing(depth):
     """THE ALTERNATING SPLIT, one routing a level for ``build_routing``/``build_layer``: entmax on the write duty at the
     even levels (read-dense) and on the read duty at the odd (write-dense), so every side has a dense level and, from
     depth two, a sparse one (docs/api.md section 2.1). At depth one the one level is softmax on both duties."""
-    from rola import dense_routing, split_routing
+    from fsla import dense_routing, split_routing
 
     if depth == 1:
         return [dense_routing(1)]
@@ -273,9 +273,9 @@ def alternating_routing(depth):
 
 
 def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bias_init=None, gain_config=None):
-    """One declared :class:`rola.Routing` covering every level in ``widths``; ``routing`` is one level routing for every
+    """One declared :class:`fsla.Routing` covering every level in ``widths``; ``routing`` is one level routing for every
     level, or a list with one a level (`alternating_routing`)."""
-    from rola import Routing, dense_routing
+    from fsla import Routing, dense_routing
 
     per_level = routing if isinstance(routing, (list, tuple)) else [routing] * len(widths)
     levels = [dense_routing(w) if r is None else r.at(w) for r, w in zip(per_level, widths)]
@@ -285,20 +285,20 @@ def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bia
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                 decay=None, decay_rate=2.0 ** -8, gain=True,
                 bias=False, plan=None, layer_idx=None, **kwargs):
-    """A :class:`rola.RoLA` over :func:`build_routing`.
+    """A :class:`fsla.FSLA` over :func:`build_routing`.
 
     ``decay`` takes ``None`` (no decay), ``'learned'`` or ``'constant'`` -- the two
     shipped decay SOURCES -- rather than a rate, because which source a model uses is
     the choice the slot exists to express. A test that needs a bundle takes it from
     the layer's producer: ``layer._produce(x)``.
     """
-    from rola import ConstantDecay, LearnedDecay, RoLA
+    from fsla import FSLA, ConstantDecay, LearnedDecay
 
     declared = build_routing(widths=widths, routing=routing, gain=gain, bias=bias, **kwargs)
     sources = {"learned": LearnedDecay, "constant": ConstantDecay}
     source = None if decay is None else sources[decay](
         decay_rate, widths=declared.widths, num_heads=num_heads)
-    return RoLA(declared, hidden_size=hidden_size, num_heads=num_heads, d_v=d_v, decay=source,
+    return FSLA(declared, hidden_size=hidden_size, num_heads=num_heads, d_v=d_v, decay=source,
                 layer_idx=layer_idx, plan=plan)
 
 
@@ -310,7 +310,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # tests/integration/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
 # is what lets them isolate a backward-through-every-tensor gate. The producer is a
-# primitive over bare tensors (`rola.ops.produce.produce`), so `produce_routing`
+# primitive over bare tensors (`fsla.ops.produce.produce`), so `produce_routing`
 # calls it with the caller's tensors: the graph reaches the caller's leaves and the
 # numerics are the REAL producer's, not a second derivation of them.
 
@@ -318,7 +318,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 def resolved_routing_from_topology(topology):
     """A `ResolvedRouting` over a `Topology`'s own levels -- exactly what a declared
     `Routing` resolves (`Routing.resolved`)."""
-    from rola.routing.types import ResolvedRouting
+    from fsla.routing.types import ResolvedRouting
 
     return ResolvedRouting(levels=topology.levels)
 
@@ -341,8 +341,8 @@ def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
     composes -- what the producer does NOT expose is the gain apart from write level 0's
     scale (docs/CONSTITUTION.md#r23), which is what a gate on that fold has to see.
     """
-    from rola.routing.projection import _packed_router_logits
-    from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
+    from fsla.routing.projection import _packed_router_logits
+    from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 
     columns = gain_W.shape[1]
     _, _, gain_logits = _packed_router_logits(
@@ -364,8 +364,8 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     """
     from types import SimpleNamespace
 
-    from rola import Routing
-    from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
+    from fsla import Routing
+    from fsla.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
 
     H, hidden_size, _ = route_W.shape
     d_v = v.shape[-1]

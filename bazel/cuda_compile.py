@@ -53,7 +53,7 @@ def main() -> int:
     ap.add_argument("nvcc", nargs=argparse.REMAINDER, help="-- then nvcc and its arguments")
     a = ap.parse_args()
     command = a.nvcc[1:] if a.nvcc[:1] == ["--"] else a.nvcc
-    with tempfile.TemporaryDirectory(prefix="rola_nvcc_") as scratch:
+    with tempfile.TemporaryDirectory(prefix="fsla_nvcc_") as scratch:
         depfile = Path(scratch) / "unit.d"
         done = subprocess.run([*command, "-MD", "-MF", str(depfile)], stderr=subprocess.PIPE, text=True)
         a.report.write_text(done.stderr)

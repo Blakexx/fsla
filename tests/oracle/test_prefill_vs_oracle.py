@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE OP AGAINST THE fp64 ORACLE: `rola.interface.rola_op`'s output and its handed-back state, per slot.
+"""THE OP AGAINST THE fp64 ORACLE: `fsla.interface.fsla_op`'s output and its handed-back state, per slot.
 
-THE REFERENCE IS `rola.ops.naive.naive_rola` DIRECTLY, on the bundle's own dequantized levels and values -- the op gate
+THE REFERENCE IS `fsla.ops.naive.naive_fsla` DIRECTLY, on the bundle's own dequantized levels and values -- the op gate
 compares on the same quantized inputs the kernels read (ruling 2026-09-26). The facts pass, the carry, the den pass,
 the intra and the epilogue run as one call and the whole answer is compared against the recurrence itself, so a
 window-grid disagreement, a double-counted diagonal or a dropped tile pair has nowhere to hide.
@@ -18,11 +18,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-import rola
+import fsla
+from fsla.interface import fsla_op
+from fsla.ops.window import window_of
 from measure.cells import by_name, carry_cells, realize
 from measure.subjects import bundle_of
-from rola.interface import rola_op
-from rola.ops.window import window_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT, PREFILL_STATE
@@ -43,7 +43,7 @@ def operands(spec, tokens: slice = slice(None)):
 def call(operands_, *args, **kwargs):
     """The op over one call's operands (``routes, values, masks, plan``)."""
     routes, values, masks, plan = operands_
-    return rola_op(routes, values, masks, *args, plan=plan, **kwargs)
+    return fsla_op(routes, values, masks, *args, plan=plan, **kwargs)
 
 
 def oracle(routes, values, entry=None):
@@ -56,7 +56,7 @@ def oracle(routes, values, entry=None):
 def test_the_op_matches_the_fp64_oracle(spec):
     """``y`` of a stateless call, every token and channel, against the recurrence's readout and its envelope."""
     routes, values, masks, plan = operands(spec)
-    y, state = rola_op(routes, values, masks, plan=plan)
+    y, state = fsla_op(routes, values, masks, plan=plan)
     assert state is None
     want = oracle(routes, values)
     assert_slots_close(y, want.y, output=PREFILL_READOUT, envelope=want.y_envelope, what=f"{spec.name} y")
@@ -65,10 +65,10 @@ def test_the_op_matches_the_fp64_oracle(spec):
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)
 def test_the_op_hands_back_the_fp64_state(spec):
     """A stateful call binds the state and hands back the recurrence's final state, leaf by leaf in canonical order
-    (`RoLAState.materialize`), against the oracle's and its envelope."""
+    (`FSLAState.materialize`), against the oracle's and its envelope."""
     routes, values, masks, plan = operands(spec)
-    state = rola.state()
-    rola_op(routes, values, masks, plan=plan, state=state)
+    state = fsla.state()
+    fsla_op(routes, values, masks, plan=plan, state=state)
     want = oracle(routes, values)
     assert_slots_close(state.materialize(), want.state, output=PREFILL_STATE, envelope=want.state_envelope,
                        what=f"{spec.name} state")
@@ -79,7 +79,7 @@ def test_a_chained_call_equals_one_long_call():
     the long call's readout and final state, each against the oracle's one long run."""
     spec = by_name("flagship-alt-k4-L4096")
     half = spec.tokens // 2
-    state = rola.state()
+    state = fsla.state()
     ys = [call(operands(spec, part), state=state)[0] for part in (slice(0, half), slice(half, spec.tokens))]
     routes, values, _masks, _plan = operands(spec)
     want = oracle(routes, values)
@@ -117,9 +117,9 @@ def test_the_intra_term_is_actually_present():
 def test_the_op_refuses_what_it_has_no_kernel_for():
     """THE REFUSAL IS STRUCTURAL: a decay, which the prefill envelope does not carry, is refused by name before any
     kernel runs."""
-    from rola.routing.types import LeafMassDecay
+    from fsla.routing.types import LeafMassDecay
 
     routes, values, masks, plan = operands(by_name("flagship-alt-k4"))
     dials = tuple(torch.full((routes.write_heads, w), 0.5, device="cuda") for w in routes.topology.widths)
     with pytest.raises((NotImplementedError, ValueError), match="decay"):
-        rola_op(routes, values, masks, LeafMassDecay(dials=dials), plan=plan)
+        fsla_op(routes, values, masks, LeafMassDecay(dials=dials), plan=plan)

@@ -14,8 +14,8 @@ import gc
 import pytest
 import torch
 
-from rola.engine.runner import Node, node, run, validate_dag
-from rola.engine.types import Variant
+from fsla.engine.runner import Node, node, run, validate_dag
+from fsla.engine.types import Variant
 
 
 def _counting(**kwargs):
@@ -85,7 +85,7 @@ def test_a_dropped_sequence_drops_its_scratch():
 #: below. A node arriving with no bag fails there BY NAME, which is what makes the
 #: discipline a gate rather than a habit.
 def _decode_scratch_facts():
-    from rola.ops.produce import decode_plan
+    from fsla.ops.produce import decode_plan
     from tests.oracle.oracle_fixtures import _topology
 
     return {"plan": decode_plan(_topology((16, 16)), d_v=64, decay=False),
@@ -96,8 +96,8 @@ PER_STATE_FACTS = {"scratch": _decode_scratch_facts}
 
 
 def _shipped_per_state_nodes() -> list[Node]:
-    from rola.engine.dags.decode_dag import DECODE_STEP
-    from rola.engine.dags.prefill_dag import PREFILL_DAG
+    from fsla.engine.dags.decode_dag import DECODE_STEP
+    from fsla.engine.dags.prefill_dag import PREFILL_DAG
 
     seen: dict[int, Node] = {}
     for dag in (PREFILL_DAG, DECODE_STEP):
@@ -223,7 +223,7 @@ def test_the_decode_step_is_declared_capturable_end_to_end():
     proves the claim is a property of the DECLARATION, so a node added to the step
     without the attribute fails here rather than at someone's first `graph.replay()`.
     """
-    from rola.engine.dags.decode_dag import DECODE_STEP
+    from fsla.engine.dags.decode_dag import DECODE_STEP
 
     assert all(step.capturable for step in DECODE_STEP)
     assert not any(step.host_sync for step in DECODE_STEP)
@@ -236,8 +236,8 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     set. Splicing it into a shipped DAG would make the gate compare the probe against
     itself, and `validate_dag` is where that is refused.
     """
-    from rola.engine.dags.decode_dag import DECODE_STEP, write_atom_bitmap
-    from rola.engine.dags.prefill_dag import PREFILL_DAG
+    from fsla.engine.dags.decode_dag import DECODE_STEP, write_atom_bitmap
+    from fsla.engine.dags.prefill_dag import PREFILL_DAG
 
     assert write_atom_bitmap.reference_only
     for dag in (PREFILL_DAG, DECODE_STEP):
@@ -250,7 +250,7 @@ def test_the_decode_dag_ends_at_the_step_and_its_verdict_is_read_outside_it():
     """The step is the LAST node, and no node reads the host. The verdict is the step's own output, read by
     `growth_pending` at the caller's synchronization -- after the launch that publishes it, and only where there is a
     page table to publish about -- so the whole tuple is the captured one."""
-    from rola.engine.dags.decode_dag import DECODE_STEP
+    from fsla.engine.dags.decode_dag import DECODE_STEP
 
     assert all(isinstance(node, Node) for node in DECODE_STEP)
     assert DECODE_STEP[-1].name == "step", "the step is the last thing the decode tuple does"

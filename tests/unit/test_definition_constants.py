@@ -1,7 +1,7 @@
 """A constant that changes the FUNCTION has exactly one home, and this checks it.
 
 The readout epsilon appeared four times as a bare literal -- in the oracle, the
-fused consumer, decode and the then-public `rola_func` -- and the four defaults
+fused consumer, decode and the then-public `fsla_func` -- and the four defaults
 merely happened to agree (audit finding F6). Four agreeing literals are
 indistinguishable from four independent decisions until one of them is edited, at
 which point the oracle and the kernel compute different functions and every Tier 1
@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from rola.ops.constants import READOUT_EPS
+from fsla.ops.constants import READOUT_EPS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,8 +39,8 @@ ROOT = Path(__file__).resolve().parents[2]
 #: Adding a fifth is fine; adding one that does not appear here is what rule 2
 #: below refuses.
 EPS_SITES = (
-    ("rola/ops/naive.py", "naive_rola"),
-    ("rola/ops/decode.py", "derive_decode_plan"),
+    ("fsla/ops/naive.py", "naive_fsla"),
+    ("fsla/ops/decode.py", "derive_decode_plan"),
 )
 
 #: The retired tiled consumer's row is dropped. Its replacement is NOT
@@ -87,30 +87,30 @@ def test_every_eps_default_is_the_named_constant_not_a_literal(relative, functio
 
 def test_every_eps_default_is_the_same_value_at_runtime():
     """Rule 1, through the signature a caller actually binds against."""
-    from rola.ops.decode import derive_decode_plan
-    from rola.ops.naive import naive_rola
+    from fsla.ops.decode import derive_decode_plan
+    from fsla.ops.naive import naive_fsla
 
-    for fn in (naive_rola, derive_decode_plan):
+    for fn in (naive_fsla, derive_decode_plan):
         default = inspect.signature(fn).parameters["eps"].default
         assert default == READOUT_EPS, f"{fn.__qualname__} binds eps={default}"
 
 
-def test_no_module_under_rola_inlines_the_readout_epsilon():
+def test_no_module_under_fsla_inlines_the_readout_epsilon():
     """The literal is gone from the package, not merely unused at the four sites.
 
-    Deliberately grep-level over `rola/`: a fifth call site that spells the number
+    Deliberately grep-level over `fsla/`: a fifth call site that spells the number
     instead of importing it is the drift this file exists to stop, and it would
     not be in `EPS_SITES` to be found by the AST rule.
     """
     literal = repr(READOUT_EPS)
     offenders = []
-    for path in sorted((ROOT / "rola").rglob("*.py")):
-        if path == ROOT / "rola" / "ops" / "constants.py":
+    for path in sorted((ROOT / "fsla").rglob("*.py")):
+        if path == ROOT / "fsla" / "ops" / "constants.py":
             continue
         for number, line in enumerate(path.read_text().splitlines(), start=1):
             if literal in line and "eps" in line.lower():
                 offenders.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
     assert not offenders, (
-        "the readout epsilon is inlined again; import it from rola.ops.constants:\n"
+        "the readout epsilon is inlined again; import it from fsla.ops.constants:\n"
         + "\n".join(offenders)
     )

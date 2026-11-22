@@ -1,7 +1,7 @@
 # The carried state, and the facade that engages it
 
-Mirror doc for `rola/_state.py` and for `rola_op`'s stateful half in
-`rola/interface.py`. It is the contract the repository carries: the design ledger
+Mirror doc for `fsla/_state.py` and for `fsla_op`'s stateful half in
+`fsla/interface.py`. It is the contract the repository carries: the design ledger
 that produced it is a workflow record, and this file is what a reader ten years from
 now is owed.
 
@@ -22,15 +22,15 @@ made mechanical.
 ## <a id="one-object"></a>1. A PAGED TENSOR, and one predicate
 
 ```python
-s = rola.state()                        # unbound
-y, s = rola.rola_op(routes, values, masks, plan=plan, state=s) # bound to this call's shape; s is mutated
-y, _ = rola.rola_op(routes, values, masks, plan=plan)  # stateless: (y, None)
+s = fsla.state()                        # unbound
+y, s = fsla.fsla_op(routes, values, masks, plan=plan, state=s) # bound to this call's shape; s is mutated
+y, _ = fsla.fsla_op(routes, values, masks, plan=plan)  # stateless: (y, None)
 ```
 
-`rola.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
-`rola/_state.py`, private by its underscore, so no module answers to the public name.
+`fsla.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
+`fsla/_state.py`, private by its underscore, so no module answers to the public name.
 
-A `RoLAState` is a paged tensor and nothing more:
+A `FSLAState` is a paged tensor and nothing more:
 
 | it holds | what it is |
 |---|---|
@@ -41,7 +41,7 @@ A `RoLAState` is a paged tensor and nothing more:
 | `strategy` | storage mechanics: what a write does to this object's own storage |
 | `pool_slack` | storage mechanics: the slack pool's size, a FRACTION of full residency |
 
-<a id="the-slack-pool"></a>**`pool_slack`** (`rola.state(pool_slack=0.0)`, default `0.0`)
+<a id="the-slack-pool"></a>**`pool_slack`** (`fsla.state(pool_slack=0.0)`, default `0.0`)
 is the other storage-mechanics knob, and it lives here for the same reason `strategy`
 does: it governs what a paged arena PRE-COMMITS, not what a call computes. A fraction
 above `0.0` reserves that fraction of each batch-head's full residency as physical slots
@@ -76,7 +76,7 @@ means no state object at that end -- nothing is read, written, or allocated ther
 A fresh state has a strategy and nothing else. The FIRST call that receives it takes
 `[B, H, N, cols]`, the device and the backing kind from the call itself. `cols` needs
 `d_v`, which is NOT on the routing — the value width is the value stream's own fact —
-so `rola_op` sources it from `v.shape[-1]`.
+so `fsla_op` sources it from `v.shape[-1]`.
 
 <a id="format"></a>**THE STATE OWNS ITS FORMAT**. What binds at that
 first call is a FORMAT DESCRIPTOR (`state.format`, a frozen `StateFormat`), and it is
@@ -119,7 +119,7 @@ paragraph above made structural.
 
 **PADDING KEEPS THIS DESCRIPTOR AT SEVEN FIELDS.** The
 logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one) lives
-at the op call surface (`rola.ops.padding`, `docs/internals/padding.md`), never here:
+at the op call surface (`fsla.ops.padding`, `docs/internals/padding.md`), never here:
 `StateFormat.B` still carries only the lawful, padded width, and `_format_of` still
 builds it from whatever widths the presented routing carries. A caller reaches this
 descriptor with an already-padded `RouteFactors` (the layer producer's
@@ -139,7 +139,7 @@ place and returns THE SAME OBJECT.
 The backing is chosen at BIND time and is not a per-call flag:
 
 * **paged** (the default for every stateful call) — a `PageArena`. The call's
-  atom bitmap (`rola.engine.facts.planes.written_atoms` of the activity byte: the
+  atom bitmap (`fsla.engine.facts.planes.written_atoms` of the activity byte: the
   kernel's own write set, and a superset of it where a dense level's digit rounded to
   zero) is planned into
   slots, and the kernel resolves one slot per atom through the page table. Resident
@@ -171,7 +171,7 @@ it is one sentence rather than a branch.
 THE CONTAINER STAYS `float32`, because the LOGICAL element is fp32. It is not a float
 ARRAY any more, though — a 32-bit word of a stored page is two neighbouring elements'
 halves — so a byte claim about pages is asserted on the integer view
-(`rola.ops.paging.bytes_equal`), never with `torch.equal`, which is a float comparison
+(`fsla.ops.paging.bytes_equal`), never with `torch.equal`, which is a float comparison
 and would call a byte-identical pair unequal the moment a word happened to read as
 NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
 
@@ -229,7 +229,7 @@ launched into its own.
 ### <a id="four-shapes"></a>The kernel's four shapes, and no plane the caller did not make
 
 `state_in` and `state_out` are two references the caller hands the kernel, and every
-layer above it (`rola.ops.prefill.prefill`) passes them
+layer above it (`fsla.ops.prefill.prefill`) passes them
 through and allocates nothing (ruling 2026-09-08). Neither is the NULL-STATE call:
 nothing comes in, nothing goes out, no sweep runs. `state_in` alone is READ-ONLY: the
 readout against a frozen state, the folds accumulate in registers and are never stored.
@@ -292,15 +292,15 @@ needs off the arena it is copying, which is where they already live.
 
 The fp64 oracle is the executable SPEC, not an arm of the op
 ([`api.md` §1.1](../api.md#11-the-built-envelope-is-the-surface)): a caller that wants
-it calls `naive_rola` and passes raw tensors. So no state ever crosses to it through
+it calls `naive_fsla` and passes raw tensors. So no state ever crosses to it through
 the facade, and the dense-contents bridge that existed to carry it (`_dense_entry`,
 `adopt_dense_contents`, the re-admission of dense contents into pages) is GONE
 (`DELETIONS.md`). What is left is one kernel arm reading the backing its state bound.
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`rola.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, plan=..., decay=...)` takes and
-returns the state exactly as `rola_op` does, and its caller owns the verdict (`growth_pending`, then
+`fsla.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, plan=..., decay=...)` takes and
+returns the state exactly as `fsla_op` does, and its caller owns the verdict (`growth_pending`, then
 `admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
 behind that seam:
 
@@ -365,11 +365,11 @@ describe here now. The container is not deleted with them: a future layer-level
 recurrence is a field ON `LayerContinuation`, never on the op's state.
 
 **The membership test, one level up: an object holds exactly the recurrences ITS OWN
-level introduced.** Op: the routed state. Layer: `LayerContinuation`. Model: the
+level introduced.** Op: the factored sparse state. Layer: `LayerContinuation`. Model: the
 per-layer bundles. This is not the old pooled state object recreated — that defect was
 layer luggage INSIDE the op's object, and this keeps each object pure while giving
 accretion nowhere to land. The container is the contract in BOTH directions, so a bare
-`RoLAState` or the retired `(state, conv_rings)` tuple handed to `forward` is refused by
+`FSLAState` or the retired `(state, conv_rings)` tuple handed to `forward` is refused by
 name rather than adopted: accepting a lookalike would make the layer's own fields
 silently optional to carry.
 
@@ -377,7 +377,7 @@ silently optional to carry.
 
 No `transformers` cache vocabulary (concatenation, eviction, window rolling,
 `get_max_cache_shape`): all of it is built for a state that GROWS with the sequence,
-and RoLA's does not. No token tally, no per-layer container: one state object belongs
+and FSLA's does not. No token tally, no per-layer container: one state object belongs
 to one layer's sequence, and a stack of layers is a list of them in the caller's hands.
 No allocator cap — the footprint is planned exactly, so a ceiling over it is either
 never-binding or a self-inflicted refusal.
@@ -398,7 +398,7 @@ the design, not an archaeology exercise. None of them is scheduled.
 `strategy="cow"` is refused by name today ([§2](#binding)). What it will mean when it is
 built is settled, and the settlement is what must not be re-litigated:
 
-* **Strategy lives on the STATE, stamped at construction** (`rola.state(strategy=...)`),
+* **Strategy lives on the STATE, stamped at construction** (`fsla.state(strategy=...)`),
   and it is a convenience stamp rather than a contract: the PLAN defaults to the state's
   strategy and an expert override wins unconditionally. Cross-branch clobbering that an
   override causes is the caller's business logic, not something this surface polices —

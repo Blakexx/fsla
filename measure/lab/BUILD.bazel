@@ -10,7 +10,7 @@ package(default_visibility = ["//visibility:public"])
 #: this package's part of the tree the checks read
 tree_part()
 
-#: `lab.cuh`, which every experiment includes (the kernels' headers are `//csrc/rola:headers`, warpline's `@warpline//:stamp`)
+#: `lab.cuh`, which every experiment includes (the kernels' headers are `//csrc/fsla:headers`, warpline's `@warpline//:stamp`)
 include_root(
     name = "lab_headers",
     hdrs = ["lab.cuh"],

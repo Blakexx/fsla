@@ -35,14 +35,14 @@ import math
 import pytest
 import torch
 
-from rola.engine.facts.call import arm_refusal
-from rola.ops.decode import _decode_step
-from rola.ops.lattice import to_canonical, to_lattice
-from rola.ops.naive import naive_rola
-from rola.ops.paging import bytes_equal
-from rola.ops.produce import decode_plan
-from rola.routing.factors import RouteFactors
-from rola.routing.types import LeafMassDecay
+from fsla.engine.facts.call import arm_refusal
+from fsla.ops.decode import _decode_step
+from fsla.ops.lattice import to_canonical, to_lattice
+from fsla.ops.naive import naive_fsla
+from fsla.ops.paging import bytes_equal
+from fsla.ops.produce import decode_plan
+from fsla.routing.factors import RouteFactors
+from fsla.routing.types import LeafMassDecay
 from tests.oracle.fixtures import (
     assert_slots_close,
     bundle_operands,
@@ -158,7 +158,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         # conditions, and the oracle below keeps the handoff semantics alive.
         reason = arm_refusal(bundle, decay, d_v=_DV)
         assert reason is not None and "decay" in reason, reason
-        naive_rola(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay, output_final_state=True)
+        naive_fsla(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay, output_final_state=True)
         return
     assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
     ref = oracle_run(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay)

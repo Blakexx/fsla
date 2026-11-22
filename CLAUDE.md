@@ -1,4 +1,4 @@
-# rola-standalone — session rules
+# fsla-standalone — session rules
 
 THE REPO IS ONE ATOMIC DESIGN. Its docs are the canonical current state, whole and self-contained:
 `docs/CONSTITUTION.md` (Blake's standing rulings), `docs/KERNEL_STANDARDS.md` (the laws), `docs/ARCHITECTURE.md` and
@@ -22,11 +22,11 @@ The rules most often violated by newcomers, restated:
 - DOCS ARE STATE: current truth written fresh; past states appear only as
   design rationale ("why it is shaped this way"), never narrative. The map of
   the docs: docs/README.md.
-- The fp64 oracle (`rola/ops/naive.py`) is the executable spec — crown jewels;
+- The fp64 oracle (`fsla/ops/naive.py`) is the executable spec — crown jewels;
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
-  `gpu_lock()` itself (`rola_devtools.locks.gpu`) — invoke GPU commands BARE,
+  `gpu_lock()` itself (`fsla_devtools.locks.gpu`) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the lock path (the lock is the files beside it, so that serializes
-  against nothing); a binary with no `gpu_lock()` runs under `python -m rola_devtools.locks.gpu -- <command>`.
+  against nothing); a binary with no `gpu_lock()` runs under `python -m fsla_devtools.locks.gpu -- <command>`.
 - A commit subject states in words what the commit makes true, never a work code.
 

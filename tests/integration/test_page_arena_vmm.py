@@ -41,8 +41,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, _write_atom_bitmap
-from rola.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
+from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
 from tests.integration.test_decode_paging import _ARMS, _bundles, _config, _fixture
 from tests.oracle.fixtures import assert_reordered_close, masks_of
 
@@ -286,14 +286,14 @@ def test_auto_resolves_to_vmm_on_cuda_and_dense_off_it():
 def test_the_capability_is_proven_once_and_cached():
     """The probe is a driver ROUND TRIP, not an attribute read, so it is asked once.
 
-    `rola_vmm_probe` reserves, maps, grants access to, unmaps and releases one
+    `fsla_vmm_probe` reserves, maps, grants access to, unmaps and releases one
     granularity-sized allocation before it says yes -- which is the only answer worth
     having, and far too expensive to repeat per arena.
     """
-    from rola.ops import paging
-    from rola.ops._ext import extension
+    from fsla.ops import paging
+    from fsla.ops._ext import extension
 
-    probe = extension().rola_vmm_probe(device=torch.cuda.current_device())
+    probe = extension().fsla_vmm_probe(device=torch.cuda.current_device())
     assert probe["supported"] and probe["allocation_granularity"] > 0
     assert "probe passed" in probe["reason"]
     assert torch.cuda.current_device() in paging._VMM_PROBE, (

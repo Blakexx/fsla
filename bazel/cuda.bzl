@@ -184,7 +184,7 @@ _cuda_unit = rule(
     attrs = {
         "srcs": attr.label_list(allow_files = [".cu"], doc = "the units, one compile each"),
         "deps": attr.label_list(providers = [CcInfo], doc = "the headers and include roots the units compile against"),
-        "copts": attr.string_list(doc = "nvcc's options (tools/build_flags.py's, through @rola_env//:flags.bzl)"),
+        "copts": attr.string_list(doc = "nvcc's options (tools/build_flags.py's, through @fsla_env//:flags.bzl)"),
         "host_cc": attr.label(mandatory = True, allow_files = True, doc = "the host C++ compiler's identity: an input of every compile, never pruned"),
         #: what rules_cuda's helper reads off a CUDA rule, at its own defaults
         "hdrs": attr.label_list(allow_files = True),
@@ -203,7 +203,7 @@ _cuda_unit = rule(
         "_default_cuda_archs": attr.label(default = "@rules_cuda//cuda:archs"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_script": attr.label(default = "//bazel:cuda_compile.py", allow_single_file = True),
-        "_python": attr.label(default = "@rola_env//:python", allow_single_file = True, cfg = "exec"),
+        "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     },
     fragments = ["cpp"],

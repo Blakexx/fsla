@@ -43,7 +43,7 @@ def main() -> int:
     listing = run(a.cuobjdump, "-sass", str(a.binary))
     a.sass.write_text(listing)
     a.usage.write_text(run(a.cuobjdump, "-res-usage", str(a.binary)))
-    with tempfile.TemporaryDirectory(prefix="rola_lab_cubins_") as scratch:
+    with tempfile.TemporaryDirectory(prefix="fsla_lab_cubins_") as scratch:
         run(a.cuobjdump, "-xelf", "all", str(a.binary.absolute()), cwd=scratch)
         found = sorted(Path(scratch).glob("*.cubin"))
         if len(found) != 1:

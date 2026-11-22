@@ -1,7 +1,7 @@
 """Gates for the dense per-level production routing solve (the producer path).
 
-`rola.routing.entmax.production.production_routing_factor_levels` is
-what `rola/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
+`fsla.routing.entmax.production.production_routing_factor_levels` is
+what `fsla/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
 lowering at CUDA fp32 and the identical sorted closed form in torch on CPU/fp64 -- and
 both are gated here against the ONE canonical ground truth this branch authorizes for
 the routing primitive: the fp64 oracle in `routing/reference.py`
@@ -10,8 +10,8 @@ form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- th
 party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
 anywhere in this file's ground truth.
 
-**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
-the independent per-side solves and the softmax pair are `csrc/rola/src/entmax/factor.cu`,
+**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/fsla/src/entmax/entmax.cu`);
+the independent per-side solves and the softmax pair are `csrc/fsla/src/entmax/factor.cu`,
 ported off Triton for the closed-world AOT policy and for P65, which trains through
 them. Everything below that says "the two lowerings" still means exactly what it
 meant, device against torch; what changed over time is WHICH BINARY the rows were
@@ -49,12 +49,12 @@ import pytest
 import torch
 from conftest import fuse_gain_columns, produce_routing, raw_side_gain, resolved_routing_from_topology
 
-import rola.ops.produce as production_path
-from rola.ops.produce import ProducerPlan, ProducerWeights, route_logits
-from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.producer import Routing
-from rola.routing.reference import routing_factor_levels as oracle_factor_levels
-from rola.routing.types import (
+import fsla.ops.produce as production_path
+from fsla.ops.produce import ProducerPlan, ProducerWeights, route_logits
+from fsla.routing.entmax.production import production_routing_factor_levels
+from fsla.routing.producer import Routing
+from fsla.routing.reference import routing_factor_levels as oracle_factor_levels
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     ResolvedRouting,
@@ -524,7 +524,7 @@ def _forbid_every_reference_entry_point(monkeypatch) -> None:
     solve happens to call today. Patching only ``entmax_tau`` proves the solve does not
     reach that one function; it says nothing about ``entmax`` or ``entmax_forward``, and
     a caller that reached either of those would have passed the narrower guard."""
-    import rola.routing.entmax.reference as entmax_reference
+    import fsla.routing.entmax.reference as entmax_reference
 
     def _forbidden(*args, **kwargs):
         raise AssertionError("production routing called the fp64 reference")
@@ -738,7 +738,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
 
     read_logits, write_logits = _production_logits(topology, production_params)
     production = _run_producer(production_params, topology)
-    #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.ops.produce`
+    #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `fsla.ops.produce`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
     monkeypatch.setattr(
         production_path, "production_routing_levels", lambda *args, **kwargs: (*oracle_factor_levels(*args, **kwargs), None))
@@ -862,24 +862,24 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
 
 def test_production_imports_nothing_from_the_reference_package():
     """The STRONGER, STATIC claim, checked directly rather than inferred from a
-    monkeypatch. `rola/routing/entmax/reference.py` and this module's own docstring say production
+    monkeypatch. `fsla/routing/entmax/reference.py` and this module's own docstring say production
     "imports nothing" from the reference package -- a claim about the IMPORT GRAPH,
     stronger than and independent of `test_the_solve_never_reaches_the_reference_*`
     above (those prove the three entry points are never CALLED at runtime; a module
     can import a name and still never call it). This is the trivially checkable form
     the adversarial review found asserted nowhere: read `production.py` as an AST and
-    confirm no import statement names `rola.routing.entmax.reference` or
-    `rola.routing.reference` (the oracle-facing module of the same shape), by module
+    confirm no import statement names `fsla.routing.entmax.reference` or
+    `fsla.routing.reference` (the oracle-facing module of the same shape), by module
     or by symbol.
     """
     import ast
     import inspect
 
-    import rola.routing.entmax.production as production_module
+    import fsla.routing.entmax.production as production_module
 
     source = inspect.getsource(production_module)
     tree = ast.parse(source, filename=production_module.__file__)
-    forbidden_modules = {"rola.routing.entmax.reference", "rola.routing.reference"}
+    forbidden_modules = {"fsla.routing.entmax.reference", "fsla.routing.reference"}
     offending: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -890,7 +890,7 @@ def test_production_imports_nothing_from_the_reference_package():
             offending.append(node.module)
     assert not offending, (
         f"production.py imports from the reference package: {offending} -- the "
-        "producer's own contract (module docstring, rola/routing/entmax/reference.py) is that it "
+        "producer's own contract (module docstring, fsla/routing/entmax/reference.py) is that it "
         "imports nothing from it")
 
 
@@ -900,10 +900,10 @@ def test_the_package_imports_no_triton_and_declares_none():
     `docs/build.md` says the dependencies are "`torch` and `einops`. Not
     `transformers`, not `fla`, not `triton` -- the kernels are CUDA." That sentence
     was FALSE for every level routed `IndependentRouting`, from the module that owned
-    the four Triton kernels this stage ported to `csrc/rola/src/entmax/factor.cu`.
+    the four Triton kernels this stage ported to `csrc/fsla/src/entmax/factor.cu`.
 
     Checked two ways, because they can fail independently: the IMPORT GRAPH (an AST
-    walk over every module under `rola/`, so a `triton` reachable at runtime cannot
+    walk over every module under `fsla/`, so a `triton` reachable at runtime cannot
     hide behind a lazy import inside a function -- `ast.walk` sees those too), and the
     DECLARATION (`pyproject.toml`'s `dependencies`, so a dependency nothing imports
     cannot linger either). Revival of the kernels is git; the ledger row is
@@ -914,7 +914,7 @@ def test_the_package_imports_no_triton_and_declares_none():
 
     root = pathlib.Path(__file__).resolve().parents[2]
     offending: list[str] = []
-    for path in sorted((root / "rola").rglob("*.py")):
+    for path in sorted((root / "fsla").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             names = []

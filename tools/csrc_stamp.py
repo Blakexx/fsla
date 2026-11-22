@@ -15,7 +15,7 @@ import argparse
 import hashlib
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
+SRC = Path(__file__).resolve().parents[1] / "csrc" / "fsla" / "src"
 #: 60 bits of the digest: the stamp entries return `int64_t`, and a constant folded with other facts leaves room to be
 #: folded
 BITS = 60
@@ -42,13 +42,13 @@ def header(d: str) -> str:
             f"// THE CSRC CONTENT HASH, as a device constant. Written by the build before it compiles;\n"
             f"// never checked in.\n"
             f"// See docs/ratification.md#the-device-stamp-keys-on-the-csrc-content-hash.\n"
-            f"// sha256(csrc/rola/src) = {d}\n"
-            f"#define ROLA_CSRC_STAMP {stamp(d)}LL\n")
+            f"// sha256(csrc/fsla/src) = {d}\n"
+            f"#define FSLA_CSRC_STAMP {stamp(d)}LL\n")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--src", type=Path, required=True, help="the kernel sources' root (csrc/rola/src)")
+    ap.add_argument("--src", type=Path, required=True, help="the kernel sources' root (csrc/fsla/src)")
     ap.add_argument("--out", type=Path, required=True, help="the header to write")
     a = ap.parse_args()
     a.out.write_text(header(digest(a.src)))

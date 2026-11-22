@@ -1,25 +1,25 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""ROLA'S DECLARATIONS: this checkout's targets for rola-devtools' declared build system (`rola_devtools.build`).
+"""FSLA'S DECLARATIONS: this checkout's targets for fsla-devtools' declared build system (`fsla_devtools.build`).
 
     bazel run //:measure -- plan declare.py:all
-    bazel run //:measure -- run declare.py:all --only 'rola/phases' --skip '*/timeline'
+    bazel run //:measure -- run declare.py:all --only 'fsla/phases' --skip '*/timeline'
 
 `declare(g, env, cells=..., timing=...)` declares one checkout's targets under the graph's scope and returns them (the
-timing registrations by arm name), so a root elsewhere (rola-bench's) loads this file from each checkout it measures,
-calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is rola measuring itself: this checkout, its own server,
+timing registrations by arm name), so a root elsewhere (fsla-bench's) loads this file from each checkout it measures,
+calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is fsla measuring itself: this checkout, its own server,
 one session and one memory pass over the cells, every result stored.
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; no
 kernel has a pipe-counter or stall-census row on this line, so neither is declared), and with a timing server
 the timing registrations: `entmax_solve@layer=C`,
-`layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each RoLA
+`layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each FSLA
 construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
 reach one record its refusal. Every
-target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`rola_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
+target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`fsla_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
-by name at run time. This file imports nothing of rola's: it reads the constructions from `measure/cells/layer.py` by
+by name at run time. This file imports nothing of fsla's: it reads the constructions from `measure/cells/layer.py` by
 path.
 """
 from __future__ import annotations
@@ -27,11 +27,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from rola_devtools.build.declare import Env, load
-from rola_devtools.cells import central
-from rola_devtools.cells.declare import cells as cell_nodes
-from rola_devtools.store import store
-from rola_devtools.timing.declare import (
+from fsla_devtools.build.declare import Env, load
+from fsla_devtools.cells import central
+from fsla_devtools.cells.declare import cells as cell_nodes
+from fsla_devtools.store import store
+from fsla_devtools.timing.declare import (
     measure_memory,
     measure_timing,
     register_clock_reader,
@@ -48,7 +48,7 @@ IMPORT_ROOTS = ["tools", "."]
 INSTRUMENTS = {
     "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
-    "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "rola"], 1800),
+    "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "fsla"], 1800),
 }
 LAYER_ARMS = ("entmax_solve", "layer_prefill", "decode_step", "layer_op")
 #: seconds an instrument may run on one cell
@@ -66,7 +66,7 @@ def checkout(path, *, python: str, label: str) -> Env:
 
 
 def kind(cell: str) -> str:
-    """A central cell's kind, by its data provider's module (`rola_devtools.cells.carry`, `.layer`, `.qkv`)."""
+    """A central cell's kind, by its data provider's module (`fsla_devtools.cells.carry`, `.layer`, `.qkv`)."""
     return central().cell(cell)["data"].split(":")[0].rsplit(".", 1)[-1]
 
 
@@ -99,11 +99,11 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
     if verdict is not None:
         out["diffs"]["carry-vs-oracle"] = verdict
     #: THE ORACLE TIER AS ONE TARGET: pytest over `tests/oracle`, keyed on the tier's code and the binary, cached while
-    #: both stand; its output is the outcome and the margins, stored beside the instruments (`rola/oracle-tier`)
+    #: both stand; its output is the outcome and the margins, stored beside the instruments (`fsla/oracle-tier`)
     out["instruments"]["oracle-tier"] = g.node(
         "oracle-tier", executor=EXECUTORS + "pytest_tier", env=env, deps=facts, holds={"gpu": 1},
         params={"paths": ["tests/oracle"], "timeout": TIER_TIMEOUT_S},
-        code={"files": ["tests/oracle", "tests/conftest.py", "rola", "measure"]})
+        code={"files": ["tests/oracle", "tests/conftest.py", "fsla", "measure"]})
     for name in instruments:
         tool, args, per_cell, holds, data, timeout = INSTRUMENTS[name]
         if per_cell and not carry:
@@ -132,9 +132,9 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
 
 
 #: THE DIFF SURFACES (`tests/oracle/sides.py`): what each IS -- the side executor, the cells it runs on (a cell kind
-#: and, where it has one, a tier), and what the side holds while it runs. Exposed for rola-bench, which pairs a surface
+#: and, where it has one, a tier), and what the side holds while it runs. Exposed for fsla-bench, which pairs a surface
 #: across checkouts and OWNS the rule it compares them under (its `RULES`), as it owns the timing methodology; the
-#: only diff this file declares itself is the kernel against its own oracle, below. What rola states about a surface's
+#: only diff this file declares itself is the kernel against its own oracle, below. What fsla states about a surface's
 #: numerics is a FACT, in `NUMERICS`; it states nothing exact of the carry: a token's partial sums from its CTAs land
 #: in any order and reassociate, so its ``num`` is compared under its clauses, never bit for bit.
 SURFACES = {
@@ -148,7 +148,7 @@ NUMERICS: dict = {}
 KERNEL_VS_ORACLE = ("carry-kernel", "tests.oracle.sides:carry_reference", {"num": "CARRY_NUM"})
 
 
-#: THE BACKWARD'S BUDGET. The oracle side runs `naive_rola` forward AND backward in fp64, and autograd retains the
+#: THE BACKWARD'S BUDGET. The oracle side runs `naive_fsla` forward AND backward in fp64, and autograd retains the
 #: recurrence's state at every token: `B * H * T * N * (DV + 1) * 8` bytes of retained state, and MEASURED (2026-09-16)
 #: a peak above nine times that -- `flat-small-dense`, 1.0 GiB of retained state, could not run under a 9 GiB cap, and
 #: the run over every oracle-tier cell was killed by the host. A surface that runs the backward therefore admits only
@@ -175,23 +175,23 @@ def surface_cells(surface: str) -> list:
                   and (surface not in BACKWARD_SURFACES or retained_state_bytes(record) < RETAINED_STATE_BUDGET))
 
 
-SIDE_CODE = ("tests/oracle/sides.py", ["tests/oracle", "rola", "measure"])
+SIDE_CODE = ("tests/oracle/sides.py", ["tests/oracle", "fsla", "measure"])
 
 
 def _sides(g, env: Env, facts: dict) -> dict:
     """One side TARGET per surface, in this checkout, over the cells the surface runs on. A side that launches the
     kernel reads the binary; a pure-torch reference does not, so a rebuilt binary re-keys the one and not the other."""
-    from rola_devtools.diff import side
+    from fsla_devtools.diff import side
 
     return {name: side(g, f"side/{name}", env=env, executor=executor, cells=cell_nodes(g, surface_cells(name)),
-                       code=_code(*SIDE_CODE), binds="rola", holds=holds, deps=facts if "gpu" in holds else {})
+                       code=_code(*SIDE_CODE), binds="fsla", holds=holds, deps=facts if "gpu" in holds else {})
             for name, (executor, _kind, _tier, holds) in SURFACES.items()}
 
 
 def _kernel_vs_oracle(g, env: Env, sides: dict):
     """The carry against the fp64 inter term, in this checkout: the clause rule per output kind; ``None`` while the
     kind's clauses are owed."""
-    from rola_devtools.diff import diff, side
+    from fsla_devtools.diff import diff, side
 
     kernel_surface, reference_executor, kinds = KERNEL_VS_ORACLE
     outputs = load(Path(env.cwd) / "tests" / "oracle" / "tolerances.py")
@@ -201,7 +201,7 @@ def _kernel_vs_oracle(g, env: Env, sides: dict):
         return None
     nodes = cell_nodes(g, surface_cells(kernel_surface))
     reference = side(g, "side/carry-reference", env=env, executor=reference_executor, cells=nodes,
-                     code=_code(*SIDE_CODE), binds="rola", holds={"gpu": "all"})
+                     code=_code(*SIDE_CODE), binds="fsla", holds={"gpu": "all"})
     per_quantity = {q: {"clauses": [list(c) for c in outputs[k].clauses], "rtol": outputs[k].rtol,
                         "envelope_from": f"{q}_envelope"} for q, k in kinds.items()}
     #: RECORDED, not a build failure: the verdict is stored per cell, red cells included (a carve the binary has no arm
@@ -210,21 +210,21 @@ def _kernel_vs_oracle(g, env: Env, sides: dict):
                 params={"per_quantity": per_quantity}, minimum=len(nodes), on_difference="record")
 
 
-def root(g, python: str = sys.executable, label: str = "rola", rounds: str = "8", reps: str = "11",
+def root(g, python: str = sys.executable, label: str = "fsla", rounds: str = "8", reps: str = "11",
          store_root: str = "") -> dict:
-    """rola measuring and gating itself: EVERY node this checkout has, and the CLI prunes by label (`--only`, `--skip`)."""
+    """fsla measuring and gating itself: EVERY node this checkout has, and the CLI prunes by label (`--only`, `--skip`)."""
     server = start_timing_server(g)
     env = checkout(HERE, python=python, label=label)
     mine = declare(g.scoped(label), env, timing=server)
     root_dir = store_root or None
-    stores = [store(g, f"store/{name}", source=target, location=f"rola/{name}", cache=target.cache, root=root_dir)
+    stores = [store(g, f"store/{name}", source=target, location=f"fsla/{name}", cache=target.cache, root=root_dir)
               for name, target in mine["instruments"].items()]
     session = measure_timing(g, "session", server=server, entries=list(mine["entries"].values()), clock=mine["clock"],
                              rounds=int(rounds), reps=int(reps))
     memory = measure_memory(g, "memory", server=server, entries=list(mine["entries"].values()))
     stores += [store(g, "store/session", source=session, location="timing/session", root=root_dir),
                store(g, "store/memory", source=memory, location="timing/memory", root=root_dir),
-               *(store(g, f"store/{name}", source=node, location=f"rola/{name}", root=root_dir)
+               *(store(g, f"store/{name}", source=node, location=f"fsla/{name}", root=root_dir)
                  for name, node in mine["diffs"].items())]
     stop = stop_timing_server(g, server=server, after=[session, memory, *stores])
     return {"all": g.group("all", [*stores, stop])}

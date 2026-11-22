@@ -1,7 +1,7 @@
-"""rola's declarations (`declare.py`): the root declares this checkout's build, machine facts, instruments, timing
+"""fsla's declarations (`declare.py`): the root declares this checkout's build, machine facts, instruments, timing
 entries and clock reader, one session and one memory pass over the cells, and a store for each result; every declared
 code digest names files that exist; a layer arm is registered per construction on the cells declared for it, and a
-decode step only on a cell that decodes; loading the file imports neither rola nor torch. No GPU: nothing is built."""
+decode step only on a cell that decodes; loading the file imports neither fsla nor torch. No GPU: nothing is built."""
 from __future__ import annotations
 
 import json
@@ -9,13 +9,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rola_devtools.build.declare import Graph
+from fsla_devtools.build.declare import Graph
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def declared() -> dict:
-    from rola_devtools.build.declare import Graph, load
+    from fsla_devtools.build.declare import Graph, load
 
     g = Graph()
     public = load(ROOT / "declare.py")["root"](g, python=sys.executable)
@@ -25,17 +25,17 @@ def declared() -> dict:
 def test_the_root_declares_the_checkout_its_session_its_memory_pass_and_their_stores():
     out = declared()
     labels = set(out["targets"])
-    assert {"rola/binary", "rola/environment", "rola/sass", "rola/support",
-            "rola/clock", "session", "memory", "store/session", "store/memory",
+    assert {"fsla/binary", "fsla/environment", "fsla/sass", "fsla/support",
+            "fsla/clock", "session", "memory", "store/session", "store/memory",
             "store/sass", "timing-server", "timing-server-stop"} <= labels
-    assert {"rola/entmax_solve@layer=chunk-sparse-gain8", "rola/entmax_solve@layer=chunk-decode-w16",
-            "rola/decode_step@layer=chunk-decode-w16"} <= labels
-    assert "rola/decode_step@layer=chunk-sparse-gain8" not in labels
+    assert {"fsla/entmax_solve@layer=chunk-sparse-gain8", "fsla/entmax_solve@layer=chunk-decode-w16",
+            "fsla/decode_step@layer=chunk-decode-w16"} <= labels
+    assert "fsla/decode_step@layer=chunk-sparse-gain8" not in labels
     #: no kernel has a pipe-counter or stall-census row on this line, so neither instrument is declared
-    assert not {"rola/counters", "rola/census", "rola/facts_pass"} & labels
+    assert not {"fsla/counters", "fsla/census", "fsla/facts_pass"} & labels
     assert out["targets"]["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {"cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
     #: the graph's front door takes the host budget for the build: a holder never starts a Bazel build
-    assert out["targets"]["rola/binary"].holds == {} and not out["targets"]["rola/binary"].cache
+    assert out["targets"]["fsla/binary"].holds == {} and not out["targets"]["fsla/binary"].cache
     assert out["targets"]["timing-server-stop"].always_run
     assert set(out["public"]) == {"all"}
 
@@ -55,21 +55,21 @@ def test_every_node_declares_the_cells_it_runs_on_and_the_root_takes_no_cell_lis
     the instruments, and a side that holds no GPU does not read the binary."""
     import inspect
 
-    from rola_devtools.build.declare import load
+    from fsla_devtools.build.declare import load
 
     declared = load(ROOT / "declare.py")
     assert "cells" not in inspect.signature(declared["root"]).parameters
     g = Graph()
     declared["root"](g, python=sys.executable)
-    assert "binary" not in g.targets["rola/side/oracle"].deps and "binary" not in g.targets["rola/side/producer"].deps
-    assert {t.label for t in g.targets["rola/side/producer"].inputs} == {
+    assert "binary" not in g.targets["fsla/side/oracle"].deps and "binary" not in g.targets["fsla/side/producer"].deps
+    assert {t.label for t in g.targets["fsla/side/producer"].inputs} == {
         f"cells/{n}" for n in declared["surface_cells"]("producer")}
 
 
 def test_a_surface_states_what_it_is_but_chooses_no_comparison():
-    """rola-bench owns the rule a surface is compared under across checkouts, as it owns the timing methodology; rola
+    """fsla-bench owns the rule a surface is compared under across checkouts, as it owns the timing methodology; fsla
     states what a surface IS."""
-    from rola_devtools.build.declare import load
+    from fsla_devtools.build.declare import load
 
     d = load(ROOT / "declare.py")
     for name, (executor, kind_, tier, holds) in d["SURFACES"].items():
@@ -78,22 +78,22 @@ def test_a_surface_states_what_it_is_but_chooses_no_comparison():
 
 def test_the_oracle_tier_is_one_target_keyed_on_its_code_and_the_binary_and_stored():
     """The whole pytest tier as a node: a red cell becomes a stored fact, and an unchanged tree is a cache hit."""
-    from rola_devtools.build.declare import load
+    from fsla_devtools.build.declare import load
 
     g = Graph()
     load(ROOT / "declare.py")["root"](g, python=sys.executable)
-    tier = g.targets["rola/oracle-tier"]
+    tier = g.targets["fsla/oracle-tier"]
     assert tier.executor.endswith(":pytest_tier") and tier.cache and tier.holds == {"gpu": 1}
     assert tier.params["paths"] == ["tests/oracle"] and {"binary", "environment"} <= set(tier.deps)
-    assert "tests/oracle" in tier.code["files"] and "rola" in tier.code["files"]
+    assert "tests/oracle" in tier.code["files"] and "fsla" in tier.code["files"]
     assert g.targets["store/oracle-tier"].deps["source"] is tier
 
 
 def test_a_backward_surface_admits_only_the_cells_under_the_retained_state_budget():
     """The rule is STATED, so the excluded cells are a consequence a reader can compute and not a run that died: the
     oracle side retains the fp64 state at every token and its peak is measured at over nine times that."""
-    from rola_devtools.build.declare import load
-    from rola_devtools.cells import central
+    from fsla_devtools.build.declare import load
+    from fsla_devtools.cells import central
 
     d = load(ROOT / "declare.py")
     admitted = d["surface_cells"]("oracle")
@@ -103,9 +103,9 @@ def test_a_backward_surface_admits_only_the_cells_under_the_retained_state_budge
             assert (name in admitted) == (d["retained_state_bytes"](record) < d["RETAINED_STATE_BUDGET"])
 
 
-def test_loading_the_declarations_imports_neither_rola_nor_torch():
-    probe = (f"import json, sys; from rola_devtools.build.declare import Graph, load; "
+def test_loading_the_declarations_imports_neither_fsla_nor_torch():
+    probe = (f"import json, sys; from fsla_devtools.build.declare import Graph, load; "
              f"load({str(ROOT / 'declare.py')!r})['root'](Graph()); "
-             f"print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in ('rola', 'torch'))))")
+             f"print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in ('fsla', 'torch'))))")
     done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd="/", timeout=120, check=True)
     assert json.loads(done.stdout.strip().splitlines()[-1]) == []

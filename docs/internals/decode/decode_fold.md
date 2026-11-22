@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode/decode_fold.cuh` — the decode step's operand pass
+# `csrc/fsla/src/decode/decode_fold.cuh` — the decode step's operand pass
 
 <a id="note-l3"></a>Every per-token operand a decode step consumes, read from the internal format (docs/api.md
 section 2.1) as stored -- no level is normalized, on either side ([`docs/CONSTITUTION.md`
@@ -88,7 +88,7 @@ except at one leaf `s0`. Then `y[c] = a * e[c] / (a * m + eps)` with `a = raw[s0
 — one multiply per column and one divide, so `y` is a function of the amplitude's last bits
 and of nothing else, and the reference computes exactly that.
 
-`rola.ops.decode.fold_levels` is the torch fold those references are built on, kept for
+`fsla.ops.decode.fold_levels` is the torch fold those references are built on, kept for
 that purpose and called from nowhere on the shipped path — the same arrangement as
 `_write_atom_bitmap` and for the same reason: a fold checked against its own output proves
 nothing.
@@ -101,4 +101,4 @@ value on the host, and a captured graph replays it with no buffer identity to pr
 
 `dials` is the one operand the fold does not touch, and the boundary is principled: it is a
 per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
-carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.
+carries a refusal (`fsla.ops.decay.leaf_rate_dials`) that the host has to raise.

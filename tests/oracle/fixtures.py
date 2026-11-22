@@ -15,12 +15,12 @@ from typing import NamedTuple
 
 import torch
 
-from rola.ops import carry as carry_ops
-from rola.ops.naive import naive_rola
-from rola.ops.paging import decode_pages, encode_pages
-from rola.routing.factors import RouteFactors
-from rola.routing.masks import DECODE, Masks, pack_digits, pack_tokens
-from rola.values import Values
+from fsla.ops import carry as carry_ops
+from fsla.ops.naive import naive_fsla
+from fsla.ops.paging import decode_pages, encode_pages
+from fsla.routing.factors import RouteFactors
+from fsla.routing.masks import DECODE, Masks, pack_digits, pack_tokens
+from fsla.values import Values
 from tests.oracle import tolerances
 
 
@@ -94,7 +94,7 @@ def bundle_operands(routes, values):
 
 def state_pages(logical):
     """A logical ``[..., N, d_v + 1]`` state as its stored int8-format pages ``[BH, N/16, page_bytes]``: every leading
-    axis folds into the batch-head axis the decode kernel indexes (`rola.ops.paging.encode_pages`)."""
+    axis folds into the batch-head axis the decode kernel indexes (`fsla.ops.paging.encode_pages`)."""
     n, cols = logical.shape[-2], logical.shape[-1]
     return encode_pages(logical.float().reshape(-1, n // 16, 16, cols))
 
@@ -131,7 +131,7 @@ def state_rounded(state):
 
 def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap: the carry family's build stamp is
-    a fact only a built kernel produces (`rola.ops.carry.build_stamp`)."""
+    a fact only a built kernel produces (`fsla.ops.carry.build_stamp`)."""
     return carry_ops.build_stamp()
 
 
@@ -196,7 +196,7 @@ class OracleRun(NamedTuple):
 
 
 def oracle_run(v, read_levels, write_levels, topology, decay=None, entry=None) -> OracleRun:
-    """`rola.ops.naive.naive_rola`, with the same recurrence run on ``|v|`` beside it: every weight is non-negative, so
+    """`fsla.ops.naive.naive_fsla`, with the same recurrence run on ``|v|`` beside it: every weight is non-negative, so
     that run's slots are the sums of the term sizes. ``entry`` is None (a fresh state), a state of the caller's own
     (its envelope is ``|entry|``) or a previous `OracleRun`, whose state and envelope a chain continues. A readout
     ``num / (den + eps)`` rounds its denominator as well, so its envelope adds ``|y|``."""
@@ -204,8 +204,8 @@ def oracle_run(v, read_levels, write_levels, topology, decay=None, entry=None) -
         state, envelope = entry.state, entry.state_envelope
     else:
         state, envelope = entry, None if entry is None else entry.double().abs()
-    y, out = naive_rola(v, read_levels, write_levels, topology, decay, initial_state=state, output_final_state=True)
-    y_magnitudes, out_envelope = naive_rola(v.abs(), read_levels, write_levels, topology, decay,
+    y, out = naive_fsla(v, read_levels, write_levels, topology, decay, initial_state=state, output_final_state=True)
+    y_magnitudes, out_envelope = naive_fsla(v.abs(), read_levels, write_levels, topology, decay,
                                             initial_state=envelope, output_final_state=True)
     return OracleRun(y, out, y_magnitudes + y.abs(), out_envelope)
 

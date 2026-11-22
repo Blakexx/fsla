@@ -1,6 +1,6 @@
 # The decode family's DAG — DECODE_DENSE and DECODE_PAGED
 
-`rola/engine/dags/decode_dag.py`. The kernel-side page is
+`fsla/engine/dags/decode_dag.py`. The kernel-side page is
 [`internals/decode/decode.md`](../decode/decode.md); this one is the HOST side — what
 the step's facts are, in what order they are found, and which of the framework's
 declarations carry the two properties a decode step lives or dies by: it must be
@@ -47,7 +47,7 @@ launch still to come. The detached clock is the write rows' own shares
 ([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so it is not a stream
 of its own either.
 
-`backing` is `RoLAState._decode_entry`: the plane, table and slack pool the state already
+`backing` is `FSLAState._decode_entry`: the plane, table and slack pool the state already
 has, over the residency it already has — it admits nothing itself. `build_launch` carries a
 stream because the decay arm's `dials` are derived there: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
@@ -66,7 +66,7 @@ caller owns the verdict, at whatever synchronization it already has, through
 `growth_pending` is a single copy of the step's own `growth_any` output into a pinned
 mirror, and it cannot be enqueued ahead of the step: the verdict the step publishes is its
 own last finisher's write, so the read is behind it by data dependence. The layer's
-one-token `forward` is that caller (`RoLA._step`, then the verdict, the admission and the
+one-token `forward` is that caller (`FSLA._step`, then the verdict, the admission and the
 step again), and a serving loop that captures `_step` reads it at the sync that samples
 its token. The verdict was a DAG node appended to the step (`DECODE_VERDICT`) until the
 layer composed it itself (2026-09-30); `DECODE_STEP` ending at the step with no host read
@@ -75,7 +75,7 @@ is asserted directly (`tests/unit/test_facts_memo.py`).
 ## <a id="capturable"></a>4. `capturable` is a declaration, not a hope
 
 Every node of `DECODE_STEP` declares `capturable=True`, and
-`rola.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
+`fsla.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
 node cannot declare both `capturable` and `host_sync`: reading a device value on the host
 is precisely what a capture forbids, and the two attributes are one claim written from
 two ends — which is exactly why the verdict read lives in `growth_pending`, outside the
@@ -88,7 +88,7 @@ the declaration is TRUE of a real capture.
 
 ## <a id="host-carrier"></a>5. The plan and the scratch, and why the scratch is memoized the way it is
 
-`DecodePlan` (`rola/engine/plan.py`), the frozen static plan (what to do, a seed of the DAG, the memo key of the scratch), answers "what shape is the launch?" — widths,
+`DecodePlan` (`fsla/engine/plan.py`), the frozen static plan (what to do, a seed of the DAG, the memo key of the scratch), answers "what shape is the launch?" — widths,
 per-level dial row offsets, the `(k, m)` lattice the state plane is written in
 (`lattice_k`, `lattice_m`, [`decode_lattice.md`](../decode/decode_lattice.md)), `d_v`, the
 decay arm, `eps`, `ctas`, `write_dense`. None of that is a derived axis. `BC` is deliberately NOT a
@@ -135,7 +135,7 @@ A step admits into its state's slack pool INSIDE the kernel, from the pool buffe
 `backing` hands the plan — there is no node for it, because it is not a fact the host
 finds: the claim is the kernel's own, made by the batch-head's owner and written into the
 page table ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
-`pool_headroom` and `refill_pool` (`rola/engine/dags/decode_dag.py`) are HOST reads and
+`pool_headroom` and `refill_pool` (`fsla/engine/dags/decode_dag.py`) are HOST reads and
 writes off the step's path entirely — a serving loop polls the first at leisure and calls
 the second on its own schedule, never as a precondition of a step. Pool-covered growth
 raises no verdict, because nothing is urgent for the host: `growth_pending` stays `False`

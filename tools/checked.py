@@ -5,7 +5,7 @@
 rules are loaded once and one way.
 
     checker()                       the checker's modules, imported from the directory `dev_config.warpline_python()` names; in the
-                                    graph's gate action, which has no dev config, the one it hands in (`ROLA_WARPLINE_PYTHON`)
+                                    graph's gate action, which has no dev config, the one it hands in (`FSLA_WARPLINE_PYTHON`)
     kernels_of(binary)              the checker's model of every kernel of a cubin or of a binary's images, each by its mangled name
     kernels_in(listing, usage, ...) the same model of the disassembly texts alone, named by the mangled name or by the demangled names given
                                     (the lab's built experiments carry the texts and the names: no tool runs)
@@ -13,7 +13,7 @@ rules are loaded once and one way.
     declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the production gate's, from the
                                     graph's declarations beside the arms, and the lab's, from `b.expect`, are this one form)
     compare(kernels, rules, ...)    THE ONE JUDGMENT, the lab's and the production gate's: the facts of the kernels under the named rules and of the build's
-                                    notices (counted under their rows' rules), compared with the declarations under rola's notes: (comparison, facts)
+                                    notices (counted under their rows' rules), compared with the declarations under fsla's notes: (comparison, facts)
     check(kernels, rules, ...)      its refusals
     profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump, its declaration a CTA-window's: its refusal or None
 
@@ -45,7 +45,7 @@ def _dev_config():
 def checker() -> SimpleNamespace:
     """warpline's checker modules, imported where first needed: the package's directory is handed in (`bazel run
     //tools:lab`, `bazel run //tools:sass_gate`, the graph's gate action, a test tier)."""
-    root = os.environ.get("ROLA_WARPLINE_PYTHON") or _dev_config().warpline_python()
+    root = os.environ.get("FSLA_WARPLINE_PYTHON") or _dev_config().warpline_python()
     if root is None:
         raise SystemExit("the checker is warpline's, which the graph hands the tool: bazel run //tools:<tool> -- ...")
     if root not in sys.path:
@@ -110,7 +110,7 @@ def declarations(entries: list[dict]) -> list:
 def compare(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None):
     """THE ONE JUDGMENT: the facts of `kernels` under the rules named (the model rules of the checker's registry) and of the build's `notices`
     (read, counted under their rows' rules of `project_ledger()` at the function they name; none: a build with no messages), compared with
-    the loaded `declarations` and rola's `notes` (a line a rule, printed after the checker's fix). The lab's check and the production gate both
+    the loaded `declarations` and fsla's `notes` (a line a rule, printed after the checker's fix). The lab's check and the production gate both
     judge through it; returns the comparison (the refusals, the figures of bound rules with no bound declared, the stale declarations) and the facts
     it compared (every rule's count and sites at every place: the production gate's report reads its figures from them)."""
     c = checker()
@@ -126,7 +126,7 @@ def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[s
 
 def profile_refusal(dump: str, kernel: str, declarations: list, notes: dict[str, str], windows: float | None):
     """The checker's profile rule `shared_wavefronts_excess` on `kernel`'s SourceCounters `dump` (the text of its header and
-    instruction rows), under the loaded `declarations` and rola's `notes`: its refusal, or None where within what is declared.
+    instruction rows), under the loaded `declarations` and fsla's `notes`: its refusal, or None where within what is declared.
     A declaration counts the excess wavefronts of a CTA-WINDOW of the profiled launch, never the launch's total (a launch's
     total moves with the grid and the windows a row times): `windows`, the launch's CTA-windows, scales it to the launch's
     allowance, and the refusal's `count` and `allowed` are the launch's, to be shown beside a window's. Where `windows` is

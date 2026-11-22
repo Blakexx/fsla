@@ -38,8 +38,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.routing.entmax.production import _overflow_free_delta
-from rola.routing.entmax.reference import entmax_tau
+from fsla.routing.entmax.production import _overflow_free_delta
+from fsla.routing.entmax.reference import entmax_tau
 from tests.oracle.fixtures import assert_slots_close
 from tests.oracle.tolerances import ENTMAX_ATOL, ENTMAX_GRADIENTS, ENTMAX_RTOL, ENTMAX_VALUES
 

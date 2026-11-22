@@ -12,12 +12,12 @@ all would be an ADDRESSING difference, and addressing is exact or wrong.
 Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64`;
 `cols = d_v + 1` (the mass column is unconditional); `BH = batch * heads`;
 **atom** = 16 consecutive leaves in LATTICE leaf order = the page granule
-(`rola.ops.paging.MMA_K_QUANTUM`); **slot** = the physical page an atom is mapped to,
+(`fsla.ops.paging.MMA_K_QUANTUM`); **slot** = the physical page an atom is mapped to,
 `-1` for an atom no plan committed; `M` = the step's touched-row count.
 
 **FIVE CLAIMS.**
 
-1. *The write-atom derivation is EXACT.* `rola.ops.decode._write_atom_bitmap` is the
+1. *The write-atom derivation is EXACT.* `fsla.ops.decode._write_atom_bitmap` is the
    ENUMERATED REFERENCE for the set a step admits -- the shipped path takes that set from
    the step's own device-side condensation, and this is the independent derivation it
    is gated against (`test_decode_growth_trigger.py`). It is checked here against the leaf
@@ -61,10 +61,10 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step, _write_atom_bitmap
-from rola.ops.lattice import permutation, to_canonical
-from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
-from rola.ops.produce import decode_plan
+from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.lattice import permutation, to_canonical
+from fsla.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
+from fsla.ops.produce import decode_plan
 
 pytestmark = [
     pytest.mark.cuda,

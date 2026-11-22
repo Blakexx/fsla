@@ -436,8 +436,8 @@ ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("tools/pipe_counters.py", "measure", "ncu"): _PROFILER,
     ("tools/stall_census.py", "measure", "ncu"): _PROFILER,
     ("tools/stall_census.py", "measure", "temporary directory"): _PROFILER,
-    ("tools/wheels.py", "check", "pip install"): rule("//:wheels (`rola_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
-    ("tools/wheels.py", "check", "temporary directory"): rule("//:wheels (`rola_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
+    ("tools/wheels.py", "check", "pip install"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
+    ("tools/wheels.py", "check", "temporary directory"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
 }
 
 

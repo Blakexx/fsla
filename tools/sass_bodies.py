@@ -28,7 +28,7 @@ kernels in an ANONYMOUS namespace, so the mangled name embedded a discriminator
 derived from the source path (`_GLOBAL__N__<hash>_9_decode_cu_<hash>`), and a baseline
 built in a worktree at a different directory mismatched on all 192 of those names
 (96/arch) while being byte-identical code. Both files now use a named internal
-namespace (`rola::decode::detail`, `rola::entmax::detail`), so those names are a
+namespace (`fsla::decode::detail`, `fsla::entmax::detail`), so those names are a
 function of source content and toolchain only -- build the two trees anywhere, side by
 side or one checked out over the other.
 
@@ -132,7 +132,7 @@ def read_map(path: str) -> dict[str, str]:
 
 #: THE SOURCE STAMP's body is the csrc content hash (docs/ratification.md#the-device-stamp): it moves with every
 #: source edit by design, so a comparison reports it and never fails on it.
-STAMP_KERNELS = ("rola::stampdet::csrc_stamp_kernel(long*)",)
+STAMP_KERNELS = ("fsla::stampdet::csrc_stamp_kernel(long*)",)
 #: A BUILD ARGUMENT (docs/internals/common/hardware.md#build-tag): `BuildTag<Build{cc, variant}>` as c++filt
 #: prints it (a zero variant may be omitted, as the ABI allows for trailing zero members)
 _BUILD_ARG = re.compile(r"denseref::arch::BuildTag<denseref::arch::Build\{(\d+)(?:, (\d+))?\}>(, )?")

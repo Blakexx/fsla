@@ -3,11 +3,11 @@
 import pytest
 import torch
 
-from rola.routing.entmax.production import (
+from fsla.routing.entmax.production import (
     production_factor,
 )
-from rola.routing.entmax.reference import entmax
-from rola.routing.types import (
+from fsla.routing.entmax.reference import entmax
+from fsla.routing.types import (
     IndependentRouting,
     ResolvedRouting,
     SoftmaxActivation,
@@ -129,7 +129,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     alike. A row that only checked closeness would pass on a stride bug that read the
     wrong columns of a symmetric fixture.
     """
-    from rola.routing.entmax.production import production_routing_factor_levels
+    from fsla.routing.entmax.production import production_routing_factor_levels
 
     torch.manual_seed(5)
     routing = ResolvedRouting(levels=(
@@ -163,7 +163,7 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
     ways; if any element were left alone the two results would differ there. Widths
     that are not powers of two are the ones a masked lane could hide in.
     """
-    from rola.routing.entmax.production import _Plan
+    from fsla.routing.entmax.production import _Plan
 
     torch.manual_seed(6)
     BH, T = 4, 96
@@ -207,7 +207,7 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     Widths differ INSIDE the class (3 and 4 both pad to 4) because a table that carried
     only equal widths would not exercise the per-level `width` the kernel reads.
     """
-    from rola.routing.entmax.production import _Plan
+    from fsla.routing.entmax.production import _Plan
 
     torch.manual_seed(11)
     BH, T = 3, 70
@@ -257,7 +257,7 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     # could never see (a narrow level silently padded into a wider arm) cannot be built
     # in the first place. `_Plan` is what keeps such a table from being assembled; this
     # asserts the layer under it refuses one anyway.
-    from rola.ops._ext import extension
+    from fsla.ops._ext import extension
 
     values = torch.zeros(BH, T, 68, device="cuda")
     with pytest.raises(RuntimeError, match="one width class"):
@@ -276,7 +276,7 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
     launches, because running the narrow one in the wide arm would not be the loop it
     replaces.
     """
-    from rola.routing.entmax.production import _Plan, _ProductionLevelsFn
+    from fsla.routing.entmax.production import _Plan, _ProductionLevelsFn
 
     def launches(routing, widths):
         counted = []

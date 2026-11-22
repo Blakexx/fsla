@@ -10,10 +10,10 @@ carry. A subject that is absent from the roster while its kernel exists is the d
 mirroring exists to catch; a subject whose kernel is unbuilt refuses by name, which is an
 honest report rather than a number for something that did not run.
 
-**TWO CELL KINDS, ONE REGISTRY** (rola-devtools' central cells). A subject declares which kind it takes.
-``kind="carry"`` is a drawn cell (`rola_devtools.cells.carry`): amplitudes put directly on the simplex, with the state
+**TWO CELL KINDS, ONE REGISTRY** (fsla-devtools' central cells). A subject declares which kind it takes.
+``kind="carry"`` is a drawn cell (`fsla_devtools.cells.carry`): amplitudes put directly on the simplex, with the state
 the sequence enters with, which is what the carry family's oracle and probe run -- read through `measure.cells`.
-``kind="layer"`` is a layer input (`rola_devtools.cells.layer`) under one of RoLA's constructions
+``kind="layer"`` is a layer input (`fsla_devtools.cells.layer`) under one of FSLA's constructions
 (`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
 only way to price the producer's own solve or a decode step through the layer.
 
@@ -57,7 +57,7 @@ class Subject:
     what: str
     #: THE LEVEL IT PRICES (Blake, 2026-09-15), recorded with every sample so a reading never crosses two of them:
     #: `kernel` is one family's launches and nothing around them; `op` is everything the op does over bare operands and
-    #: a state -- the facts, the paging, the packing and the kernels -- as `rola_op` calls it; `layer` adds the
+    #: a state -- the facts, the paging, the packing and the kernels -- as `fsla_op` calls it; `layer` adds the
     #: projections that produce the routing, and is the ONLY level at which this library is compared with another.
     level: str
     #: THE BODY'S OWN NAME, for `ncu -k regex:`. A PREFIX would capture whichever kernel
@@ -84,24 +84,24 @@ class Subject:
 
 def cell_carve(spec):
     """The carve the planner picks for a cell's declared sparsity and value width, from the record alone (no draw)."""
-    from rola.engine.carve import plan_carve
+    from fsla.engine.carve import plan_carve
 
     declared = spec.declared_sparsity()
     return plan_carve(tuple(spec.widths), *(tuple(level[side] for level in declared) for side in (0, 1)), spec.dv)
 
 
 def prefill_op(fx) -> Launch:
-    """THE PREFILL AS THE OP RUNS IT: `rola.interface.rola_op` over the cell's bundle, stateless -- the validation, the
+    """THE PREFILL AS THE OP RUNS IT: `fsla.interface.fsla_op` over the cell's bundle, stateless -- the validation, the
     carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
+    from fsla.interface import fsla_op
     from measure.cells import realize
-    from rola.interface import rola_op
 
     spec = fx["cell"]
     routes, values, masks, plan, _layout = bundle_of(spec, realize(spec))
 
     def run():
-        return rola_op(routes, values, masks, plan=plan)
+        return fsla_op(routes, values, masks, plan=plan)
 
     run()
     return Launch(name=f"prefill|{spec.name}", call=run)
@@ -111,13 +111,13 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     """``(routes, values, masks, plan, layout)``: the cell's draw over ``tokens`` in the format the kernels read, the
     masks the draw's own nonzero digits (the producer knows what it gives), and the plan the cell's declared sparsity
     names: the levels each side walks by lists."""
-    from rola.engine import PrefillPlan
-    from rola.engine.carve import plan_carve
-    from rola.ops import facts as facts_ops
-    from rola.routing.factors import RouteFactors
-    from rola.routing.masks import PREFILL, Masks, pack_tokens
-    from rola.routing.types import OpaqueRouting, Topology
-    from rola.values import Values
+    from fsla.engine import PrefillPlan
+    from fsla.engine.carve import plan_carve
+    from fsla.ops import facts as facts_ops
+    from fsla.routing.factors import RouteFactors
+    from fsla.routing.masks import PREFILL, Masks, pack_tokens
+    from fsla.routing.types import OpaqueRouting, Topology
+    from fsla.values import Values
 
     declared = spec.declared_sparsity()
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
@@ -142,7 +142,7 @@ def entmax_solve(fx) -> Launch:
     The logits are drawn once from the cell's seed and held: what is priced is the
     SOLVE, not the projection that produced them.
     """
-    from rola.routing.entmax.production import production_routing_factor_levels
+    from fsla.routing.entmax.production import production_routing_factor_levels
 
     spec = fx["cell"]
     routing = fx["layer"].routing.resolved
@@ -178,10 +178,10 @@ def _one_segment(spec, layer) -> None:
 
 
 def layer_op(fx) -> Launch:
-    """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `rola.interface.rola_op`, stateless --
+    """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `fsla.interface.fsla_op`, stateless --
     the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
     layer into the producer and the op; beside the stage subjects, the op into its launches and its glue."""
-    from rola.interface import rola_op
+    from fsla.interface import fsla_op
 
     spec, layer = fx["cell"], fx["layer"]
     _one_segment(spec, layer)
@@ -189,7 +189,7 @@ def layer_op(fx) -> Launch:
         routes, values, masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())
 
     def run():
-        return rola_op(routes, values, masks, plan=layer.prefill_plan)[0]
+        return fsla_op(routes, values, masks, plan=layer.prefill_plan)[0]
 
     run()
     return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)
@@ -202,12 +202,12 @@ def decode_step(fx) -> Launch:
     seeds a fresh state from the prefill before every call: each timed call is the same
     step, at the same context position, over the same residency.
     """
-    import rola
-    from rola.engine.constants import box_leaves
-    from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
-    from rola.engine.facts import liveness as lv
-    from rola.ops import facts as facts_ops
-    from rola.ops.produce import decode_plan
+    import fsla
+    from fsla.engine.constants import box_leaves
+    from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+    from fsla.engine.facts import liveness as lv
+    from fsla.ops import facts as facts_ops
+    from fsla.ops.produce import decode_plan
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -228,7 +228,7 @@ def decode_step(fx) -> Launch:
 
     def reset():
         seeded.clear()
-        state = rola.state()
+        state = fsla.state()
         with torch.no_grad():
             _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, paging=True, BC=box_leaves(spec.dv, 8))
             arena.wait()
@@ -241,7 +241,7 @@ def decode_step(fx) -> Launch:
     def run():
         with torch.no_grad():
             routes, _values, masks = layer._produce(token, layer.step_plan)
-            values = rola.Values.from_projection(v_token)
+            values = fsla.Values.from_projection(v_token)
             y, state = decode_step_gated(routes, values, masks, seeded["state"], plan=plan)
             if growth_pending(state):
                 admit_growth(state)
@@ -258,7 +258,7 @@ def decode_step(fx) -> Launch:
 #: once it is built: no kernel of the op is built on this line, so a capture of it finds nothing and a launch refuses by name.
 SUBJECTS = {
     "prefill": Subject("prefill", "carry", prefill_op,
-                       "the stateless prefill as rola_op runs it: carry, intra, glue and readout",
+                       "the stateless prefill as fsla_op runs it: carry, intra, glue and readout",
                        level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
                             "the producer's batched multi-level solve",
@@ -274,12 +274,12 @@ SUBJECTS = {
     "decode_step": Subject("decode_step", "layer", decode_step,
                            "one carried single-token step through the engine: the pages it commits "
                            "and the kernels, as the op runs them",
-                           level="op", symbol="decode_step_kernel", stamp="rola_decode_build_stamp"),
+                           level="op", symbol="decode_step_kernel", stamp="fsla_decode_build_stamp"),
 }
 
 
 def _shared_window() -> int:
-    from rola.ops.window import window_of
+    from fsla.ops.window import window_of
 
     return window_of()
 
@@ -291,7 +291,7 @@ def _splits(tokens: int, calls: int) -> bool:
 
 
 def _intra_reads(widths) -> bool:
-    from rola.ops import intra as intra_ops
+    from fsla.ops import intra as intra_ops
 
     return intra_ops.reads(widths)
 

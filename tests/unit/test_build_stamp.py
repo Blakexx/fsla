@@ -10,7 +10,7 @@ have since moved. The only check that cannot be fooled is a fact the DEVICE prod
 out of a constant the compile put there.
 
 `csrc_build_stamp()` is that fact, and this file is what makes it mean something: the
-value the loaded fatbin returns must equal the content hash of `csrc/rola/src` as this
+value the loaded fatbin returns must equal the content hash of `csrc/fsla/src` as this
 tree hashes it right now. A stamp nothing compares to the tree is a number, not a gate.
 
 The digest function is read from `tools/csrc_stamp.py` (the build's and ratify's) BY PATH rather than imported from an
@@ -26,7 +26,7 @@ import pathlib
 import pytest
 import torch
 
-from rola.ops._ext import extension
+from fsla.ops._ext import extension
 
 pytestmark = pytest.mark.cuda
 
@@ -35,7 +35,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 def _stamp():
     spec = importlib.util.spec_from_file_location(
-        "rola_csrc_stamp_for_stamp", REPO / "tools" / "csrc_stamp.py")
+        "fsla_csrc_stamp_for_stamp", REPO / "tools" / "csrc_stamp.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -45,7 +45,7 @@ def _stamp():
 def test_the_device_stamp_is_this_trees_csrc_content_hash():
     stamp = _stamp()
     got = extension().csrc_build_stamp()
-    want = stamp.stamp(stamp.digest(REPO / "csrc" / "rola" / "src"))
+    want = stamp.stamp(stamp.digest(REPO / "csrc" / "fsla" / "src"))
     assert got == want, (
         f"the loaded fatbin reports the csrc stamp {got}, this tree hashes to {want}. "
         f"The binary was built from other sources than the ones being tested; rebuild "
@@ -60,7 +60,7 @@ def test_the_stamp_moves_when_the_sources_do():
     comparison this file makes rather than merely asserting the number that is there.
     """
     stamp = _stamp()
-    real = stamp.digest(REPO / "csrc" / "rola" / "src")
+    real = stamp.digest(REPO / "csrc" / "fsla" / "src")
     perturbed = stamp.stamp("0" * 63 + "1")
     assert extension().csrc_build_stamp() != perturbed
     assert stamp.stamp(real) != perturbed

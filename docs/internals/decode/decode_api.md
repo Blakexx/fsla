@@ -1,8 +1,8 @@
-# `csrc/rola/src/decode/decode_api.cuh` — the decode path's host-facing declarations
+# `csrc/fsla/src/decode/decode_api.cuh` — the decode path's host-facing declarations
 
-<a id="note-l3"></a>The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares six
+<a id="note-l3"></a>The ONLY decode header `csrc/fsla/fsla_api.cpp` includes. It declares six
 symbols and carries no definitions: the two capacity accessors, the build stamp, the arm list, the phase-ledger bind
-and `rola_decode_forward`. The decode
+and `fsla_decode_forward`. The decode
 path itself is documented in
 [`decode.md`](decode.md); this file exists for a compilation reason, and the
 reason is the whole content of this doc.
@@ -13,7 +13,7 @@ reason is the whole content of this doc.
 
 The split looks gratuitous until you hit it.
 
-`rola_api.cpp` is HOST-ONLY and is compiled by the HOST compiler, not by `nvcc`.
+`fsla_api.cpp` is HOST-ONLY and is compiled by the HOST compiler, not by `nvcc`.
 `decode.cuh` carries `__device__` helpers — the bitmap funnel shift, the set-bit
 boundary cuts ([`decode.md` §14](decode.md#extract-bits)) — that the host compiler
 cannot parse. A binding TU that included `decode.cuh` would therefore fail to
@@ -26,19 +26,19 @@ audience instead.**
 
 ## <a id="bound-surface"></a>2. The bound surface
 
-<a id="rola-decode-capacity"></a>`rola_decode_capacity()` exists so a Python test can assert the C++ level-width
-capacity against `rola.routing.topology.MAX_BRANCH_WIDTH`. A `static_assert`
+<a id="fsla-decode-capacity"></a>`fsla_decode_capacity()` exists so a Python test can assert the C++ level-width
+capacity against `fsla.routing.topology.MAX_BRANCH_WIDTH`. A `static_assert`
 cannot read a Python constant, so the pair of them is what makes the
 producer/decode capacity relation CHECKABLE rather than merely written down.
 
-`rola_decode_producer_width_mirror()` is the second half of that pair; why it is a
+`fsla_decode_producer_width_mirror()` is the second half of that pair; why it is a
 separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
-<a id="arm-subset"></a><a id="roladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
+<a id="arm-subset"></a><a id="fsladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, declared
-one row per arm in `csrc/rola/src/decode/arms.bzl` (an arm family of `bazel/arms.bzl`:
+one row per arm in `csrc/fsla/src/decode/arms.bzl` (an arm family of `bazel/arms.bzl`:
 [`../../build-graph.md#arms`](../../build-graph.md#arms)) so a BUILD can name a subset
 by index: `--//:decode_arms=5` compiles arm 5 and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
@@ -51,8 +51,8 @@ the MACRO LADDER -- a `#define` per axis whose BODY restates the `<<<...>>>`. De
 fields are constants, the launch is a single generic lambda taking three `integral_constant`s, and no `<<<...>>>` is
 spelled twice.
 
-**THE BUILT SET IS READ BACK OFF THE SAME SET.** `rola_decode_arms()` returns `DecodeArmSet::rows()`, the `[d_v, D, decay]`
-rows of the arms the build selected, so `rola.ops.decode.arms()` cannot disagree with what was compiled -- one set, and the
+**THE BUILT SET IS READ BACK OFF THE SAME SET.** `fsla_decode_arms()` returns `DecodeArmSet::rows()`, the `[d_v, D, decay]`
+rows of the arms the build selected, so `fsla.ops.decode.arms()` cannot disagree with what was compiled -- one set, and the
 dispatch and the readback both read it. An arm the binary does not carry is the switch's refusal, naming the field that
 misses and the built set, never a silent miss.
 
@@ -60,7 +60,7 @@ misses and the built set, never a silent miss.
 declaration by construction, so an iteration build is never a wheel ([`build.md#iteration`](../../build.md#iteration)).
 
 <a id="build-stamp"></a>
-<a id="roladecodebuildstamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
+<a id="fsladecodebuildstamp"></a>`fsla_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds four facts into one `int64_t` in a positional scheme and reads it back:
 
@@ -80,7 +80,7 @@ this path MEANS while moving neither struct's size nor any ceiling, and a stamp 
 would certify the new binary as the old one. A stamp that cannot separate two binaries is
 not a stamp. `tests/unit/test_decode_capacity.py` inverts the stamp term by term.
 
-<a id="the-step"></a><a id="note-l43"></a>`rola_decode_forward` is the single data-plane entry, and it launches
+<a id="the-step"></a><a id="note-l43"></a>`fsla_decode_forward` is the single data-plane entry, and it launches
 ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN
 per-batch-head residency verdict are phases of it. There is no probe launch in front of it:
 the write set the walk enumerates is the set the residency test reads, so the test is a pass
@@ -132,20 +132,20 @@ admission (`admit_growth`) plans from, so the host derives no support of its own
 
 ## <a id="the-pool"></a>5. `pool_slots`, `pool_cursor` — the slack pool, both or neither
 
-Present exactly on a paged step whose state reserved slack (`rola.state(pool_slack=...)`
+Present exactly on a paged step whose state reserved slack (`fsla.state(pool_slack=...)`
 above `0.0`): the physical slots the host pre-committed and pre-zeroed, and how many of each
 batch-head's are spent. The head's owner writes its claim into the page table itself
 ([`decode.md#queue-claim-pool`](decode.md#queue-claim-pool)), so `page_table` is mutable.
-`rola_decode_forward` checks that both are present together or neither is — the pool is not a mode a caller can half-configure — and
+`fsla_decode_forward` checks that both are present together or neither is — the pool is not a mode a caller can half-configure — and
 that a pool requires `page_table` (a dense state has no table to admit into). The design and
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
 
-## <a id="decode-ledger-bind"></a>`rola_decode_ledger_bind`
+## <a id="decode-ledger-bind"></a>`fsla_decode_ledger_bind`
 
 Binds the phase ledger the next decode steps book into (`decode.md#phase-ledger`), or unbinds it with `None`: a
 contiguous CUDA int64 tensor `[ctas][warps][kDecodePhases]` (`warps` the step's plan's at its device's build), a row per resident CTA, which the host entry
 checks before each launch. Measurement only; nothing on the shipped path binds one.
 
-<a id="decode-ledger-warps"></a>`rola_decode_ledger_warps()` is that tensor's warps, the step's plan's at the current
+<a id="decode-ledger-warps"></a>`fsla_decode_ledger_warps()` is that tensor's warps, the step's plan's at the current
 card's build (`DecodePlan<B>::kWarps`), so a caller sizes a ledger by asking rather than holding the number.

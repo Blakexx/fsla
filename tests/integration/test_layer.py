@@ -3,7 +3,7 @@
 The vocabulary IS the tag vocabulary: one level config per routing level, each carrying
 its width and its per-duty activation OBJECTS -- ``IndependentRouting(width, read,
 write)``, ``TiedRouting(width, op)`` and ``UnionRouting(width, alpha)``
-(``rola.routing.types``), with ``dense_routing``/``union_routing``/``split_routing``/
+(``fsla.routing.types``), with ``dense_routing``/``union_routing``/``split_routing``/
 ``tied_routing`` as the spellings and ``uniform`` as the way to say one of them D times.
 Every row here holds one refusal that vocabulary owes a caller: a value that is not an
 activation, a width that cannot be a width, a depth past the built bound.
@@ -15,7 +15,7 @@ import inspect
 
 import pytest
 
-from rola.routing.types import IndependentRouting, UnionRouting, entmax, softmax
+from fsla.routing.types import IndependentRouting, UnionRouting, entmax, softmax
 
 # ---------------------------------------------------------------------------
 # `IndependentRouting`/`UnionRouting` validation -- the tag vocabulary's own gate.

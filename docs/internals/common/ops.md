@@ -1,4 +1,4 @@
-# `csrc/rola/src/common/ops.cuh` — the device op helpers
+# `csrc/fsla/src/common/ops.cuh` — the device op helpers
 
 The instruction-level helpers every kernel executes through: the MMA atoms (bf16, f16 and int8) and their fragment
 loads, the asynchronous staging and its barriers, the pinned-base addressing discipline the SASS gate patrols, the

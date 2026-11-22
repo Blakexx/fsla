@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT, and an SVG.
+"""a DAG tuple (`fsla.engine.dags.*`) as Graphviz DOT, and an SVG.
 
-`rola/engine/runner.py`'s `Node.needs`/`.gives` already declare the edges
+`fsla/engine/runner.py`'s `Node.needs`/`.gives` already declare the edges
 `docs/internals/engine/*.md`'s prose diagrams describe by hand; this renders
 the SAME edges MECHANICALLY from the committed tuple, so a doc page and the
 DAG it describes can be checked against each other rather than trusted by
 eye. Not wired into any gate -- a mismatch between the prose and this render
-is a review-time finding (`rola-review`'s pointer), not a CI failure.
+is a review-time finding (`fsla-review`'s pointer), not a CI failure.
 
 Usage:
-    python tools/build/dag_to_dot.py rola.engine.dags.prefill_dag:PREFILL_DAG \
+    python tools/build/dag_to_dot.py fsla.engine.dags.prefill_dag:PREFILL_DAG \
         --svg docs/internals/engine/prefill_dag.svg
-    python tools/build/dag_to_dot.py rola.engine.dags.decode_dag:DECODE_STEP \
+    python tools/build/dag_to_dot.py fsla.engine.dags.decode_dag:DECODE_STEP \
         --svg docs/internals/engine/decode_dag.svg
 """
 from __future__ import annotations

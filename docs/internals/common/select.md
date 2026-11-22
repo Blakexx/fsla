@@ -1,6 +1,6 @@
 # `common/select.cuh` — the selection layer
 
-Mirrors `csrc/rola/src/common/select.{cu,cuh}`.
+Mirrors `csrc/fsla/src/common/select.{cu,cuh}`.
 
 Every kernel adapts to its card (the constitution's R8; [`KERNEL_STANDARDS.md` section
 8](../../KERNEL_STANDARDS.md#8-arch-mapping-at-the-atom-closed-world-at-the-arm)): its sizes come from its plan at a
@@ -26,7 +26,7 @@ product's row names its build variant; a device without a row runs its architect
 <a id="carried"></a>
 ## The builds a binary carries
 
-`build/generated/builds.inc` (`ROLA_BUILDS(F)`, one `F(cc, variant)` a build) is written before every compile by
+`build/generated/builds.inc` (`FSLA_BUILDS(F)`, one `F(cc, variant)` a build) is written before every compile by
 the graph's header action from the build's architectures (`measure/hardware.py`'s `builds_header`): every
 variant of every architecture the binary compiles.
 
@@ -43,4 +43,4 @@ runtime (an invalid device function) and, before that, by `card_of`.
 ## `build_switch(card, body)`
 
 The host's one branch to the card's build: `body(BuildTag<B>{})`, `B` the card's build as a compile-time value and
-`BuildTag<B>::traits` its traits, over `ROLA_BUILDS`: where a kernel's launch takes its build.
+`BuildTag<B>::traits` its traits, over `FSLA_BUILDS`: where a kernel's launch takes its build.

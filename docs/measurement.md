@@ -5,22 +5,22 @@ stored with its provenance. This document is what that sentence means.
 
 | layer | where | answers |
 |---|---|---|
-| cells | rola-devtools' central registry `rola_devtools.cells` (rola's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
-| subjects | `measure/subjects.py`, `measure/provider.py` (rola's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
-| declarations | `declare.py` (this checkout's targets), rola-bench's `declare.py` (checkouts composed) | WHAT RUNS: the build, the instruments, the timing registrations and sessions, the stores, as targets of `rola_devtools.build` |
-| method | rola-devtools' `rola_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
-| preconditions | the targets' requirements (`rola_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
-| statistics | rola-devtools' `rola_devtools.verdict` | whether a difference is real |
-| record | `rola_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
+| cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
+| subjects | `measure/subjects.py`, `measure/provider.py` (fsla's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
+| declarations | `declare.py` (this checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT RUNS: the build, the instruments, the timing registrations and sessions, the stores, as targets of `fsla_devtools.build` |
+| method | fsla-devtools' `fsla_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
+| preconditions | the targets' requirements (`fsla_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
+| statistics | fsla-devtools' `fsla_devtools.verdict` | whether a difference is real |
+| record | `fsla_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
 
-rola measures itself with `bazel run //:measure -- run declare.py:all`; rola-bench's root loads this file from each
+fsla measures itself with `bazel run //:measure -- run declare.py:all`; fsla-bench's root loads this file from each
 checkout it compares, declares every checkout's targets beside its attention reference, and times them in shared
 sessions. Both are one method: a number taken either way is the same measurement.
 
 ## The method
 
-A session is a `measure_timing` target (`rola_devtools.timing`): the timing entries it depends on -- a checkout's arm on
-a central cell, rola's `carry_forward` or rola-bench's `flash` -- are set up in their checkouts' worker processes behind a
+A session is a `measure_timing` target (`fsla_devtools.timing`): the timing entries it depends on -- a checkout's arm on
+a central cell, fsla's `carry_forward` or fsla-bench's `flash` -- are set up in their checkouts' worker processes behind a
 barrier (nothing is timed until every entry has set up), each warmed past the floor of 10 calls, and then every rep of
 every round calls every entry once, in a fresh random order, one call at a time: the next call is sent only when the
 last has replied. Each sample is one launch on the entry's own stopwatch, taken inside its worker, so the pipe between
@@ -33,7 +33,7 @@ stopwatches in one session fail it.
 
 A NULL GATE (`measure_null_gate`) times one registration's entries against copies of themselves in second workers of the
 same checkout: where the per-rep ratios of the two copies put one outside their interquartile range, a worker's bias is
-found, and a ratio between two checkouts' workers on that cell is read beside it. rola-bench's root declares one over
+found, and a ratio between two checkouts' workers on that cell is read beside it. fsla-bench's root declares one over
 the target's `carry_forward`.
 
 Call by call, because drift on this host is the size of the effects measured: its sustained clock has two states ~17 %
@@ -48,9 +48,9 @@ Not a checklist: the requirements a target holds and the runner's setup do each 
 | step | what happens |
 |---|---|
 | GPU lock | a session holds `gpu: all`: the GPU lock exclusive through `gpu_lock()`, taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. The lock's rules are [`testing.md#running-it`](testing.md#running-it)'s. |
-| clock lock | a session holds `clock: 1`: the host's own lock (`rola_devtools.locks.clock`, the dev config's `clock.json`), proven by this binary's clock read (`register_clock_reader`) before the first call and after the last; a session whose read is off the lock fails. A host without one runs unlocked, and the session records its reads. |
+| clock lock | a session holds `clock: 1`: the host's own lock (`fsla_devtools.locks.clock`, the dev config's `clock.json`), proven by this binary's clock read (`register_clock_reader`) before the first call and after the last; a session whose read is off the lock fails. A host without one runs unlocked, and the session records its reads. |
 | binary identity | building an arm asks the device for the subject's family stamp and refuses the arm without it: a path or a hash passes against a stale extension, a device-side fact does not. |
-| extension identity | `import rola` must resolve inside the entry's own checkout, or the arm is refused: a venv that names another checkout (an editable install in a shared venv, or another checkout's own venv) otherwise answers with that tree's kernel while the record carries this tree's commit. |
+| extension identity | `import fsla` must resolve inside the entry's own checkout, or the arm is refused: a venv that names another checkout (an editable install in a shared venv, or another checkout's own venv) otherwise answers with that tree's kernel while the record carries this tree's commit. |
 | tree identity | every stored sample carries each checkout's commit and the sha256 of its tracked diff; a dirty tree is stamped, not refused. |
 
 ## The host a measurement runs on
@@ -63,7 +63,7 @@ cells that do.
 * **A session's whole member set fits the card, with headroom.** A session sets up every entry before timing and holds
   them all resident at once, each in its checkout's entry worker, so what must fit is every arm on every cell of the
   group plus the reference's. The card is shared with the host's display, and a near-full one pages and corrupts every
-  time in the session without a message. Size a local cell at scale smaller (fewer heads, or a group with one RoLA
+  time in the session without a message. Size a local cell at scale smaller (fewer heads, or a group with one FSLA
   cell), estimate each cell's peak footprint on paper before launch, and keep
   `torch.cuda.set_per_process_memory_fraction` as the backstop.
 * **A row near the card's cap is discarded, never caveated.** Under WSL2 the driver falls back to host memory over PCIe
@@ -81,26 +81,26 @@ cells that do.
 
 ## The three levels, and what a comparison may cross
 
-Blake, 2026-09-15: the LAYER holds the projections and produces the routing (RoLA's analogue of QKV); the OP takes those
+Blake, 2026-09-15: the LAYER holds the projections and produces the routing (FSLA's analogue of QKV); the OP takes those
 bare operands and a state and produces the next state and the readout -- the facts, the paging, the packing and the
 kernels; a KERNEL runs its own launches and nothing around them. Every subject states the level it prices
 (`Subject.level`) and every sample records it, so a reading pairs entries of ONE level and
 `bazel run //:results -- verdict` refuses a pair of two.
-A comparison between this library and another is therefore a LAYER comparison: RoLA's
-own layer against attention's, because RoLA's number includes the state its capacity buys.
+A comparison between this library and another is therefore a LAYER comparison: FSLA's
+own layer against attention's, because FSLA's number includes the state its capacity buys.
 
 What this line can measure today: the KERNEL level (`entmax_solve`) and one OP-level path
 (`decode_step`, through the engine's decode DAG, which commits the pages the prefill's words write; its measurement seeds them from the liveness model, no facts kernel being built). There is no
-op-level prefill subject and no layer subject: `rola.interface.rola_op` walks the prefill DAG, whose carry leg is not
+op-level prefill subject and no layer subject: `fsla.interface.fsla_op` walks the prefill DAG, whose carry leg is not
 yet
 wired to the rebuilt carry ([`open-work.md`](open-work.md)). The flash reference is a layer entry, and until a
-RoLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
+FSLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
 
 ## The reference
 
 Every reported carry number sits beside FlashAttention at the same point, measured in the
-same interleaved, clock-locked session: rola-bench's attention entry
-(`rola_bench/measure/attention.py`) on the group's QKV cell, causal, width `dv`, bf16, through torch's flash
+same interleaved, clock-locked session: fsla-bench's attention entry
+(`fsla_bench/measure/attention.py`) on the group's QKV cell, causal, width `dv`, bf16, through torch's flash
 backend: Dao's FlashAttention-2 compiled into torch, or FA3 (Hopper) and FA4 (Blackwell) once
 `torch.nn.attention.activate_flash_attention_impl` registers them. The backend is forced, so torch refuses a call
 flash cannot take rather than timing its math or memory-efficient backend, and the entry records torch's version and
@@ -109,22 +109,22 @@ the implementation.
 <a id="incremental"></a>
 THE INCREMENTAL CELL is the headline (Blake, 2026-10-18): the time to process `c` NEW tokens given `T` tokens already
 absorbed, for a model of state count `N`. FlashAttention's `c` queries attend over a KV cache of `T + c` keys,
-bottom-right causal (the entry's `context` parameter); RoLA's layer runs the `c` tokens' producer, facts pass, carry
-from its `N`-leaf state and intra. FlashAttention's cost grows with `T`; RoLA's does not once its state holds the
+bottom-right causal (the entry's `context` parameter); FSLA's layer runs the `c` tokens' producer, facts pass, carry
+from its `N`-leaf state and intra. FlashAttention's cost grows with `T`; FSLA's does not once its state holds the
 history, so the comparison is a grid -- `T` in {0, 4K, 16K, 64K, 256K, 1M} by `c` in {1, 512, 4K, 16K}, the model's
 hidden width and heads stated -- never one number. Each side's per-call overhead is in its time: FlashAttention's KV
-read and launch; RoLA's state load and store (its HBM round trip, ~12.6 MB a head at `N` 64K), launch, partial last
+read and launch; FSLA's state load and store (its HBM round trip, ~12.6 MB a head at `N` 64K), launch, partial last
 window and wave quantization.
 
 AT LAYER LEVEL, WITH BOTH SIDES' PROJECTIONS: FlashAttention's QKV projection of the `c` tokens (the entry's `hidden`:
-one cuBLAS GEMM for every head, the library's own form) against RoLA's producer (its routing, gain and values: 1,088
+one cuBLAS GEMM for every head, the library's own form) against FSLA's producer (its routing, gain and values: 1,088
 columns a head against QKV's 192), so a number is what a user pays. The output projection is the same on both sides and
 is in neither.
 
 `N = L` -- `T = 0`, `c = L`, the whole sequence from zero tokens -- is the grid's whole-sequence case and the
 capacity-fair point a single-length cell states (`N = L`); it averages FlashAttention over contexts from 0 to `L` and
-holds one RoLA call's overheads, so it is never quoted alone. Until RoLA's carry starts from a stored state (the
-segment boundary), RoLA's side of the grid is projected from the labs, the producer's floor and the state's bytes, each
+holds one FSLA call's overheads, so it is never quoted alone. Until FSLA's carry starts from a stored state (the
+segment boundary), FSLA's side of the grid is projected from the labs, the producer's floor and the state's bytes, each
 number labelled projected.
 
 <a id="quoting"></a>
@@ -134,9 +134,9 @@ number labelled projected.
   single-state linear attention: the method's case is a bounded state against a growing cache, and at `N`
   proportional to `L` the state stays under the cache while its key width is small, so that regime's problem is
   compute, which the activation's sparsity decouples (the user's framing, 2026-07-01).
-- CAPACITY-FAIR POINTS (Blake, 2026-08-01): a gap is never quoted from a cell where RoLA holds `N` states while
-  FlashAttention attends over `L < N` tokens -- attention is quadratic in `L` and RoLA flat in it at fixed `N`, so the
-  cell charges RoLA capacity rent at short-context prices. Headline figures put measured points at capacity-fair
+- CAPACITY-FAIR POINTS (Blake, 2026-08-01): a gap is never quoted from a cell where FSLA holds `N` states while
+  FlashAttention attends over `L < N` tokens -- attention is quadratic in `L` and FSLA flat in it at fixed `N`, so the
+  cell charges FSLA capacity rent at short-context prices. Headline figures put measured points at capacity-fair
   `(N, L)`, FlashAttention run at `L = N`, and share one x-axis, addressing capacity; an `L < N` cell extrapolates
   per-token latency only.
 - EVERY RATIO CARRIES ITS LABELS (Blake, 2026-10-24): the card, the level (op or layer), the depth and the sparsity.
@@ -171,17 +171,17 @@ and a rounding error at scale. An `ncu` duration reads above the event time (25 
 small cell), which is why it is a third instrument and not a cross-check on the first
 two.
 
-Every timed entry names its stopwatch (`Timed.instrument`; rola's arms time with `cuda_events`), and a session refuses
+Every timed entry names its stopwatch (`Timed.instrument`; fsla's arms time with `cuda_events`), and a session refuses
 entries that name two.
 
 <a id="comparing-two-builds"></a>
 ## Comparing two builds
 
 A change is judged against its baseline in ONE session: the baseline checkout (a worktree at the old commit, built,
-with its venv) is a reference of rola-bench's suite, and the run is pruned to the timing sessions and their stores:
+with its venv) is a reference of fsla-bench's suite, and the run is pruned to the timing sessions and their stores:
 
 ```bash
-python -m rola_devtools.build run declare.py:suite \
+python -m fsla_devtools.build run declare.py:suite \
     --arg target=worktree:<new checkout>,venv:<its venv> --arg references='worktree:<baseline>,venv:<its venv>' \
     --only 'store/session/*'
 ```
@@ -194,7 +194,7 @@ states ~17% apart (the method, above), larger than the effects a change is judge
 
 ## The flagging rule: three gates, all must fire
 
-`rola_devtools.verdict` judges a candidate against a reference timed in the same sessions; which stored sessions and
+`fsla_devtools.verdict` judges a candidate against a reference timed in the same sessions; which stored sessions and
 which reference it is given is the store's query (below). Timing compares only within the session that interleaved it,
 so every gate reads within-session quantities: `session(candidate, reference)` takes the two members' samples by round
 and gives, per round, each member's median, their RATIO and their DIFFERENCE.
@@ -265,12 +265,12 @@ every build: Bazel's cache is its key, and the library's digest, its output, key
 its machine
 facts, each instrument over the cells sized for measurement (`tier` probe or both), its timing arms, its diff sides
 and its own kernel-vs-oracle diff, the oracle tier as one node -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
-nothing of cells, groups or instruments: `--only 'rola/phases'` runs that instrument and what it needs, `--skip
+nothing of cells, groups or instruments: `--only 'fsla/phases'` runs that instrument and what it needs, `--skip
 '*/timeline'` drops that instrument and everything that reads it. A node whose code, binary and inputs have not changed
-is a cache hit and does not run. A full run of rola-bench's suite over one checkout is seven minutes (measured
+is a cache hit and does not run. A full run of fsla-bench's suite over one checkout is seven minutes (measured
 2026-09-16, 212 targets); the dev loop is a pruned run, seconds.
 
-THE ORACLE TIER IS A TARGET (`rola/oracle-tier`): the oracle battery run whole, keyed on its code and the binary, its
+THE ORACLE TIER IS A TARGET (`fsla/oracle-tier`): the oracle battery run whole, keyed on its code and the binary, its
 output the counts, WHICH cases failed and the per-comparison margins (`--oracle-margins`, the worst per output kind),
 stored beside the instruments. A red cell is a stored fact.
 
@@ -279,7 +279,7 @@ a DIFF is two sides under one named rule -- `bit-identical`, the per-slot clause
 `support-equal` -- with a claim (`expect` same or different) and a consequence (a build failure or a recorded verdict).
 A side proves which checkout's library it imported; a comparison that compared fewer quantities than it declared, or a
 cell only one side could produce, refuses rather than passes; a cell both sides refuse is listed and not counted. Inside
-Across checkouts rola-bench pairs each surface a checkout exposes (`SURFACES` in `declare.py`: the fp64 oracle and the
+Across checkouts fsla-bench pairs each surface a checkout exposes (`SURFACES` in `declare.py`: the fp64 oracle and the
 producer reference) under ITS rule for the surface (`RULES`) -- the oracle bit-identical, the producer support-equal --
 stored at `diff/<surface>`. Verdicts are stored, tensors never. The carry kernel has no diff surface and no
 kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
@@ -299,10 +299,10 @@ timing session:
 
 A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 
-## The measurements record: `rola_results`
+## The measurements record: `fsla_results`
 
-Every measuring tool stores what it measured through one library, `rola_results`, in the rola-results repository:
-`store.root` in the dev config (default `rola-results` beside the checkouts), importable from every interpreter
+Every measuring tool stores what it measured through one library, `fsla_results`, in the fsla-results repository:
+`store.root` in the dev config (default `fsla-results` beside the checkouts), importable from every interpreter
 `bazel run //:init` provisions. A result measured in any worktree of a machine lands in that one repository, visible
 to every other at once; the devbox container has its own clone (`docs/setup.md#the-devbox-image`), whose records
 reach another machine's by git (`bazel run //:results -- commit`, then a push and a pull).
@@ -317,11 +317,11 @@ and a timing only compares within the session that interleaved it.
 
 | location | writer | the semantics | a sample's output |
 |---|---|---|---|
-| `rola/<instrument>` | a store target of `declare.py` or rola-bench's root | the instrument target's semantics: its tool and arguments, code digest, the cells, the binary's and environment's outputs | the instrument's JSON per cell, with each cell's failure |
+| `fsla/<instrument>` | a store target of `declare.py` or fsla-bench's root | the instrument target's semantics: its tool and arguments, code digest, the cells, the binary's and environment's outputs | the instrument's JSON per cell, with each cell's failure |
 | `timing/session`, `timing/memory` | a store target over `measure_timing` / `measure_memory` | the session's semantics: every registration's executor, cells, code and binary, the timing parameters | every sample in order with its round, rep and position, each entry's status, the clock reads; each entry's peak memory |
-| `timing/null` | a store target over `measure_null_gate` (rola-bench's root) | the gate's semantics: the registration, its cells, the timing parameters | the session of the two copies and, per cell, whether they agree |
+| `timing/null` | a store target over `measure_null_gate` (fsla-bench's root) | the gate's semantics: the registration, its cells, the timing parameters | the session of the two copies and, per cell, whether they agree |
 | `environment` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
-| `rola/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
+| `fsla/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
 | `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in
@@ -333,7 +333,7 @@ terminal print.
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record.
 `bazel run //:results -- sql "..."` queries every location through a derived SQLite index beside the records
-(`history` and `latest` for one location; views flatten the stored outputs, and the rola-results README lists them
+(`history` and `latest` for one location; views flatten the stored outputs, and the fsla-results README lists them
 with the last, history, compare and baseline questions as SQL); `bazel run //:results -- verdict` is the regression
 judgement above; `bazel run //:results -- commit -m <message>` commits the records, after the repository's own check
 that every key recomputes from its semantics and every output exists. Pushing is the owner's act.

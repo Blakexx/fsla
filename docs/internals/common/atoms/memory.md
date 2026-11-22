@@ -1,6 +1,6 @@
 # `common/atoms/memory.cuh` — the loads and stores
 
-Mirrors `csrc/rola/src/common/atoms/memory.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): shared and global accesses addressed rather than indexed, plain and predicated in the instruction.
+Mirrors `csrc/fsla/src/common/atoms/memory.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): shared and global accesses addressed rather than indexed, plain and predicated in the instruction.
 
 - <a id="storef32"></a>`store_f32`: a summand stored at fp32, unrounded, for a buffer whose consumer is a fan-in
   ([`reduce.md#fan-in-add`](reduce.md#fan-in-add)).

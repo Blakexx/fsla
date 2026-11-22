@@ -1,7 +1,7 @@
 """THE PRODUCER'S DENSITY SWEEP: the logit gain is the knob that moves realized routing's density, as it does in
 training, so a cell set that claims to cover the distribution has to show the knob moving it.
 
-The constructions are RoLA's `producer-sweep-g*` (`measure.cells.layer.CONSTRUCTIONS`): one entmax constructor at
+The constructions are FSLA's `producer-sweep-g*` (`measure.cells.layer.CONSTRUCTIONS`): one entmax constructor at
 four logit gains on one central layer input. Each is built by `measure.cells.layer.build`, and its REALIZED write
 density -- the exact-nonzero fraction of the write side's amplitudes -- must fall monotonically as the gain rises, across
 at least a factor of four.

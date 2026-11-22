@@ -85,7 +85,7 @@ Three arguments make the rule permanent, because they are about what a measureme
    would have to catch it.
 
 The same rule holds outside the state: decay dials accumulate in fp32, because `1 - rate` near 1 cancels
-catastrophically inside a narrow product (`rola/routing/`).
+catastrophically inside a narrow product (`fsla/routing/`).
 
 <a id="gates"></a>
 ## What a precision change owes

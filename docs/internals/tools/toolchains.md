@@ -29,10 +29,10 @@ declared ones. A second spelling of the choice would be one that can disagree wi
 `tools/ratify.py`'s census resolves it per run; a lint that checks a built binary takes the toolchain from that binary's own
 `BUILD_CONFIG["ptxas"]`, never from whatever toolkit the checking host has.
 
-`rola_cu13/_build_config.py` records the toolchain's name beside its `ptxas`, and `tools/supported.py` writes one README row
+`fsla_cu13/_build_config.py` records the toolchain's name beside its `ptxas`, and `tools/supported.py` writes one README row
 per (toolchain, built architecture).
 
-`built_extension(root)` is the binary a checkout's in-place build produced, `rola_<toolchain>/_C.*so`, inside the binary
+`built_extension(root)` is the binary a checkout's in-place build produced, `fsla_<toolchain>/_C.*so`, inside the binary
 plugin the toolchain's build ships as ([`../../build.md#wheels`](../../build.md#wheels)). It refuses a checkout with none
 or with more than one toolchain's, and the tools that fingerprint or disassemble the binary take it from here.
 

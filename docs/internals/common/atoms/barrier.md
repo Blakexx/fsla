@@ -1,6 +1,6 @@
 # `common/atoms/barrier.cuh` — the barriers
 
-Mirrors `csrc/rola/src/common/atoms/barrier.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the CTA's and named rendezvous, the mbarrier's phases, the warp's edge and the publish fence.
+Mirrors `csrc/fsla/src/common/atoms/barrier.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the CTA's and named rendezvous, the mbarrier's phases, the warp's edge and the publish fence.
 
 - `rendezvous()`: every thread of the CTA arrives and all prior shared accesses are ordered before all subsequent
   ones; also the WAR fence that lets a ring slot be overwritten. <a id="rendezvous-group"></a>`rendezvous_group(id, n)`

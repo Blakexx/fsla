@@ -103,7 +103,7 @@ And two things that are explicitly **not** missing:
 Nothing short of a user ruling; this is a veto, not a measurement. But the record
 should be honest about what the veto costs and what would make the cost visible:
 the delta-rule wing of the literature buys expressiveness per state, and if a
-capacity-matched comparison ever showed RoLA needing materially more states to
+capacity-matched comparison ever showed FSLA needing materially more states to
 reach the same quality, that is the number that would have to be argued about.
 The engine's own position is that the answer to "more expressiveness per state"
 is **more states**, and that the affine recurrence is what makes more states

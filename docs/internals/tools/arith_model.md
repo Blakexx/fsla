@@ -3,7 +3,7 @@
 The op's accuracy class is a format decision ([precision.md](../../architecture/precision.md#quality) records it);
 this model prices the family before any kernel of it exists: rows u8 at every level, values and MMA operands bf16,
 every sum fp32. Its truth is the fp64 oracle's -- summed a window at a time
-so a 64K cell fits, and checked against `rola.ops.naive.naive_rola` over the first two windows on every run -- and it
+so a 64K cell fits, and checked against `fsla.ops.naive.naive_fsla` over the first two windows on every run -- and it
 rounds only where such a kernel would (the tool's docstring lists the four places), each alone and all together.
 
     bazel run //tools:arith_model -- flagship-alt-k4 nl64k-dense [--window 1024] [--json model.json]

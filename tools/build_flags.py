@@ -49,7 +49,7 @@ def extension_defines() -> list[str]:
 TORCH_MIN = (2, 13)
 STABLE_DEFINES = (f"-DTORCH_TARGET_VERSION=0x{(TORCH_MIN[0] << 56) | (TORCH_MIN[1] << 48):016x}",)
 
-#: THE HOST C++ COMPILE'S OWN FLAGS (the registration unit, `csrc/rola/rola_api.cpp`): host code only, never a codegen
+#: THE HOST C++ COMPILE'S OWN FLAGS (the registration unit, `csrc/fsla/fsla_api.cpp`): host code only, never a codegen
 #: input of a kernel
 HOST_CXX_FLAGS = ("-O3", "-std=c++20", "-DNDEBUG", *STABLE_DEFINES)
 

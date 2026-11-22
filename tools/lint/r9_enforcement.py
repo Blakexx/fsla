@@ -31,7 +31,7 @@ untaken arms never exist in the binary -- so it is already exactly the
 a trap to guard (CUTE_NO_UNROLL-style metaprogramming, not a dispatch).
 
 MEASURED ON THIS TREE (2026-08-29, before G2 lands): every `else if` chain
-under csrc/rola/ is `if constexpr` (excluded); the one `switch` on a runtime
+under csrc/fsla/ is `if constexpr` (excluded); the one `switch` on a runtime
 value is `decode_lattice.cuh::kind_bits`'s `switch (kind)` -- three explicit
 cases plus a bare `default: return r & ~w;` (the fourth legitimate case,
 `kKindRmW`, folded into the default rather than named) and no marker. This is
@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CSRC = ROOT / "csrc" / "rola"
+CSRC = ROOT / "csrc" / "fsla"
 
 SWITCH_RE = re.compile(r"^\s*switch\s*\(\s*(\w+)\s*\)")
 IF_RE = re.compile(r"^\s*(?:}\s*else\s+)?if\s*(constexpr)?\s*\(\s*(\w+)\s*(==|!=)")

@@ -38,7 +38,7 @@ verified, and so is its binary
 sha256 where the pin has one. The whole release -- a tarball or a bare binary under its release's name -- lands under `host.tools_dir`, because the layout
 is part of the tool. A pinned tool is found by its pin
 (`dev_config.pinned`: under `host.tools_dir`, in its pin's folder, by its release's name), never recorded in the
-machine's files -- every checkout loads them, and an older loader refuses a key it does not declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and rola.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), and runs `check`. The
+machine's files -- every checkout loads them, and an older loader refuses a key it does not declare. `install_bazelisk` links `toolchain.bazel` (`~/.local/bin/bazel`) to the pinned bazelisk -- a link it made to another pinned release is replaced, anything else at the path refused. `init` wires this checkout's commit gate (the git-config keys `core.hooksPath` per worktree, whose pre-commit hook runs `bazel test //:gate`, and fsla.venv naming the checkout's own `bazel run //:dev_env` venv, which the post-commit review runs from; a checkout with no venv of its own is named and left as it is) in every worktree of the repository that carries the tracked hook, turns the repository's shared hook into a refusal (a checkout reaches it only unwired), and runs `check`. The
 clock is not set by `init`, because locking it asks for administrator consent once.
 
 **`check`** prints one row per dependency and exits 1 on any red:
@@ -50,14 +50,14 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The lock directory, scratch directory and GPU lock directory are writable.
 - This checkout's own scratch directory (`host.scratch`, one folder a checkout) is printed, green by itself.
 - The clock is set, or the host is marked unlocked.
-- The worktrees folder exists; `store.root` is a rola-results checkout, and `rola_results` and `rola_devtools` import
+- The worktrees folder exists; `store.root` is a fsla-results checkout, and `fsla_results` and `fsla_devtools` import
   from `store.root` and `workspace.devtools` in the checkout's own venv.
 
 <a id="action-hooks"></a>
 **The action-hook dispatcher** (`.claude/hooks/repo_hooks.py`; KERNEL_STANDARDS `#every-rule-has-a-row`, the `hook` mechanism; the hooks, the manifest and what the dispatcher trusts: [`lint.md`](lint.md#action-hooks)). A rule enforced by a hook holds only in a session that fires it, and a session may start in any checkout, so `init` installs the one generic dispatcher at the user level and `check` has a row that it is current, wired and rooted. The roots it may run code under are the machine-dependent value `workspace.hook_roots` (null: this repository's checkouts and `workspace.worktrees`); `~/.claude/repo_hooks_roots.json` is derived from it on every `init` and never edited (KERNEL_STANDARDS §23.1: one location). `init` does nothing where `~/.claude` is absent (the devbox image).
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
-the harness makes (`rola_devtools.locks.clock`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven
+the harness makes (`fsla_devtools.locks.clock`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven
 does it write `clock.json`.
 - **Under WSL:** it registers two elevated scheduled tasks, `gpu-lock` and `gpu-unlock`. Each runs a hidden
   `wscript` launcher that calls `nvidia-smi.exe` and exits with its code, and registering them asks for administrator
@@ -67,28 +67,28 @@ does it write `clock.json`.
 
 **`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
 (its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
-interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_rola_<name>.pth`), the
-co-developed sibling checkouts (`rola_devtools.pth`, `rola_results.pth`, `LINKED`), the environment's site-packages
-(`zz_rola_env.pth`, the venv's marker) and the bytecode prefix (`zz_rola_pycache.pth`: `sys.pycache_prefix` under
+interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_fsla_<name>.pth`), the
+co-developed sibling checkouts (`fsla_devtools.pth`, `fsla_results.pth`, `LINKED`), the environment's site-packages
+(`zz_fsla_env.pth`, the venv's marker) and the bytecode prefix (`zz_fsla_pycache.pth`: `sys.pycache_prefix` under
 `host.build_cache`, so no `__pycache__` lands in the checkout). An activated venv is a developer's shell, so its bin
 carries every command the devbox has: the environment's (ruff, pytest, ast-grep, clangd, py-spy, ...), run by the
 venv's interpreter so they import what its site names, and the devbox's pinned tools (hyperfine, difft, ncu, nsys),
 linked from their folders under `host.tools_dir`, one install a machine whichever checkout links it. It refuses
-until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `rola`, `rola_devtools`, `rola_results` and `torch` each import from
+until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `fsla`, `fsla_devtools`, `fsla_results` and `torch` each import from
 where those files say.
 
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
 `bazel run //:library` in it: its venv and commit gate, then its extension, which the graph serves from its shared
-cache when any checkout built that commit's library. It imports `rola` and the extension from inside the worktree.
+cache when any checkout built that commit's library. It imports `fsla` and the extension from inside the worktree.
 Never a bare `git worktree add`: its commits are refused until `bazel run //:dev_env`.
 
 **`container`** keeps the devbox image a supported environment (§23 (3), `docs/setup.md` §2-3). Each action takes the
 image's OCI layout (`//:image`), whose manifest digest is the image's identity, and `check` and `compose` the image as
-Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
+Docker loads it (`//:image_tarball`), tagged `fsla-devbox:<digest[:12]>`.
 - `check` (`bazel run //:container_check`) is the clean room: `CONTAINER_LOOP` run step by step by `docker exec` in a
   container on fresh volumes of its own, which clones the checkouts from their git directories mounted read-only
   (`CLONED`, this checkout with its staged change), each step timed; `COLD_START` names the steps a fresh machine pays
-  before it can work. It stores the result through `rola_results` at `environment`, one record per image digest, and
+  before it can work. It stores the result through `fsla_results` at `environment`, one record per image digest, and
   a green check removes its volumes; the digest the tree names is the graph's (`bazel run //:devbox_image_update` writes
   `tools/devbox_image.json`, `//:devbox_image` holds it).
 - `compose` (`bazel run //:container_compose`) writes `.devcontainer/compose.local.yaml`: the image's tag, the
@@ -98,15 +98,15 @@ Docker loads it (`//:image_tarball`), tagged `rola-devbox:<digest[:12]>`.
   digest (that the name is the image the graph builds is `//:devbox_image`'s). A commit that leaves the image alone needs no
   Docker.
 
-**The measurements store** (`store.root`, a rola-results checkout) is importable from every interpreter that runs
-here: `init` links `rola_results` into each checkout's own venv (it names the environment's site-packages as a plain
-path, which reads none of its `.pth` files), by a one-line `rola_results.pth`, and `dev-env` links each venv it
+**The measurements store** (`store.root`, a fsla-results checkout) is importable from every interpreter that runs
+here: `init` links `fsla_results` into each checkout's own venv (it names the environment's site-packages as a plain
+path, which reads none of its `.pth` files), by a one-line `fsla_results.pth`, and `dev-env` links each venv it
 writes. The store's own command line is `bazel run //:results`
 (`commit -m` commits the records).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container reads `rola_results`, which it links; the host's own python carries nothing of this project. The sibling repositories gate through their own graphs (`bazel test //:gate`, rola-devtools' commit gate), from no venv of this tree's.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container reads `fsla_results`, which it links; the host's own python carries nothing of this project. The sibling repositories gate through their own graphs (`bazel test //:gate`, fsla-devtools' commit gate), from no venv of this tree's.
 
 **`get`** prints one value, for a person or a shell.
 
-**Running a CPU-heavy command under the host budget** is `python -m rola_devtools.locks.host [--slots N]
+**Running a CPU-heavy command under the host budget** is `python -m fsla_devtools.locks.host [--slots N]
 [--exclusive] -- <cmd>`, niced per `host.nice`. The graph's front door takes it for every build.

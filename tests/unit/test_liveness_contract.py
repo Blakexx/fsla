@@ -17,10 +17,10 @@ from math import prod
 import pytest
 import torch
 
-from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
-from rola.engine.facts import liveness as lv
-from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
-from rola.routing.masks import DECODE, PREFILL, Masks, pack_tokens
+from fsla._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
+from fsla.engine.facts import liveness as lv
+from fsla.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
+from fsla.routing.masks import DECODE, PREFILL, Masks, pack_tokens
 
 #: (B_l per level, L) -- a padded dense level, a two-level and a three-level topology,
 #: an L that is not a whole number of words, and one cell whose boxes SPLIT an atom.
@@ -34,7 +34,7 @@ def _format(widths, d_v=64, BH=2):
 
 
 def _draw(layout, *, logical=None, dense=(), BH=2, seed=0):
-    """A call's synthetic MASKS, as data: ``(masks, bits)`` -- the PREFILL-layout :class:`~rola.routing.masks.Masks` of
+    """A call's synthetic MASKS, as data: ``(masks, bits)`` -- the PREFILL-layout :class:`~fsla.routing.masks.Masks` of
     ``BH`` heads (read and write sides alike) and each level's drawn bool bits ``[1, L, BH, b_l]`` at its logical width. A
     level in ``dense`` is all live, the others a random support with at least one live digit per token. No row exists:
     a mask is the bits, never derived from anything here."""

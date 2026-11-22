@@ -14,7 +14,7 @@ TWO INDEPENDENT ROUTES TO THE SAME NUMBER, and both are used:
    that only ever ran route 1 would never test it.
 
 Everything here derives its own leaf addresses (MSB-first mixed radix), exactly as
-``rola/ops/naive.py`` does and for the same reason: a reference that imported
+``fsla/ops/naive.py`` does and for the same reason: a reference that imported
 production's map would make a wrong convention agree with itself.
 
 Symbols at first use: ``widths`` per-level digit counts, ``N = prod widths``,

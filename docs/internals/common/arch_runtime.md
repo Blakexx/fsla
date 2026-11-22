@@ -1,6 +1,6 @@
 # `common/arch_runtime.cu` — the closed-world arch rule's runtime half
 
-Mirrors `csrc/rola/src/common/arch_runtime.{cu,cuh}`.
+Mirrors `csrc/fsla/src/common/arch_runtime.{cu,cuh}`.
 
 `arch_caps.cuh`'s `static_assert(tabulated(kArch))` fixes the compiling target: a
 binary refuses to BUILD for a compute capability the table has no row for. That

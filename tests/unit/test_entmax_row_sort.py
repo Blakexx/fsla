@@ -1,6 +1,6 @@
 """THE ROW SORT'S TIE BATTERY -- the gate on `RowSort`'s exactness claim.
 
-`csrc/rola/src/entmax/entmax.cuh`'s `RowSort` lowers phase B to one of two networks,
+`csrc/fsla/src/entmax/entmax.cuh`'s `RowSort` lowers phase B to one of two networks,
 chosen by width class: a register-resident bitonic network at ``IPT <= 4`` and
 ``cub::WarpMergeSort`` at ``IPT == 8``. The claim that makes the choice free is that a
 sort is a PERMUTATION and the solve reads the sorted row only through its prefix sums and
@@ -29,8 +29,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.types import ResolvedRouting, UnionRouting
+from fsla.routing.entmax.production import production_routing_factor_levels
+from fsla.routing.types import ResolvedRouting, UnionRouting
 from tests.oracle.fixtures import assert_slots_close
 from tests.oracle.tolerances import ENTMAX_VALUES
 

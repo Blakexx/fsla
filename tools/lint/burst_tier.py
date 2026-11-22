@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[2]
-SRC = ROOT / "csrc" / "rola" / "src"
+SRC = ROOT / "csrc" / "fsla" / "src"
 
 #: a device function's signature line, behind any of `static`, `inline`, `constexpr` and `__host__`
 SIGNATURE = re.compile(r"^\s*(?:(?:static|inline|constexpr|__host__)\s+)*(?:__device__|__global__)\s+.*?\b(\w+)\s*\(")

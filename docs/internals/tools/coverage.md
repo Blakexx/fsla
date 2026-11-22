@@ -32,4 +32,4 @@ reviewed line of the declaration. Paying one replaces it with a pointer.
 The first run found one pointer that had already broken: the sanitizer's decode row named a test the work queue's
 commit had renamed, so the lane would have failed to launch its cell.
 
-The lint reads the sanitizer table by AST and imports nothing of rola's, so it runs where the other commit hooks run.
+The lint reads the sanitizer table by AST and imports nothing of fsla's, so it runs where the other commit hooks run.

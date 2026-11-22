@@ -54,14 +54,14 @@ import math
 import pytest
 import torch
 
-from rola.ops.decode import _decode_step
-from rola.ops.lattice import permutation, to_canonical, to_lattice
-from rola.ops.paging import bytes_equal
-from rola.ops.produce import decode_plan
-from rola.routing import quant
-from rola.routing.factors import RouteFactors
-from rola.routing.types import LeafMassDecay
-from rola.values import Values
+from fsla.ops.decode import _decode_step
+from fsla.ops.lattice import permutation, to_canonical, to_lattice
+from fsla.ops.paging import bytes_equal
+from fsla.ops.produce import decode_plan
+from fsla.routing import quant
+from fsla.routing.factors import RouteFactors
+from fsla.routing.types import LeafMassDecay
+from fsla.values import Values
 from tests.oracle.fixtures import (
     assert_planted_errors_fail,
     assert_slots_close,

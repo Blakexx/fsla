@@ -14,10 +14,10 @@ tree carried when it began gating are a baseline that only shrinks.
 | `ast_grep_gate.py` + `rules/*.yml` | the standards' shapes an AST can see (§12 fences and collectives, a torch header in a per-arm translation unit, an anonymous-namespace kernel, a width-shaped `if`) |
 | `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the vendored pin, the comment-density mandate, repository portability |
 | `unit_lints.py` + `.clang-tidy`, `clang-tidy-device.yaml` | the pinned clang-tidy (`tools/clang_tidy_pin.json`) on every unit the library links, for each built architecture: `.clang-tidy` on the host units (every finding fails), `clang-tidy-device.yaml` on the device units through clang's CUDA front end (dead stores, unused parameters, redundant expressions); and the host units' `-Wall -Wextra -Wunused` front-end compile. A finding in the unit's own package fails, and so does any compiler error -- a unit the compiler cannot parse is a unit no lint read ([below](#unit-lints)) |
-| `unused_instantiations.py` | every `__global__` function template must demangle-match an entry function the graph's units compiled (the census's, `bazel test //csrc/rola:unused_instantiations`). `__device__` templates are found, counted and explicitly NOT checked: `ptxas -v` reports entry functions only, and a wrapped-once helper has no standalone symbol |
+| `unused_instantiations.py` | every `__global__` function template must demangle-match an entry function the graph's units compiled (the census's, `bazel test //csrc/fsla:unused_instantiations`). `__device__` templates are found, counted and explicitly NOT checked: `ptxas -v` reports entry functions only, and a wrapped-once helper has no standalone symbol |
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
 | `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
-| `python -m rola_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is rola-devtools', linked into the venvs; its README describes the export) |
+| `python -m fsla_devtools.mirror --check` | every tracked path is declared ships or private for the public mirror in `.github/mirror/declarations.json`, so a new file never ships, and never silently stays behind, undecided (the tool is fsla-devtools', linked into the venvs; its README describes the export) |
 | `rules_table.py` | every rule of the constitution and the standards has a row in [`docs/rules.json`](../../rules.json) naming its mechanism, and every enforcer a row names resolves ([below](#rules-table)) |
 | `learnings.py` | every row of [`LEARNINGS.md`](../LEARNINGS.md) names, as `path::text`, a mechanism the tree holds: a row that names none, a file that is gone or a string its file no longer contains fails the commit |
 | `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
@@ -45,7 +45,7 @@ is red too; a fixture's verdict must hold exactly its expected findings ([below]
 `.claude/` and every `CLAUDE.md` -- name a machine's own path: a home directory, a mount, a drive. The hooks and
 `CLAUDE.md` ship with the code to every clone and worktree, so they cite repo-relative paths, hooks resolve
 through `$CLAUDE_PROJECT_DIR`, and a site's own locations come from the dev config or the environment
-(`ROLA_SCRATCH`).
+(`FSLA_SCRATCH`).
 
 <a id="rules-table"></a>
 ## Every rule has a row
@@ -60,7 +60,7 @@ history note, a section that states no rule). Each carries what that mechanism n
 `path::symbol` and Bazel labels) and `coverage` (`full`, or `partial: <what is not checked>`); `why_not_mechanical` for a
 `review` row; `would_be` for an `owed` row (the forcing point it will take and how); `why` for a `none` row. A `review` row's
 statement reaches the reviewer's prompt, which lists them as the rules only the review enforces. `checker` is not a standard and
-holds no row: it is rola's guidance on the rules of the pinned checker (check 5 [below](#rules-table)).
+holds no row: it is fsla's guidance on the rules of the pinned checker (check 5 [below](#rules-table)).
 
 A SITE is derived from the documents by the lint, never listed twice. `<DOC>#<anchor>` names every `<a id>` anchor (every
 `## ` heading of either document, each addendum paragraph and each paragraph of the standards' preamble carries one, and
@@ -84,9 +84,9 @@ site states more than one rule.
    the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks;
 5. the `checker` section, against the rules of the pinned checker (`warpline.checker.declare.rule_names`, over the checker's base
    ledger with the project's `tools/notice_ledger.json`): a rule with no entry, an entry whose key is a rule the pin does not have,
-   and an id an entry lists under `rules` that is no row. The section is the checker's own map to rola's mechanism, not a standard:
+   and an id an entry lists under `rules` that is no row. The section is the checker's own map to fsla's mechanism, not a standard:
    an entry is keyed by the checker rule's name and carries `guidance`, one line -- the atom or
-   practice, the standards anchor, the lab page with the evidence, or "nothing beyond the generic fix" where rola has nothing to
+   practice, the standards anchor, the lab page with the evidence, or "nothing beyond the generic fix" where fsla has nothing to
    add -- `triggers`, regexes over kernel source (a list, empty where no source text shows the rule), and `rules`, the ids of the
    standards rows it serves (a list, empty where no row states the rule); it holds no mechanism, enforcer or coverage, so it claims
    no enforcement, and a row's `enforcer` names `tools/lab.py::check` only where that check holds the rule. The lint needs the
@@ -145,8 +145,11 @@ cannot run fails; it never reads as zero. `--init` records a new lint's baseline
 
 A RE-KEY is the stated rename of a finding's key, for a finding whose message was reworded (the message is part of the key): `--rekey OLD NEW`
 rewrites the baseline's entries whose message is OLD to NEW, their counts unchanged, and records `{"from", "to", "count"}` in the baseline's `rekeys`.
+
 `--grown` reads HEAD's entries through the baseline's own re-keys, so a re-keyed entry is the same entry and a re-key that adds to a count is growth
 (`tests/unit/test_lint_ratchet.py`); `--shrink` drops a re-key whose `to` the baseline no longer holds.
+
+A FOLLOW is the stated move of a file and reword of a line (the line digest is part of the key): `--follow` takes each entry's line in HEAD's file, follows it through git's rename detection and a line diff to the working file, and rewrites the entry to the file and digest it now has, counts unchanged; the digests that changed are recorded in `follows`, which `--grown` reads HEAD's entries through and re-derives from git, so a hand-written follow is refused.
 
 A finding that is not a defect is exempted the lint's own way, with its reason: vulture's whitelist
 (`vulture_whitelist.py`), a `reserved:` marker for a constant parameter. "A ruling per hit" is that work: the lint cannot
@@ -155,7 +158,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | lint | baseline (2026-09-14) | what burns it down |
 |---|---|---|
 | `work_codes.py` | 558 | prose: `DELETIONS.md` 162 and `open-work.md` 59 need rows that say what each change did; the rest are test and tool docstrings |
-| `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `rola` and `rola.expert` export), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
+| `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `fsla` and `fsla.expert` export), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
@@ -215,7 +218,7 @@ and excluded), a committed doc or script wrapping a command in an external `floc
 to `docs/`, `measure/`, `tools/`, `CLAUDE.md` and `README.md`, the standards among them), the
 file-reading checks
 (`check_arch_coverage`, `check_vendored_pin`, each a function of the
-tree's files, never of an imported `rola`), and
+tree's files, never of an imported `fsla`), and
 `check_repo_portability` (§17): every tracked file scanned for an absolute home-directory path, a citation of an
 out-of-repo journal by path, a real worktree path or a session's scratch path, with no allowlist (its own source is
 excluded by name, because its patterns spell what they catch). Every finding prints its section, `file:line` and the

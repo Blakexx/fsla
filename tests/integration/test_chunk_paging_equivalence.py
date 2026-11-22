@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`rola.interface.rola_op`).
+"""THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.interface.fsla_op`).
 
 The paged arena is the default backing and `PrefillPlan(paging=False)` pins the dense plane (docs/api.md section 5):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
@@ -15,11 +15,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-import rola
+import fsla
+from fsla.expert import PrefillPlan
+from fsla.interface import fsla_op
 from measure.cells import by_name, realize
 from measure.subjects import bundle_of
-from rola.expert import PrefillPlan
-from rola.interface import rola_op
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -36,12 +36,12 @@ def operands(spec, tokens: slice = slice(None)):
 def run(operands_, state, paging=None):
     """The op over one call's operands, the plan's mapping pinned to ``paging`` (``False``: the dense plane)."""
     routes, values, masks, plan = operands_
-    return rola_op(routes, values, masks, plan=PrefillPlan(carve=plan.carve, paging=paging), state=state)
+    return fsla_op(routes, values, masks, plan=PrefillPlan(carve=plan.carve, paging=paging), state=state)
 
 
 def calls(spec, parts, paging=None):
     """``(ys, state)``: the op over ``parts`` of the cell's tokens, one state carried through them."""
-    state = rola.state()
+    state = fsla.state()
     ys = [run(operands(spec, part), state, paging)[0] for part in parts]
     return ys, state
 
@@ -93,7 +93,7 @@ def test_an_idle_resident_page_is_neither_loaded_nor_stored():
     untouched = ~touched.reshape(-1)
     assert bool(untouched.any()), "the cell's second half writes every leaf: the claim is vacuous"
     for paging in (None, DENSE):
-        state = rola.state()
+        state = fsla.state()
         run(first, state, paging)
         before = state.materialize().clone()
         run(second, state, paging)

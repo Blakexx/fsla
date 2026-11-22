@@ -10,7 +10,7 @@
     bazel run //:docrefs -- init               # pin today's references, unread; refused when a lock exists
 
 A REFERENCE is a doc's citation of a primitive: `` `tools/ratify.py`'s `main` ``, a dotted name in code font whose
-module is in the tree (`` `rola.ops.carry.carry_forward` ``), a path in code font, or a link (`[x](build.md#wheels)`).
+module is in the tree (`` `fsla.ops.carry.carry_forward` ``), a path in code font, or a link (`[x](build.md#wheels)`).
 Its TARGET is a function, method, class or constant (Python, found by `ast`); a function or a `//: @ref NAME` ...
 `//: @end` region (C++/CUDA); a markdown section, from its heading to the next heading at its level or above; or a
 whole file or directory, which is checked to exist and never hashed. A target's content is normalized before it is
@@ -48,7 +48,7 @@ LOCKS = {"public": "docs/references.lock.json", "private": ".claude/references.l
 MIRROR_DECLARATIONS = ".github/mirror/declarations.json"
 #: A dotted name in code font is a reference when its first component is one of these; the value is the directory
 #: the package imports from.
-PACKAGES = {"rola": "", "tests": "", "tools": "", "measure": "", "bench": "measure", "rola_cu13": ""}
+PACKAGES = {"fsla": "", "tests": "", "tools": "", "measure": "", "bench": "measure", "fsla_cu13": ""}
 #: A path in code font is a reference when it ends in one of these, or in `/`.
 PATH_SUFFIXES = (".py", ".md", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".json", ".toml", ".yaml", ".yml", ".sh", ".in",
                  ".cfg", ".txt", ".lock")
@@ -154,13 +154,13 @@ def _link_target(doc: str, link: str) -> Target:
 
 
 def mirrored(doc: str, files: set[str]) -> list[str]:
-    """The sources a mirror page describes: `docs/internals/<rel>.md` mirrors `csrc/rola/src/<rel>` and
+    """The sources a mirror page describes: `docs/internals/<rel>.md` mirrors `csrc/fsla/src/<rel>` and
     `docs/internals/tools/<name>.md` mirrors `tools/<name>`, in each source suffix the tree carries, plus any path in
     code font on the page's title line or in its opening `Mirrors ...` / `The mirror of ...` sentence."""
     if not doc.startswith("docs/internals/"):
         return []
     rel = doc[len("docs/internals/"):-len(".md")]
-    stems = [f"csrc/rola/src/{rel}", f"tools/{rel[len('tools/'):]}" if rel.startswith("tools/") else ""]
+    stems = [f"csrc/fsla/src/{rel}", f"tools/{rel[len('tools/'):]}" if rel.startswith("tools/") else ""]
     sources = [f"{stem}{suffix}" for stem in filter(None, stems) for suffix in (*CPP_SUFFIXES, ".py", ".sh")
                if f"{stem}{suffix}" in files]
     head = (ROOT / doc).read_text().splitlines()[:8]
@@ -331,7 +331,7 @@ def _section(text: str, anchor: str) -> str | None:
 
 
 def _generated(path: str) -> bool:
-    """A build's output the tree ignores (`rola_cu13/_build_config.py`): a doc may cite it, and no checkout has it."""
+    """A build's output the tree ignores (`fsla_cu13/_build_config.py`): a doc may cite it, and no checkout has it."""
     return subprocess.run(["git", "check-ignore", "-q", path], cwd=ROOT).returncode == 0
 
 
@@ -392,7 +392,7 @@ def _load(blobs) -> dict[tuple[str, str], dict]:
     if pinned - {PYTHON}:
         raise SystemExit(f"docrefs: the locks were pinned under Python {', '.join(sorted(pinned))} and this is "
                          f"{PYTHON}, whose ast.unparse digests differ; run it from the checkout's venv "
-                         "(`git config rola.venv`)")
+                         "(`git config fsla.venv`)")
     return {(e["doc"], e["target"]): e for d in docs for e in d["references"]}
 
 

@@ -1,9 +1,9 @@
 """The `entmax` (DeepSPIN, PyPI) version pin -- checkable without a build.
 
 Mirrors `test_vendored_pin.py`'s shape for the CUTLASS pin, adapted for a pip-installed
-reference rather than a vendored subtree: `rola/routing/entmax/pin.py::gate()` refuses
+reference rather than a vendored subtree: `fsla/routing/entmax/pin.py::gate()` refuses
 an installed `entmax` whose version or on-disk bytes drift from
-`rola/routing/entmax/PIN.json`, and this file checks the three claims the pin makes:
+`fsla/routing/entmax/PIN.json`, and this file checks the three claims the pin makes:
 
 1. the recorded digest describes the package that is actually installed;
 2. a version mismatch is refused, named on both sides;
@@ -12,7 +12,7 @@ an installed `entmax` whose version or on-disk bytes drift from
    carry one version string over different bytes).
 
 `gate()` already ran once, successfully, when this test file imported
-`rola.routing.entmax.reference` (directly or transitively) -- so a version drift on
+`fsla.routing.entmax.reference` (directly or transitively) -- so a version drift on
 THIS box would already have failed collection before reaching these tests. That is the
 gate doing its job, not a reason to skip checking it; the tests below drive `gate()`
 and `pin.py`'s helpers directly, with a planted wrong version, so the refusal itself is
@@ -20,13 +20,13 @@ exercised rather than assumed from the fact that collection succeeded.
 
 It is a test, not a lint: it EXECUTES real code (`pin.gate()`, monkeypatched refusal
 shapes) rather than reading files -- a check that executes the code under test is a
-test (docs/testing.md), and a lint's run holds no built `rola`.
+test (docs/testing.md), and a lint's run holds no built `fsla`.
 """
 from __future__ import annotations
 
 import pytest
 
-from rola.routing.entmax import pin
+from fsla.routing.entmax import pin
 
 
 def test_pin_records_every_field_the_gate_relies_on():

@@ -26,7 +26,7 @@ import pipes  # noqa: E402
 
 import dev_config  # noqa: E402 -- path insert must precede this import
 import kernel_targets  # noqa: E402
-from rola_devtools import process  # noqa: E402
+from fsla_devtools import process  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "measure"))
 from measure.provider import arm_name, oneshot_argv  # noqa: E402

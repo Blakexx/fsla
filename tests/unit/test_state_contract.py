@@ -1,6 +1,6 @@
 """THE STATE OWNS ITS FORMAT: the descriptor's field list, pinned without a kernel.
 
-`rola/_state.py::StateFormat` is what every kernel derives its addressing from and what a
+`fsla/_state.py::StateFormat` is what every kernel derives its addressing from and what a
 later call is checked against (`docs/internals/state.md#format`). This file pins that
 contract at the Python object -- no CUDA extension, no kernel body, no GPU required -- so
 the pipelined body inherits a descriptor whose shape cannot silently drift underneath it.
@@ -10,8 +10,8 @@ descriptor's `B` tuple); `DV` the value width; `cols = DV + 1` the page's logica
 (the mass column); an **atom** is 16 consecutive canonical leaves, the page granule.
 
 **THE ONE ADMISSION LAW.** K50: "prefill and decode share ONE admission law" -- there is no
-decode-only shape, tolerance or topology. `RoLAState._kernel_entry` (prefill) and
-`RoLAState._decode_entry` (decode) both build the call's presented format through the SAME
+decode-only shape, tolerance or topology. `FSLAState._kernel_entry` (prefill) and
+`FSLAState._decode_entry` (decode) both build the call's presented format through the SAME
 free function, `_format_of`, and check it against the bound one through the SAME method,
 `StateFormat.check` -- never a second comparison written at either seam. That is asserted
 here structurally (each entry point's own source names both calls), which is what makes a
@@ -25,13 +25,13 @@ import inspect
 
 import pytest
 
-from rola._state import (
+from fsla._state import (
     CANONICAL_ORDER,
     MIN_LEVEL_WIDTH,
     PAGE_RECTANGLE_BITS,
     SPLIT_PLANE_DTYPE,
     STATE_DTYPE,
-    RoLAState,
+    FSLAState,
     StateFormat,
     _format_of,
 )
@@ -152,8 +152,8 @@ def test_kernel_entry_and_decode_entry_both_call_the_one_admission_law():
     `StateFormat.check` is the ONE comparison -- both entry points name both, so a future
     decode-only shape/tolerance path (K50: refused by name) shows up as a source diff here
     rather than as a silent divergence between the two seams."""
-    prefill_src = inspect.getsource(RoLAState._kernel_entry)
-    decode_src = inspect.getsource(RoLAState._decode_entry)
+    prefill_src = inspect.getsource(FSLAState._kernel_entry)
+    decode_src = inspect.getsource(FSLAState._decode_entry)
     for src, name in ((prefill_src, "_kernel_entry"), (decode_src, "_decode_entry")):
         assert "_format_of(" in src, f"{name} does not build its presented format via _format_of"
         assert ".check(" in src or "self._format = presented" in src, (
@@ -173,15 +173,15 @@ def test_format_of_sources_dv_from_the_value_stream_not_the_routing():
 def test_decode_op_entry_reuses_state_format_not_a_second_copy():
     """STRUCTURAL PIN, decode's side of `test_kernel_entry_and_decode_entry_both_call_the_one_admission_law`.
 
-    That test pins `RoLAState._decode_entry` (a BOUND state's own check); this pins
-    `rola.ops.decode`'s OP ENTRY, which a call reaches directly with no `RoLAState` in
+    That test pins `FSLAState._decode_entry` (a BOUND state's own check); this pins
+    `fsla.ops.decode`'s OP ENTRY, which a call reaches directly with no `FSLAState` in
     play at all (every oracle/integration fixture in `tests/oracle/test_decode_*.py` and
     `tests/integration/test_decode_*.py` calls `derive_decode_plan` this way). Before
     K53 that path asked no floor at all -- `StateFormat` is imported here rather than a
     hand-rolled power-of-two check, so a future rewrite that duplicates the rule instead
     of asking the one class shows up as a source diff here.
     """
-    from rola.ops import decode as decode_ops
+    from fsla.ops import decode as decode_ops
 
     src = inspect.getsource(decode_ops._admit)
     assert "StateFormat(" in src, "_admit does not route through StateFormat"
@@ -193,7 +193,7 @@ def test_decode_op_entry_refuses_an_unlawful_topology_by_name():
     """K53: decode's D=4 arm's OLD topology, `(8, 8, 8, 8)`, is unlawful under the floor
     every prefill call already refuses at -- decode's own entry now refuses it by the
     SAME name (`StateFormat`'s), not a decode-shaped message of its own."""
-    from rola.ops import decode as decode_ops
+    from fsla.ops import decode as decode_ops
 
     with pytest.raises(ValueError, match="level 0 is 8"):
         decode_ops._admit((8, 8, 8, 8))
@@ -203,6 +203,6 @@ def test_decode_op_entry_refuses_an_unlawful_topology_by_name():
 def test_decode_op_entry_accepts_every_shipped_decode_topology(widths):
     """The three topologies `test_decode_vs_oracle.py` carries post-K53 -- none of them
     is refused by the law that replaced the missing floor."""
-    from rola.ops import decode as decode_ops
+    from fsla.ops import decode as decode_ops
 
     decode_ops._admit(widths)  # no raise

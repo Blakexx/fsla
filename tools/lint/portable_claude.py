@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE AGENT FILES ARE PORTABLE (KERNEL_STANDARDS section 17, gating): nothing under `.claude/` and no `CLAUDE.md`
 names a machine's own path -- a home directory, a mount, a drive. Hooks resolve through `$CLAUDE_PROJECT_DIR`,
-`CLAUDE.md` cites repo-relative paths, and a site's own locations come from the dev config or the environment (`ROLA_SCRATCH`), so a
+`CLAUDE.md` cites repo-relative paths, and a site's own locations come from the dev config or the environment (`FSLA_SCRATCH`), so a
 clone or a worktree anywhere runs the same agent setup. Docs: docs/internals/tools/lint.md#portable-agent-files.
 """
 from __future__ import annotations

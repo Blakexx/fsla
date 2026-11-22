@@ -18,8 +18,8 @@ The table is `{"rules": [the rows], "checker": {the guidance}}`. Check 5, THE CH
 section, which is not a standard and carries no mechanism: it runs both ways against the rules of the pinned checker
 (`warpline.checker.declare.rule_names` over the checker's base ledger with the project's `tools/notice_ledger.json`): every rule has an entry
 keyed by its name, no entry names a rule the pin lacks, and every id an entry lists under `rules` (the standards rows it serves, none where
-no row states the rule) is a row. An entry carries `guidance` (rola's one line: the atom or practice, the standards anchor, the lab page with
-the evidence; where rola has nothing to add it says "nothing beyond the generic fix"), `triggers` (the regexes over new kernel source at which
+no row states the rule) is a row. An entry carries `guidance` (fsla's one line: the atom or practice, the standards anchor, the lab page with
+the evidence; where fsla has nothing to add it says "nothing beyond the generic fix"), `triggers` (the regexes over new kernel source at which
 the edit hook injects it, `.claude/hooks/guidance.py`) and `rules`. The refusals of `tools/lab.py` print `guidance` after the checker's fix;
 a checker that is not on the path fails the lint, never reads as zero.
 
@@ -62,7 +62,7 @@ FIELDS = {
     "none": ("why",),
 }
 STATEMENT_WORDS = 25
-#: the top-level sections of the table, and the keys of one entry of `checker`: rola's one line on the checker's rule, the regexes that fire
+#: the top-level sections of the table, and the keys of one entry of `checker`: fsla's one line on the checker's rule, the regexes that fire
 #: the edit hook, the ids of the standards rows the entry serves
 SECTIONS = ("rules", "checker")
 GUIDANCE = ("guidance", "triggers", "rules")
@@ -345,7 +345,7 @@ def judge(root: Path, build: str, table: object, leaves: set[str], every: set[st
 def check(root: Path, build: str, rules: list[str] | None) -> list[str]:
     """Checks 1 to 3 and 5 over one tree: its two documents, its `docs/rules.json`, its build files and the pinned checker's rules."""
     if rules is None:
-        return ["the pinned checker is not on the path (ROLA_WARPLINE_PYTHON, or a test's runfiles): check 5 cannot run, and a lint that cannot run fails"]
+        return ["the pinned checker is not on the path (FSLA_WARPLINE_PYTHON, or a test's runfiles): check 5 cannot run, and a lint that cannot run fails"]
     leaves, every, problems = derive_both(root)
     try:
         table = json.loads((root / TABLE).read_text())

@@ -31,7 +31,7 @@ coverage is proved by a negative control (a known-broken variant must fail).
 
 ## The oracle tier — semantics
 
-**Ground truth is `rola.naive_rola`, fp64, and nothing else.** A freshly written second reference proves
+**Ground truth is `fsla.naive_fsla`, fp64, and nothing else.** A freshly written second reference proves
 self-consistency only. This prohibition is not a preference; it is the direct lesson of a shared-router bug that agreed
 with a sibling implementation and disagreed with the definition.
 
@@ -82,34 +82,34 @@ linear-attention loop is held by review of the lines it is written in and by the
 
 ### Changing the oracle: the dual-run protocol
 
-`rola/ops/naive.py` and the routing references are the oracle pair, so a change to them is not reviewed by reading the
+`fsla/ops/naive.py` and the routing references are the oracle pair, so a change to them is not reviewed by reading the
 diff -- the question is never "is this code reasonable" but "does it compute the same function". Both versions are RUN:
 
 ```bash
-# in rola-bench: this checkout against another, every surface, as targets
-python -m rola_devtools.build run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
+# in fsla-bench: this checkout against another, every surface, as targets
+python -m fsla_devtools.build run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
 ```
 
 Both sides are DIFF SIDES (`tests/oracle/sides.py`) run by the build system in each checkout's own environment over the
 same central cells: this checkout exposes its surfaces (`declare.py`'s `SURFACES`), and a diff target
-(`rola_devtools.diff`) compares each under the rule rola-bench owns for it: the oracle under BIT-IDENTITY, forward
+(`fsla_devtools.diff`) compares each under the rule fsla-bench owns for it: the oracle under BIT-IDENTITY, forward
 and backward, with "no gradient" an empty
 tensor and never a zero one; the producer reference under support equality. A side proves which tree it imported, a
 comparison that compared fewer quantities than declared refuses, and the raw tensors never leave the build cache.
 
-**The backward's retained state is a declared BUDGET.** The oracle side runs `naive_rola` forward and backward in
+**The backward's retained state is a declared BUDGET.** The oracle side runs `naive_fsla` forward and backward in
 fp64, and autograd retains the recurrence's state at every token (measured: a peak above nine times the retained-state
 byte count). `RETAINED_STATE_BUDGET` (512 MiB) is checked per cell (`retained_state_bytes`), and only
 `BACKWARD_SURFACES` runs the backward at all; a cell over budget is excluded from that surface, a consequence a reader
 can compute from the declaration rather than a run that died.
 
-**A venv imports the `rola` of the checkout it names, so a tool run from one WORKTREE with another checkout's venv imports that checkout unless it is stopped.**
+**A venv imports the `fsla` of the checkout it names, so a tool run from one WORKTREE with another checkout's venv imports that checkout unless it is stopped.**
 The protocol binds and then CHECKS the library each side imported, and prints both. Test runs are unaffected -- pytest
-puts the rootdir on the path -- but any new tool that imports `rola` and compares two trees inherits the trap.
+puts the rootdir on the path -- but any new tool that imports `fsla` and compares two trees inherits the trap.
 
 ### The cells
 
-The cells are the central registry's (`rola_devtools.cells`, read through `measure/cells`): each states the regime it
+The cells are the central registry's (`fsla_devtools.cells`, read through `measure/cells`): each states the regime it
 proves — density, temporal coherence, read-write correlation, mass concentration, support cardinality, depth and
 widths, length — and its draw proves that regime is present before any kernel comparison, so a fixture that cannot
 demonstrate its claimed regime fails rather than passes vacuously. The oracle tier runs the carry cells at
@@ -121,12 +121,12 @@ THE WHOLE-CALL GATES run on those cells and stay red, cell by cell, until the sy
 2026-09-29: a red test is the plan's record of what is unported; base infrastructure is re-pointed at a new seam, never
 deleted with the implementation it exercised): the carry's inter numerator against the fp64 inter term in the
 recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement
-`test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_rola`
+`test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla`
 (`tests/oracle/test_prefill_vs_oracle.py`), and the state's backings bit-identical through a fresh call and a
 continuation (`tests/integration/test_chunk_paging_equivalence.py`, red by plan). Its readouts' bit-identity is an
 assertion a carry cannot meet -- its num differs run to run (its fp32 sums across CTAs reassociate) -- so the test's
 port re-points it to that sum's bound; the state's bit-identity stands. Every one of them is red on this line by the
-ops' named error (`rola.ops._ext.KernelNotBuilt`): no carry, intra or producer kernel is built. THE TOLERANCES OF THOSE
+ops' named error (`fsla.ops._ext.KernelNotBuilt`): no carry, intra or producer kernel is built. THE TOLERANCES OF THOSE
 KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each
 kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by the same
 name. `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared
@@ -216,11 +216,11 @@ row `tools/supported.py` prints — and the check asserts the generated table sa
 
 **`tests/unit/test_closed_world_arch_gate.py`** holds the RUNTIME refusal: closed-world rule R4 forbids a launch on a
 device whose arch was never measured, as a pair of clauses — `static_assert(tabulated(kArch))` in
-`csrc/rola/src/common/arch_caps.cuh` and `check_arch_table()` (`csrc/rola/src/common/arch_runtime.cu`) as the first
+`csrc/fsla/src/common/arch_caps.cuh` and `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`) as the first
 statement of every launching entry. The test states the clause over every declared entry surface, so the next entry
 inherits it.
 
-<a id="headers"></a>**`bazel test //csrc/rola:header_selfcheck`** is the graph's compile of every header under `csrc/rola/src` ALONE, twice in
+<a id="headers"></a>**`bazel test //csrc/fsla:header_selfcheck`** is the graph's compile of every header under `csrc/fsla/src` ALONE, twice in
 one translation unit, with the extension's own flags and include roots (the CUDA rule's units, cached by the headers each
 read), so a header that leans on another's include, or whose include guard is broken, fails the build here rather than at
 a later caller; the test checks that every header has its unit. It needs no device.
@@ -238,7 +238,7 @@ A document nothing checks is a document that drifts. These run in the commit gat
 - **`tools/docrefs.py`**: every citation a doc makes of the tree is pinned to its target's content; a new
   citation is read and accepted, and a changed target waits in `pending` for the docs pass
   ([`internals/tools/docrefs.md`](internals/tools/docrefs.md)).
-- **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/rola/` has a mirror doc at the same
+- **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/fsla/` has a mirror doc at the same
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
   anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).
   A floor on the number of sources found keeps a broken glob from checking nothing.
@@ -262,7 +262,7 @@ and no shipped DAG contains a `reference_only` node, which keeps the growth gate
 being wired in. The CAPTURE ITSELF is `tests/integration/test_decode_graph_step.py`'s.
 
 **`tests/unit/test_facts_rules.py`** holds the RULE layer: every band-2 fold fed plain values and asserted on its
-decision, plus the marker sweep that makes `rola/engine/rules/` an inventory (an unmarked function there fails). The
+decision, plus the marker sweep that makes `fsla/engine/rules/` an inventory (an unmarked function there fails). The
 run table is derived over all eight liveness bytes against every row of
 [`internals/engine/rules.md#run-table`](internals/engine/rules.md#run-table), whose row lines are matched against the
 rule. It must pass under `CUDA_VISIBLE_DEVICES=""`, and it asserts that the battery never resolved the compiled
@@ -292,8 +292,8 @@ additionally at a batch tip (and always when csrc or codegen flags moved); the l
 lane run on their own cadence, never per-commit. **Never `pytest tests/` unscoped.**
 
 **Every GPU entry point takes the GPU lock itself** — a test tier through a session fixture in `tests/conftest.py`,
-`tools/sanitize_oracle.py`, rola-devtools' build system for a target that holds the GPU — through `gpu_lock()`
-(`rola_devtools.locks.gpu`): shared for correctness runs, exclusive for measurement. Invoke them BARE: an external
+`tools/sanitize_oracle.py`, fsla-devtools' build system for a target that holds the GPU — through `gpu_lock()`
+(`fsla_devtools.locks.gpu`): shared for correctness runs, exclusive for measurement. Invoke them BARE: an external
 `flock` on the lock's path around a self-locking tool deadlocks, and a lint rule in `tools/lint/lint_standards.py`
 refuses one on a command line. A tier runs outside the sandbox, since the locks it takes live in `/tmp` by default
 (the GPU lock `host.gpu_lock`, the host budget's slots in `host.lock_dir`) and a sandboxed test's `/tmp` is its own;
@@ -309,8 +309,8 @@ must never be able to fail a merge.
 ## Measurement, and the tests that guard it
 
 Performance work has its own document — [`measurement.md`](measurement.md) — because the instruments are as much a
-subject of review as the kernel. The timing system's own non-vacuity tests live with it, in rola-devtools and
-rola-results; this repository's is `tests/unit/test_bench_provider.py`, which plants an
+subject of review as the kernel. The timing system's own non-vacuity tests live with it, in fsla-devtools and
+fsla-results; this repository's is `tests/unit/test_bench_provider.py`, which plants an
 iteration build of a declared arm family and another library's data, and requires each refusal by name, and
 requires that the `prefill` arm, whose carry is not built, is offered on no cell.
 `bazel run //:ratify -- --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).

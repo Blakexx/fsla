@@ -45,7 +45,7 @@ tools.
   `derivation_harness` compiles it as the extension's units are compiled and links it; `derivation_record` runs that
   binary over the sources the cases name (`derivation.py --record`) and its output is what `tools/manifests/derivation.json` holds.
 - `compiled_entries()` is the mangled name of every entry function the units compiled: what
-  `bazel test //csrc/rola:unused_instantiations` reads ([`lint.md`](lint.md)).
+  `bazel test //csrc/fsla:unused_instantiations` reads ([`lint.md`](lint.md)).
 
 `bazel run //:ratify -- --census` runs in the checkout ([`build-graph.md`](../../build-graph.md#census)); the template lint runs on the census in a
 copy of the tree.

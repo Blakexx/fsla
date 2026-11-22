@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.naive import naive_rola
-from rola.routing.types import LeafMassDecay
+from fsla.ops.naive import naive_fsla
+from fsla.routing.types import LeafMassDecay
 from tests.oracle.fixtures import with_gain
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 
@@ -38,7 +38,7 @@ def _draw(widths, H, H_w, decayed, seed):
 
 def _run(widths, read, write, v, g_write, state, dials):
     decay = None if dials is None else LeafMassDecay(dials=dials)
-    return naive_rola(v, read, with_gain(write, g_write), _topology(widths), decay, initial_state=state, output_final_state=True)
+    return naive_fsla(v, read, with_gain(write, g_write), _topology(widths), decay, initial_state=state, output_final_state=True)
 
 
 def _spread(x, g, dim, consecutive=True):

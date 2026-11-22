@@ -1,7 +1,7 @@
 """THE NUMERIC BAND, stated ONCE for every tier that grades against the oracle.
 
 The comparison basis is fixed by the arms, not by a file: the fp64 oracle
-(`rola.ops.naive.naive_rola`) is the reference, the kernel arm stores bf16, and
+(`fsla.ops.naive.naive_fsla`) is the reference, the kernel arm stores bf16, and
 the derived budget is therefore the **bf16 family bound**
 
     BF16_RTOL = 1e-2      (u_bf16 = 2^-8 = 3.9e-3 per requantization)
@@ -90,7 +90,7 @@ class Output:
 class Owed:
     """AN OUTPUT KIND WHOSE KERNEL IS NOT BUILT: its clauses are owed by the kernel's own measurement (`pytest
     --oracle-margins=FILE`, read with `fixtures.frontier_rtols`), taken when a hopper schedule of it lands, and none is
-    stated before. Grading against it refuses by name (`rola.ops._ext.KernelNotBuilt`); a launch of the kernel refuses
+    stated before. Grading against it refuses by name (`fsla.ops._ext.KernelNotBuilt`); a launch of the kernel refuses
     first, so a test of it collects and fails by that one named refusal until the kernel exists.
     """
 
@@ -98,7 +98,7 @@ class Owed:
     kernel: str
 
     def _refuse(self):
-        from rola.ops._ext import KernelNotBuilt
+        from fsla.ops._ext import KernelNotBuilt
 
         raise KernelNotBuilt(f"the {self.name} tolerance is owed by the {self.kernel} kernel's own measurement: that "
                              "kernel is not built on this line, so no clause is stated")

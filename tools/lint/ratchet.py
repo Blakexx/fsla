@@ -5,6 +5,7 @@
     bazel run //tools/lint:ratchet -- work_codes --shrink   # drop the fixed entries (it never adds one)
     bazel run //tools/lint:ratchet -- work_codes --init     # record today's findings; refused when a baseline exists
     bazel run //tools/lint:ratchet -- work_codes --rekey OLD NEW   # a finding's message was reworded: rename its entries
+    bazel run //tools/lint:ratchet -- work_codes --follow  # files moved or lines reworded since HEAD: entries follow them
     bazel test //:ratchet_baselines                         # every baseline against HEAD's alone, in the checkout
 
 A lint's findings are its `path:line: message` lines. A finding is known by its path, its message's first sentence and
@@ -25,12 +26,21 @@ rename: `--rekey OLD NEW` rewrites the baseline's entries whose message is OLD t
 re-keyed entry is the same entry and a re-key that adds to a count is growth; `--shrink` drops a re-key whose `to` the
 baseline no longer holds.
 
+A FOLLOW is the stated move of a file and the reword of a line: a finding is known by the digest of its line, so
+`git mv` plus a rewrite of the line reads as a new finding and a fixed one. `--follow` takes each entry's line in HEAD's
+file, follows it through git's rename detection against HEAD and a line diff to the working file, and rewrites the entry
+to the file and the digest it now has, counts unchanged -- never to an entry it was not: a line that is gone or was
+rewritten beyond a one-for-one swap keeps its entry, which then reads NEW and fixed as it should. It records
+`{"path", "from_sha256", "to_sha256", "count"}` in the baseline's `follows`, which `--grown` reads HEAD's entries through
+(and re-derives from git, so a hand-written follow is refused); `--shrink` drops a follow whose `to_sha256` is not held.
+
 A lint that cannot run (a missing tool, a crash) fails the gate; it never reads as zero findings.
 Docs: docs/internals/tools/lint.md#ratchets.
 """
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import re
@@ -79,11 +89,19 @@ def _rekeys(blob: str) -> list[dict]:
     return json.loads(blob).get("rekeys", [])
 
 
-def _encode(lint: str, entries: Counter, rekeys: list[dict] | None = None) -> str:
+def _follows(blob: str) -> list[dict]:
+    """A baseline's recorded follows: `{"path": HEAD's, "from_sha256", "to_sha256", "count"}`, the entries a file's move
+    and a line's reword carried (`follow`)."""
+    return json.loads(blob).get("follows", [])
+
+
+def _encode(lint: str, entries: Counter, rekeys: list[dict] | None = None, follows: list[dict] | None = None) -> str:
     rows = [{"path": p, "message": m, "line_sha256": d, "count": n} for (p, m, d), n in sorted(entries.items()) if n > 0]
     record = {"lint": lint, "findings": rows}
     if rekeys:
         record["rekeys"] = rekeys
+    if follows:
+        record["follows"] = follows
     return json.dumps(record, indent=1) + "\n"
 
 
@@ -105,10 +123,85 @@ def rekey(entries: Counter, old: str, new: str) -> tuple[Counter, dict]:
     return rekeyed(entries, [{"from": old, "to": new}]), {"from": old, "to": new, "count": count}
 
 
-def _head(path: Path, rekeys: list[dict] | None = None) -> Counter | None:
-    """HEAD's baseline at `path`, read through `rekeys` (the working baseline's own)."""
+def _git(*args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _moves() -> dict[str, str]:
+    """HEAD's path -> the working tree's, for each file git's rename detection finds moved (staged or not)."""
+    moved = {}
+    for row in _git("diff", "-M", "--name-status", "HEAD").splitlines():
+        cells = row.split("\t")
+        if cells[0].startswith("R") and len(cells) == 3:
+            moved[cells[1]] = cells[2]
+    return moved
+
+
+def follow_line(old_path: str, digest: str, moves: dict[str, str]) -> tuple[str, set[str]] | None:
+    """Where the line of HEAD's `old_path` with `digest` is in the working tree: `(its path, the digests of the lines it
+    maps to)`, a line mapping one for one through a line diff (an unchanged line, or one swapped for one); None when the
+    file is gone or no line of it has the digest, and an empty set when a matching line did not map."""
+    new_path = moves.get(old_path, old_path)
+    target = ROOT / new_path
+    old = _git("show", f"HEAD:{old_path}").splitlines()
+    if not old or not target.is_file():
+        return None
+    new = target.read_text(errors="replace").splitlines()
+    hits = [i for i, line in enumerate(old) if hashlib.sha256(line.strip().encode()).hexdigest()[:16] == digest]
+    if not hits:
+        return None
+    mapped: dict[int, int] = {}
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal" or (tag == "replace" and i2 - i1 == j2 - j1):
+            mapped.update({i1 + k: j1 + k for k in range(i2 - i1)})
+    if any(i not in mapped for i in hits):
+        return new_path, set()
+    return new_path, {hashlib.sha256(new[mapped[i]].strip().encode()).hexdigest()[:16] for i in hits}
+
+
+def follow(entries: Counter) -> tuple[Counter, list[dict]]:
+    """`entries` (HEAD's keys) at the files and lines they now are, and the record of each digest that changed."""
+    moves, out, record = _moves(), Counter(), []
+    for (path, message, digest), n in entries.items():
+        where = follow_line(path, digest, moves)
+        if where is None or len(where[1]) != 1:
+            out[(moves.get(path, path), message, digest)] += n
+            continue
+        new_path, (new_digest,) = where[0], tuple(where[1])
+        out[(new_path, message, new_digest)] += n
+        if new_digest != digest:
+            record.append({"path": path, "from_sha256": digest, "to_sha256": new_digest, "count": n})
+    return out, record
+
+
+def followed(entries: Counter, follows: list[dict]) -> Counter:
+    """`entries` (HEAD's) with each follow applied to the entry it names, its digest the one the line now has."""
+    renamed = {(f["path"], f["from_sha256"]): f["to_sha256"] for f in follows}
+    out: Counter = Counter()
+    for (path, message, digest), n in entries.items():
+        out[(path, message, renamed.get((path, digest), digest))] += n
+    return out
+
+
+def follows_unproven(head: Counter, follows: list[dict]) -> list[dict]:
+    """The follows git does not bear out: a follow of an entry HEAD holds must be what `follow_line` finds in the files."""
+    moves, held = _moves(), {(p, d) for (p, _, d) in head}
+    bad = []
+    for f in follows:
+        if (f["path"], f["from_sha256"]) in held:
+            where = follow_line(f["path"], f["from_sha256"], moves)
+            if where is None or where[1] != {f["to_sha256"]}:
+                bad.append(f)
+    return bad
+
+
+def _head(path: Path, rekeys: list[dict] | None = None, follows: list[dict] | None = None) -> Counter | None:
+    """HEAD's baseline at `path`, read through `rekeys` and `follows` (the working baseline's own)."""
     shown = subprocess.run(["git", "show", f"HEAD:{path.relative_to(ROOT)}"], cwd=ROOT, capture_output=True, text=True)
-    return rekeyed(_decode(shown.stdout), rekeys or []) if shown.returncode == 0 else None
+    if shown.returncode:
+        return None
+    return followed(rekeyed(_decode(shown.stdout), rekeys or []), follows or [])
 
 
 def verdict(found: Counter, baseline: Counter, head: Counter | None) -> tuple[Counter, Counter, Counter]:
@@ -150,10 +243,15 @@ def baselines_grown(lints: list[str]) -> int:
         #: a baseline HEAD lacks is new, and one the tree lacks is deleted: neither has grown
         if not path.exists():
             continue
-        head = _head(path, _rekeys(path.read_text()))
+        blob = path.read_text()
+        head = _head(path, _rekeys(blob), _follows(blob))
         if head is None:
             continue
         compared += 1
+        bad = follows_unproven(_head(path, _rekeys(blob)) or Counter(), _follows(blob))
+        if bad:
+            print(f"ratchet {lint}: {len(bad)} follow(s) git does not bear out (a follow is derived by `--follow`, never written):")
+            grown_any = True
         grown = verdict(Counter(), _decode(path.read_text()), head)[2]
         if grown:
             _show(f"ratchet {lint}: the baseline GREW against HEAD's -- a backlog only shrinks:", grown)
@@ -171,6 +269,9 @@ def main() -> int:
                       help="every baseline against HEAD's, none grown (the commit's half; no lint runs)")
     mode.add_argument("--shrink", action="store_true", help="remove the entries the lint no longer finds")
     mode.add_argument("--init", action="store_true", help="record the current findings as a new lint's baseline")
+    mode.add_argument("--follow", action="store_true",
+                      help="files moved and lines reworded since HEAD: the entries follow them, counts unchanged, and "
+                           "the digests that changed are recorded")
     mode.add_argument("--rekey", nargs=2, metavar=("OLD", "NEW"),
                       help="a finding's message was reworded: rename the baseline's entries OLD to NEW, counts unchanged, "
                            "and record the rename in the baseline")
@@ -180,6 +281,14 @@ def main() -> int:
     if a.lint is None:
         ap.error("name a lint, or pass --grown")
     path = BASELINES / f"{a.lint}.json"
+    if a.follow:
+        if not path.exists():
+            raise SystemExit(f"ratchet {a.lint}: no baseline at {path.relative_to(ROOT)}")
+        current = _decode(path.read_text())
+        moved, record = follow(current)
+        path.write_text(_encode(a.lint, moved, _rekeys(path.read_text()), [*_follows(path.read_text()), *record]))
+        print(f"ratchet {a.lint}: {sum(current.values())} entr(ies) followed, {len(record)} digest(s) changed, the count unchanged")
+        return 0
     found = findings(a.lint)
 
     if a.init:
@@ -202,7 +311,8 @@ def main() -> int:
         return 0
     if a.shrink:
         kept = baseline & found
-        path.write_text(_encode(a.lint, kept, [r for r in rekeys if any(m == r["to"] for (_, m, _) in kept)]))
+        path.write_text(_encode(a.lint, kept, [r for r in rekeys if any(m == r["to"] for (_, m, _) in kept)],
+                                [f for f in _follows(path.read_text()) if any(d == f["to_sha256"] for (_, _, d) in kept)]))
         print(f"ratchet {a.lint}: baseline {sum(baseline.values())} -> {sum(kept.values())}")
         return 0
 

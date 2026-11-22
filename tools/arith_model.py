@@ -9,7 +9,7 @@ bf16 values and operands, fp32 accumulation and an fp32 sum.
 The cell's bundle is put in the format first -- each level's rows u8 unit-max with its fp32 scale (a dense level
 too: no floor, a zero a zero), the values bf16 unit-max with an fp32 scale a token -- and the fp64 recurrence
 on THOSE operands is the truth: summed a window at a time (what a 64K run can hold), and proven the oracle's every
-run (`rola.ops.naive.naive_rola` over the first two windows, refused on a difference). The model rounds where a kernel of the family
+run (`fsla.ops.naive.naive_fsla` over the first two windows, refused on a difference). The model rounds where a kernel of the family
 rounds, a window `W` at a time:
 - THE FOLD: a (token, leaf)'s coefficient, the levels' bytes over 255 times the token's `m s` (the value column) or
   `m` (the mass column), rounded to bf16 once; times the bf16 value; summed into an fp32 state.
@@ -71,9 +71,9 @@ def _fp32(x):
 
 
 def _format(levels):
-    """Each level's rows as ``(unit, scale)`` in the u8 scaled-block form (`rola.routing.quant.ROWS`: against the
+    """Each level's rows as ``(unit, scale)`` in the u8 scaled-block form (`fsla.routing.quant.ROWS`: against the
     row's max at 255, no floor, a zero a zero), ``[T, width]`` fp64 and ``[T]``."""
-    from rola.routing import quant
+    from fsla.routing import quant
 
     out = []
     for x in levels:
@@ -83,14 +83,14 @@ def _format(levels):
 
 
 def _prove_truth(reads, writes, u, s, topology, y64, tokens: int) -> None:
-    """THE TRUTH IS THE ORACLE'S: `rola.ops.naive.naive_rola` on the formatted operands over the run's first
+    """THE TRUTH IS THE ORACLE'S: `fsla.ops.naive.naive_fsla` on the formatted operands over the run's first
     ``tokens``, against this tool's windowed fp64 sums there -- refused where they differ, so the windowed form (what a
     64K run can hold) is the recurrence, proven every run."""
 
-    from rola.ops.naive import naive_rola
+    from fsla.ops.naive import naive_fsla
 
     level = lambda side: tuple((unit * scale[:, None])[None, :tokens, None] for unit, scale in side)  # noqa: E731
-    want, _ = naive_rola((u * s[:, None])[None, :tokens, None], level(reads), level(writes), topology, None)
+    want, _ = naive_fsla((u * s[:, None])[None, :tokens, None], level(reads), level(writes), topology, None)
     worst = float((y64[:tokens] - want[0, :, 0]).abs().amax() / want.abs().amax().clamp_min(1e-300))
     if not worst < 1e-9:
         raise SystemExit(f"the windowed truth is not the oracle's over the first {tokens} tokens: {worst:.3e}")
@@ -225,10 +225,10 @@ def model(name: str, window: int, head: int, shape: tuple[int, int], along: int,
           value_spread: int, leaf_spread: int, spike: int) -> dict:
     import torch
 
+    from fsla.ops.constants import READOUT_EPS
+    from fsla.ops.naive import _leaf_capacity, _leaf_product, _radix_strides
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of
-    from rola.ops.constants import READOUT_EPS
-    from rola.ops.naive import _leaf_capacity, _leaf_product, _radix_strides
 
     spec = by_name(name)
     routes, values, _layout, _statics = bundle_of(spec, realize(spec))
@@ -374,7 +374,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--json", type=Path, help="write the records here")
     a = ap.parse_args(argv)
 
-    from rola_devtools.locks.gpu import gpu_lock
+    from fsla_devtools.locks.gpu import gpu_lock
 
     records = []
     with gpu_lock(mode="shared"):

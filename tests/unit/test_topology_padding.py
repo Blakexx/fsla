@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """PADDING AT THE PRODUCER: the descriptor's logical-vs-padded split.
 
-No CUDA/GPU anywhere in this file: `rola.routing.topology.padded_level_width` and
+No CUDA/GPU anywhere in this file: `fsla.routing.topology.padded_level_width` and
 `Topology.padded_widths`/`.padded()` are pure Python/dataclass derivations, and
-`rola.ops.padding`'s helpers are plain `torch` tensor ops that run identically on
+`fsla.ops.padding`'s helpers are plain `torch` tensor ops that run identically on
 CPU. `tests/oracle/test_padding_seam.py` is the GPU/kernel-boundary half.
 
 Symbols, each at first use: `b_l` a level's LOGICAL width (any int the caller
@@ -17,15 +17,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.padding import PaddedShape, pad_routes, pad_v, padded_value_width, slice_y
-from rola.routing.topology import PADDED_LEVEL_FLOOR, padded_level_width
-from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.ops.padding import PaddedShape, pad_routes, pad_v, padded_value_width, slice_y
+from fsla.routing.topology import PADDED_LEVEL_FLOOR, padded_level_width
+from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
 
 def test_the_floor_matches_the_states_own_floor():
-    """`rola._state.MIN_LEVEL_WIDTH` and `padded_level_width`'s floor are ONE number,
+    """`fsla._state.MIN_LEVEL_WIDTH` and `padded_level_width`'s floor are ONE number,
     stated in two files -- this pins them equal so the two never drift apart."""
-    from rola._state import MIN_LEVEL_WIDTH
+    from fsla._state import MIN_LEVEL_WIDTH
 
     assert PADDED_LEVEL_FLOOR == MIN_LEVEL_WIDTH == 16
 
@@ -89,7 +89,7 @@ def test_topology_padded_is_idempotent_on_an_already_padded_topology():
     assert topology.padded().widths == topology.widths
 
 
-# -- rola.ops.padding: the op-level translator ---------------------------------------
+# -- fsla.ops.padding: the op-level translator ---------------------------------------
 
 def test_padded_shape_of_derives_every_field_from_widths_and_d_v():
     shape = PaddedShape.of((31, 45), 48, shipped_dv=(32, 64, 128))

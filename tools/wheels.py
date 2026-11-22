@@ -1,11 +1,11 @@
-"""THE WHEELS: the graph's library of a clean commit, packaged as `rola` (pure Python) and `rola-cu13` (the binary
+"""THE WHEELS: the graph's library of a clean commit, packaged as `fsla` (pure Python) and `fsla-cu13` (the binary
 plugin).
 
-    bazel run //:wheels                          # dist/rola-<v>-py3-none-any.whl, dist/rola_cu13-<v>-cp310-abi3-linux_x86_64.whl
+    bazel run //:wheels                          # dist/fsla-<v>-py3-none-any.whl, dist/fsla_cu13-<v>-cp310-abi3-linux_x86_64.whl
     bazel run //tools:wheels -- --check dist     # install both into a scratch venv and prove what each one does alone
 
-Wheel naming D (docs/build.md#wheels): `pip install "rola[cu13]"` installs both at one version. The binary in
-`rola-cu13` is `//:library`'s, which its gates passed, and the build's record must name this version and the toolchain
+Wheel naming D (docs/build.md#wheels): `pip install "fsla[cu13]"` installs both at one version. The binary in
+`fsla-cu13` is `//:library`'s, which its gates passed, and the build's record must name this version and the toolchain
 and be no iteration build. The metadata is `pyproject.toml`'s `[project]`, with the `cu13` extra
 pinned to this version. Docs: docs/internals/tools/wheels.md.
 """
@@ -30,7 +30,7 @@ import build_record  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLCHAIN = "cu13"
-PLUGIN = f"rola_{TOOLCHAIN}"
+PLUGIN = f"fsla_{TOOLCHAIN}"
 PLUGIN_TAG = "cp310-abi3-linux_x86_64"  #: the limited API torch builds against (3.10), and the host's platform
 EPOCH = (1980, 1, 1, 0, 0, 0)  #: every member's timestamp, so one commit's wheels are the same bytes
 #: a package's files are its tracked files but these placeholders, which keep an empty directory in git
@@ -61,7 +61,7 @@ def _verify(record: dict, version: str) -> None:
              "iteration": (record["iteration"], False)}
     wrong = {k: v for k, v in wrong.items() if v[0] != v[1]}
     if wrong:
-        raise SystemExit(f"refusing: the build's record is not a shippable {TOOLCHAIN} build of rola {version} "
+        raise SystemExit(f"refusing: the build's record is not a shippable {TOOLCHAIN} build of fsla {version} "
                          f"(field: recorded, required): {wrong}")
 
 
@@ -88,7 +88,7 @@ def _wheel_file(members: dict[str, bytes], dist_info: str, out: Path) -> Path:
 
 
 def _wheel_meta(tag: str, purelib: bool) -> bytes:
-    return (f"Wheel-Version: 1.0\nGenerator: rola tools/wheels.py\nRoot-Is-Purelib: {str(purelib).lower()}\n"
+    return (f"Wheel-Version: 1.0\nGenerator: fsla tools/wheels.py\nRoot-Is-Purelib: {str(purelib).lower()}\n"
             f"Tag: {tag}\n").encode()
 
 
@@ -104,7 +104,7 @@ def _licence_files() -> list[str]:
 
 
 def metadata(project: dict, version: str) -> tuple[str, list[str]]:
-    """`rola`'s METADATA from `[project]` (core metadata 2.4, as setuptools writes it: the licence's text folded under
+    """`fsla`'s METADATA from `[project]` (core metadata 2.4, as setuptools writes it: the licence's text folded under
     `License`, the README its body), with its one extra, `cu13`, pinned to this version; and the licence files it
     names."""
     licences = _licence_files()
@@ -123,19 +123,19 @@ def metadata(project: dict, version: str) -> tuple[str, list[str]]:
 
 
 def build(library: Path, record_path: Path, out: Path, version: str) -> list[Path]:
-    """`rola` takes the `rola` package and the project's metadata; `rola-cu13` takes the plugin package, the graph's
+    """`fsla` takes the `fsla` package and the project's metadata; `fsla-cu13` takes the plugin package, the graph's
     library and record, and metadata of its own."""
     record = _record(record_path)
     _verify(record, version)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     text, licence_files = metadata(project, version)
 
-    info = f"rola-{version}.dist-info"
-    core = _package("rola")
+    info = f"fsla-{version}.dist-info"
+    core = _package("fsla")
     core.update({f"{info}/licenses/{name}": (ROOT / name).read_bytes() for name in licence_files})
     core[f"{info}/METADATA"] = text.encode()
     core[f"{info}/WHEEL"] = _wheel_meta("py3-none-any", purelib=True)
-    core[f"{info}/top_level.txt"] = b"rola\n"
+    core[f"{info}/top_level.txt"] = b"fsla\n"
 
     plugin_info = f"{PLUGIN}-{version}.dist-info"
     plugin = _package(PLUGIN)
@@ -149,32 +149,32 @@ def build(library: Path, record_path: Path, out: Path, version: str) -> list[Pat
                                                                    "Requires-Python")]
     torch = next(line for line in lines if re.match(r"Requires-Dist: torch\b", line))
     plugin[f"{plugin_info}/METADATA"] = "\n".join([
-        "Metadata-Version: 2.4", f"Name: rola-{TOOLCHAIN}", f"Version: {version}",
-        f"Summary: RoLA's kernels built by the {TOOLCHAIN} toolchain; "
-        f"install as rola[{TOOLCHAIN}]", *header, f"Requires-Dist: rola=={version}", torch, ""]).encode()
+        "Metadata-Version: 2.4", f"Name: fsla-{TOOLCHAIN}", f"Version: {version}",
+        f"Summary: FSLA's kernels built by the {TOOLCHAIN} toolchain; "
+        f"install as fsla[{TOOLCHAIN}]", *header, f"Requires-Dist: fsla=={version}", torch, ""]).encode()
     plugin[f"{plugin_info}/WHEEL"] = _wheel_meta(PLUGIN_TAG, purelib=False)
     plugin[f"{plugin_info}/top_level.txt"] = f"{PLUGIN}\n".encode()
 
     out.mkdir(parents=True, exist_ok=True)
-    return [_wheel_file(core, info, out / f"rola-{version}-py3-none-any.whl"),
+    return [_wheel_file(core, info, out / f"fsla-{version}-py3-none-any.whl"),
             _wheel_file(plugin, plugin_info, out / f"{PLUGIN}-{version}-{PLUGIN_TAG}.whl")]
 
 
 _PROBE = """
-import rola
-from rola.ops import _ext
+import fsla
+from fsla.ops import _ext
 try:
     _ext.extension()
-    print("LOADED", sorted(map(tuple, _ext.extension().rola_decode_arms())))
+    print("LOADED", sorted(map(tuple, _ext.extension().fsla_decode_arms())))
 except ImportError as e:
     print("REFUSED", str(e).splitlines()[0], "|", [l.strip() for l in str(e).splitlines() if "pip install" in l])
 """
 
 
 def check(wheels: Path) -> int:
-    """A scratch venv over this interpreter's torch: `rola` alone refuses a kernel naming the extra, and with
-    `rola-cu13` beside it the binary loads and names its carry arms."""
-    (core,) = wheels.glob("rola-*-py3-none-any.whl")
+    """A scratch venv over this interpreter's torch: `fsla` alone refuses a kernel naming the extra, and with
+    `fsla-cu13` beside it the binary loads and names its carry arms."""
+    (core,) = wheels.glob("fsla-*-py3-none-any.whl")
     (plugin,) = wheels.glob(f"{PLUGIN}-*.whl")
     torch_site = Path(subprocess.run([sys.executable, "-c", "import torch, pathlib; print(pathlib.Path(torch.__file__)"
                                       ".parents[1])"], capture_output=True, text=True, check=True).stdout.strip())
@@ -192,7 +192,7 @@ def check(wheels: Path) -> int:
             probe = subprocess.run([py, "-c", _PROBE], cwd=tmp, capture_output=True, text=True)
             verdicts.append(probe.stdout.strip() or probe.stderr.strip()[-600:])
             print(f"{wheel.name}: {verdicts[-1]}")
-    ok = verdicts[0].startswith("REFUSED") and f"rola[{TOOLCHAIN}]" in verdicts[0] and verdicts[1].startswith("LOADED")
+    ok = verdicts[0].startswith("REFUSED") and f"fsla[{TOOLCHAIN}]" in verdicts[0] and verdicts[1].startswith("LOADED")
     print("wheels check", "OK" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -209,7 +209,7 @@ def main() -> int:
     if not (a.library and a.record):
         raise SystemExit("the wheels package the graph's build: `bazel run //:wheels`")
     sha = _clean_commit()
-    version = build_record.version(ROOT / "rola" / "__init__.py")
+    version = build_record.version(ROOT / "fsla" / "__init__.py")
     for wheel in build(a.library, a.record, a.out, version):
         print(f"{wheel}  ({wheel.stat().st_size / 1e6:.1f} MB)  commit {sha[:12]}")
     return 0

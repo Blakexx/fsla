@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The public op stack (`rola/interface.py`) and the O-3 name contract.
+"""The public op stack (`fsla/interface.py`) and the O-3 name contract.
 
-Two things are gated here. The first is THE ENVELOPE -- what `rola_op` runs and what
+Two things are gated here. The first is THE ENVELOPE -- what `fsla_op` runs and what
 it refuses -- because the layer-dispatch autograd gap is a failure that produces no
 exception and no wrong number, only a `grad_fn` that quietly is not there, and the
 answer to it is a refusal rather than a second arm. The second is the NAME contract:
@@ -21,12 +21,12 @@ import pytest
 import torch
 from conftest import build_layer
 
-import rola
-from rola.engine import PrefillPlan
-from rola.engine.carve import plan_carve
-from rola.expert import envelope_refusal, require_envelope
-from rola.interface import BackwardNotImplemented, operands_of, requires_backward
-from rola.values import Values
+import fsla
+from fsla.engine import PrefillPlan
+from fsla.engine.carve import plan_carve
+from fsla.expert import envelope_refusal, require_envelope
+from fsla.interface import BackwardNotImplemented, operands_of, requires_backward
+from fsla.values import Values
 
 # --- the predicate -----------------------------------------------------------
 
@@ -55,23 +55,23 @@ def test_the_predicate_ignores_non_tensors_rather_than_guessing():
 def test_the_layer_and_the_op_ask_the_same_question():
     """One predicate, or the two surfaces drift into two slightly different answers.
     Asserted structurally -- the layer imports it -- not by comparing behaviours."""
-    import rola.layer as layer_module
+    import fsla.layer as layer_module
 
     assert layer_module.requires_backward is requires_backward
     assert layer_module.operands_of is operands_of
 
 
 def _dense_routing():
-    from rola.routing.types import TiedRouting
+    from fsla.routing.types import TiedRouting
 
-    return TiedRouting(width=1, op=rola.SoftmaxActivation())
+    return TiedRouting(width=1, op=fsla.SoftmaxActivation())
 
 
 def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     """A real `RouteFactors` bundle, on the smallest topology the tests need.
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
-    carrying only `topology`/`normalization`. New: `rola_op` takes a
+    carrying only `topology`/`normalization`. New: `fsla_op` takes a
     `RouteFactors`, which the fixture takes from a layer's producer -- `requires_grad`
     on the source stream `x` reaches every tensor the producer derives (read/write
     levels, gains), exactly as `requires_grad` on the five loose tensors used to.
@@ -94,31 +94,31 @@ def test_a_grad_bearing_prefill_is_refused_loudly():
     values = Values.from_projection(v)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
-        rola.rola_op(routes, values, masks, plan=plan)
+        fsla.fsla_op(routes, values, masks, plan=plan)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        rola.rola_op(routes, values, masks, plan=plan)
+        fsla.fsla_op(routes, values, masks, plan=plan)
 
 
-def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
-    """OLD: `rola_func` accepted CUDA-consumer-only options (`paging`, ...) on
+def test_fsla_op_has_no_consumer_only_kwargs_to_silently_ignore():
+    """OLD: `fsla_func` accepted CUDA-consumer-only options (`paging`, ...) on
     BOTH arms and refused them explicitly with `ValueError` on the reference
     arm -- one function, two arms, one of which had to actively reject what the
-    other used. `rola_op` structurally cannot have that failure mode: paging,
+    other used. `fsla_op` structurally cannot have that failure mode: paging,
     scheduling and every other CUDA-consumer detail live behind
-    `rola.expert.execute`'s own seam, reachable only from the CUDA path, and
-    `rola_op`'s signature carries no CUDA-consumer-only parameter at all -- so
+    `fsla.expert.execute`'s own seam, reachable only from the CUDA path, and
+    `fsla_op`'s signature carries no CUDA-consumer-only parameter at all -- so
     passing one is a plain `TypeError` (unknown keyword) regardless of which arm
     the call would otherwise take, rather than a case the op has to notice and
     refuse."""
     v, routes, masks, plan = _tiny_routing(requires_grad=True)
     with pytest.raises(TypeError):
-        rola.rola_op(routes, v, masks, plan=plan, paging=object())
+        fsla.fsla_op(routes, v, masks, plan=plan, paging=object())
 
 
 def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
-    """OLD: `rola_forward` was a separate entrypoint that established its own
+    """OLD: `fsla_forward` was a separate entrypoint that established its own
     no-grad context internally, so an inference caller could not be wrong about
-    it by forgetting to wrap the call. `rola_op` merges the two entrypoints into
+    it by forgetting to wrap the call. `fsla_op` merges the two entrypoints into
     one: there is no separate inference spelling any more, and the caller's own
     `torch.no_grad()` is what an inference site now uses -- exactly as any other
     PyTorch op. The surviving half of the old claim: wrapped in `torch.no_grad()`,
@@ -145,8 +145,8 @@ def test_the_envelope_refuses_a_no_grad_cuda_bundle_for_want_of_a_carry_arm():
     """The prefill envelope always refuses while no carry is built: an in-matrix no-grad CUDA bundle is
     refused BY NAME (no carry arm), and `require_envelope` raises that sentence."""
     torch.manual_seed(5)
-    layer = rola.RoLA(rola.Routing([rola.split_routing(256, sparse_duty="write"),
-                                    rola.split_routing(256, sparse_duty="read")]),
+    layer = fsla.FSLA(fsla.Routing([fsla.split_routing(256, sparse_duty="write"),
+                                    fsla.split_routing(256, sparse_duty="read")]),
                       hidden_size=32, num_heads=1, d_v=64).to("cuda").eval()
     x = torch.randn(1, 512, 32, device="cuda")
     v = torch.randn(1, 512, 1, 64, device="cuda")
@@ -169,10 +169,10 @@ def test_no_public_name_in_the_package_says_v3():
     """O-3, checked mechanically over the package's own public surface: every
     module-level `def`/`class`/assignment whose name does not start with `_`, plus
     every `__all__` entry. Comments and docstrings are out of scope -- they cite the
-    spec document `ROLA_V3_SPEC.md` and the `rola-v3` source branch, which are
+    spec document `FSLA_V3_SPEC.md` and the `fsla-v3` source branch, which are
     real proper nouns and not spellings of any function."""
     offenders = []
-    for path in sorted(pathlib.Path(rola.__path__[0]).rglob("*.py")):
+    for path in sorted(pathlib.Path(fsla.__path__[0]).rglob("*.py")):
         tree = ast.parse(path.read_text())
         names = []
         for node in tree.body:
@@ -186,7 +186,7 @@ def test_no_public_name_in_the_package_says_v3():
             if name.startswith("_"):
                 continue
             if "v3" in name.lower() and name not in _PUBLIC_V3_EXEMPTIONS:
-                offenders.append(f"{path.relative_to(rola.__path__[0])}::{name}")
+                offenders.append(f"{path.relative_to(fsla.__path__[0])}::{name}")
         for node in ast.walk(tree):
             if (isinstance(node, ast.Assign)
                     and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
@@ -194,15 +194,15 @@ def test_no_public_name_in_the_package_says_v3():
                 for element in node.value.elts:
                     if (isinstance(element, ast.Constant) and isinstance(element.value, str)
                             and "v3" in element.value.lower()):
-                        offenders.append(f"{path.relative_to(rola.__path__[0])}::__all__:{element.value}")
+                        offenders.append(f"{path.relative_to(fsla.__path__[0])}::__all__:{element.value}")
     assert not offenders, f"public names still saying v3: {offenders}"
 
 
 def test_the_top_level_exports_are_exactly_the_declared_api():
     """`__all__` is the contract; a name that is exported but not declared is a name
     nobody promised and everybody will import anyway."""
-    for name in rola.__all__:
-        assert hasattr(rola, name), f"{name} is in __all__ but not importable"
-    assert "rola_op" in rola.__all__
-    assert not any(name.startswith("_") and name != "__version__" for name in rola.__all__), (
-        "a private name must not be re-exported: the op's public spelling is rola_op")
+    for name in fsla.__all__:
+        assert hasattr(fsla, name), f"{name} is in __all__ but not importable"
+    assert "fsla_op" in fsla.__all__
+    assert not any(name.startswith("_") and name != "__version__" for name in fsla.__all__), (
+        "a private name must not be re-exported: the op's public spelling is fsla_op")

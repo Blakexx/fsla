@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import pytest
 
-from rola.engine import Carve, PrefillPlan
-from rola.engine.carve import channel_groups, check_carve, plan_carve, token_groups, walks
-from rola.ops.produce import activation_walks, prefill_plan
-from rola.routing.types import (
+from fsla.engine import Carve, PrefillPlan
+from fsla.engine.carve import channel_groups, check_carve, plan_carve, token_groups, walks
+from fsla.ops.produce import activation_walks, prefill_plan
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     SoftmaxActivation,

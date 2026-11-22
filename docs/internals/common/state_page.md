@@ -1,8 +1,8 @@
 # The state page: s24 planes at a group exponent
 
-Mirror doc for `csrc/rola/src/common/state_page.cuh`. `Blocks<DV>` is the ONE definition of the int8 state
-format's page (ruled 2026-09-28), and `rola.ops.paging.page_layout` its Python mirror; the device codec below is
-the arithmetic every kernel that reads or writes a stored state uses, and `rola.ops.paging.encode_pages` /
+Mirror doc for `csrc/fsla/src/common/state_page.cuh`. `Blocks<DV>` is the ONE definition of the int8 state
+format's page (ruled 2026-09-28), and `fsla.ops.paging.page_layout` its Python mirror; the device codec below is
+the arithmetic every kernel that reads or writes a stored state uses, and `fsla.ops.paging.encode_pages` /
 `decode_pages` its host statement for the oracle and the tests. `SplitBlocks<DV>` is the unported carry's own page.
 
 ## <a id="geometry"></a>The page, in bytes

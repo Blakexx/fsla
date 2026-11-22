@@ -3,12 +3,12 @@
 visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_list_flag")
-load("@rola_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
+load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel:arms.bzl", "arm_family", "arm_selection")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
-load("//csrc/rola:src/decode/arms.bzl", "DECODE_DOMAINS", "DECODE_KEY")
+load("//csrc/fsla:src/decode/arms.bzl", "DECODE_DOMAINS", "DECODE_KEY")
 load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
 
 #: THE LAB'S UNIT TESTS: the lab's, the dev config's and the measurement declaration's (`declare.py`), which `:lab` runs and `:cpu` leaves out
@@ -32,7 +32,7 @@ _HOST_CC = "@host_cc//:identity.txt"
     archs = _PROBE_ARCHS,
     copts = _PROBE_COPTS,
     host_cc = _HOST_CC,
-    deps = ["//csrc/rola:headers"],
+    deps = ["//csrc/fsla:headers"],
 ) for name in ["sass_gate", "life_ranges"]]
 
 cuda_unit(
@@ -41,7 +41,7 @@ cuda_unit(
     archs = _PROBE_ARCHS,
     copts = _PROBE_COPTS + ["-std=c++17"],
     host_cc = _HOST_CC,
-    deps = ["//csrc/rola:headers"],
+    deps = ["//csrc/fsla:headers"],
 )
 
 cc_binary(
@@ -82,7 +82,7 @@ arm_family(
     unit = {
         "arm_header": "fixture_arm.cuh",
         "copts": NVCC_FLAGS,
-        "define": "ROLA_FIXTURE_ARM_DEFINE",
+        "define": "FSLA_FIXTURE_ARM_DEFINE",
         "deps": [":fixture_headers"],
         "host_cc": _HOST_CC,
     },
@@ -110,14 +110,14 @@ arm_family(
     name = "arm_switch_probe_%s" % variant,
     srcs = [
         "unit/fixtures/arm_switch_probe.cpp",
-        "@rola_env//:torch_libraries",
+        "@fsla_env//:torch_libraries",
     ],
     additional_compiler_inputs = [_HOST_CC],
     copts = ["-std=c++17", "-O0"],
     deps = [
         ":arm_switch_%s_header" % variant,
-        "//csrc/rola:headers",
-        "@rola_env//:torch_headers",
+        "//csrc/fsla:headers",
+        "@fsla_env//:torch_headers",
     ],
 ) for variant in ["built", "empty"]]
 

@@ -1,5 +1,5 @@
 """RED BY PLAN: no facts kernel is built on this line, so every launch here fails by name
-(`rola.ops._ext.KernelNotBuilt`) until a hopper schedule of the words lands.
+(`fsla.ops._ext.KernelNotBuilt`) until a hopper schedule of the words lands.
 
 The facts pass's words, folded to atoms, are the EXACT atom-grain write bitmap of the levels as the pass words
 them: a sparse level by its nonzero digits, a dense level whole (`_declared`). Against the stored digits the bitmap is
@@ -15,12 +15,12 @@ against two independent references, never as a containment.
 Vocabulary, defined here and used unqualified below: `D` = level count;
 `B` = one uniform level width; `N = B ** D` = leaves; `L`/`T` = tokens;
 `BH` = batch * heads; **atom** = the 16-leaf page granule
-(`rola.ops.paging.MMA_K_QUANTUM`); `atoms = N // 16`; the **bitmap** is
+(`fsla.ops.paging.MMA_K_QUANTUM`); `atoms = N // 16`; the **bitmap** is
 `[BH, atoms]`, true where this routing's WRITE side touches the atom.
 
 **THE REFERENCE, and why it is an independent one.** The bitmap is checked
 against an fp64 recomputation built from the ORACLE's own leaf materialization
-(`rola.ops.naive._leaf_product` over `rola.ops.naive._radix_strides`), which
+(`fsla.ops.naive._leaf_product` over `fsla.ops.naive._radix_strides`), which
 derives leaf addresses separately from production on purpose. Validating a device
 kernel against a FRESH reference written beside it would prove only
 self-consistency -- the failure mode this repository has already been bitten by --
@@ -49,20 +49,20 @@ from math import prod
 import pytest
 import torch
 
-from rola.engine.facts import liveness as lv
-from rola.engine.facts import planes
-from rola.ops import facts as facts_ops
-from rola.ops.naive import _leaf_product, _radix_strides
-from rola.ops.paging import MMA_K_QUANTUM
-from rola.routing.factors import RouteFactors
-from rola.routing.types import (
+from fsla.engine.facts import liveness as lv
+from fsla.engine.facts import planes
+from fsla.ops import facts as facts_ops
+from fsla.ops.naive import _leaf_product, _radix_strides
+from fsla.ops.paging import MMA_K_QUANTUM
+from fsla.routing.factors import RouteFactors
+from fsla.routing.types import (
     EntmaxActivation,
     IndependentRouting,
     OpaqueRouting,
     SoftmaxActivation,
     Topology,
 )
-from rola.values import Values
+from fsla.values import Values
 from tests.oracle.fixtures import with_gain
 
 pytestmark = [

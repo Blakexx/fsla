@@ -2,7 +2,7 @@
 # (`bazel run //:container_compose`) first hands the devbox image to Docker and writes `compose.local.yaml` beside this
 # file: the image's tag (its digest), the devbox's volumes, and the host's lock and driver mounts -- never committed.
 services:
-  rola:
+  fsla:
     ipc: host
     working_dir: /workspace
     command: sleep infinity
@@ -16,7 +16,7 @@ services:
 #: the devbox's own volumes, once a machine: its home (the pinned tools, Bazel's caches, the environment store) and its
 #: workspace (the checkouts)
 volumes:
-  rola-devbox-home:
-    name: rola-devbox-home
-  rola-devbox-work:
-    name: rola-devbox-work
+  fsla-devbox-home:
+    name: fsla-devbox-home
+  fsla-devbox-work:
+    name: fsla-devbox-work

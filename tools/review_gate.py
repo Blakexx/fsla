@@ -15,7 +15,7 @@ commit until its message answers it (`--unanswered`, run by tools/git-hooks/comm
 
 The reviewer is `claude -p` (Opus by default, `--model`) in the checkout, its tools read-only (Read, Grep, Glob), its
 output a fixed schema. A report is cached by everything it read (the standards, the message, the diff, the model, the
-prompt's version) and kept in the git common dir (`rola-review/`), shared by every worktree. Docs:
+prompt's version) and kept in the git common dir (`fsla-review/`), shared by every worktree. Docs:
 docs/internals/tools/review_gate.md.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ SCHEMA = {
     },
     "required": ["summary", "findings"],
 }
-INSTRUCTIONS = """You review a change to the RoLA repository against its standards: the CONSTITUTION (Blake's standing
+INSTRUCTIONS = """You review a change to the FSLA repository against its standards: the CONSTITUTION (Blake's standing
 rulings) and KERNEL_STANDARDS (the laws), both given in full below, then the change's message(s) and diff.
 
 Report ONLY a violation of a specific rule you can cite by its section (e.g. "KERNEL_STANDARDS section 20",
@@ -93,7 +93,7 @@ def git(*args: str) -> str:
 
 def store() -> Path:
     common = Path(git("rev-parse", "--git-common-dir").strip())
-    out = (common if common.is_absolute() else ROOT / common) / "rola-review"
+    out = (common if common.is_absolute() else ROOT / common) / "fsla-review"
     out.mkdir(parents=True, exist_ok=True)
     return out
 

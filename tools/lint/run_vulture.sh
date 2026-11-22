@@ -47,7 +47,7 @@ set +e
 # gate it exists to test). `bazel/` is IN THE SCAN because its action scripts are CALLERS: the record, the arm
 # gate and the flags call the tools' gates and lists.
 out=$(vulture --exclude '*/tools/lint/fixtures/*' \
-       rola/ tools/ tests/ measure/ bazel/ tools/lint/vulture_whitelist.py 2>&1)
+       fsla/ tools/ tests/ measure/ bazel/ tools/lint/vulture_whitelist.py 2>&1)
 set -e
 
 n=$(printf '%s\n' "$out" | grep -c . || true)

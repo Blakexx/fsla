@@ -100,14 +100,14 @@ then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` pro
 first N: an experiment's first is its checked launch, the timed ones follow.
 <a id="profile-checked"></a>A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump (a carried one or a live one)
 and REFUSES, exit 1, where a kernel's shared wavefronts in excess of the conflict-free count are over what the experiment declares -- zero undeclared. The refusal names the
-kernel, then each source line that issues the excess with its count a CTA-window (`--per`) and in the launch, the checker's fix and rola's note. Declare it as
+kernel, then each source line that issues the excess with its count a CTA-window (`--per`) and in the launch, the checker's fix and fsla's note. Declare it as
 `b.expect(k, "BANK_CONFLICT", "<=", n)` with its `//:` reason above it (the [hazards](#hazards)): `n` is the excess wavefronts of a CTA-WINDOW
 of the profiled launch (the dump's count over the launch's CTA-windows, `--per`), never of the launch -- a launch's total moves with the grid and the
 windows a row times, so a declaration of it is no bound. The refusal prints both, the excess and the declaration a CTA-window and in the launch; a profile whose
 CTA-windows are not stated (no `--per`) reads no declaration. A conflict a row measures on purpose (a probe of the conflict) states its count there. A row is not read as a result before this holds.
 
 <a id="hazards"></a>THE LEARNINGS' CHECKS ([`LEARNINGS.md`](../LEARNINGS.md)). The hazards are WARPLINE'S CHECKER'S RULES (`warpline.checker`, the module
-`MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. A refusal prints the finding, the checker's own fix and then rola's `note:` for the rule, the `guidance` of the rule's entry in the `checker` section of `docs/rules.json` (`guidance()` in `tools/lab.py`; [`lint.md`](lint.md#rules-table)). `check` translates the experiment's
+`MODULE.bazel` pins and `bazel run //tools:lab` hands in): the lab computes none of them. A refusal prints the finding, the checker's own fix and then fsla's `note:` for the rule, the `guidance` of the rule's entry in the `checker` section of `docs/rules.json` (`guidance()` in `tools/lab.py`; [`lint.md`](lint.md#rules-table)). `check` translates the experiment's
 `Bench::expect(kernel, NAME, "<=", n)` declarations to the checker's (kernel regex, rule, allowed count, reason -- the reason is the `//:` comment
 block above the `expect` where exactly one stands above the experiment's declarations of that NAME, else a fixed text saying it is in the source),
 reads the kernels into the checker's model (named as the toolkit's `cu++filt` names them: the patterns `lab::kernel` writes are of that form),
@@ -259,7 +259,7 @@ else from the work the tensor-pipe counter counts and the one MMA kind the SASS 
 <a id="warpline"></a>THE STAMP HEADER AND THE RECORD. `measure/lab/lab.cuh` includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
 `MODULE.bazel`) and `warpline/host.hpp` (its host writer of the native record, plain C++17). the experiments' compile takes them as the dependencies `@warpline//:stamp` and `@warpline//:host` (`bazel/lab.bzl`). The includes are compile-time
 only, so `pack` and `carried` need nothing of warpline at run time: the packed binary writes the records itself. `bazel run //tools:lab`
-hands `tools/lab.py` the directory of warpline's Python package too (`ROLA_WARPLINE_PYTHON`, `@warpline//:warpline`), which
+hands `tools/lab.py` the directory of warpline's Python package too (`FSLA_WARPLINE_PYTHON`, `@warpline//:warpline`), which
 `tools/lab_trace.py` reads the records with and `lab.py` checks them with (`tools/checked.py` is the one seam to the checker); a box that runs a pack outside Bazel has none, and
 `carried` there writes the records unchecked (`lab trace` checks them where warpline is).
 `trace_record` is the one place the lab's row meets warpline's: the lab's row head (the count of entries issued and the CTA's shared base, 32 words)
@@ -284,7 +284,7 @@ full grid's record; any other's count is the warps that arrive at it), and the v
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * WHAT THE LAB TAKES FROM PRODUCTION: `lab.cuh` includes `common/atoms/warp.cuh` and `common/structure_switch.cuh` (no copy;
-  `csrc/rola/src` is on the lab's include path) and offers `opaque`, `uniform_warp<Warps>()` and `uniform_switch<N>(v, body)`
+  `csrc/fsla/src` is on the lab's include path) and offers `opaque`, `uniform_warp<Warps>()` and `uniform_switch<N>(v, body)`
   to the experiments under their production names: a branch on a per-thread value serializes, so a switch over a CTA-uniform
   value goes through `uniform_switch`. Two lab helpers stay beside them because they differ in meaning: `lab::warp_id` is a
   per-thread value (`uniform_warp` is warp-uniform to ptxas) and `lab::held` emits no instruction and takes u32 or u64
@@ -357,7 +357,7 @@ Every item below cost a wrong number before the lab existed; each is now a guard
 * <a id="build"></a>**A launch sized at the host pass's card.** The host pass compiles at the pinned card, so a
   harness that sized its launch from a plan at the compiling architecture launched the A100 with sm_86's shared bytes
   (2026-11-07, `read_alone`, `read_dense`). An experiment compiles for one architecture (`bazel/lab.bzl`:
-  the extension's own `-gencode` form for that one row, C++20 as the extension) and `-DROLA_LAB_CC` names it to both passes, so `lab::kLabBuild` -- that
+  the extension's own `-gencode` form for that one row, C++20 as the extension) and `-DFSLA_LAB_CC` names it to both passes, so `lab::kLabBuild` -- that
   architecture's own build ([`common/hardware.md#builds`](../common/hardware.md#builds)) -- is the one plan a harness
   reads on the device and on the host.
 * **Dead work.** ptxas deletes an instruction whose result is dead — including a result only tested against a value it
@@ -390,7 +390,7 @@ Every item below cost a wrong number before the lab existed; each is now a guard
 
 ## <a id="parts"></a>Part harnesses
 
-An experiment may include the kernels' own headers (its compile has `csrc/rola/src` on the include path, `//csrc/rola:headers`, and the graph's
+An experiment may include the kernels' own headers (its compile has `csrc/fsla/src` on the include path, `//csrc/fsla:headers`, and the graph's
 CUDA rule's flags), so a component is measured as the kernel runs it, alone and on real inputs, before its
 cost is read in the composed ledger (KERNEL_STANDARDS section 19).
 

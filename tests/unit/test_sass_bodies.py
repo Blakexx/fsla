@@ -13,10 +13,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import sass_bodies  # noqa: E402
 
-#: `rola::k<Arm<3>>(int)` and `rola::k<BuildTag<Build{900, 0}>, Arm<3>>(int)`, as nvcc 13.0 mangles them
-OLD = "sm_90a:_ZN4rola1kINS_3ArmILi3EEEEEvi"
-NEW = "sm_90a:_ZN4rola1kIN8denseref4arch8BuildTagIXtlNS2_5BuildELi900ELi0EEEEENS_3ArmILi3EEEEEvi"
-STAMP = "sm_90a:_ZN4rola8stampdet17csrc_stamp_kernelEPl"
+#: `fsla::k<Arm<3>>(int)` and `fsla::k<BuildTag<Build{900, 0}>, Arm<3>>(int)`, as nvcc 13.0 mangles them
+OLD = "sm_90a:_ZN4fsla1kINS_3ArmILi3EEEEEvi"
+NEW = "sm_90a:_ZN4fsla1kIN8denseref4arch8BuildTagIXtlNS2_5BuildELi900ELi0EEEEENS_3ArmILi3EEEEEvi"
+STAMP = "sm_90a:_ZN4fsla8stampdet17csrc_stamp_kernelEPl"
 
 
 def test_an_own_image_build_argument_is_dropped():
@@ -32,4 +32,4 @@ def test_the_source_stamp_is_never_a_verdict():
     a = sass_bodies.by_signature({OLD: "h", STAMP: "s1"}, True)
     b = sass_bodies.by_signature({NEW: "h", STAMP: "s2"}, True)
     assert sass_bodies.compare(a, b, "a", "b")
-    assert not sass_bodies.compare(a, {**b, "sm_90a:rola::k<rola::Arm<3> >(int)": "moved"}, "a", "b")
+    assert not sass_bodies.compare(a, {**b, "sm_90a:fsla::k<fsla::Arm<3> >(int)": "moved"}, "a", "b")

@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DEV CONFIG (KERNEL_STANDARDS §23): every value that depends on the machine, read from one directory.
 
-The directory is `~/.config/rola/`, or the directory `ROLA_DEV_CONFIG` names (a test). It holds one JSON
+The directory is `~/.config/fsla/`, or the directory `FSLA_DEV_CONFIG` names (a test). It holds one JSON
 file a section; every file and every key is declared in `SCHEMA` below with its type, default and meaning, and
 anything undeclared is refused, so a typo fails loudly instead of silently taking a default. A missing file or key
 takes the declared default. `bazel run //:init` writes the files for this machine, `bazel run //:show`
 prints every resolved value with the file it came from.
 
 The reader and the machine's own sections -- `host` (the locks, the compute budget, scratch) and `clock` -- are
-rola-devtools' (`rola_devtools.config`), shared with the locks (`rola_devtools.locks`) and every repository on the
-host; the sections below them are rola's. rola-devtools is a development dependency, pinned in MODULE.bazel: the
+fsla-devtools' (`fsla_devtools.config`), shared with the locks (`fsla_devtools.locks`) and every repository on the
+host; the sections below them are fsla's. fsla-devtools is a development dependency, pinned in MODULE.bazel: the
 graph's environment installs it from the module's source, and `bazel run //:init` links the checkout at
 `workspace.devtools` into every venv here.
 
@@ -29,17 +29,17 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from rola_devtools.config import (
+    from fsla_devtools.config import (
         MACHINE,
         POINTER,
         Key,
         directory,  # noqa: F401 -- callers read dev_config.directory()
         read,
     )
-    from rola_devtools.config import reload as reload_machine
+    from fsla_devtools.config import reload as reload_machine
 except ImportError as missing:
-    raise SystemExit("tools/dev_config.py: rola_devtools is not importable -- run from the checkout's venv "
-                     "(`bazel run //:dev_env`), or put a rola-devtools checkout on the path (docs/setup.md)") from missing
+    raise SystemExit("tools/dev_config.py: fsla_devtools is not importable -- run from the checkout's venv "
+                     "(`bazel run //:dev_env`), or put a fsla-devtools checkout on the path (docs/setup.md)") from missing
 
 from bootstrap import DEVTOOLS, SIBLINGS  # noqa: E402 -- the defaults a pre-reader tool shares
 
@@ -76,15 +76,15 @@ SCHEMA: dict[str, dict[str, Key]] = {
     },
     **MACHINE,
     "store": {
-        "root": Key("path", str(SIBLINGS / "rola-results"),
+        "root": Key("path", str(SIBLINGS / "fsla-results"),
                     "the measurements store: its own git repository, shared by every worktree on the machine "
                     "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
     },
     "workspace": {
-        "suite": Key("path", str(SIBLINGS / "rola-bench"),
-                     "the rola-bench checkout whose measurement suite (its root declare.py) runs this tree's declarations"),
+        "suite": Key("path", str(SIBLINGS / "fsla-bench"),
+                     "the fsla-bench checkout whose measurement suite (its root declare.py) runs this tree's declarations"),
         "devtools": Key("path", str(DEVTOOLS),
-                        "the rola-devtools checkout (the public mirror's export, the declared build system), linked into "
+                        "the fsla-devtools checkout (the public mirror's export, the declared build system), linked into "
                         "every venv that runs here"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
@@ -110,14 +110,14 @@ HANDOFFS = {
     POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
-    "ROLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
-    "ROLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (rola-devtools' pytest_tier)",
-    "ROLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
+    "FSLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
+    "FSLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (fsla-devtools' pytest_tier)",
+    "FSLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
                             "which the graph's actions that read compiled code hand it (bazel/defs.bzl's `lab_run` and gate action, "
                             "bazel/lab.bzl's validation action)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
-    "ROLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
+    "FSLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
 }
 
 
@@ -128,7 +128,7 @@ def load() -> dict[str, dict[str, tuple[Any, str]]]:
 
 
 def reload() -> None:
-    """Forget what was read, here and in the locks' reader: the next read takes the directory `ROLA_DEV_CONFIG` names."""
+    """Forget what was read, here and in the locks' reader: the next read takes the directory `FSLA_DEV_CONFIG` names."""
     load.cache_clear()
     reload_machine()
 
@@ -158,19 +158,19 @@ def _graph_toolkit() -> str:
 
 def cuda_home() -> str:
     """The toolkit every compile, disassembly and assembler check outside the graph's own rules uses: the graph's
-    (`@cuda_tools`, pinned by tools/cuda_toolkit_pin.json) -- handed in as `ROLA_CUDA_HOME` by a test tier, else read
+    (`@cuda_tools`, pinned by tools/cuda_toolkit_pin.json) -- handed in as `FSLA_CUDA_HOME` by a test tier, else read
     from the graph's repository."""
-    if os.environ.get("ROLA_CUDA_HOME"):
-        return os.environ["ROLA_CUDA_HOME"]
+    if os.environ.get("FSLA_CUDA_HOME"):
+        return os.environ["FSLA_CUDA_HOME"]
     return _graph_toolkit()
 
 
 def warpline_python() -> str | None:
     """The directory that holds the `warpline` package, which reads the lab's traced rows: the pinned module's
-    (`@warpline//:warpline`), which `bazel run //tools:lab` hands in (`ROLA_WARPLINE_PYTHON`) and a test tier carries as
+    (`@warpline//:warpline`), which `bazel run //tools:lab` hands in (`FSLA_WARPLINE_PYTHON`) and a test tier carries as
     data, where it is the module's directory of the tier's runfiles. None where the process has none (a box that runs a
     pack outside Bazel: its binary writes the records, and nothing there reads them)."""
-    found = os.environ.get("ROLA_WARPLINE_PYTHON")
+    found = os.environ.get("FSLA_WARPLINE_PYTHON")
     if not found and os.environ.get("TEST_SRCDIR"):
         found = str(Path(os.environ["TEST_SRCDIR"]) / "warpline+")
     return found

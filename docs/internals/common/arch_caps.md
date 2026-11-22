@@ -1,4 +1,4 @@
-# `csrc/rola/src/common/arch_caps.cuh` — the card's facts at the compiling target
+# `csrc/fsla/src/common/arch_caps.cuh` — the card's facts at the compiling target
 
 Its rows are data in [`hardware.json`](hardware.md), generated into `common/hardware.cuh` by the build graph, which checks no copy in (`Caps`, `tabulated`,
 `caps_of`): per architecture the INSTRUCTIONS an atom reads and the NUMBERS a plan reads. This file names the compiling

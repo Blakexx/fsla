@@ -1,4 +1,4 @@
-# `csrc/rola/src/decode/decode_leaf.cuh` — one leaf's step, eight channels a lane
+# `csrc/fsla/src/decode/decode_leaf.cuh` — one leaf's step, eight channels a lane
 
 The arithmetic a decode step does to ONE leaf, stated once and run by both of the walk's
 forms: a leaf a lane group (the read terms, and a write term whose innermost level is sparse)

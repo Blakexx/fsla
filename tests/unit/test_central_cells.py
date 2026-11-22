@@ -1,18 +1,18 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""rola's reading of the central cells (`measure/cells`): the window the central cells state their tail and flip
+"""fsla's reading of the central cells (`measure/cells`): the window the central cells state their tail and flip
 against is this kernel's, and a layer construction names only central inputs. No GPU: nothing here draws a cell."""
 from __future__ import annotations
 
 import pytest
 import torch
-from rola_devtools.cells import central
-from rola_devtools.cells.carry import WINDOW
-from rola_devtools.cells.layer import LayerCell
+from fsla_devtools.cells import central
+from fsla_devtools.cells.carry import WINDOW
+from fsla_devtools.cells.layer import LayerCell
 
+from fsla.ops.window import window_of
 from measure.cells import by_name, carry_cells
 from measure.cells.layer import CONSTRUCTIONS
-from rola.ops.window import window_of
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the device's window is the binary's table at its card")

@@ -1,4 +1,4 @@
-"""The runtime units listed in `csrc/rola/units.bzl` are the ones `tools/kernels.py` derives from the source: the hand
+"""The runtime units listed in `csrc/fsla/units.bzl` are the ones `tools/kernels.py` derives from the source: the hand
 units under `src/common/` that define no kernel. A unit that gains a kernel, or a new runtime unit, is a list to
 change, and this test is what says so."""
 from __future__ import annotations
@@ -14,7 +14,7 @@ import kernels  # noqa: E402
 
 
 def _listed() -> list[str]:
-    for node in ast.parse((ROOT / "csrc" / "rola" / "units.bzl").read_text()).body:
+    for node in ast.parse((ROOT / "csrc" / "fsla" / "units.bzl").read_text()).body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "RUNTIME_UNITS" for t in node.targets):
             return ast.literal_eval(node.value)
     raise AssertionError("units.bzl lists no RUNTIME_UNITS")

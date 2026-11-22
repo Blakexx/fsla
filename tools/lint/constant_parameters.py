@@ -29,8 +29,8 @@ tree does not exercise yet -- says so on its own line:
 definition's docstring naming the parameter, is the declaration. It carries a REASON,
 which is the whole point: "reserved" without one is indistinguishable from dead.
 
-WHO COUNTS AS A CALLER. Every call under `rola/`, `tools/` and `measure/`, and the tests' calls to the PUBLIC
-surface (the names `rola` and `rola.expert` export): a public option a test exercises is a feature under test, while
+WHO COUNTS AS A CALLER. Every call under `fsla/`, `tools/` and `measure/`, and the tests' calls to the PUBLIC
+surface (the names `fsla` and `fsla.expert` export): a public option a test exercises is a feature under test, while
 an internal knob only a test sets is a test hook in production code, which says so with `reserved:`. A constructor's
 parameters are keyed by its class, since a call names the class.
 
@@ -57,13 +57,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-ROOTS = ("rola", "tools", "measure", "bazel")
+ROOTS = ("fsla", "tools", "measure", "bazel")
 #: THE TESTS ARE CALLERS OF THE PUBLIC SURFACE (Blake, 2026-09-29): a public option a test exercises is a product
 #: feature under test, not a dead knob. An internal function still needs a caller in the product itself -- a knob
 #: only a test sets there is a test hook in production code.
 CALLER_ROOTS = ("tests",)
 #: the modules whose `__all__` is the public surface
-PUBLIC_MODULES = ("rola/__init__.py", "rola/expert.py")
+PUBLIC_MODULES = ("fsla/__init__.py", "fsla/expert.py")
 
 #: The declaration that a knob is deliberately unexercised, with its reason beside it.
 MARKER = "reserved:"

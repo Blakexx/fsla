@@ -28,13 +28,13 @@ R[t,s] =  Π_l  q[l][t, d_l(s)]     # (docs/CONSTITUTION.md#r23)
 rate[s] = Π_l  delta_l[d_l(s)]
 ```
 
-(`rola/ops/naive.py`, `_leaf_product`.) A product over levels is a rank-1 object
+(`fsla/ops/naive.py`, `_leaf_product`.) A product over levels is a rank-1 object
 per level; storing the expansion stores `Π b_l` numbers to represent `Σ b_l`
 numbers. At the design scale — `N ≳ 65K` states, the standing target — the
 difference is the difference between a plan that fits and a plan that does not.
 
 The **address side factors too**: a leaf's digit at a level is a pure function of
-the leaf index that reads no routing data (`rola/ops/naive.py::_leaf_product`'s
+the leaf index that reads no routing data (`fsla/ops/naive.py::_leaf_product`'s
 strides; the kernels' shifts over power-of-two widths). So the support's
 *bitmap* is likewise a Kronecker product of the per-level indicators
 ([`decode/decode.md`](../internals/decode/decode.md), which expands two `N`-bit maps by
@@ -101,4 +101,4 @@ waste or worse:
 - The Cartesian-product support structure:
   [`docs/internals/decode/decode.md`](../internals/decode/decode.md#kronecker-support),
   [`docs/internals/decode/decode_lattice.md`](../internals/decode/decode_lattice.md); reference semantics:
-  `rola/ops/naive.py::_leaf_product`.
+  `fsla/ops/naive.py::_leaf_product`.

@@ -9,7 +9,7 @@ message: >-
   lanes unordered"). Every lane that issued the data must execute the fence
   itself; only the counter update after it may be single-lane.
 files:
-  - "csrc/rola/**"
+  - "csrc/fsla/**"
   - "tools/lint/fixtures/**"
 rule:
   all:

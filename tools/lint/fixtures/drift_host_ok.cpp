@@ -5,7 +5,7 @@
 namespace fixture {
 
 void launch(int D, int dv, int warps_per_cta) {
-  rola::arm_switch<FixtureArmSet>(D, dv, warps_per_cta, [&](auto arm) {
+  fsla::arm_switch<FixtureArmSet>(D, dv, warps_per_cta, [&](auto arm) {
     (void)decltype(arm)::index;
   });
 }

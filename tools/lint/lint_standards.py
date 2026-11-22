@@ -11,14 +11,14 @@ shape) -- those live here as plain line-oriented scans.
 
 Checks:
   1. UNROLL DISCIPLINE (KERNEL_STANDARDS.md §6). A `for`/`while` loop in
-     device code (any file under csrc/rola/, excluding csrc/third_party/)
+     device code (any file under csrc/fsla/, excluding csrc/third_party/)
      whose bound is NOT compile-time carries `#pragma unroll 1` immediately
      before it. This is a HEURISTIC, not a compiler: it approximates
      "compile-time bound" by regexing the loop's stop expression, and it can
      only be conservative in one direction --  see HEURISTIC LIMITS below.
   2. NO TORCH INCLUDE IN ARM TUs (belt to the ast-grep rule
      torch_include_in_arm_tu.yml). A `#include` line naming `torch/`
-     under csrc/rola/src/<family>/ of every family the arm registry
+     under csrc/fsla/src/<family>/ of every family the arm registry
      (`ARM_FAMILIES`, bazel/arms.bzl) names, found by TEXT rather than AST so
      a macro-guarded or unusually-formatted include cannot hide from either
      check; and the AST rule's scope names the same directories.
@@ -72,7 +72,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CSRC_ROLA = ROOT / "csrc" / "rola"
+CSRC_FSLA = ROOT / "csrc" / "fsla"
 TORCH_RULE = ROOT / "tools" / "lint" / "rules" / "torch_include_in_arm_tu.yml"
 TESTS_ROOT = ROOT / "tests"
 
@@ -118,7 +118,7 @@ BARRIER_FREE_END_RE = re.compile(r"//:\s*@barrier-free-end\b")
 
 def device_files():
     for suf in DEVICE_SUFFIXES:
-        for p in CSRC_ROLA.rglob(f"*{suf}"):
+        for p in CSRC_FSLA.rglob(f"*{suf}"):
             if "third_party" in p.parts:
                 continue
             yield p
@@ -260,7 +260,7 @@ def check_no_torch_in_arm_tus() -> list[str]:
     import yaml
 
     findings = []
-    dirs = [CSRC_ROLA / "src" / family for family in arm_families()]
+    dirs = [CSRC_FSLA / "src" / family for family in arm_families()]
     scoped = set(yaml.safe_load(TORCH_RULE.read_text())["files"])
     for directory in dirs:
         glob = f"{directory.relative_to(ROOT)}/**"
@@ -438,7 +438,7 @@ def check_tests_tier_directories() -> list[str]:
 #: not execute the code under test is a lint, not a test -- docs/testing.md).
 #: Deliberately grep-level, no markdown parser: a check a contributor cannot
 #: read is a check they will route around.
-_DOCS_SRC = ROOT / "csrc" / "rola"
+_DOCS_SRC = ROOT / "csrc" / "fsla"
 _DOCS_MIRROR = ROOT / "docs" / "internals"
 _DOCS_SOURCE_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
 
@@ -464,7 +464,7 @@ def _docs_sources() -> list[Path]:
 
 
 def _docs_mirror_for(source: Path) -> Path:
-    """``csrc/rola/src/decode/decode.cuh`` -> ``docs/internals/decode/decode.md``.
+    """``csrc/fsla/src/decode/decode.cuh`` -> ``docs/internals/decode/decode.md``.
 
     The mirror does not repeat the ``src/`` component: the sources it mirrors
     are all under it, so carrying it would be one directory of pure ceremony.
@@ -596,7 +596,7 @@ def _repo_identifier_text() -> str:
     if _REPO_TEXT is None:
         chunks = []
         for root, suffixes in ((_DOCS_SRC, _DOCS_SOURCE_SUFFIXES),
-                               (ROOT / "rola", (".py",)), (ROOT / "tools", (".py", ".sh")),
+                               (ROOT / "fsla", (".py",)), (ROOT / "tools", (".py", ".sh")),
                                (ROOT / "tests", (".py",)), (ROOT / "measure", (".py", ".json"))):
             if not root.is_dir():
                 continue
@@ -697,14 +697,14 @@ def check_docs_mirror() -> list[str]:
 
 
 #: "The word `flock` leaves the process": -- every GPU entry point now takes
-#: `rola_devtools.locks.gpu`'s `gpu_lock()` ITSELF, so no committed doc/script should
+#: `fsla_devtools.locks.gpu`'s `gpu_lock()` ITSELF, so no committed doc/script should
 #: ever again tell a reader to wrap a command in an external `flock` on the GPU lock
 #: path (the lock is the files beside it, so the wrapper serializes against nothing;
-#: a binary with no `gpu_lock()` runs under `python -m rola_devtools.locks.gpu --`).
+#: a binary with no `gpu_lock()` runs under `python -m fsla_devtools.locks.gpu --`).
 #: A COMMAND LINE is what this catches -- a line that, once backticks/leading
 #: whitespace are stripped, STARTS with the literal token `flock` naming the GPU lock
 #: path; a PROSE mention is not on a line whose own first token is the command.
-FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*rola_gpu")
+FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*fsla_gpu")
 
 #: "docs, scripts": committed prose and recipes an
 #: agent or contributor reads and might copy-paste, not generated/vendored trees.
@@ -767,7 +767,7 @@ _NOT_A_WORK_CODE = re.compile(
 #: so a bare rung number spelled that way escapes; the standards form is `§R<n>` and is
 #: unambiguous. The sweep that turned this check on removed both classes where it found
 #: them; a new one is caught by review, not here.
-_WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "measure", "tools", "bazel")
+_WORK_CODE_ROOTS = ("csrc", "fsla", "docs", "tests", "measure", "tools", "bazel")
 _WORK_CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".md", ".json",
                        ".yaml", ".yml", ".sh", ".toml", ".bazel", ".bzl")
 #: the build graph's files at the checkout's root
@@ -905,7 +905,7 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
                 findings.append(
                     f"K46 'the word flock leaves the process': {path.relative_to(ROOT)}:{idx}: "
                     f"a command line wraps the GPU lock in an external `flock` -- every GPU "
-                    f"entry point takes `gpu_lock()` itself now (rola_devtools.locks.gpu); invoke "
+                    f"entry point takes `gpu_lock()` itself now (fsla_devtools.locks.gpu); invoke "
                     f"BARE -- {line.strip()!r}"
                 )
     return findings
@@ -920,10 +920,10 @@ _TOOLS_DIR = ROOT / "tools"
 
 
 def _repo_build_config() -> dict | None:
-    """THIS TREE's `rola_<toolchain>/_build_config.py`, loaded BY PATH, or None if unbuilt.
+    """THIS TREE's `fsla_<toolchain>/_build_config.py`, loaded BY PATH, or None if unbuilt.
 
-    Never `import rola_cu13._build_config`. This module runs as a script, so `sys.path[0]`
-    is `tools/lint/` and not the repository root: a plain import resolves `rola` out of
+    Never `import fsla_cu13._build_config`. This module runs as a script, so `sys.path[0]`
+    is `tools/lint/` and not the repository root: a plain import resolves `fsla` out of
     whatever venv happens to be active -- on a box with a shared base venv, that is a
     DIFFERENT worktree's build, and the two checks below then verdict on a binary this
     repository never produced. (The extension trap's 14th form; the same rule as
@@ -931,11 +931,11 @@ def _repo_build_config() -> dict | None:
     """
     import importlib.util
 
-    found = sorted(ROOT.glob("rola_*/_build_config.py"))
+    found = sorted(ROOT.glob("fsla_*/_build_config.py"))
     if not found:
         return None
     path = found[0]
-    spec = importlib.util.spec_from_file_location("_rola_repo_build_config", path)
+    spec = importlib.util.spec_from_file_location("_fsla_repo_build_config", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.BUILD_CONFIG
@@ -944,7 +944,7 @@ def _repo_build_config() -> dict | None:
 def check_hardware() -> list[str]:
     """`measure/hardware.py --check`: every built
     architecture has a row carrying its pipes' and MMAs' rates, and every rate a source that holds -- a measured one matches the lab
-    record it names, on the product it names. Files only (the module imports no `rola`)."""
+    record it names, on the product it names. Files only (the module imports no `fsla`)."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     from measure import hardware
@@ -1048,9 +1048,9 @@ def check_vendored_pin() -> list[str]:
         if "BSD-3-Clause" not in notice_text:
             findings.append("NOTICE does not name BSD-3-Clause")
 
-    units_build = (ROOT / "csrc" / "rola" / "BUILD.bazel").read_text()
+    units_build = (ROOT / "csrc" / "fsla" / "BUILD.bazel").read_text()
     if '"//csrc/third_party:cutlass"' not in units_build:
-        findings.append("csrc/rola/BUILD.bazel's units no longer compile against the vendored tree "
+        findings.append("csrc/fsla/BUILD.bazel's units no longer compile against the vendored tree "
                         "(//csrc/third_party:cutlass)")
     if "vendored_pin(" not in (ROOT / "bazel" / "record.py").read_text():
         findings.append("closed-world rule 5 gate (build_record.vendored_pin) is gone from the graph's record action")
@@ -1080,7 +1080,7 @@ def check_vendored_pin() -> list[str]:
 #: reader sees when the check fires on someone else's line.
 _PORTABILITY_LINT_SELF = Path(__file__).resolve()
 HOME_PATH_RE = re.compile("/" + "home/" + r"[\w.\-]+(?:/[\w.\-]+)*")
-OUT_OF_REPO_JOURNAL_RE = re.compile("rola" + "-scratch")
+OUT_OF_REPO_JOURNAL_RE = re.compile("fsla" + "-scratch")
 #: `/path/to/...` is this repo's OWN documented placeholder convention (docs/setup.md)
 #: for "substitute your own location" -- it names nothing ad hoc, so that prefix
 #: exempts what follows; a real absolute path under a home directory is already
@@ -1137,7 +1137,7 @@ def check_repo_portability() -> list[str]:
     return findings
 
 
-_SETTINGS_SHELL_RE = re.compile(r"\$\{?((?:ROLA_[A-Z0-9_]+)|CUDA_HOME|MAX_JOBS|MOLD_PATH|PYTORCH_NVCC)\b")
+_SETTINGS_SHELL_RE = re.compile(r"\$\{?((?:FSLA_[A-Z0-9_]+)|CUDA_HOME|MAX_JOBS|MOLD_PATH|PYTORCH_NVCC)\b")
 _MACHINE_PATH_RE = re.compile(r"/usr/local/cuda|/mnt/c/Windows")
 
 
@@ -1189,7 +1189,7 @@ def _python_env_reads(text: str) -> tuple[list[tuple[int, str]], list[tuple[int,
 
 def check_settings_come_from_the_dev_config() -> list[str]:
     """§23 (1): every machine-dependent value is read through `tools/dev_config.py`. A Python environment read, or a
-    shell expansion of a `ROLA_*` variable (or `MOLD_PATH`), that the loader does not list as a handoff is a finding,
+    shell expansion of a `FSLA_*` variable (or `MOLD_PATH`), that the loader does not list as a handoff is a finding,
     and so is a CUDA or Windows path spelled outside the loader in tools or benchmarks."""
     sys.path.insert(0, str(ROOT / "tools"))
     import dev_config

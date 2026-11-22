@@ -4,11 +4,11 @@
   // workspace (/workspace: the checkouts, cloned inside) -- with the host's locks and, under WSL, the driver's
   // libraries. `bazel run //:container_compose` hands the image to Docker and writes `compose.local.yaml` (not
   // committed). Inside, the host's loop: clone the checkouts into /workspace, then `python3 tools/bootstrap.py`,
-  // `bazel run //:init` and `bazel run //:dev_env` in /workspace/rola.
-  "name": "rola-devbox",
+  // `bazel run //:init` and `bazel run //:dev_env` in /workspace/fsla.
+  "name": "fsla-devbox",
   "initializeCommand": "bazel run //:container_compose",
   "dockerComposeFile": ["compose.yaml", "compose.local.yaml"],
-  "service": "rola",
+  "service": "fsla",
   "workspaceFolder": "/workspace",
   "customizations": {
     "vscode": {
@@ -19,8 +19,8 @@
         "nvidia.nsight-vscode-edition"
       ],
       "settings": {
-        "clangd.path": "/workspace/venv-rola/bin/clangd",
-        "python.defaultInterpreterPath": "/workspace/venv-rola/bin/python"
+        "clangd.path": "/workspace/venv-fsla/bin/clangd",
+        "python.defaultInterpreterPath": "/workspace/venv-fsla/bin/python"
       }
     }
   }

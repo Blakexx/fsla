@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE BUILD RECORD: `rola_cu13/_build_config.py`, which answers "which build is this exact .so?" from an installed
+"""THE BUILD RECORD: `fsla_cu13/_build_config.py`, which answers "which build is this exact .so?" from an installed
 wheel with no checkout -- and rule 3, which refuses an architecture the hardware table does not build.
 
 Written by the graph's record action (`bazel/record.py`), standard library only so the graph runs it in its sandbox.
@@ -31,7 +31,7 @@ def rule3(archs: list[str], built: list[str]) -> None:
         if f"sm_{a}" not in built:
             raise RuntimeError(
                 f"CLOSED-WORLD RULE 3: sm_{a} is in the build's architectures but is not built (built: "
-                f"{', '.join(built)}). An architecture is built when its row in csrc/rola/src/common/hardware.json "
+                f"{', '.join(built)}). An architecture is built when its row in csrc/fsla/src/common/hardware.json "
                 f"chooses a window; bring it up by docs/bringup.md. Building an architecture nobody measured is the "
                 f"failure this rule exists to prevent.")
     print(f"rule 3 OK  {', '.join(f'sm_{a}' for a in archs)} built")

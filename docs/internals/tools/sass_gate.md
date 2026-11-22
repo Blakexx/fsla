@@ -82,20 +82,20 @@ re-reads. A no-change build's gate is ~0.1 s; a one-kernel edit re-reads that ke
 ## <a id="declarations"></a>Declarations, beside the kernels
 
 A kernel states what it keeps beside the unit that compiles it, in Starlark (`bazel/cuda.bzl`'s `declaration(kernel, rule, allow, reason)`, the checker's form, on
-`cuda_unit(declarations = [...])`), and a family states its arms' beside the arms: `csrc/rola/src/<family>/arms.bzl` holds `<FAMILY>_KERNEL`, the arm's kernel name up to its parameter
+`cuda_unit(declarations = [...])`), and a family states its arms' beside the arms: `csrc/fsla/src/<family>/arms.bzl` holds `<FAMILY>_KERNEL`, the arm's kernel name up to its parameter
 list as the toolkit demangles it with `@<field>@` for each template argument of the key and `@cc@` for the architecture (`decode`'s is
-`rola::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
+`fsla::decode::detail::decode_step_kernel<denseref::arch::BuildTag<denseref::arch::Build{(int)@cc@, (int)0}>, (int)@d_v@, (int)@levels@, (bool)@decay@>`), and
 `<FAMILY>_DECLARATIONS`, `arm_declaration(rule, allow, reason, where = {field: [values]})`s over the arms they select. `arm_family(kernel =, declarations =)` generates each arm's EXACT pattern
 (`bazel/arms.bzl`'s `arm_kernel_pattern`: the template's text escaped, anchored at `^void` and the `(` of the parameter list) for each arm the build carries (`--//:<family>_arms`) and
 each architecture it carries (`--//:archs`), and the declarations on the arms they select; nobody writes a kernel regex by hand for an arm.
 The architecture is the attachment's: a declaration carries none, and `arch` on the Starlark struct says which build target it attaches to (none: every one the unit is built for); the
 library rule writes one file (`<label>_declarations.json`: per architecture, its declarations and its arms) and the gate reads each cubin's under its own architecture. A
 declaration may tighten (`allow` 0 where a ledger row accepts the notice by default) as well as allow; a rule is a rule of the checker or of the project's ledger
-(`docs/internals/tools/lab.md#ledger`). `decode`'s and the producer's solves' declarations (`csrc/rola/src/decode/arms.bzl`, `csrc/rola/src/entmax/declarations.bzl`, on the `entmax_units` target) are each kernel's exact count of `load_in_trip` and `loop_convergence`, the two rules the full set found on code that predates them ("predates the rule; fixed at the family's Hopper rewrite"), a cap and never more; the toolkit's notices of production (ptxas's per-function summaries, and `--warn-on-spills`, which finds none) are the base ledger's accepted rows.
+(`docs/internals/tools/lab.md#ledger`). `decode`'s and the producer's solves' declarations (`csrc/fsla/src/decode/arms.bzl`, `csrc/fsla/src/entmax/declarations.bzl`, on the `entmax_units` target) are each kernel's exact count of `load_in_trip` and `loop_convergence`, the two rules the full set found on code that predates them ("predates the rule; fixed at the family's Hopper rewrite"), a cap and never more; the toolkit's notices of production (ptxas's per-function summaries, and `--warn-on-spills`, which finds none) are the base ledger's accepted rows.
 
 ## <a id="probes"></a>A library of probes
 
-`--probes` gates an instrument's library (`bazel/defs.bzl`'s `rola_instrument`: a family's part
+`--probes` gates an instrument's library (`bazel/defs.bzl`'s `fsla_instrument`: a family's part
 harness, which lands with the family's first schedule): its kernels are PROBES, so it owes none of the source's
 kernels, and a probe keeps a signature -- branches, the conversion unit or global memory in an MMA step -- only
 where its units' declarations name it (`cuda_unit(declarations = ...)`, a permit: `allow` of `checked.PERMIT`, the cost the probe measures as the reason; the same constant the lab's presence expectations use). A calibration that puts a global reduction between its MMAs does so to measure that
@@ -116,6 +116,6 @@ config's toolkit and scratch, and its own cache.
 
 ## <a id="sass-text"></a>A unit's SASS as text
 
-`bazel build //csrc/rola:<unit>_sass` (a unit by its source's name: `decode_sass`) gives that unit's SASS, every architecture the build carries, as text by the graph's own
+`bazel build //csrc/fsla:<unit>_sass` (a unit by its source's name: `decode_sass`) gives that unit's SASS, every architecture the build carries, as text by the graph's own
 `cuobjdump -sass` (`bazel/defs.bzl`'s `unit_sass` over the library's units; the file is `_objs/<target>/<unit>.sass` under `.bazel/bin`; `cuda_unit`'s output group `sass` holds
 them all, `bazel build //:library --output_groups=sass`), so a SASS diff of two commits is two builds and `diff`, never a disassembler typed by hand.

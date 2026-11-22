@@ -34,7 +34,7 @@ class _Whitelist:
     pytest_addoption = None
     pytest_configure = None
 
-    # rola_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
+    # fsla_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
     # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
     # `run_tool`, `timed`, `read_clock`).
     compile_kernel = None
@@ -52,7 +52,7 @@ class _Whitelist:
     pytest_tier = None  # `measure/executors.py`, named by `declare.py`'s oracle-tier target
 
     # torch calls `forward` through `Module.__call__`, never by name: every `nn.Module` in the tree defines one and
-    # none of them is called explicitly. 13 sites, measured 2026-09-15 (`rola/layer.py`, `rola/routing/`'s decay,
+    # none of them is called explicitly. 13 sites, measured 2026-09-15 (`fsla/layer.py`, `fsla/routing/`'s decay,
     # producer, side_gain and entmax bodies, and the module stubs three tests define).
     forward = None
 
@@ -68,7 +68,7 @@ class _Whitelist:
     token_bit = None
 
     # DOCUMENTED PUBLIC SURFACE, read by a user rather than by this tree: the paging facade's `backing_kind` and
-    # `closed` (`docs/internals/rola_api.md`), the arena's `owners_total` and `free`, and `Activation`, the spec-facing
+    # `closed` (`docs/internals/fsla_api.md`), the arena's `owners_total` and `free`, and `Activation`, the spec-facing
     # type alias (`docs/api.md`).
     backing_kind = None
     closed = None

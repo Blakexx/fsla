@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import torch
 
+from fsla.ops.window import card_of
 from measure import hardware
 from measure.hardware import slugify_gpu
-from rola.ops.window import card_of
 
 
 def test_the_binary_finds_the_product_the_host_names():

@@ -1,6 +1,6 @@
 # `common/arm_switch.cuh` — the host dispatch over the shipped arm set
 
-Mirrors `csrc/rola/src/common/arm_switch.cuh`.
+Mirrors `csrc/fsla/src/common/arm_switch.cuh`.
 
 `uniform_switch` (`structure_switch.md`) is the DEVICE branch over a generated set;
 `arm_switch` is its HOST twin. The choice it makes is which compiled body a call
@@ -13,13 +13,13 @@ exists, and two enumerations of one set drift.
 <a id="arm-set"></a>
 ## The four layers, and who owns each
 
-1. **The cases are GENERATED, with the count asserted.** `ROLA_<FAMILY>_ARM_SET_X(F)` in
+1. **The cases are GENERATED, with the count asserted.** `FSLA_<FAMILY>_ARM_SET_X(F)` in
    the generated selection header expands to one `F(index, <the key's fields>)` per
-   BUILT arm, the key being `ArmKey<N>` (`arm.md`), and `ROLA_DEFINE_ARM_SET(Name, FAMILY)` builds the family's
-   set struct from it and from the header's `ROLA_<FAMILY>_ARM_FAMILY`, `_ARM_KEY` and `_ARM_FIELDS` — no hand-written
+   BUILT arm, the key being `ArmKey<N>` (`arm.md`), and `FSLA_DEFINE_ARM_SET(Name, FAMILY)` builds the family's
+   set struct from it and from the header's `FSLA_<FAMILY>_ARM_FAMILY`, `_ARM_KEY` and `_ARM_FIELDS` — no hand-written
    list exists to disagree with the per-arm translation units, because both come out of
-   `bazel/arms.bzl` reading `csrc/rola/src/<family>/arms.bzl`. The header also
-   carries `ROLA_<FAMILY>_ARM_COUNT` and `ROLA_<FAMILY>_ARM_DECLARED`.
+   `bazel/arms.bzl` reading `csrc/fsla/src/<family>/arms.bzl`. The header also
+   carries `FSLA_<FAMILY>_ARM_COUNT` and `FSLA_<FAMILY>_ARM_DECLARED`.
 2. **A compile-time exhaustiveness assert.** `arm_switch` static-asserts that the set
    is a subset of the declaration (`count <= declared`). A build carries FEWER arms
    than the declaration declares — never other ones — so a set larger than the
@@ -58,9 +58,9 @@ second `ArmSet`, not a second switch.
 
 ## Users
 
-- The decode step (`decode/decode.cu`): `ROLA_DEFINE_ARM_SET(DecodeArmSet, DECODE)` over its selection header, `arm_switch`
+- The decode step (`decode/decode.cu`): `FSLA_DEFINE_ARM_SET(DecodeArmSet, DECODE)` over its selection header, `arm_switch`
   at its launch and `DecodeArmSet::rows()` for the built set. A family that dispatches on its host joins by
-  `ROLA_DEFINE_ARM_SET` over its selection header.
+  `FSLA_DEFINE_ARM_SET` over its selection header.
 - `tests/unit/test_arm_switch.py` compiles a probe against the shipped header with a
   synthetic three-arm selection header — rendered by the same rule a build uses (`bazel/arms.bzl`'s `arm_selection`) —
   and exercises every layer: both counts, a built arm dispatching with its own

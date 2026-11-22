@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""THE LEAF ORDER's own arithmetic: `rola.ops.lattice`, on the host, with no kernel.
+"""THE LEAF ORDER's own arithmetic: `fsla.ops.lattice`, on the host, with no kernel.
 
 `pi` maps a CANONICAL leaf index `ell` (MSB-first mixed radix, the oracle's forever) to a
 LATTICE index `lambda`. Every plane the oracle and a kernel both touch crosses at that
@@ -21,14 +21,14 @@ import math
 
 import torch
 
-from rola.ops.lattice import (
+from fsla.ops.lattice import (
     box_shape,
     derive_lattice,
     permutation,
     to_canonical,
     to_lattice,
 )
-from rola.ops.paging import bytes_equal
+from fsla.ops.paging import bytes_equal
 
 #: Every shape of box the shipped topologies produce: `k = 1` (no admissible span),
 #: `m = 1` (no admissible capacity), `D` from 1 to 4, and the flagship's `(4, 8)`.

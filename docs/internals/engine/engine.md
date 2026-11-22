@@ -1,6 +1,6 @@
 # The engine
 
-Mirror of `rola/engine/` — the umbrella's ROOT (the runner, the value types, the
+Mirror of `fsla/engine/` — the umbrella's ROOT (the runner, the value types, the
 plans) and its `facts/` domain. This page explains WHY the structure is shaped as it
 is and how its pieces connect; the code is the authoritative statement of how each
 body works. What is DECIDED from facts is [the rule layer's page](rules.md).
@@ -39,39 +39,39 @@ geometry object, the state's residency entry, and the arena's side-stream/event 
 ONE umbrella package with three domains under it, and one sentence decides what is in
 it at all:
 
-> **What crosses the EXTENSION BOUNDARY lives in `rola/ops/`. What a DAG walk produces
-> or decides lives in `rola/engine/`.**
+> **What crosses the EXTENSION BOUNDARY lives in `fsla/ops/`. What a DAG walk produces
+> or decides lives in `fsla/engine/`.**
 
-* `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
+* `fsla/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
   `validate_capturable`), the value types, the pins a caller may set over axes the op
   decides — the carry's carve — `Carve`, `SidePlan` — and the
   refusal every no-backward clause raises —
   `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, `DecodePlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan`, `operands`, `workspace`).
-* `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
+* `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
   bitmap (`planes.py`), the liveness words and their folds (`liveness.py`), the facts
   pass's list model (`lists.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
   envelope authority they fold into — `envelope_refusal` and `require_envelope`
   (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
   a wrapper that defers its logic elsewhere; the primitive IS here.
-* `rola/engine/rules/` — band 2, one declared fold per decision.
-* `rola/engine/dags/` — the per-family compositions: the tuple, its context, its
+* `fsla/engine/rules/` — band 2, one declared fold per decision.
+* `fsla/engine/dags/` — the per-family compositions: the tuple, its context, its
   terminal node.
-* `rola/ops/` — the launches and the bodies around them. `decode.py` is the geometry,
+* `fsla/ops/` — the launches and the bodies around them. `decode.py` is the geometry,
   the scratch and `step`, plus `_decode_step` — those same bodies in the step's order
   for a caller holding tensors rather than a bundle; the fold and the factor tables are
   IN the step's one launch and have no separate body here
   ([`decode/decode_fold.md`](../decode/decode_fold.md), [`decode/decode_lattice.md`](../decode/decode_lattice.md)).
 
 **A domain reaches the core through the ROOT, never through a sibling domain.**
-`rola/engine/__init__.py` re-exports the core for exactly that: `from rola.engine
+`fsla/engine/__init__.py` re-exports the core for exactly that: `from fsla.engine
 import rule` is the import a rule module writes, so `rule` is a property of the engine
 rather than of whichever domain happened to define it. The core itself imports no
-domain, which is what keeps that re-export from being a cycle; `rola/engine/facts/`
+domain, which is what keeps that re-export from being a cycle; `fsla/engine/facts/`
 re-exports nothing, because a domain that is also a route to something it does not own
-is the mis-homing this layout removes. `rola.engine.rules` therefore never acquires a
-dependency on the extension: the primitives that DO reach it are `rola.engine.facts`
+is the mis-homing this layout removes. `fsla.engine.rules` therefore never acquires a
+dependency on the extension: the primitives that DO reach it are `fsla.engine.facts`
 modules, imported by module.
 
 ## <a id="a-dag-is-code"></a>3. A DAG is code
@@ -163,9 +163,9 @@ inherits nothing through a cache (`docs/internals/state.md` §9.1).
 raises on any attribute read, so the property is proven per node rather than declared.
 
 A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
-not a node and no node memo reaches it: the binary's arm census (`rola.ops.carry.arms`) is
+not a node and no node memo reaches it: the binary's arm census (`fsla.ops.carry.arms`) is
 read by the envelope adapter in `facts/call.py` at each call. The intra's admitted widths are not one: they are a law
-over the widths and the value width (`rola.ops.intra.admits`).
+over the widths and the value width (`fsla.ops.intra.admits`).
 
 ## <a id="refusals"></a>8. Refusals are one call at the head
 
@@ -183,14 +183,14 @@ The envelope half of that call is `facts/call.py`'s `require_envelope`, and it i
 reached DOWNWARD: the engine composes the rule layer's clauses over its own adapters
 and the facade calls the engine, never the reverse. `envelope_refusal` beside it is the
 same composition without the raise, which is what lets a caller ask before calling —
-`rola.expert` re-exports it as the public address (`docs/api.md` §5), and that
+`fsla.expert` re-exports it as the public address (`docs/api.md` §5), and that
 re-export is the only direction the dependency runs.
 
 `PrefillPlan` is the same statement from the other end. A plan field is a VALUE a rule
 folds — `rules/paging.py` reads it and returns a bool — so it is engine vocabulary and
-`plan.py` is where it is defined; `rola.expert` re-exports it as the marked door
-(`docs/api.md` §5). NO MODULE UNDER `rola/engine/` IMPORTS `rola.interface` OR
-`rola.expert`, at import time or inside a body: a deferred import in a function body
+`plan.py` is where it is defined; `fsla.expert` re-exports it as the marked door
+(`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
+`fsla.expert`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds
 none.
 

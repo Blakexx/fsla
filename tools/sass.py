@@ -44,7 +44,7 @@ _GRAPH: dict[str, Path] = {}
 def use_graph(*, cuobjdump: str, nvdisasm: str, cuxxfilt: str | None = None) -> None:
     """Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits. `cuxxfilt`, the graph's
     demangler, is for the readers that name functions."""
-    scratch_dir = tempfile.mkdtemp(prefix="rola_sass_")
+    scratch_dir = tempfile.mkdtemp(prefix="fsla_sass_")
     atexit.register(shutil.rmtree, scratch_dir, True)
     _GRAPH.update(cuobjdump=Path(cuobjdump).absolute(), nvdisasm=Path(nvdisasm).absolute(), scratch=Path(scratch_dir))
     if cuxxfilt:

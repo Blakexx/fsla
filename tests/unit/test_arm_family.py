@@ -39,7 +39,7 @@ def test_the_table_is_the_declared_rows_on_the_decode_key(table):
 def test_the_selection_header_carries_every_arm_when_the_build_names_none(table):
     text = (GENERATED / "fixture_selection.inc").read_text()
     assert arms.check_built_arm_table(text, arms.family_arms(table, "", "--//tests:fixture_arms"), table, "fixture") == []
-    assert "#define ROLA_FIXTURE_ARM_COUNT 3" in text and "#define ROLA_FIXTURE_ARM_DECLARED 3" in text
+    assert "#define FSLA_FIXTURE_ARM_COUNT 3" in text and "#define FSLA_FIXTURE_ARM_DECLARED 3" in text
     assert "  F(2, 64, 2, 1)" in text
 
 

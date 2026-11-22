@@ -1,6 +1,6 @@
 # `common/phase_clock.cuh` — the phase ledger and trace
 
-Mirrors `csrc/rola/src/common/phase_clock.cuh`.
+Mirrors `csrc/fsla/src/common/phase_clock.cuh`.
 
 `PhaseClock<Phases>` is one warp's measurement of itself, shared by every kernel family that
 measures its phases: lane 0 accumulates the cycles between laps into the warp's shared row, one

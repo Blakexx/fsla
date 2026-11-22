@@ -1,6 +1,6 @@
-"""R9's ONE PRIMITIVE, exercised on a real device: `rola::uniform_switch`.
+"""R9's ONE PRIMITIVE, exercised on a real device: `fsla::uniform_switch`.
 
-`csrc/rola/src/common/structure_switch.cuh` is a device primitive with no shipped caller
+`csrc/fsla/src/common/structure_switch.cuh` is a device primitive with no shipped caller
 yet (`docs/internals/common/structure_switch.md` names the pipelined body as the one that
 consumes it), so nothing in the extension can prove it works. This file compiles a toy
 `__global__` against the SHIPPED HEADER and runs it, which is the only proof there is:

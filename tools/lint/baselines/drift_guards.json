@@ -2,13 +2,13 @@
  "lint": "drift_guards",
  "findings": [
   {
-   "path": "csrc/rola/src/decode/decode_lattice.cuh",
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
    "message": "a device switch on 'kind' that is not a uniform_switch<Set>",
    "line_sha256": "6e3e44e259f5b70b",
    "count": 1
   },
   {
-   "path": "rola/ops/decode.py",
+   "path": "fsla/ops/decode.py",
    "message": "a comment naming the work code 'K53': \"\"\"DECODE'S OP ENTRY, THE SAME DESCRIPTOR CHECK AS PREFILL (K53).",
    "line_sha256": "942322dd781d5cf1",
    "count": 1

@@ -1,6 +1,6 @@
 # `common/atoms/math.cuh` — the elementwise math
 
-Mirrors `csrc/rola/src/common/atoms/math.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the special-function unit's roots and powers, byte and halfword selects and packs, the bf16 pair arithmetic.
+Mirrors `csrc/fsla/src/common/atoms/math.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): the special-function unit's roots and powers, byte and halfword selects and packs, the bf16 pair arithmetic.
 
 - <a id="sqrt-approx"></a>`sqrt_approx`: `sqrt.approx.f32`, one special-function instruction. The IEEE root (`sqrtf`)
   compiles to a range check and a call to a slow-path subroutine, whose calling convention spills a body that holds
