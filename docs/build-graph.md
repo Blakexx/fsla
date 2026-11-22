@@ -120,11 +120,11 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   a generated source that defines the arm under its own selection guard) when the family has per-arm units; the selection
   header of the build (`<family>_selection.inc`: every row of the list, which is the arms the build's contract reaches); and the Python table (`<family>_arms.py`: the key and the rows) that the record, the arm gate and
   `bazel run //:library`'s copy into `build/generated` give the measurement. `<family>_arm_set` hands the link only the
-  units the build's arms and architectures name, so an unwanted arm or architecture is never compiled. A malformed
+  units the build's architectures name, so an unwanted architecture is never compiled (the arms are the contract's). A malformed
   declaration is refused at analysis, naming the field: a row of the wrong width, a value outside its domain, a duplicate,
   or rows out of canonical order (an arm's index is what the header and the unit names say, so it is the
   declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
-  `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's flags, parameters, record and
+  `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's parameters, record and
   gates are made for each name in it, so a family joins by being named there and declared beside its kernel.
 - `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`FSLA_NVCC_THREADS`): the
   cicc a job runs is the count its job budget divides by.

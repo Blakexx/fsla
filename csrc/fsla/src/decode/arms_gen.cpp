@@ -3,12 +3,13 @@
 // DECODE'S ARM GENERATOR (docs/internals/decode/arms_gen.md): a host tool the graph builds and
 // runs. It evaluates decode's launch function over every context of the contract and writes the arm list
 // the graph instantiates, and the selection record. A context the matcher
-// maps to no arm, or a point that reaches several arms (or one a range does not reach), fails the
+// maps to no arm (some point of its ranges reaches none), fails the
 // run naming the context.
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -107,61 +108,53 @@ std::string key_of(const Arm& a) {
   return out.str();
 }
 
-//: THE POINT PROPERTY: a launch function over a point returns exactly one arm, and the arms of the points of a range are among the range's.
-//: The points tried: every combination of the ranged facts' ends (each at its lo or its hi), and each ranged fact swept through every value
-//: of its range (up to kSweep) with the others at their lo. A context with more ranged facts than kMaxRanged is refused: its corners are not tried.
-constexpr std::size_t kMaxRanged = 8;
-constexpr std::int64_t kSweep = 4096;
+//: THE COVERAGE CHECK, exact and without sampling: `decode_reach` walks the arm half's decision tree over the context's ranges, following both
+//: branches of a Maybe, so it reaches every arm some point of the ranges reaches and the NONE leaf exactly when some point reaches no arm
+//: (docs/internals/common/plan/rules.md#exact). The count of ranged facts does not matter.
+bool reaches_a_gap(const Facts& f) {
+  fsla::plan::DecodeReach r = fsla::plan::decode_reach(f);
+  return r.gap || r.arms.none();
+}
 
-bool corners_agree(const Context& c, const fsla::plan::DecodeArmSet& reached) {
-  std::size_t n = c.ranges.size();
-  if (n > kMaxRanged) {
-    std::fprintf(
-        stderr,
-        "arms_gen: context '%s' has %zu ranged facts; the point property is tried at most over "
-        "%zu: state the facts as points or alternatives, or narrow the context\n",
-        c.id.c_str(), n, kMaxRanged);
-    return false;
+//: a point of the context that reaches no arm, found by halving each ranged fact toward the half where the walk still reaches the NONE leaf
+//: (one such half always exists: the walk is exact)
+Facts gap_witness(const Context& c) {
+  Facts f = c.facts;
+  for (const auto& [name, range] : c.ranges) {
+    std::int64_t lo = range.lo, hi = range.hi;
+    while (lo < hi) {
+      std::int64_t mid = lo + (hi - lo) / 2;
+      Facts left = f;
+      left.assign(name, Interval{lo, mid});
+      if (reaches_a_gap(left)) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    f.assign(name, Interval{lo, lo});
   }
+  return f;
+}
 
-  std::vector<Facts> points;
-  for (std::size_t mask = 0; mask < (std::size_t{1} << n); ++mask) {
+//: THE SANITY CHECK of the argument (`--sample N --seed S`, tests/unit/test_decode_arms_gen.py): N seeded random points inside each context, each
+//: of which must reach exactly one arm (`decode_arm`, the same walk over a point) among the context's reach
+bool sampled_points_agree(const Context& c, const fsla::plan::DecodeReach& reached,
+                          std::mt19937_64& rng, std::size_t samples) {
+  for (std::size_t i = 0; i < samples; ++i) {
     Facts f = c.facts;
-    for (std::size_t i = 0; i < n; ++i) {
-      std::int64_t v = (mask >> i) & 1 ? c.ranges[i].second.hi : c.ranges[i].second.lo;
-      f.assign(c.ranges[i].first, Interval{v, v});
+    for (const auto& [name, range] : c.ranges) {
+      std::int64_t v = std::uniform_int_distribution<std::int64_t>(range.lo, range.hi)(rng);
+      f.assign(name, Interval{v, v});
     }
-    points.push_back(f);
-  }
-
-  for (std::size_t axis = 0; axis < n; ++axis) {
-    Facts base = c.facts;
-    for (std::size_t i = 0; i < n; ++i) {
-      base.assign(c.ranges[i].first, Interval{c.ranges[i].second.lo, c.ranges[i].second.lo});
-    }
-    const Interval range = c.ranges[axis].second;
-    for (std::int64_t v = range.lo; v <= range.hi && v < range.lo + kSweep; ++v) {
-      Facts f = base;
-      f.assign(c.ranges[axis].first, Interval{v, v});
-      points.push_back(f);
-    }
-  }
-
-  for (const Facts& f : points) {
-    fsla::plan::DecodeArmSet point = fsla::plan::decode_arms(f);
-    if (point.size() != 1) {
-      std::fprintf(stderr, "arms_gen: context '%s': the point %s maps to %zu arms, not one\n",
-                   c.id.c_str(), fsla::plan::decode_facts_read(f).c_str(), point.size());
-      return false;
-    }
+    Arm arm = fsla::plan::decode_arm(f);
     bool among = false;
-    for (std::size_t i = 0; i < reached.size(); ++i) among |= reached.arms[i] == point.arms[0];
+    for (std::size_t k = 0; k < reached.arms.size(); ++k) among |= reached.arms.arms[k] == arm;
     if (!among) {
       std::fprintf(stderr,
-                   "arms_gen: context '%s': the point %s reaches %s, which the context's range "
-                   "does not\n",
-                   c.id.c_str(), fsla::plan::decode_facts_read(f).c_str(),
-                   spell(point.arms[0]).c_str());
+                   "arms_gen: context '%s': the point %s reaches %s, which the context's reach "
+                   "does not hold\n",
+                   c.id.c_str(), fsla::plan::decode_facts_read(f).c_str(), spell(arm).c_str());
       return false;
     }
   }
@@ -197,16 +190,24 @@ static_assert(kLaunch.args.pad == 16 && kLaunch.args.sms == 132 && kLaunch.args.
 
 int main(int argc, char** argv) {
   std::string contexts_path, out_dir;
-  if (argc != 5) refuse("usage: arms_gen --contexts <file> --out-dir <dir>");
+  std::size_t samples = 0;
+  std::uint64_t seed = 0;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--contexts") {
       contexts_path = argv[i + 1];
     } else if (flag == "--out-dir") {
       out_dir = argv[i + 1];
+    } else if (flag == "--sample") {
+      samples = std::stoull(argv[i + 1]);
+    } else if (flag == "--seed") {
+      seed = std::stoull(argv[i + 1]);
     } else {
       refuse("unknown argument " + flag);
     }
+  }
+  if (argc % 2 == 0 || contexts_path.empty() || out_dir.empty()) {
+    refuse("usage: arms_gen --contexts <file> --out-dir <dir> [--sample <points> --seed <n>]");
   }
 
   std::ifstream in(contexts_path);
@@ -225,20 +226,25 @@ int main(int argc, char** argv) {
 
   std::set<Arm> built;
   std::vector<std::pair<std::string, std::vector<Arm>>> reach;
+  std::mt19937_64 rng(seed);
   int failures = 0;
   for (const Context& c : contexts) {
-    fsla::plan::DecodeArmSet set = fsla::plan::decode_arms(c.facts);
-    if (set.none()) {
+    fsla::plan::DecodeReach set = fsla::plan::decode_reach(c.facts);
+    if (set.gap || set.arms.none()) {
+      std::string maps = "it";
+      if (!c.ranges.empty()) {
+        maps = "the point " + fsla::plan::decode_facts_read(gap_witness(c)) + " of it";
+      }
       std::fprintf(stderr,
                    "arms_gen: the contract holds context '%s' (%s) and decode's launch function "
-                   "(csrc/fsla/src/common/plan/decode_launch.h) maps it to NONE: add the arm "
+                   "(csrc/fsla/src/common/plan/decode_launch.h) maps %s to NONE: add the arm "
                    "or narrow the contract (hardware/parts) in the same commit\n",
-                   c.id.c_str(), fsla::plan::decode_facts_read(c.facts).c_str());
+                   c.id.c_str(), fsla::plan::decode_facts_read(c.facts).c_str(), maps.c_str());
       ++failures;
-    } else if (!corners_agree(c, set)) {
+    } else if (samples && !sampled_points_agree(c, set, rng, samples)) {
       ++failures;
     } else {
-      std::vector<Arm> arms(set.arms, set.arms + set.size());
+      std::vector<Arm> arms(set.arms.arms, set.arms.arms + set.arms.size());
       built.insert(arms.begin(), arms.end());
       reach.emplace_back(c.id, arms);
     }

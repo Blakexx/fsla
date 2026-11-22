@@ -88,8 +88,8 @@ def _check(name, key, domains, arms):
         if list(arms[i]) in [list(row) for row in arms[:i]]:
             fail("%s: row %s is declared twice; a duplicate would give one kernel two indices" % (name, list(arms[i])))
     if [list(row) for row in arms] != sorted([list(row) for row in arms]):
-        fail("%s: the rows are not in canonical order. An arm's index is named by the selection header and the units, so it " +
-             "must be a property of the declaration, not of where a row was typed. Write them sorted: %s" % sorted([list(row) for row in arms]))
+        fail(("%s: the rows are not in canonical order. An arm's index is named by the selection header and the units, so it " +
+              "must be a property of the declaration, not of where a row was typed. Write them sorted: %s") % (name, sorted([list(row) for row in arms])))
 
 def arm_declaration(rule, allow, reason, where = {}, arch = None):
     """A declaration of a family's arms, stated beside its arms (`<FAMILY>_DECLARATIONS`): the checker's form (`declaration` in cuda.bzl) over the arms
@@ -164,12 +164,11 @@ arm_table = rule(
 )
 
 def _arm_set_impl(ctx):
-    want = list(range(ctx.attr.rows))
     archs = ctx.attr.archs_flag[BuildSettingInfo].value
     chosen = []
     for unit, where in ctx.attr.units.items():
         at = json.decode(where)
-        if at["arm"] in want and at["arch"] in archs:
+        if at["arch"] in archs:
             chosen.append(unit)
     return [
         DefaultInfo(files = depset(transitive = [unit[DefaultInfo].files for unit in chosen])),
@@ -181,7 +180,6 @@ _arm_set = rule(
     implementation = _arm_set_impl,
     attrs = {
         "family": attr.string(mandatory = True),
-        "rows": attr.int(mandatory = True, doc = "the declared arms"),
         "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each unit, and its arm and architecture (JSON)"),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
     },
@@ -265,4 +263,4 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
                 deps = unit["deps"],
             )
             units[":" + target] = json.encode({"arm": i, "arch": arch})
-    _arm_set(name = name + "_arm_set", family = name, rows = len(arms), units = units)
+    _arm_set(name = name + "_arm_set", family = name, units = units)

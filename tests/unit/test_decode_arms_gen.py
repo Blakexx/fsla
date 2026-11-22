@@ -3,12 +3,17 @@
 """DECODE'S LAUNCH FUNCTION OVER THE CONTRACT AND THE ARM GENERATOR (`csrc/fsla/src/common/plan/decode_launch.h`, `arms_gen.cpp`,
 docs/internals/decode/arms_gen.md): the arms the launch function reaches over the contract are the decode arm list, in canonical order
 (`d_v`, then `levels`, then `decay`); a contract context no arm covers fails the generator, naming the context, and so fails the build; a
-point reaching other than one arm, a range's point outside the range's arms and a context with too many ranged facts to try are refused."""
+context whose ranges hold a point no arm covers fails it too, naming such a point, whatever the count of its ranged facts (the coverage check is the rule
+language's three-valued walk over the ranges, exact: no corner is sampled)."""
 from __future__ import annotations
 
+import itertools
 import json
+import random
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -82,15 +87,27 @@ def test_the_graphs_arm_list_is_that_list_and_each_context_reaches_both_value_wi
 def test_a_contract_context_no_arm_covers_fails_the_generator_naming_it(tmp_path, fact, value, named):
     run, out = _run(_contract_with(tmp_path, **{fact: value}), tmp_path)
     assert run.returncode == 1
-    assert "context 'hopper_decode" in run.stderr and named in run.stderr and "maps it to NONE" in run.stderr
+    assert "context 'hopper_decode" in run.stderr and named in run.stderr and "to NONE" in run.stderr
     assert "decode_launch.h" in run.stderr
     assert not list(out.iterdir()), "a refused contract writes no arm list"
 
 
-def test_a_range_wider_than_the_arms_fails_at_the_point_no_arm_serves(tmp_path):
+def test_a_range_wider_than_the_arms_fails_at_a_point_no_arm_serves(tmp_path):
     run, out = _run(_contract_with(tmp_path, d_v={"lo": 2, "hi": 128}), tmp_path)
     assert run.returncode == 1
-    assert "context 'hopper_decode" in run.stderr and "d_v=128" in run.stderr and "maps to 0 arms, not one" in run.stderr
+    assert "context 'hopper_decode" in run.stderr and "maps the point" in run.stderr and "d_v=65" in run.stderr and "to NONE" in run.stderr
+    assert not list(out.iterdir())
+
+
+@pytest.mark.parametrize("fact, value, witness", [
+    ("d_v", {"lo": 0, "hi": 40}, "d_v=0"),
+    ("levels", {"lo": 3, "hi": 9}, "levels=5"),
+    ("decay", {"lo": -1, "hi": 1}, "decay=-1"),
+])
+def test_a_hole_only_some_points_of_a_range_fall_in_is_found_and_named(tmp_path, fact, value, witness):
+    run, out = _run(_contract_with(tmp_path, **{fact: value}), tmp_path)
+    assert run.returncode == 1
+    assert "the point" in run.stderr and witness in run.stderr and "to NONE" in run.stderr
     assert not list(out.iterdir())
 
 
@@ -115,14 +132,74 @@ def test_a_range_inside_one_arms_width_reaches_that_arm_alone(tmp_path):
     assert json.loads((out / "decode_arm_rows.json").read_text())["arms"] == [[64, 1, 0]]
 
 
-def test_a_context_with_more_ranged_facts_than_the_property_tries_is_refused_not_passed(tmp_path):
-    """Every integer fact a range: nine of them, over the eight whose corners are tried."""
-    ranged = {name: {"lo": value, "hi": value + 1} for name, value in
-              [("cc", 900), ("regs_per_sm", 65536), ("smem_per_sm", 233472), ("smem_per_cta_optin", 232448), ("max_threads_per_sm", 2048),
-               ("sm_count", 114)]}
-    contract = _contract_with(tmp_path, parts={"device/hopper_sm90a": ranged}, d_v={"lo": 2, "hi": 64},
-                              levels={"lo": 1, "hi": 2}, decay={"lo": 0, "hi": 1})
+NINE = [("cc", 900), ("regs_per_sm", 65536), ("smem_per_sm", 233472), ("smem_per_cta_optin", 232448), ("max_threads_per_sm", 2048),
+        ("sm_count", 114)]
+
+
+def test_a_context_with_more_than_eight_ranged_facts_is_checked_exactly_and_fast(tmp_path):
+    """All nine integer facts ranges (the old corner check refused above eight): the gap is found, at the cc the contract does not serve."""
+    ranged = {name: {"lo": value - 1, "hi": value + 1} for name, value in NINE}
+    contract = _contract_with(tmp_path, parts={"device/hopper_sm90a": ranged}, d_v={"lo": 2, "hi": 64}, levels={"lo": 1, "hi": 2},
+                              decay={"lo": 0, "hi": 1})
+    assert len(re.findall(r"\w+=\d+:\d+", contract.splitlines()[-1])) >= 9
+    start = time.monotonic()
     run, out = _run(contract, tmp_path)
+    assert time.monotonic() - start < 5
     assert run.returncode == 1
-    assert "has 9 ranged facts" in run.stderr and "refused" in run.stderr
+    assert "ranged facts" not in run.stderr and "cc=899" in run.stderr and "to NONE" in run.stderr
     assert not list(out.iterdir())
+
+
+def test_eight_ranged_facts_the_launch_function_serves_pass(tmp_path):
+    ranged = {name: {"lo": value - 1, "hi": value + 1} for name, value in NINE[1:]}
+    contract = _contract_with(tmp_path, parts={"device/hopper_sm90a": ranged}, d_v={"lo": 2, "hi": 64}, levels={"lo": 1, "hi": 4},
+                              decay={"lo": 0, "hi": 1})
+    run, out = _run(contract, tmp_path)
+    assert run.returncode == 0, run.stderr
+    assert json.loads((out / "decode_arm_rows.json").read_text())["arms"] == REACHED
+
+
+def _expected(d_v, levels, decay):
+    """The arms the ranges reach and whether some point of them reaches none, by enumerating every point (the oracle of the exact walk)."""
+    arms, gap = set(), False
+    for dv, lv, dc in itertools.product(range(d_v[0], d_v[1] + 1), range(levels[0], levels[1] + 1), range(decay[0], decay[1] + 1)):
+        if 1 <= dv <= 64 and 1 <= lv <= 4 and dc in (0, 1):
+            arms.add((32 if dv <= 32 else 64, lv, dc))
+        else:
+            gap = True
+    return sorted(arms), gap
+
+
+def test_the_walk_is_exact_against_every_point_of_seeded_ranges(tmp_path):
+    """The walk over a context's ranges reaches the arms and the NONE leaf of exactly the points inside: seeded random ranges, many straddling an arm width."""
+    rng = random.Random(23)
+
+    def span(low, high, reach):
+        lo = rng.randint(low, high)
+        return lo, rng.randint(lo, lo + reach)
+
+    for case in range(40):
+        d_v, levels, decay = span(0, 70, rng.choice([0, 3, 40])), span(0, 6, 4), span(-1, 2, 2)
+        sub = tmp_path / f"c{case}"
+        sub.mkdir()
+        run, out = _run(_contract_with(sub, d_v={"lo": d_v[0], "hi": d_v[1]}, levels={"lo": levels[0], "hi": levels[1]},
+                                       decay={"lo": decay[0], "hi": decay[1]}), sub)
+        arms, gap = _expected(d_v, levels, decay)
+        assert (run.returncode == 1) == gap, (d_v, levels, decay, run.stderr)
+        if gap:
+            assert "to NONE" in run.stderr
+        else:
+            assert json.loads((out / "decode_arm_rows.json").read_text())["arms"] == [list(a) for a in arms], (d_v, levels, decay)
+
+
+def test_sampled_points_of_every_context_reach_an_arm_among_the_contexts(tmp_path):
+    """The sanity check of the argument, not its guarantee: seeded random points inside each context of the contract and of a wide one."""
+    wide = _contract_with(tmp_path, d_v={"lo": 1, "hi": 64}, levels={"lo": 1, "hi": 4}, decay={"lo": 0, "hi": 1})
+    for n, contexts in enumerate((registry.contexts_text(registry.contexts()), wide)):
+        sub = tmp_path / f"s{n}"
+        sub.mkdir()
+        (sub / "contexts.txt").write_text(contexts)
+        (sub / "out").mkdir()
+        run = subprocess.run([str(TOOL), "--contexts", str(sub / "contexts.txt"), "--out-dir", str(sub / "out"), "--sample", "300", "--seed", "93"],
+                             capture_output=True, text=True, timeout=60)
+        assert run.returncode == 0, run.stderr

@@ -113,4 +113,103 @@ struct ArmSet {
   }
 };
 
+//: WHAT A DECISION TREE REACHES: the arms of the leaves visited, `gap` when a NONE leaf was, and the leaves visited
+template <typename Arm, std::size_t Cap>
+struct Reach {
+  ArmSet<Arm, Cap> arms;
+
+  bool gap = false;
+
+  std::size_t leaves = 0;
+
+  constexpr void arm(const Arm& a) {
+    arms.add(a);
+    ++leaves;
+  }
+
+  constexpr void hole() {
+    gap = true;
+    ++leaves;
+  }
+
+  //: THE ARM AT A POINT: the one leaf a point reaches; aborts on a range that reached other than one leaf, or on NONE
+  constexpr Arm one() const {
+    if (leaves != 1 || gap) std::abort();
+    return arms.arms[0];
+  }
+};
+
+//: a branch: `then` when the test can be Yes, `otherwise` when it can be No, both on Maybe
+template <typename Then, typename Otherwise>
+constexpr void fork(Truth t, Then then, Otherwise otherwise) {
+  if (t != Truth::No) then();
+  if (t != Truth::Yes) otherwise();
+}
+
+namespace detail {
+
+template <typename Hole, typename Leaf>
+constexpr void ladder_from(Interval x, const int* upto, std::size_t n, std::size_t i,
+                           const Hole& hole, const Leaf& leaf) {
+  if (i == n) {
+    hole();
+    return;
+  }
+  const auto here = [&] { leaf(i); };
+  const auto above = [&] { ladder_from(x, upto, n, i + 1, hole, leaf); };
+  fork(le(x, upto[i]), here, above);
+}
+
+}  // namespace detail
+
+//: THE LADDER over an int fact (docs/internals/common/plan/rules.md#exact): `leaf(i)` for the values from `first` up to `upto[i]`
+//: (`upto` ascends, `first <= upto[0]`); `hole()` below `first` or above `upto[n - 1]`
+template <typename Hole, typename Leaf>
+constexpr void ladder(Interval x, int first, const int* upto, std::size_t n, const Hole& hole,
+                      const Leaf& leaf) {
+  const auto rungs = [&] { detail::ladder_from(x, upto, n, 0, hole, leaf); };
+  fork(ge(x, first), rungs, hole);
+}
+
+namespace detail {
+
+//: THE POINT GUARANTEE, at compile time: over a point every primitive returns Yes or No, never Maybe
+constexpr bool primitives_decide_at_points() {
+  for (std::int64_t x = -3; x <= 3; ++x) {
+    const Interval p{x, x};
+    for (std::int64_t c = -3; c <= 3; ++c) {
+      if (lt(p, c) == Truth::Maybe || le(p, c) == Truth::Maybe) return false;
+      if (ge(p, c) == Truth::Maybe || eq(p, c) == Truth::Maybe) return false;
+      for (std::int64_t hi = -3; hi <= 3; ++hi)
+        if (in(p, c, hi) == Truth::Maybe) return false;
+    }
+  }
+  for (int m = 0; m < 64; ++m)
+    for (std::uint64_t bits : {std::uint64_t{0}, ~std::uint64_t{0}, std::uint64_t{1} << 5})
+      if (has(EnumSet{bits}, m) == Truth::Maybe) return false;
+  for (Truth a : {Truth::No, Truth::Yes})
+    for (Truth b : {Truth::No, Truth::Yes})
+      for (Truth c : {Truth::No, Truth::Yes})
+        if (all(a, b, c) == Truth::Maybe || any(a, b, c) == Truth::Maybe) return false;
+  return true;
+}
+
+//: and so a ladder over a point reaches exactly one leaf
+constexpr bool a_point_reaches_one_leaf() {
+  constexpr int kUpto[] = {2, 5, 9};
+  for (std::int64_t x = -3; x <= 12; ++x) {
+    Reach<int, 4> r;
+    const auto hole = [&] { r.hole(); };
+    const auto leaf = [&](std::size_t i) { r.arm(static_cast<int>(i)); };
+    ladder(Interval{x, x}, 1, kUpto, 3, hole, leaf);
+    if (r.leaves != 1 || r.gap != (x < 1 || x > 9)) return false;
+  }
+  return true;
+}
+
+static_assert(primitives_decide_at_points(), "a primitive over a point must be Yes or No");
+static_assert(a_point_reaches_one_leaf(), "a tree over a point must reach exactly one leaf");
+
+}  // namespace detail
+
 }  // namespace fsla::plan

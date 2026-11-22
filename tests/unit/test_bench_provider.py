@@ -32,6 +32,8 @@ def binary(monkeypatch):
     monkeypatch.setattr(decode, "arms", lambda: tuple(tables.decode))
     monkeypatch.setattr(provider, "_declared_families", lambda: ["decode"])
     monkeypatch.setattr(provider, "_declared", lambda family: declared_decode)
+    #: a full-contract build's record, planted as the tables are
+    monkeypatch.setattr(provider, "_build_config", lambda: {"iteration": False, "ptxas": "x"})
     #: the window an sm_90a card's build runs (hardware.json), planted as the tables are: no device answers it here
     monkeypatch.setattr(subjects, "_shared_window", lambda: hardware.load()["arch"]["sm_90a"]["build"]["window"])
     return tables
@@ -62,6 +64,16 @@ def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
     with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:contract"):
+        provider.arms(by_name(DECODE_CELL))
+
+
+def test_a_binary_built_under_a_narrowed_contract_is_refused_though_its_own_table_is_complete(binary, monkeypatch):
+    #: a narrowed build's generated table is its own subset, so declared == built: only the record names it
+    monkeypatch.setattr(provider, "_build_config", lambda: {"iteration": True})
+    with pytest.raises(RuntimeError, match="iteration build.*--//:contract"):
+        provider.arms(by_name(DECODE_CELL))
+    monkeypatch.setattr(provider, "_build_config", lambda: {})
+    with pytest.raises(RuntimeError, match="no build record"):
         provider.arms(by_name(DECODE_CELL))
 
 

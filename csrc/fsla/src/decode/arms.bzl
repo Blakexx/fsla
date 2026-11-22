@@ -1,5 +1,5 @@
 """THE DECODE FAMILY'S ARM KEY, kernel and declarations (docs/internals/decode/decode.md#decode-arm-0). Its arms are not listed here: they are
-what `decode_arms` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows file `arm_family` reads, an arm's index
+what `decode_reach` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows file `arm_family` reads, an arm's index
 its row's in canonical order. The decode step is one hand unit (`decode.cu`) that dispatches over the selection header's arm set, so the
 family has no unit of its own (bazel/arms.bzl's `arm_family`, without `unit`).
 """

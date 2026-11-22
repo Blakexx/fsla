@@ -4,8 +4,9 @@
 
 `arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
 and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
-- any cell, when the binary lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): an iteration build
-  (`--//:<family>_arms`) measures a subset of the tree;
+- any cell, when the binary is an iteration build (its build record's `iteration` mark: a narrowed `--//:contract`, or architectures
+  other than the built set), or lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): a narrowed binary
+  carries a subset of the tree, and its own generated table is that subset, so the record is what refuses it;
 - data that is neither kind.
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
 through `oneshot_argv`.
@@ -49,6 +50,7 @@ def arms(data) -> dict:
     from measure.cells.layer import CONSTRUCTIONS
     from measure.subjects import SUBJECTS, applicable
 
+    _refuse_an_iteration_binary()
     _refuse_a_partial_binary()
     if isinstance(data, CarryCell):
         kind, constructions = "carry", [None]
@@ -88,6 +90,28 @@ def _declared_families() -> list[str]:
     from tools.arm_families import arm_families
 
     return sorted(arm_families(CHECKOUT))
+
+
+def _build_config() -> dict:
+    """The binary's own build record (`fsla_cu13/_build_config.py`, written by the build); empty when this binary has none."""
+    try:
+        from fsla_cu13._build_config import BUILD_CONFIG
+    except ImportError:
+        return {}
+    return BUILD_CONFIG
+
+
+def _refuse_an_iteration_binary() -> None:
+    """A binary built under a non-default `--//:contract` (or other than the built architectures) is refused: its generated
+    arm table is its own narrowed one, so the declared-against-built comparison below cannot see that it is partial."""
+    record = _build_config()
+    if not record:
+        raise RuntimeError("this binary carries no build record (fsla_cu13/_build_config.py), so it cannot state that it was built "
+                           "under the full contract; build the library (`bazel run //:library`)")
+    if record.get("iteration", True):
+        raise RuntimeError("this binary is an iteration build (its build record's `iteration` is set: a narrowed --//:contract or "
+                           "other architectures than the built set), a subset of the tree; measure a build under the full contract "
+                           "(`bazel run //:library`, no --//:contract)")
 
 
 def _refuse_a_partial_binary() -> None:
@@ -138,10 +162,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
     fx = {"cell": spec} if kind == "carry" else _layer_fixture(spec, construction)
     fx.update(calls=calls)
     launch = subject.build(fx)
-    try:
-        from fsla_cu13._build_config import BUILD_CONFIG
-    except ImportError:
-        BUILD_CONFIG = {}
+    BUILD_CONFIG = _build_config()
     props = torch.cuda.get_device_properties(0)
 
     def call() -> float:

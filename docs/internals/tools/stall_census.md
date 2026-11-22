@@ -25,5 +25,5 @@ Samples are counts. Turning them into cycles (a component's share of the samples
 reader's, as the composer does for its part steps. The raw `.ncu-rep` capture is scratch and is not kept.
 
 <a id="member"></a>The image it attributes is the cell's own (`kernel_targets.member`): a family's one image, or for the
-family with several arms (an image each when the build carries several: every build but a `--//:<family>_arms` subset), the
+family with several arms (an image each when the build carries several: every build but one under a narrowed `--//:contract`), the
 image of the arm the cell selects (its key against the declared arm list).

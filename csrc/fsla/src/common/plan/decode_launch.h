@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 
 #include "plan/facts.h"
@@ -46,8 +47,6 @@ struct DecodeLaunch {
 
 inline constexpr std::size_t kMaxDecodeArms = 64;
 
-using DecodeArmSet = ArmSet<DecodeArm, kMaxDecodeArms>;
-
 //: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight.
 //: -- see docs/internals/decode/decode.md#decode-threads
 inline constexpr int kDecodeRegsPerThread = 128;
@@ -62,20 +61,37 @@ inline constexpr int kDecodeBlocksPerSm = 1;
 //: the value widths the decode arms are built at; a call's `d_v` is served by the narrowest arm that holds it
 inline constexpr int kDecodeArmWidths[] = {32, 64};
 
-constexpr DecodeArmSet decode_arms(const Descriptor& d) {
-  DecodeArmSet out;
-  int narrower = 0;
-  for (int d_v : kDecodeArmWidths) {
-    for (int levels = 1; levels <= 4; ++levels)
-      for (int decay = 0; decay <= 1; ++decay) {
-        Truth reached = all(eq(Reader::cc(d), 900), in(Reader::d_v(d), narrower + 1, d_v),
-                            eq(Reader::levels(d), levels), eq(Reader::decay(d), decay));
-        if (reached != Truth::No) out.add({d_v, levels, decay});
-      }
-    narrower = d_v;
-  }
-  return out;
+inline constexpr int kDecodeLevelsUpto[] = {1, 2, 3, 4};
+inline constexpr int kDecodeDecayUpto[] = {0, 1};
+
+using DecodeReach = Reach<DecodeArm, kMaxDecodeArms>;
+
+constexpr void decode_decays(DecodeReach& r, const Descriptor& d, int d_v, int levels) {
+  const auto hole = [&] { r.hole(); };
+  const auto leaf = [&](std::size_t k) { r.arm({d_v, levels, static_cast<int>(k)}); };
+  ladder(Reader::decay(d), 0, kDecodeDecayUpto, 2, hole, leaf);
 }
+
+constexpr void decode_levels(DecodeReach& r, const Descriptor& d, int d_v) {
+  const auto hole = [&] { r.hole(); };
+  const auto leaf = [&](std::size_t l) { decode_decays(r, d, d_v, static_cast<int>(l) + 1); };
+  ladder(Reader::levels(d), 1, kDecodeLevelsUpto, 4, hole, leaf);
+}
+
+//: THE ARM HALF, a decision tree on Truth, exact over ranges (docs/internals/common/plan/rules.md#exact)
+constexpr DecodeReach decode_reach(const Descriptor& d) {
+  DecodeReach r;
+  const auto hole = [&] { r.hole(); };
+  const auto leaf = [&](std::size_t w) { decode_levels(r, d, kDecodeArmWidths[w]); };
+  const auto widths = [&] {
+    ladder(Reader::d_v(d), 1, kDecodeArmWidths, std::size(kDecodeArmWidths), hole, leaf);
+  };
+  fork(eq(Reader::cc(d), 900), widths, hole);
+  return r;
+}
+
+//: the arm of a point: the same walk, which over a point visits one leaf; a range, or a point no arm serves, aborts
+constexpr DecodeArm decode_arm(const Descriptor& d) { return decode_reach(d).one(); }
 
 //: exact values only: a range aborts
 constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
@@ -112,9 +128,8 @@ constexpr int decode_grid(const DecodeArgs& args, std::int64_t unit_ceiling, std
 }
 
 constexpr DecodeLaunch decode_launch(const Descriptor& d) {
-  DecodeArmSet set = decode_arms(d);
-  if (set.size() != 1) std::abort();
-  return {set.arms[0], decode_args(d, set.arms[0])};
+  const DecodeArm arm = decode_arm(d);
+  return {arm, decode_args(d, arm)};
 }
 
 inline std::string decode_facts_read(const Descriptor& d) {

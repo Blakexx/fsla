@@ -38,7 +38,7 @@ separate claim from the capacity is [`decode.md`
 
 <a id="arm-subset"></a><a id="fsladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD COMPILES THE ARMS ITS CONTRACT REACHES.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, the arms
-`decode_arms` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows of an
+`decode_reach` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows of an
 arm family of `bazel/arms.bzl` ([`arms_gen.md`](arms_gen.md), [`../../build-graph.md#arms`](../../build-graph.md#arms)), so a BUILD that names a declared narrowed contract
 (`--//:contract=decode_d32_l2`) compiles the arms that contract reaches and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
