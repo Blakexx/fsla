@@ -365,6 +365,17 @@ __device__ __forceinline__ void wg_bf16_n64_ss(float (&d)[32], uint64_t a, uint6
                : "l"(a), "l"(b), "r"(1));
 }
 
+#define LAB_WG_D8(d) "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
+//: m64n64k16, both operands M|N-major, its accumulator FOUR 16-column sets end to end (set `s` is columns `16 s`
+//: on: the registers a 16-column step of that set writes): `d` += A [64 x 16] B [16 x 64], or written whole
+__device__ __forceinline__ void wg_bf16_n64_ss_mn4(float (&d0)[8], float (&d1)[8], float (&d2)[8], float (&d3)[8],
+                                                   uint64_t a, uint64_t b, bool add = true) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
+               "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST ", %32, %33, p, 1, 1, 1, 1; }"
+               : LAB_WG_D8(d0), LAB_WG_D8(d1), LAB_WG_D8(d2), LAB_WG_D8(d3)
+               : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+}
+
 //: m64n64k16 with BOTH operands M|N-major (the transposed form; `wg_desc` states the tile): `d` += A [64 x 16]
 //: B [16 x 64]
 __device__ __forceinline__ void wg_bf16_n64_ss_mn(float (&d)[32], uint64_t a, uint64_t b) {
