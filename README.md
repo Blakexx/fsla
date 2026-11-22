@@ -144,7 +144,7 @@ produces; the gate fails if it drifts. Change the generator, not the table.
 <!-- BEGIN GENERATED: tools/supported.py -->
 | Compute capability | GPUs | Toolchain | Assembler | Status |
 |---|---|---|---|---|
-| `sm_90a` | H100 | `cu13` | ptxas 13.0.48 | built |
+| `sm_90a` | H100 | `cu13` | ptxas 13.5.37 | built |
 | `sm_100a` | B200 | — | — | **not built — will refuse to load** |
 <!-- END GENERATED: tools/supported.py -->
 

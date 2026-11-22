@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import toolchains  # noqa: E402
 
-A = "ptxas: NVIDIA (R) Ptx optimizing assembler Cuda compilation tools, release 13.0, V13.0.48 Build x_0"
+A = "ptxas: NVIDIA (R) Ptx optimizing assembler Cuda compilation tools, release 13.5, V13.5.37 Build x_0"
 B = "ptxas: NVIDIA (R) Ptx optimizing assembler Cuda compilation tools, release 12.4, V12.4.99 Build y_0"
 
 

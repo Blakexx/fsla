@@ -3480,6 +3480,13 @@ int main(int argc, char** argv) {
     //: rearrangement on the way (KERNEL_STANDARDS 33), its reloads the 8 words
     if (roles & kWide) b.expect(k, "STORE_RELOAD", "<=", 8);
     b.exempt(k, "a composition probe: the carry's roles in one CTA, no kernel's step");
+    //: toolkit 13.5: three rows (the five-warpgroup fold and its readout, 513 and 515, and the listed ahead row with its
+    //: counted uniform stores, 865817416389624099) spill 4 bytes at their 128 registers and keep an 8-byte stack frame for
+    //: it, where toolkit 13.0 compiled each without either: the spills moved from 0 to 1 a row and the frames from 0 to 1
+    if (roles == 513 || roles == 515 || roles == 865817416389624099LL) {
+      b.expect(k, "REGISTER_SPILL", "<=", 1);
+      b.expect(k, "LOCAL_MEMORY_USED", "<=", 1);
+    }
     //: once a slot or a chunk a role: a `__syncwarp` before a one-lane arrival is a convergence call, and each
     //: barrier's polled wait a region -- five roles' in one kernel
     b.expect(k, "LOOP_CONVERGENCE", "<=", 64);

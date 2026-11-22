@@ -27,7 +27,7 @@ def built(tmp_path) -> "lab.Built":
     exp.part("sass").write_text(SASS)
     exp.part("usage").write_text(USAGE)
     exp.part("names").write_text("_Z1kv\tk()\n")
-    exp.part("toolkit").write_text("Cuda compilation tools, release 13.0, V13.0.48\nBuild cuda_13.0.r13.0/compiler.0\n")
+    exp.part("toolkit").write_text("Cuda compilation tools, release 13.5, V13.5.37\nBuild cuda_13.5.r13.5/compiler.0\n")
     return exp
 
 
@@ -39,7 +39,7 @@ def test_a_built_experiments_kernels_are_read_off_its_texts(tmp_path):
 def test_a_pack_is_read_as_the_target_is(tmp_path):
     exp = built(tmp_path)
     packed = lab.Built(exp.binary.parent, "x", "sm_90a")
-    assert packed.functions() == ["_Z1kv"] and packed.toolkit() == "Build cuda_13.0.r13.0/compiler.0"
+    assert packed.functions() == ["_Z1kv"] and packed.toolkit() == "Build cuda_13.5.r13.5/compiler.0"
     assert packed.demangle(["_Z1kv"]) == {"_Z1kv": "k()"}
 
 

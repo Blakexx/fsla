@@ -35,6 +35,14 @@ C7517 = ("ptxas info    : (C7517) warpgroup.wait is injected in around line 3928
          "defined by GMMA in function '{}'")
 C7519 = ("ptxas info    : (C7519) warpgroup.arrive is injected in around line 9191 by compiler to allow use of "
          "registers in GMMA in function '{}'")
+#: toolkit 13.5's wording: a serialization notice ends ` in line N` and two causes are numbered one lower (the pipeline's
+#: registers C7511, the divergent arrive C7519), the injected wait is `wgmma.wait_group`
+C7511_135 = ("ptxas info    : (C7511) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
+             "insufficient register resources for the wgmma pipeline in the function '{}' in line 168")
+C7519_135 = ("ptxas info    : (C7519) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
+             "program dependence on compiler-inserted WG.AR in divergent path in the function '{}' in line 245")
+C7517_135 = ("ptxas info    : (C7517) wgmma.wait_group is injected in around line 3928 by compiler to allow use of registers "
+             "defined by GMMA in function '{}'")
 SETMAXNREG = "ptxas info    : (C7505) Potential Performance Loss: 'setmaxnreg' ignored to allow debugging."
 #: a template the toolkit prints with no code in front of it
 BARE = "Potential Performance Loss: 'setmaxnreg' ignored to maintain compatibility into 'extern' call."
@@ -145,9 +153,20 @@ def test_a_register_notice_of_c7511_is_the_known_code_it_is(tmp_path, monkeypatc
 
 
 @needs_checker
+def test_toolkit_13_5_wording_is_the_same_rows(tmp_path, monkeypatch):
+    for line, said in ((C7511_135, "ptxas C7511"), (C7519_135, "ptxas C7519")):
+        failures = failures_of(tmp_path, monkeypatch, line.format("k"))
+        assert len(failures) == 1 and "the toolkit serialized its asynchronous MMAs" in failures[0] and said in failures[0]
+        assert failures_of(tmp_path, monkeypatch, line.format("k"), declared=[declare("k", "STEPS_SERIALIZED", 1)]) == []
+    failures = failures_of(tmp_path, monkeypatch, C7517_135.format("k"))
+    assert len(failures) == 1 and "1 x ptxas C7517" in failures[0]
+    assert failures_of(tmp_path, monkeypatch, C7517_135.format("k"), declared=[declare("k", "WAIT_INJECTED", 1)]) == []
+
+
+@needs_checker
 def test_an_injected_wait_is_counted_a_kernel_unless_declared_and_an_injected_arrive_never(tmp_path, monkeypatch):
     failures = failures_of(tmp_path, monkeypatch, C7517.format("k"), C7519.format("k"))
-    assert len(failures) == 1 and "injected a `warpgroup.wait`" in failures[0] and "1 x ptxas C7517" in failures[0]
+    assert len(failures) == 1 and "injected a wait (`wgmma.wait_group`" in failures[0] and "1 x ptxas C7517" in failures[0]
     assert failures_of(tmp_path, monkeypatch, C7517.format("k"), C7519.format("k"),
                        declared=[declare("k", "WAIT_INJECTED", 1)]) == []
 

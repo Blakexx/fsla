@@ -91,7 +91,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
   header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
   a header edit recompiles the units that include it and no other. The file
-  lists what every pass read, the host's and each architecture's device pass (nvcc 13.0.48: a header included only
+  lists what every pass read, the host's and each architecture's device pass (nvcc 13.5.37: a header included only
   under `__CUDA_ARCH__ == 900` is listed when sm_90a compiles). Only declared headers are
   prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
   diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console

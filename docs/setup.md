@@ -44,7 +44,7 @@ tracked action hooks from any session, rooted by `workspace.hook_roots` in the d
 
 ## 1. Host prerequisites
 
-* **An NVIDIA driver for the toolchain's CUDA major.** The declared toolchain is `cu13` (CUDA 13.0,
+* **An NVIDIA driver for the toolchain's CUDA major.** The declared toolchain is `cu13` (CUDA 13.5,
   `tools/toolchains/cu13.json`), so any driver >= 580 works. This repo's own dev box runs driver `595.95` against an
   RTX 3080 Ti, which builds, lints and checks SASS but runs no GPU test: master is hopper only, and every GPU test
   runs on a rented H100.
@@ -210,7 +210,7 @@ that graphviz's `dot` from PATH.
 
 | Tool | Source | Role |
 |---|---|---|
-| the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | `tools/cuda_toolkit_pin.json` (NVIDIA's redistributable components, by the manifest's digest), fetched by the graph as `@cuda_tools` and read through `dev_config.cuda_home()`; on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.0, V13.0.48) for every tool outside the graph's own rules; the same copy is the test tiers' and the binary gates' |
+| the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | `tools/cuda_toolkit_pin.json` (NVIDIA's redistributable components, by the manifest's digest), fetched by the graph as `@cuda_tools` and read through `dev_config.cuda_home()`; on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.5, V13.5.37) for every tool outside the graph's own rules; the same copy is the test tiers' and the binary gates' |
 | `mold` 2.42.0 | `tools/mold_pin.json`, the graph's `@mold` | the extension's only linker |
 | Nsight Compute 2025.3, Nsight Systems 2025.3 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
 | `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
