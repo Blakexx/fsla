@@ -10,11 +10,8 @@
       "declared_by": "docs/open-work.md row A-h: the value widths the carry's cells are drawn at, 2 up to 128 (the central carry cells' `dv` 32, 64 and 128); the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes the range when the carry is built; the padding seam (docs/internals/padding.md) serves the widths between"
     },
     "decay": {
-      "value": [
-        0,
-        1
-      ],
-      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0); the prefill's decay arm is owed (docs/open-work.md row C-h)"
+      "value": 0,
+      "declared_by": "docs/api.md section 1.1: a prefill's decay is refused -- decay is decode's (section 3), outside the first paper's scope"
     },
     "prefill": {
       "value": 1,

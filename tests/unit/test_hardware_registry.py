@@ -208,7 +208,7 @@ def test_the_owed_descriptors_are_the_prefills_calls_and_none_of_them_is_in_the_
     """`descriptors/owed` holds the prefill's four depths, each waiting on the prefill kernel: their contexts are held apart from the contract, the contexts file
     the matchers read and the narrowed contracts."""
     owed = registry.owed()
-    assert len(owed) == 8
+    assert len(owed) == 4  # a depth each: a prefill states no decay
     assert {c.descriptor for c, _ in owed} == {f"hopper_prefill_d{lv}" for lv in (1, 2, 3, 4)}
     assert all(kernels == ("prefill",) and c.facts["prefill"] == (1, 1) for c, kernels in owed)
     assert all(c.facts["stateful"] == (0, 1) and c.facts["tokens"][0] == 1 for c, _ in owed)
@@ -220,7 +220,7 @@ def test_the_owed_descriptors_are_the_prefills_calls_and_none_of_them_is_in_the_
 
 def test_the_owed_header_holds_each_owed_context_and_the_kernels_it_waits_on():
     text = registry.owed_header(registry.owed(), registry.schema())
-    assert text.count("out.push_back({\"hopper_prefill_d") == 8 and text.count("{\"prefill\"}}") == 8
+    assert text.count("out.push_back({\"hopper_prefill_d") == 4 and text.count("{\"prefill\"}}") == 4
     assert "f.assign(\"prefill\", Interval{1, 1});" in text and "struct OwedContext" in text
 
 

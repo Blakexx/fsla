@@ -120,16 +120,12 @@ def test_the_intra_term_is_actually_present():
                            what="inter alone")
 
 
-def test_the_op_refuses_what_it_has_no_kernel_for():
-    """THE REFUSAL IS STRUCTURAL: a decay, which the prefill envelope does not carry, is refused by name before any
-    kernel runs."""
-    from conftest import hand_descriptor
+def test_a_prefill_with_a_decay_is_outside_the_contract():
+    """A DECAY IS DECODE'S: no descriptor, guaranteed or owed, holds a prefill that decays, so its call is refused when its descriptor is
+    made -- as a call outside the contract, before any kernel could run."""
+    from fsla.ops.produce import prefill_descriptor
 
-    from fsla.routing.types import LeafMassDecay
-
-    routes, values, masks = operands(by_name("flagship-alt-k4"))
-    dials = tuple(torch.full((routes.write_heads, w), 0.5, device="cuda") for w in routes.topology.widths)
-    decay = LeafMassDecay(dials=dials)
-    #: the prefill's descriptor is owed (refused when made), so the op's own refusal is reached through one made by hand
-    with pytest.raises((NotImplementedError, ValueError), match="decay"):
-        fsla_op(routes, values, masks, hand_descriptor(routes, values, decay=decay), decay=decay)
+    routes, values, _masks = operands(by_name("flagship-alt-k4"))
+    with pytest.raises(RuntimeError, match="outside FSLA's contract"):
+        prefill_descriptor(routes.topology, d_v=values.d_v, decay=True, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
+                           stateful=False, device=routes.device)
