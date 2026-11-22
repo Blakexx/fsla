@@ -3438,6 +3438,10 @@ int main(int argc, char** argv) {
     //: thread of the warpgroup takes: it serializes one group of steps (ptxas C7520). That is a known defect of these
     //: rows, built to measure issuing only the steps a list reaches: their numbers are of a serialized form
     if ((roles & kSkip) && (roles & kReady)) b.expect(k, "STEPS_SERIALIZED", "<=", 1);
+    //: those rows' two runs of four steps or more, each waited out before the next (2 in each row), and the shuffle-less row's
+    //: four waits for every group with work behind them (4): predates the rule; fixed at the family's Hopper rewrite
+    if ((roles & kSkip) && (roles & kReady)) b.expect(k, "STEP_SERIALIZED", "<=", 2);
+    if ((roles & kSkip) && (roles & kReady) && !(roles & kShfl)) b.expect(k, "WAIT_ALL_WITH_WORK", "<=", 4);
     //: the packed rows' fold steps are a list's rolled loop (above): steps that do not pipeline (H100, 2026-11-20),
     //: a known defect of these rows: their recorded figures are of steps that do not pipeline
     if ((roles & kPacked) == kPacked) b.expect(k, "STEP_ROLLED", "<=", 16);

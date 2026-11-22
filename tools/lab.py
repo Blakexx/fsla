@@ -172,6 +172,7 @@ HAZARD_RULES = {
     "LOOP_CONVERGENCE": "loop_convergence", "LOAD_IN_TRIP": "load_in_trip", "STORE_RELOAD": "store_reload",
     "STORE_UNFENCED": "store_unfenced", "CLOCK_UNIFORM": "clock_uniform", "WAIT_AFTER_ISSUE": "wait_after_issue",
     "STEP_ROLLED": "step_rolled", "STEP_PORT": "step_port", "STEP_WORK": "step_work",
+    "STEP_SERIALIZED": "step_serialized", "ACCUMULATOR_MOVED": "accumulator_moved", "WAIT_ALL_WITH_WORK": "wait_all_with_work",
     "STEPS_SERIALIZED": "mma_serialized", "WAIT_INJECTED": "wait_injected",
     "BANK_CONFLICT": "shared_wavefronts_excess",
 }
@@ -298,6 +299,9 @@ REFUSAL_TEXT = {
     "clock_uniform": "{n} sums of a cycle-counter reading in uniform registers, {declared} declared (CLOCK_UNIFORM)",
     "wait_after_issue": "{n} tensor waits directly after their group's steps, {declared} declared (WAIT_AFTER_ISSUE)",
     "step_rolled": "{n} tensor steps in loops that hold no wait on them (loops at {where}), {declared} declared (STEP_ROLLED)",
+    "step_serialized": "{n} runs of four tensor steps or more each waited out before the next (waits at {where}), {declared} declared (STEP_SERIALIZED)",
+    "accumulator_moved": "{n} instructions that copy or update a step's accumulator registers between two steps or a step and its wait (at {where}), {declared} declared (ACCUMULATOR_MOVED)",
+    "wait_all_with_work": "{n} tensor waits for every group in flight that leave work of substance waiting behind them (at {where}), {declared} declared (WAIT_ALL_WITH_WORK)",
     "step_port": "{n:,} bytes a step through the shared-memory port, over the {declared:,} declared (STEP_PORT)",
     "step_work": "{n:,} instructions a step, over the {declared:,} declared (STEP_WORK)",
     "step_branches": "{n} branches inside an MMA step nobody declared (BSSY)",
@@ -379,7 +383,8 @@ def held_rules(experiment: str) -> set[str]:
     budgeted kernels only, for an experiment in `_PRE_TIMELINE`), and past `_PRE_TIMELINE` the rest -- `wait_after_issue` past `_PRE_WAIT`."""
     names = {"step_port", "step_work", "step_branches", "step_conversion", "step_global", "convergence_call", "loop_convergence"}
     if experiment not in _PRE_TIMELINE:
-        names |= {"load_in_trip", "store_reload", "store_unfenced", "clock_uniform", "step_rolled"}
+        names |= {"load_in_trip", "store_reload", "store_unfenced", "clock_uniform", "step_rolled",
+                  "step_serialized", "accumulator_moved", "wait_all_with_work"}
         if experiment not in _PRE_WAIT:
             names.add("wait_after_issue")
     return names

@@ -27,7 +27,7 @@ git_override(
 bazel_dep(name = "warpline", version = "0.1.0")
 git_override(
     module_name = "warpline",
-    commit = "d01f657fc092406d3c70c18acb2ab56bbaba439a",
+    commit = "25adf02ccd9f7bd160447f6ae8a2dd1867c63bc8",
     remote = "https://github.com/Blakexx/warpline.git",
 )
 

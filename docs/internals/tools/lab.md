@@ -122,6 +122,9 @@ runs the rules and shows each refusal under the hazard's name the experiment dec
 | `CLOCK_UNIFORM` | `clock_uniform` | a cycle-counter reading summed in uniform registers |
 | `WAIT_AFTER_ISSUE` | `wait_after_issue` | a tensor wait that leaves no group in flight directly after its group's steps (KERNEL_STANDARDS 29.16) |
 | `STEP_ROLLED` | `step_rolled` | tensor steps in the innermost natural loop that holds no wait on them (the rule counts the steps; the declaration is a count of them) |
+| `STEP_SERIALIZED` | `step_serialized` | a run of four tensor steps or more in one innermost loop in which at most one step in eight lacks its own `DEPBAR` 0 before the next (the count is the runs) |
+| `ACCUMULATOR_MOVED` | `accumulator_moved` | an instruction that is no step, writes a register of a step's destination and reads one, between two steps of a chain or a step and its wait (a copy or an update of an accumulator) |
+| `WAIT_ALL_WITH_WORK` | `wait_all_with_work` | a `DEPBAR` 0 after which nothing up to the next step touches the newest group's registers while work of substance is on its path: a wait for fewer groups would let it overlap |
 | `STEP_PORT`, `STEP_WORK` | `step_port`, `step_work` | a BOUND, declared `<=`: the bytes a step puts through the shared-memory port, the instructions a thread issues a step |
 | `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
 | `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps, not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, declared a CTA-window of the profiled launch (`--per`), never a launch's total |
