@@ -28,13 +28,16 @@
   "fsla_cu13",
   "sgconfig.yml",
   "tests",
-  "tools"
+  "tools",
+  ".claude",
+  "CLAUDE.md"
  ],
  "private": [
-  ".claude",
-  "CLAUDE.md",
-  ".github/workflows/mirror.yml",
-  "tools/lint/fixtures/rules_table/tree/.claude"
+  ".github/workflows/mirror.yml"
  ],
- "allow": {}
+ "allow": {},
+ "agent_files": false,
+ "emails": [
+  "blakebresearch@gmail.com"
+ ]
 }

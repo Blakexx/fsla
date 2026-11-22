@@ -180,6 +180,14 @@ tool_run(
     module = "fsla_devtools.mirror",
 )
 
+#: the mirror's content checks over a staged diff or a pushed range (`--staged`, `--range A..B`): the pre-commit and
+#: pre-push hooks run it, before the mirror would refuse the same lines (docs/build-graph.md#checks)
+tool_run(
+    name = "tripwire",
+    environment = True,
+    module = "fsla_devtools.tripwire",
+)
+
 ratify_run(
     name = "ratify",
     census = ":census",
