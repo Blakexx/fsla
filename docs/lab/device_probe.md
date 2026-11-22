@@ -8,8 +8,8 @@ memory per SM, shared memory per CTA (opt-in), threads per SM, SM count and L2 b
 (`cudaGetDeviceProperties` and `cudaDeviceGetAttribute`) and the device's own registers (`%nsmid`, `%total_smem_size`) agree?
 
 THE FORM. No timing. The host reads each fact by its property and by its attribute; one CTA of one warp reads the two special registers and stores them; each
-fact is recorded as a row of its own name (`cc` is major x 100 + minor x 10, as the schema says), beside the bus, slot and domain the driver reports. Three checks: the two
-routes are equal, the registers were read, and the device's SM count is within the register's SM identifiers. The kernel declares its special-register read.
+fact is recorded as a row of its own name (`cc` is major x 100 + minor x 10, as the schema says), beside the bus, slot and domain the driver reports. Four checks: the two
+routes are equal, the registers were read, the device's SM count is within the register's SM identifiers, and every fact is positive. The kernel declares its special-register read.
 
 THE CANDIDATE. `lab page device_probe --instance LABEL` turns the record into `hardware/parts/device/<id>.candidate.json`: each fact the schema reads
 from the device with its value and the row that measured it, `tensor` and `instructions` from the architecture table's row of the device's compute capability

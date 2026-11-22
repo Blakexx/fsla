@@ -22,4 +22,7 @@ ranged facts than the corners are tried over (`kMaxRanged`): the tool refuses wh
 `tests/unit/test_decode_arms_gen.py` holds the failures: a contract that admits `d_v` 128, `levels` 5 or `decay` 2, a range wider than the arms,
 a context with too many ranged facts.
 
-`--//:decode_arms` names a subset of the generated list, by index, for an iteration build that is never a wheel.
+`//hardware:contexts` is the contract the build names (`--//:contract`, default `full`): under a declared narrowed contract
+([`../hardware/registry.md#narrowed`](../hardware/registry.md#narrowed)) the tool reaches only the arms that contract does (`decode_d32_l2`: 4 of the 16), and the
+build is an iteration build that is never a wheel. The first line of the contexts file names the contract; the selection record repeats it.
+`tests/unit/test_narrowed_contract.py` holds the counts.

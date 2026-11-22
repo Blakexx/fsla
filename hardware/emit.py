@@ -22,14 +22,15 @@ def main() -> int:
     ap.add_argument("--facts-header", type=Path)
     ap.add_argument("--contexts", type=Path)
     ap.add_argument("--contract-header", type=Path)
+    ap.add_argument("--contract", default=registry.FULL, help="the contract: `full`, or a narrowed contract of descriptors/dev (the build's `--//:contract`)")
     a = ap.parse_args()
     registry.check(a.root)
     if a.facts_header:
         a.facts_header.write_text(registry.facts_header(registry.schema(a.root)))
     if a.contexts:
-        a.contexts.write_text(registry.contexts_text(registry.contexts(a.root)))
+        a.contexts.write_text(registry.contexts_text(registry.contexts(a.root, a.contract), a.contract))
     if a.contract_header:
-        a.contract_header.write_text(registry.contract_header(registry.contexts(a.root), registry.schema(a.root)))
+        a.contract_header.write_text(registry.contract_header(registry.contexts(a.root, a.contract), registry.schema(a.root), a.contract))
     return 0
 
 

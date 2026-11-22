@@ -2,7 +2,6 @@
 `pytest_tier`). Each test is in one tier: the CPU tier is tests/unit's rows that launch nothing, run with no device
 visible; a device tier runs alone. Every tier takes the library: collecting a tier reaches the plugin."""
 
-load("@bazel_skylib//rules:common_settings.bzl", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel:arms.bzl", "arm_family", "arm_rows", "arm_selection")
@@ -60,11 +59,7 @@ _FIXTURE_DOMAINS = {
 }
 
 #: THE FIXTURE ARM FAMILY (tests/unit/fixtures/fixture_arms.bzl): the macro of bazel/arms.bzl on a family that is not a shipped one. Its three rows make a unit each for each built architecture, its selection header names the arms
-#: `--//tests:fixture_arms` does, and its table is the rows (tests/unit/test_arm_family.py reads all three)
-string_list_flag(
-    name = "fixture_arms",
-    build_setting_default = [],
-)
+#: of every row (a real family's rows are the arms its contract reaches), and its table is the rows (tests/unit/test_arm_family.py reads all three)
 
 cc_library(
     name = "fixture_headers",
@@ -83,7 +78,6 @@ arm_family(
     arms = FIXTURE_ROWS,
     built_archs = BUILT_ARCHS,
     domains = _FIXTURE_DOMAINS,
-    flag = ":fixture_arms",
     includer = "the fixture's arm units",
     key = _FIXTURE_KEY,
     unit = {
@@ -147,6 +141,8 @@ pytest_tier(
         "//csrc/fsla:decode_arms_gen",
         "//csrc/fsla:decode_plan",
         "//csrc/fsla:plan_tool",
+        "//csrc/fsla:decode_plan_narrowed",
+        "//csrc/fsla:plan_tool_narrowed",
         ":fixture_arm_set",
         ":fixture_selection",
         ":fixture_table",

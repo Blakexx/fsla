@@ -24,8 +24,9 @@ ones with their document, the undocumented ones measured by `smem_rates` and the
 card), and regenerate the header. **Do not guess**: an overstated resource makes `ptxas`
 silently discard the launch bound, which is a silent occupancy loss on the architecture
 nobody checked. `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`, called from
-every family's launching entry, carry included) checks every row against the driver at run
-time, so a wrong number is caught — but it is caught by a user unless you check it first.
+every family's launching entry, carry included) admits the device's card by the planner's contract check: the driver's own
+numbers must lie in a registered context ([`arch_runtime.md`](internals/common/arch_runtime.md#check-arch-table)), so a number
+the contract does not hold is refused by a user's first launch -- unless you probe it first.
 
 Then PROBE THE DEVICE, which admits it to the contract: run `//measure/lab:device_probe` on the card (`bazel run //tools:lab -- run device_probe --record`, then
 `bazel run //tools:lab -- page device_probe --instance LABEL`), read the candidate part it writes (`hardware/parts/device/<id>.candidate.json`), complete what

@@ -24,7 +24,7 @@ load(":arms.bzl", "ARM_FAMILIES")
 load(":cuda.bzl", "CudaUnitInfo")
 
 #: the build's parameters (the root package's settings), as every rule here reads them
-_SETTINGS = dict({"_archs": "//:archs"}, **{"_%s_arms" % family: "//:%s_arms" % family for family in ARM_FAMILIES})
+_SETTINGS = {"_archs": "//:archs", "_contract": "//:contract"}
 
 def _setting_attrs():
     return {name: attr.label(default = label) for name, label in _SETTINGS.items()}
@@ -34,8 +34,7 @@ def _value(ctx, name):
 
 def _parameters(ctx, args):
     args.add("--archs", ",".join(_value(ctx, "_archs")))
-    for family in ARM_FAMILIES:
-        args.add("--arms", "%s=%s" % (family, ",".join(_value(ctx, "_%s_arms" % family))))
+    args.add("--contract", _value(ctx, "_contract"))
 
 #: the header `bazel/headers.py` writes: the builds the binary carries (`measure/hardware.py`'s)
 _BUILDS = "builds.inc"
@@ -282,7 +281,6 @@ def _extension_impl(ctx):
     for family in ARM_FAMILIES:
         arm_args.add("--header", "%s=%s" % (family, headers[family].path))
         arm_args.add("--table", "%s=%s" % (family, tables[family].path))
-        arm_args.add("--arms", "%s=%s" % (family, ",".join(_value(ctx, "_%s_arms" % family))))
     #: the environment's interpreter by its store path, which carries the environment's key
     arm_args.add("--python", VENV + "/bin/python3")
     arm_args.add("--driver-stub", stub)
@@ -406,10 +404,7 @@ def _census_impl(ctx):
     ctx.actions.write(record, json.encode_indent({
         "units": [{"source": u.source, "report": u.report.short_path, "object": u.object.short_path} for u in units],
         "tools": {name: f.short_path for name, f in tools.items()},
-        "parameters": dict({"archs": ",".join(_value(ctx, "_archs"))}, **{
-            "%s_arms" % family: ",".join(_value(ctx, "_%s_arms" % family))
-            for family in ARM_FAMILIES
-        }),
+        "parameters": {"archs": ",".join(_value(ctx, "_archs")), "contract": _value(ctx, "_contract")},
     }) + "\n")
     files = [record] + tools.values() + [u.report for u in units] + [u.object for u in units]
     return [DefaultInfo(files = depset([record]), runfiles = ctx.runfiles(files = files))]
@@ -918,3 +913,46 @@ def device_lane(name, cmd, **kwargs):
     part of a suite a commit runs (`manual`)."""
     _device_lane(name = name, cmd = cmd, venv = VENV, devices = Label("@host_gpu//:identity.txt"),
                  **(_TIER_TOOLKIT | kwargs))
+
+def _full_contract_test_impl(ctx):
+    contract = ctx.attr._contract[BuildSettingInfo].value
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    if contract == "full":
+        body = "#!/bin/bash\necho 'the gate runs against the full contract'\n"
+    else:
+        body = "#!/bin/bash\necho 'the gate refuses --//:contract=%s: the full contract is enforced in the gate and in releases (a narrowed contract is a development build)' >&2\nexit 1\n" % contract
+    ctx.actions.write(script, body, is_executable = True)
+    return [DefaultInfo(executable = script)]
+
+full_contract_test = rule(
+    implementation = _full_contract_test_impl,
+    test = True,
+    attrs = {"_contract": attr.label(default = "//:contract", providers = [BuildSettingInfo])},
+    doc = "A test that passes under the full contract and fails, naming the narrowed one, under any other `--//:contract`: the gate's refusal of a narrowed build.",
+)
+
+def _contract_transition_impl(_settings, attr):
+    return {str(Label("//:contract")): attr.contract}
+
+_contract_transition = transition(
+    implementation = _contract_transition_impl,
+    inputs = [],
+    outputs = [str(Label("//:contract"))],
+)
+
+def _with_contract_impl(ctx):
+    outs = []
+    for f in ctx.attr.target[0][DefaultInfo].files.to_list():
+        out = ctx.actions.declare_file("%s/%s" % (ctx.label.name, f.basename))
+        ctx.actions.run_shell(inputs = [f], outputs = [out], command = "cp -p \"$1\" \"$2\"", arguments = [f.path, out.path], mnemonic = "FslaWithContract")
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs), runfiles = ctx.runfiles(files = outs))]
+
+with_contract = rule(
+    implementation = _with_contract_impl,
+    attrs = {
+        "target": attr.label(mandatory = True, cfg = _contract_transition),
+        "contract": attr.string(mandatory = True, doc = "the narrowed contract (`hardware/descriptors/dev/<name>.json`) the target is built under"),
+    },
+    doc = "A target's files as a build under a narrowed contract (`--//:contract=<contract>`) makes them, beside the default build's: the tests' way to read a narrowed build's tools and arm list on CPU.",
+)

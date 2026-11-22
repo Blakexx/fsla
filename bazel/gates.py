@@ -26,26 +26,24 @@ def main() -> int:
     ap.add_argument("--header", action="append", default=[], metavar="FAMILY=PATH",
                     help="a family's selection header the build compiled against")
     ap.add_argument("--table", action="append", default=[], metavar="FAMILY=PATH", help="a family's generated table")
-    ap.add_argument("--arms", action="append", default=[], metavar="FAMILY=SPEC", help="a family's arm scope")
     ap.add_argument("--python", required=True, help="the environment's interpreter, torch beside it")
     ap.add_argument("--driver-stub", type=Path, required=True, help="the toolkit's libcuda.so stub")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    headers, tables, specs = (arms.by_family(a.header, "--header"), arms.by_family(a.table, "--table"),
-                              arms.by_family(a.arms, "--arms"))
+    headers, tables = arms.by_family(a.header, "--header"), arms.by_family(a.table, "--table")
     report = []
     with tempfile.TemporaryDirectory(prefix="fsla_arm_gate_") as tmp:
         #: the stub under its soname, the one the binary's NEEDED names
         (Path(tmp) / "libcuda.so.1").symlink_to(a.driver_stub.absolute())
         for family in sorted(tables):
             table = arms.Table(Path(tables[family]))
-            want = arms.family_arms(table, specs.get(family, ""), f"--//:{family}_arms")
+            want = list(range(len(table.arms)))
             bad = arms.check_built_arm_table(Path(headers[family]).read_text(), want, table, family)
             if bad:
                 raise SystemExit(f"the built {family} arm table:\n" + "\n".join(bad))
             swept = arms.sweep_binary(str(Path(a.python).absolute()), a.so.absolute(), family, want, table, cwd=Path(tmp),
                                       env={"LD_LIBRARY_PATH": tmp, "PATH": "/usr/bin:/bin"})
-            report.append(f"arm table OK  {family}: {len(want)} built of {len(table.arms)} declared; {swept} arm(s) swept\n")
+            report.append(f"arm table OK  {family}: {len(want)} arms the build's contract reaches; {swept} arm(s) swept\n")
     a.out.write_text("".join(report))
     return 0
 

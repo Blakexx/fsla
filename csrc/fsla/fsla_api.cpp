@@ -90,17 +90,18 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
   return {probe.device, probe.supported, (int64_t)probe.allocation_granularity, probe.reason};
 }
 
-//: A DEVICE'S CARD (`common/select.cuh`): its compute capability, family and W
-std::vector<int64_t> device_card_op(int64_t device) {
+//: A DEVICE'S CARD (`common/select.cuh`): its compute capability, its family's name (`kFamilyNames`, generated from
+//: the one list the `Family` enum is) and W
+std::tuple<int64_t, std::string, int64_t> device_card_op(int64_t device) {
   const fsla::Card& c = fsla::card_of(static_cast<int>(device));
-  return {c.cc, static_cast<int64_t>(c.traits.family), c.traits.window};
+  return {c.cc, denseref::arch::kFamilyNames[static_cast<int>(c.traits.family)], c.traits.window};
 }
 
 }  // namespace
 
 STABLE_TORCH_LIBRARY(fsla, m) {
   // ---- the device's card, the segment law and the stamps -------------------
-  m.def("device_card(int device) -> int[]");
+  m.def("device_card(int device) -> (int, str, int)");
   m.def(
       "segment_tokens(int budget, int state, int per_token, int batch, int length, int device) -> int");
   m.def("csrc_build_stamp() -> int");

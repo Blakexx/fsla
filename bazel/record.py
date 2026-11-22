@@ -33,7 +33,7 @@ def main() -> int:
     ap.add_argument("--nvdisasm", required=True, help="the graph's nvdisasm")
     ap.add_argument("--archs", required=True)
     ap.add_argument("--table", action="append", default=[], metavar="FAMILY=PATH", help="a family's generated table")
-    ap.add_argument("--arms", action="append", default=[], metavar="FAMILY=SPEC", help="a family's arm scope")
+    ap.add_argument("--contract", default="full", help="the build's contract: `full`, or the narrowed contract it names")
     ap.add_argument("--torch", required=True, help="the environment's torch version")
     ap.add_argument("--torch-cuda", required=True, help="the CUDA release the environment's torch was built for")
     ap.add_argument("--cxx11-abi", required=True, choices=("True", "False"))
@@ -49,14 +49,10 @@ def main() -> int:
                              {"cuobjdump": toolchains.version_text(a.cuobjdump),
                               "nvdisasm": toolchains.version_text(a.nvdisasm)})
     print(f"rule 1 OK  toolchain {toolchain.name}, torch CUDA {a.torch_cuda}, ptxas: {ptxas}")
-    tables = {family: arms.Table(Path(path)) for family, path in arms.by_family(a.table, "--table").items()}
-    specs = arms.by_family(a.arms, "--arms")
-    scopes = {family: (arms.family_arms(table, specs.get(family, ""), f"--//:{family}_arms"), table)
-              for family, table in tables.items()}
     cutlass = build_record.vendored_pin(ROOT / "csrc" / "third_party" / "cutlass")
     a.out.write_text(build_record.render(build_record.config(
         version=build_record.version(ROOT / "fsla" / "__init__.py"), archs=archs,
-        iteration=arms.is_iteration(scopes, archs, built),
+        iteration=arms.is_iteration(a.contract, archs, built),
         toolchain=toolchain.name,
         ptxas=ptxas, torch=a.torch, cxx11_abi=a.cxx11_abi == "True",
         cutlass_pin=cutlass)))

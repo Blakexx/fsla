@@ -67,7 +67,8 @@ the family and `BUILD_TRAITS`, and a product holding a `build`.
 - COMPILE TIME reads a BUILD's traits (below): its architecture's capabilities and the build choices. `hardware.cuh`
   carries every tabulated architecture's `Caps` row, `tabulated(cc)` and `caps_of(cc)`, and every build's
   `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and names the compiling target's row, and
-  [`arch_runtime.cu`](arch_runtime.md) checks the row against the driver.
+  [`arch_runtime.cu`](arch_runtime.md) admits the device by the planner's contract check (the driver's numbers lie in a registered
+  context), not by a second table of them.
 - RUN TIME may read rates: the binary carries every architecture's and product's MMA rates (`kMmaRows`), a
   product's found by the device's name. No entry reads them on this line: no form is chosen by a card's rates
   (`docs/CONSTITUTION.md#r17`).

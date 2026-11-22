@@ -36,20 +36,19 @@ def test_the_table_is_the_declared_rows_on_the_decode_key(table):
     assert table.arms == EXPECTED_ROWS
 
 
-def test_the_selection_header_carries_every_arm_when_the_build_names_none(table):
+def test_the_selection_header_carries_every_row_of_the_list(table):
     text = (GENERATED / "fixture_selection.inc").read_text()
-    assert arms.check_built_arm_table(text, arms.family_arms(table, "", "--//tests:fixture_arms"), table, "fixture") == []
+    assert arms.check_built_arm_table(text, list(range(len(table.arms))), table, "fixture") == []
     assert "#define FSLA_FIXTURE_ARM_COUNT 3" in text and "#define FSLA_FIXTURE_ARM_DECLARED 3" in text
     assert "  F(2, 64, 2, 1)" in text
 
 
-def test_a_scope_names_arm_indices_or_all_and_refuses_the_rest(table):
-    assert arms.family_arms(table, "2,0", "knob") == [0, 2]
-    assert arms.family_arms(table, "all", "knob") == [0, 1, 2]
-    with pytest.raises(SystemExit, match="no such arm 3"):
-        arms.family_arms(table, "3", "knob")
-    with pytest.raises(SystemExit, match="not an arm index or 'all'"):
-        arms.family_arms(table, "x", "knob")
+def test_a_narrowed_contract_or_an_unbuilt_architecture_makes_an_iteration_build():
+    built = hardware.built()
+    archs = [x.removeprefix("sm_") for x in built]
+    assert not arms.is_iteration("full", archs, built)
+    assert arms.is_iteration("decode_d32_l2", archs, built)
+    assert arms.is_iteration("full", archs[:-1], built)
 
 
 @pytest.mark.parametrize("arch", [a.removeprefix("sm_") for a in hardware.built()])

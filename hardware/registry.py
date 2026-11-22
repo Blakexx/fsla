@@ -17,6 +17,9 @@ ROOT = Path(__file__).absolute().parent
 #: declaration that makes it the contract
 PROVENANCE = ("measured_by", "validated_by", "documented_by", "declared_by")
 READS = ("DEVICE", "CALL")
+#: the contract a build compiles against when it names none: every descriptor of `descriptors/`. A development build names a NARROWED contract
+#: instead (`descriptors/dev/<name>.json`, marked `"narrowed": true`)
+FULL = "full"
 #: the suffix of a part the device probe wrote (`hardware/parts/device/<id>.candidate.json`): a candidate is never a part
 CANDIDATE = ".candidate"
 TYPES = ("int", "set<enum>")
@@ -140,9 +143,9 @@ def parts(root: Path = ROOT) -> list[str]:
     return sorted(str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json"))
 
 
-def descriptors(root: Path = ROOT) -> dict[str, dict]:
+def descriptors(root: Path = ROOT, folder: str = "descriptors") -> dict[str, dict]:
     out = {}
-    for path in sorted((root / "descriptors").glob("*.json")):
+    for path in sorted((root / folder).glob("*.json")):
         data = _read(path)
         if data.get("name") != path.stem:
             raise RegistryError(f"{path}: the descriptor's name is {data.get('name')!r}, its file says {path.stem!r}")
@@ -180,8 +183,43 @@ def expand(descriptor: dict, facts: dict[str, Fact], root: Path = ROOT) -> list[
             for combo in itertools.product(*(stated[n] for n in names))]
 
 
-def contexts(root: Path = ROOT) -> list[Context]:
-    """The contract: every context of every descriptor, refused when two are identical in every fact."""
+def narrowed(name: str, root: Path = ROOT) -> dict:
+    """A DECLARED NARROWED CONTRACT by name (`descriptors/dev/<name>.json`): a descriptor of its own, marked `"narrowed": true`, whose every
+    context lies inside a context of the full contract (a narrowed contract promises less, never more), or a RegistryError."""
+    found = descriptors(root, "descriptors/dev")
+    if name not in found:
+        raise RegistryError(f"no narrowed contract {name!r}: the declared ones are {sorted(found) or 'none'} (`descriptors/dev/<name>.json`); "
+                            f"`--//:contract={FULL}` is the full contract")
+    descriptor = found[name]
+    if descriptor.get("narrowed") is not True:
+        raise RegistryError(f"descriptors/dev/{name}.json is not marked narrowed (`\"narrowed\": true`): only a declared narrowed contract may "
+                            "narrow a build")
+    facts = schema(root)
+    held = contexts(root)
+    for context in expand(descriptor, facts, root):
+        if not any(_inside(context, whole, facts) for whole in held):
+            raise RegistryError(f"narrowed contract {name}: its context '{context.id}' lies outside the full contract: a narrowed contract may "
+                                "promise less than the full one, never more")
+    return descriptor
+
+
+def _inside(context: Context, whole: Context, facts: dict[str, Fact]) -> bool:
+    for name, fact in facts.items():
+        a, b = context.facts[name], whole.facts[name]
+        if fact.type == "int":
+            if a[0] < b[0] or a[1] > b[1]:
+                return False
+        elif not set(a) <= set(b):
+            return False
+    return True
+
+
+def contexts(root: Path = ROOT, contract: str = FULL) -> list[Context]:
+    """The contract a build compiles against: every context of every descriptor (`contract` the full one), or of the one narrowed contract it
+    names; refused when two are identical in every fact."""
+    if contract != FULL:
+        facts = schema(root)
+        return expand(narrowed(contract, root), facts, root)
     facts = schema(root)
     refused = [n for n in parts(root) if n.endswith(CANDIDATE)]
     if refused:
@@ -208,11 +246,14 @@ def check(root: Path = ROOT) -> None:
             if fname not in facts:
                 raise RegistryError(f"part {name}: {fname} is no fact of the schema")
     contexts(root)
+    for name in descriptors(root, "descriptors/dev"):
+        narrowed(name, root)
 
 
-def contexts_text(contexts_: list[Context]) -> str:
-    """The contract as `arms_gen` reads it: a line a context, tab-separated: its id, then `fact=lo:hi` or `fact={member,...}`."""
-    lines = []
+def contexts_text(contexts_: list[Context], contract: str = FULL) -> str:
+    """The contract as `arms_gen` reads it: a first line naming the contract (`# contract: full`), then a line a context, tab-separated: its id,
+    then `fact=lo:hi` or `fact={member,...}`."""
+    lines = [f"# contract: {contract}"]
     for c in contexts_:
         cells = [c.id]
         for name, value in c.facts.items():
@@ -277,10 +318,12 @@ def facts_header(facts: dict[str, Fact]) -> str:
     return "".join(out)
 
 
-def contract_header(contexts_: list[Context], facts: dict[str, Fact]) -> str:
-    """`plan/contract.h`: the contract as the run time holds it, `contract()` a context each (its id and its facts, each a point or a range)."""
+def contract_header(contexts_: list[Context], facts: dict[str, Fact], contract: str = FULL) -> str:
+    """`plan/contract.h`: the contract as the run time holds it, `contract()` a context each (its id and its facts, each a point or a range), and
+    its name: a narrowed contract is named wherever the run time refuses a call outside it."""
     out = ["// GENERATED from hardware/descriptors by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
            "#pragma once\n\n#include <vector>\n\n#include \"plan/facts.h\"\n\nnamespace fsla::plan {\n\n",
+           f"//: the contract this build compiled against: `full`, or the narrowed contract a development build named\ninline constexpr const char* kContractName = \"{contract}\";\ninline constexpr bool kContractNarrowed = {'true' if contract != FULL else 'false'};\n\n",
            "struct ContractContext {\n  const char* id;\n  Facts facts;\n};\n\n",
            "//: every context FSLA accepts\ninline const std::vector<ContractContext>& contract() {\n  static const std::vector<ContractContext> rows = [] {\n    std::vector<ContractContext> out;\n"]
     for c in contexts_:

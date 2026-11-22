@@ -26,5 +26,5 @@ never a raw fact.
 
 `decode.cu`'s `fsla_decode_forward` takes the descriptor's words, has the planner check them against the contract and this device, and
 launches the arm `decode_launch` names with its arguments; the compiled arms are the build's selection (`arm_switch<DecodeArmSet>`), so an
-arm the contract reaches that an iteration build left out is refused by name. The build selection stays beside the launch function because it
+arm the contract reaches that a narrowed contract left out is refused by name (the planner holds the narrowed contract). The build selection stays beside the launch function because it
 answers a different question: which arms THIS binary compiled.

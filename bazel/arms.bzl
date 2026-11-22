@@ -8,8 +8,8 @@ the family's launch function's arm half into over the contract (docs/internals/d
 - one translation unit per arm and per BUILT architecture (`<name>_arm_<i>_sm_<arch>`) when the family has per-arm units
   (`unit`), whose source is the family's arm header and one `<NAME>_ARM_DEFINE(i, key...)` under the arm's own selection
   guard -- an arm the build does not select is a unit that compiles to nothing, and a unit the build never compiles;
-- the selection header of the build (`<name>_selection.inc`): which arms this build carries, from `--//:<name>_arms`
-  (`flag`), with the arm set the host dispatches over;
+- the selection header of the build (`<name>_selection.inc`): the arms this build carries -- every row of the list, which is the arms the
+  build's CONTRACT reaches (`--//:contract`, docs/build.md#narrowed) -- with the arm set the host dispatches over;
 - the Python table (`<name>_arms.py`): the key and the rows, which the build's gates and the measurement read;
 - when the family states its kernel (`kernel`), its declarations (`<name>_declarations`): each arm's exact kernel-name pattern, generated from the
   arm's template arguments, and the declarations of `declarations` for the arms they select, on each architecture the build carries
@@ -17,8 +17,8 @@ the family's launch function's arm half into over the contract (docs/internals/d
 
 A family with no rows makes no unit and a selection naming none.
 
-`ARM_FAMILIES` is the registry of the families a build ships: the build's settings (`--//:<family>_arms`), its census
-parameters, its gates and its arm flags are made for each of them, and a family joins by being named there.
+`ARM_FAMILIES` is the registry of the families a build ships: its tables, its gates and its census
+parameters are made for each of them, and a family joins by being named there.
 """
 
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
@@ -70,7 +70,7 @@ arm_rows = rule(
 
 def _check(name, key, domains, arms):
     """The declaration, refused field by field: each way it could be wrong is a compile error in a generated file, or a
-    silent renumbering of every arm index a flag, a header and a unit name."""
+    silent renumbering of every arm index a header and a unit name."""
     if not key:
         fail("%s: the key names no field" % name)
     if sorted(domains.keys()) != sorted(key):
@@ -88,7 +88,7 @@ def _check(name, key, domains, arms):
         if list(arms[i]) in [list(row) for row in arms[:i]]:
             fail("%s: row %s is declared twice; a duplicate would give one kernel two indices" % (name, list(arms[i])))
     if [list(row) for row in arms] != sorted([list(row) for row in arms]):
-        fail("%s: the rows are not in canonical order. An arm's index is named by --//:%s_arms, the selection header and the units, so it " % (name, name) +
+        fail("%s: the rows are not in canonical order. An arm's index is named by the selection header and the units, so it " +
              "must be a property of the declaration, not of where a row was typed. Write them sorted: %s" % sorted([list(row) for row in arms]))
 
 def arm_declaration(rule, allow, reason, where = {}, arch = None):
@@ -105,28 +105,9 @@ def arm_declaration(rule, allow, reason, where = {}, arch = None):
     declaration("^", rule, allow, reason, arch)
     return struct(rule = rule, allow = allow, reason = reason, where = where, arch = arch)
 
-def _chosen(tokens, flag):
-    """THE GRAMMAR of a build's `--//:<family>_arms`, parsed once (the emitter and the arm set take its result): `all` (also an empty flag)
-    or the sorted indices it names. Whether an index is in range is checked where the row count is known."""
-    if not tokens:
-        return "all"
-    want = []
-    for token in tokens:
-        if token == "all":
-            return "all"
-        if not token.isdigit():
-            fail("%s: %r is not an arm index or 'all'" % (flag, token))
-        want.append(int(token))
-    return sorted({i: True for i in want}.keys())
-
-def _selected(tokens, flag):
-    """The emitter's `--selected`: `all` or the comma-separated indices."""
-    chosen = _chosen(tokens, flag)
-    return chosen if chosen == "all" else ",".join([str(i) for i in chosen])
-
 def _arm_declarations_impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".json")
-    args = ["--selected=" + _selected(ctx.attr.flag[BuildSettingInfo].value, "--//:%s_arms" % ctx.attr.family), "--kernel", ctx.attr.kernel,
+    args = ["--kernel", ctx.attr.kernel,
             "--archs", ",".join(ctx.attr.archs_flag[BuildSettingInfo].value)]
     for d in ctx.attr.declarations:
         args += ["--declared", d]
@@ -143,7 +124,6 @@ arm_declarations = rule(
         "rows": attr.label(mandatory = True, allow_single_file = True, doc = "the family's rows file"),
         "kernel": attr.string(mandatory = True, doc = "the arm's kernel pattern (`cuda.bzl`'s `kernel_pattern`), `@field@` standing for a template argument the emitter fills"),
         "declarations": attr.string_list(doc = "the family's declarations (`arm_declaration`), each as JSON"),
-        "flag": attr.label(mandatory = True, providers = [BuildSettingInfo]),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
     },
     provides = [CudaUnitInfo, CcInfo],
@@ -153,10 +133,7 @@ arm_declarations = rule(
 
 def _selection_impl(ctx):
     header = ctx.actions.declare_file("%s/%s_selection.inc" % (ctx.attr.dir, ctx.attr.family))
-    if ctx.attr.flag:
-        args = ["--selected=" + _selected(ctx.attr.flag[BuildSettingInfo].value, "--//:%s_arms" % ctx.attr.family)]
-    else:
-        args = ["--selected=" + ",".join(ctx.attr.selected)]
+    args = ["--selected=" + ",".join(ctx.attr.selected)]
     _emit(ctx, "selection", ctx.file.rows, header, ["--includer", ctx.attr.includer] + args, "Writing %s's arm selection")
     return [DefaultInfo(files = depset([header]))]
 
@@ -166,8 +143,7 @@ arm_selection = rule(
         "family": attr.string(mandatory = True),
         "rows": attr.label(mandatory = True, allow_single_file = True, doc = "the family's rows file"),
         "includer": attr.string(mandatory = True, doc = "who includes the header, for its own comment"),
-        "flag": attr.label(providers = [BuildSettingInfo], doc = "the build's `--//:<family>_arms`: indices or `all`, empty for every arm"),
-        "selected": attr.string_list(doc = "a fixed selection, in place of the flag (a fixture's)"),
+        "selected": attr.string_list(default = ["all"], doc = "the arms the header names: every row of the rows file (`all`), which is the arms the build's contract reaches, or a fixed selection of indices (a probe's)"),
         "dir": attr.string(default = "generated", doc = "the directory the header is written to, in the package"),
     },
     doc = "The selection header of one arm family for one build: the arms it carries, and the arm set the host dispatches over.",
@@ -188,13 +164,7 @@ arm_table = rule(
 )
 
 def _arm_set_impl(ctx):
-    rows = ctx.attr.rows
-    flag = "--//:%s_arms" % ctx.attr.family
-    want = _chosen(ctx.attr.flag[BuildSettingInfo].value, flag)
-    want = list(range(rows)) if want == "all" else want
-    for i in want:
-        if i >= rows:
-            fail("%s: %d is not an arm index; the list has %d rows (0..%d)" % (flag, i, rows, rows - 1))
+    want = list(range(ctx.attr.rows))
     archs = ctx.attr.archs_flag[BuildSettingInfo].value
     chosen = []
     for unit, where in ctx.attr.units.items():
@@ -213,10 +183,9 @@ _arm_set = rule(
         "family": attr.string(mandatory = True),
         "rows": attr.int(mandatory = True, doc = "the declared arms"),
         "units": attr.label_keyed_string_dict(providers = [CcInfo, CudaUnitInfo], doc = "each unit, and its arm and architecture (JSON)"),
-        "flag": attr.label(mandatory = True, providers = [BuildSettingInfo]),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
     },
-    doc = "The arm units the build's arms and architectures name: an arm or an architecture the build does not want is a unit it never compiles.",
+    doc = "The arm units the build's architectures name: an architecture the build does not want is a unit it never compiles.",
 )
 
 def _arm_source(name, i, row, arm_header, define, selection_header):
@@ -230,14 +199,13 @@ def _arm_source(name, i, row, arm_header, define, selection_header):
         ),
     )
 
-def arm_family(name, key, flag, includer, built_archs, arms = None, domains = None, arms_file = None, unit = None, kernel = None, declarations = []):
+def arm_family(name, key, includer, built_archs, arms = None, domains = None, arms_file = None, unit = None, kernel = None, declarations = []):
     """One kernel's arm family: its selection header, its Python table and, when `unit` is given, one translation unit
     per arm and built architecture.
 
     Args:
       name: the family's name (`decode`): `<name>_selection`, `<name>_table` and `<name>_arm_set` are its targets.
       key: the fields of a row, in order.
-      flag: the build setting naming the arms a build carries (`//:decode_arms`): indices into the arm list.
       includer: who includes the selection header, for the header's comment.
       built_archs: the architectures the units are made for (`BUILT_ARCHS`); a build compiles those its `--//:archs` names.
       arms: the declared rows, in canonical order, with `domains` (each field's admitted values, `{field: [values]}`): a family
@@ -271,7 +239,7 @@ def arm_family(name, key, flag, includer, built_archs, arms = None, domains = No
         rows = ":" + name + "_rows"
     else:
         rows = arms_file
-    arm_selection(name = name + "_selection", family = name, rows = rows, includer = includer, flag = flag)
+    arm_selection(name = name + "_selection", family = name, rows = rows, includer = includer)
     arm_table(name = name + "_table", family = name, rows = rows)
     if kernel:
         arm_declarations(
@@ -280,7 +248,6 @@ def arm_family(name, key, flag, includer, built_archs, arms = None, domains = No
             rows = rows,
             kernel = kernel_pattern(kernel),
             declarations = [json.encode(d) for d in declarations],
-            flag = flag,
         )
     if unit == None:
         return
@@ -298,4 +265,4 @@ def arm_family(name, key, flag, includer, built_archs, arms = None, domains = No
                 deps = unit["deps"],
             )
             units[":" + target] = json.encode({"arm": i, "arch": arch})
-    _arm_set(name = name + "_arm_set", family = name, rows = len(arms), units = units, flag = flag)
+    _arm_set(name = name + "_arm_set", family = name, rows = len(arms), units = units)

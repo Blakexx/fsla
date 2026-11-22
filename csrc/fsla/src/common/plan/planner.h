@@ -107,7 +107,14 @@ inline Planned settle(const Descriptor& d, Scope scope, std::string_view what,
       nearest_outside = out;
     }
   }
-  std::string text = std::string(what) + " lies outside FSLA's contract. The nearest context '";
+  std::string text = std::string(what) + " lies outside FSLA's ";
+  if (kContractNarrowed) {
+    text += "NARROWED contract '" + std::string(kContractName)
+            + "' (a development build; the full contract is enforced in the gate and in releases)";
+  } else {
+    text += "contract";
+  }
+  text += ". The nearest context '";
   text += std::string(nearest->id) + "' does not hold:";
   for (const std::string& fact : nearest_outside) text += " " + fact + ";";
   text += " the facts read: " + spell(d, scope);

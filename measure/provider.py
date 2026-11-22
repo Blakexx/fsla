@@ -98,8 +98,8 @@ def _refuse_a_partial_binary() -> None:
         built = {tuple(int(x) for x in arm) for arm in importlib.import_module(f"fsla.ops.{family}").arms()}
         if declared - built:
             raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the declared arms "
-                               f"{sorted(declared - built)}: an iteration build (--//:{family}_arms) measures a subset of the "
-                               "tree; build the declared set")
+                               f"{sorted(declared - built)}: an iteration build (--//:contract) measures a subset of the "
+                               "tree; build the full contract")
 
 
 def _kernel_carried(subject: str, spec, construction) -> bool:

@@ -59,6 +59,20 @@ A device enters the contract by a MEASURED part, in four steps:
 4. THE BUILD'S CONTRACT CHECK THEN COVERS IT: the part's contexts are in `//hardware:contexts`, every family's matcher is evaluated over them, and a context mapped to no arm
    fails the build ([`arms_gen.md`](../decode/arms_gen.md)).
 
+<a id="narrowed"></a>
+
+## A narrowed contract (development builds)
+
+A development build may compile a subset by naming a DECLARED NARROWED CONTRACT: a descriptor of its own under `descriptors/dev/<name>.json`, marked
+`"narrowed": true`, composing a subset of the call parts (`parts/calls/decode_narrow_d32_l2.json`) beside the device part. The build setting
+`--//:contract=<name>` (default `full`) chooses it: `//hardware:contexts` and `//hardware:contract` are then written for it
+(`hardware/contract.bzl`; `registry.contexts(contract=<name>)`), so `arms_gen` compiles exactly the arms the narrowed contract reaches and the run time,
+holding the narrowed contract, refuses a call outside it, naming it (`kContractName`, `planner.h`'s refusal). The registry refuses a name no descriptor of
+`descriptors/dev/` declares, a descriptor not marked narrowed, and a narrowed context outside every full context: a narrowed contract promises less than
+the full one, never more. A narrowed descriptor is never part of the full contract (`descriptors/*.json` alone are), so the README's table and the
+duplicate check read the full one. The full contract is enforced by `//:gate` (its `full_contract` test fails, naming the contract, under any other
+setting) and by releases (the build record says `iteration: True`, which `bazel run //:wheels` refuses). `tests/unit/test_narrowed_contract.py` holds all of it.
+
 <a id="outputs"></a>
 
 ## What reads it
@@ -66,6 +80,6 @@ A device enters the contract by a MEASURED part, in four steps:
 | reader | reads |
 |---|---|
 | `//hardware:facts` | the schema: `plan/facts.h` |
-| `//hardware:contexts` | the contract, a line a context (`registry.contexts_text`): `arms_gen`'s input |
+| `//hardware:contexts` | the build's contract (`--//:contract`), a line a context (`registry.contexts_text`): `arms_gen`'s input |
 | `//hardware:contract` | the contract as a table the run time holds: `plan/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
 | `tools/supported.py` | the contract: the README's support table |

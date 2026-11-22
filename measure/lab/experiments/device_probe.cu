@@ -5,7 +5,7 @@
 // METHOD: no timing. The host reads each fact by its property and by its attribute, one CTA of one warp reads the two special
 // registers and stores them, and each fact is recorded as a row of its own name (`cc` is major * 100 + minor * 10, as the schema
 // says) with the model's other identity (the bus, slot and domain the driver reports); a check holds the two routes equal, the
-// device's SM count within the register's SM identifiers, and the record's cc at or above the build's.
+// registers read nonzero, the device's SM count within the register's SM identifiers, and every fact positive.
 // TIMELINE: one warp, one CTA, one read of each register; nothing is timed.
 // see docs/internals/tools/lab.md#device-probe
 #include "lab.cuh"

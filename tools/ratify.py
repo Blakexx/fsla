@@ -5,7 +5,7 @@ the build compiled -- registers, spill stores and loads, the register-side CTAs 
 -- and exits 1 on a launch bound the assembler discarded (`Value of threads per SM ... is out of range`: that entry
 compiled with no bound at all, so `ptxas` spent registers as it liked). It reads the units the graph's CUDA rule
 compiled (`--graph`, `--runfiles`: the target passes both): each unit's `ptxas -v` report and its object, with the
-graph's disassemblers. The scope is the build's parameters (`--//:archs`, one `--//:<family>_arms` per family of `ARM_FAMILIES`), never
+graph's disassemblers. The scope is the build's parameters (`--//:archs`, `--//:contract`), never
 a flag of its own, and the tool compiles nothing: a tool that can force a launch bound is a tool that can report a
 number nobody ships.
 

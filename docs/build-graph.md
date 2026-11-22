@@ -80,8 +80,9 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@fsla_env//:flags.bzl`'s
   `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
-  [`architecture/families.md`](architecture/families.md)), one `--//:<family>_arms` for each family of `ARM_FAMILIES` in `bazel/arms.bzl` (the registry: `--//:decode_arms`; arm
-  indices; empty is every arm). Any value but a default makes an iteration build, which its record says.
+  [`architecture/families.md`](architecture/families.md)), and `--//:contract` (default `full`: the contract the build compiles against, or a declared narrowed contract of
+  `hardware/descriptors/dev/`, [`build.md#narrowed`](build.md#narrowed)). Any value but a default makes an iteration build, which its record says; `//:gate`
+  refuses a non-default `--//:contract`.
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@fsla_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
   none of its own. the compile adds nothing of its own (no extended lambdas, compilation-mode flags, random seed or host
@@ -117,12 +118,11 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   not built on this line declares no family. `bazel/arms.bzl`'s `arm_family` reads
   that one list and makes the family's pieces (the selection header, table and declarations written by `bazel/arm_emit.py` over the rows file): one unit per arm and built architecture (`<family>_arm_<i>_sm_<arch>`, from
   a generated source that defines the arm under its own selection guard) when the family has per-arm units; the selection
-  header of the build (`<family>_selection.inc`, from `--//:<family>_arms`: indices or `all`, empty for every arm, an index
-  out of range refused); and the Python table (`<family>_arms.py`: the key and the rows) that the record, the arm gate and
+  header of the build (`<family>_selection.inc`: every row of the list, which is the arms the build's contract reaches); and the Python table (`<family>_arms.py`: the key and the rows) that the record, the arm gate and
   `bazel run //:library`'s copy into `build/generated` give the measurement. `<family>_arm_set` hands the link only the
   units the build's arms and architectures name, so an unwanted arm or architecture is never compiled. A malformed
   declaration is refused at analysis, naming the field: a row of the wrong width, a value outside its domain, a duplicate,
-  or rows out of canonical order (an arm's index is what the flag, the header and the unit names say, so it is the
+  or rows out of canonical order (an arm's index is what the header and the unit names say, so it is the
   declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
   `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's flags, parameters, record and
   gates are made for each name in it, so a family joins by being named there and declared beside its kernel.
@@ -326,7 +326,7 @@ names one).
     bazel build //:compile_commands                                 # the editor's .bazel/bin/compile_commands.json
     bazel test //:lane                                              # every test tier
     bazel run //:library                                            # the shipped build, in .bazel/bin/fsla_cu13/
-    bazel run //:library --//:archs=90a --//:decode_arms=3           # an iteration build
+    bazel run //:library --//:archs=90a --//:contract=decode_d32_l2   # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub
     bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv

@@ -174,7 +174,9 @@ def builds_header(archs: list[str]) -> str:
 def _build_lines(cfg: dict) -> list[str]:
     """The families, the build key, each build's traits, as `hardware.cuh` carries them."""
     out = ["//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families",
-           "enum class Family : int { " + ", ".join(_camel(f) for f in FAMILIES) + " };", "",
+           "enum class Family : int { " + ", ".join(_camel(f) for f in FAMILIES) + " };",
+           "//: the families' names, in `Family`'s order: the one source the host's readers (`device_card`) take a name from",
+           "constexpr const char* kFamilyNames[] = {" + ", ".join(f'"{f}"' for f in FAMILIES) + "};", "",
            "//: A BUILD: the key a kernel compiles at, its compute capability. see docs/internals/common/hardware.md#builds",
            "struct Build {", "  int cc;", "};", "",
            "//: A BUILD'S TRAITS: what a kernel's plan reads. see docs/internals/common/hardware.md#traits",

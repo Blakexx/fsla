@@ -5,7 +5,7 @@ load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "HOST_CXX_FLAGS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel:arms.bzl", "ARM_FAMILIES", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "census_test", "include_root", "fsla_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass")
+load("//bazel:defs.bzl", "census_test", "include_root", "fsla_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass", "with_contract")
 load(":src/decode/arms.bzl", "DECODE_DECLARATIONS", "DECODE_KERNEL", "DECODE_KEY")
 load(":src/entmax/declarations.bzl", "ENTMAX_DECLARATIONS")
 load(":units.bzl", "RUNTIME_UNITS")
@@ -182,12 +182,24 @@ genrule(
     tools = [":decode_arms_gen"],
 )
 
+#: THE NARROWED CONTRACT'S PLAN AND PLANNER (tests/unit/test_narrowed_contract.py): the same tool and planner built under a development contract
+with_contract(
+    name = "decode_plan_narrowed",
+    contract = "decode_d32_l2",
+    target = ":decode_plan",
+)
+
+with_contract(
+    name = "plan_tool_narrowed",
+    contract = "decode_d32_l2",
+    target = ":plan_tool",
+)
+
 arm_family(
     name = "decode",
     arms_file = ":decode_plan/decode_arm_rows.json",
     built_archs = BUILT_ARCHS,
     declarations = DECODE_DECLARATIONS,
-    flag = "//:decode_arms",
     includer = "csrc/fsla/src/decode/decode.cu",
     kernel = DECODE_KERNEL,
     key = DECODE_KEY,

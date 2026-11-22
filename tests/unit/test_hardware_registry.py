@@ -65,6 +65,7 @@ def test_the_hopper_part_is_the_hardware_tables_values():
 
 def test_the_contexts_text_is_a_line_a_context_the_matchers_tool_reads():
     lines = registry.contexts_text(registry.contexts()).splitlines()
+    assert lines.pop(0) == "# contract: full"
     assert len(lines) == 8
     cells = lines[0].split("\t")
     assert cells[0] == "hopper_decode levels=1 decay=0"

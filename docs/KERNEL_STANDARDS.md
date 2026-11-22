@@ -150,8 +150,8 @@ whose bound is a leaf count, a channel count, or a product of them is wrong.
 - CUTLASS emits one `.cu` per configuration with an aggregator that only declares initializers
   (`cutlass/python/cutlass_library/manifest.py:290-330`) and prunes the instantiated set for compile cost
   (`media/docs/cpp/profiler.md:14`; `quickstart.md:609`).
-RULE: one arm per TU, generated from the closed-world arm list; an ARM-SUBSET build knob (declared list,
-default all) for iteration; iteration builds are single-arch AND arm-subset; every-arch all-arm builds
+RULE: one arm per TU, generated from the closed-world arm list; a NARROWED-CONTRACT build setting (`--//:contract`,
+default the full contract) for iteration; iteration builds are single-arch AND narrowed-contract; every-arch all-arm builds
 once per stage, after the last source edit. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) read from the build's compiles (OWED: nothing reads either yet).
 
 ## <a id="s8"></a>8. Arch mapping at the atom, closed-world at the arm
@@ -228,7 +228,7 @@ the harness re-invokes it when the command exits, with the exit status. Never wa
 `until pgrep … sleep` loops, no `pgrep -f` on a process name (it self-matches, it matches other tracks'
 builds in the same venv, and a live waiter re-wakes a stopped agent into a worktree it no longer owns).
 Never edit a source file while a build of it is in flight. One gate build per stage; iteration builds
-single-arch and arm-subset.
+single-arch and narrowed-contract.
 Why: each check of a waiting loop is a model request that re-reads the whole context; a background run with an exit
 marker costs none. A poll may still be made with a stated reason (Blake, 2026-11-17: "override is ok if there is a good
 reason"): the command carries `POLL_OVERRIDE=<why>`, and the stated reason is the whole authorization.
@@ -269,24 +269,24 @@ graph rule):
   our dev setup."). No call site of tracked code names this clause today; the lint's allowlist cites it only for one that does.
 
 ## <a id="s15"></a>15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
-- A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
+- A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, narrowed-contract, oracle-first.
   When the budget is spent and a gate is still red, the stage STOPS and reports the residual — it does not
   keep chasing green.
 - MID-STAGE RE-SCOPING IS ALLOWED when it changes WHAT is built (a design or mechanism ruling) — Blake:
   "I'd rather re-scope than build something wrong and fix it later." A re-scoped stage restarts its
   cycle budget from the amended spec. Amendments that do not change the design (count formats, report
   shape, housekeeping) go in the NEXT brief instead.
-- Every kernel family carries an arm-subset knob (`--//:<family>_arms` for each family of `ARM_FAMILIES`); a family without one gets it
-  before its next build.
+- A development build compiles a subset of the arms only by naming a declared narrowed contract (`--//:contract=<name>`, a descriptor
+  of its own under `hardware/descriptors/dev/`); the full contract is enforced in the gate and in releases.
 <a id="s15-addendum"></a>§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
 extension header and ~0.33 GB in a torch-free arm unit (docs/build.md#compile-ledger), on a 16-CPU / 24 GB machine.
 A build's jobs are the host-budget slots the front door holds, divided by `host.nvcc_threads` (2: one cicc an
-architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and arm-subset.
+architecture), every build under the same machine-wide pool (§23); an iteration build is single-arch and narrowed-contract.
 Re-derive the budget if cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
 ## <a id="s16"></a>§16 — The closed world is the declared targets (Blake, 2026-08-28; amended 2026-11-21)
 
-A stage's gate is SMALL: an iteration build (single arch, arm subset), the fp64 oracle on the arms
+A stage's gate is SMALL: an iteration build (single arch, narrowed contract), the fp64 oracle on the arms
 it touched, the census on those arms, and the model tests. Nothing is "ratified at a milestone": the closed world is
 the declared targets (a kernel's arms in its `arms.bzl`, the built architectures, the pinned toolchain) and the gates
 every build runs, so a built binary is measured by construction. `ratify --census` is an on-demand report of what the

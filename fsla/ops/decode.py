@@ -62,9 +62,10 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
     """The decode arms THIS BINARY carries, as ``(d_v, D, decay)`` rows.
 
     A full build carries the whole declared matrix (``d_v x D x decay`` = 16 rows). An
-    ITERATION build names a subset with ``--//:decode_arms`` and is NOT SHIPPABLE; this
-    is how such a binary identifies itself, and the launch refuses any arm not listed
-    here rather than mis-launching it (``docs/build.md``).
+    ITERATION build names a narrowed contract with ``--//:contract=<name>``, carries the
+    arms that contract reaches and is NOT SHIPPABLE; this is how such a binary identifies
+    itself, and the launch refuses a call outside the narrowed contract, naming it
+    (``docs/build.md#narrowed``).
     """
     return tuple((int(dv), int(d), bool(decay)) for dv, d, decay in extension().fsla_decode_arms())
 

@@ -61,7 +61,7 @@ def test_a_layer_cells_arms_are_its_declared_constructions(binary):
 def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))
     binary.decode = []
-    with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:decode_arms"):
+    with pytest.raises(RuntimeError, match="lacks the declared arms.*--//:contract"):
         provider.arms(by_name(DECODE_CELL))
 
 

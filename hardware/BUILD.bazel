@@ -3,6 +3,7 @@ contract as the matchers' tools read it."""
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:defs.bzl", "tree_part")
+load(":contract.bzl", "contract_output")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -17,6 +18,7 @@ filegroup(
         "*.json",
         "parts/**/*.json",
         "descriptors/*.json",
+        "descriptors/dev/*.json",
     ]),
 )
 
@@ -40,27 +42,19 @@ cc_library(
     includes = ["."],
 )
 
-#: THE CONTRACT: every context FSLA accepts, a line each (`registry.contexts_text`)
-genrule(
+#: THE CONTRACT: every context the build's contract holds, a line each (`registry.contexts_text`); `--//:contract` names a narrowed one
+contract_output(
     name = "contexts",
-    srcs = [":registry"],
-    outs = ["contexts.txt"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --contexts $@",
-    tools = [
-        "emit.py",
-        "@fsla_env//:python",
-    ],
+    out = "contexts.txt",
+    registry = ":registry",
+    what = "contexts",
 )
 
-genrule(
+contract_output(
     name = "contract_header",
-    srcs = [":registry"],
-    outs = ["plan/contract.h"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --contract-header $@",
-    tools = [
-        "emit.py",
-        "@fsla_env//:python",
-    ],
+    out = "plan/contract.h",
+    registry = ":registry",
+    what = "contract-header",
 )
 
 #: `plan/contract.h`, the contract as a table the run time holds: `contract()`, a context each

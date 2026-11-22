@@ -21,7 +21,7 @@ def rows_of(path: Path) -> tuple[list[str], list[list[int]]]:
     if len({tuple(r) for r in arms}) != len(arms):
         raise SystemExit(f"{path}: a row is declared twice; a duplicate would give one kernel two indices")
     if arms != sorted(arms):
-        raise SystemExit(f"{path}: the rows are not in canonical order: an arm's index is named by `--//:<family>_arms`, the selection header and the units, "
+        raise SystemExit(f"{path}: the rows are not in canonical order: an arm's index is named by the selection header and the units, "
                          f"so it is a property of the declaration. Sorted: {sorted(arms)}")
     return key, arms
 
@@ -109,7 +109,7 @@ def main() -> int:
     ap.add_argument("--rows", type=Path)
     ap.add_argument("--family", default="")
     ap.add_argument("--includer", default="")
-    ap.add_argument("--selected", default="all", help="the arms the build carries: `all` or comma-separated indices (empty for none), as `bazel/arms.bzl` parsed the flag")
+    ap.add_argument("--selected", default="all", help="the arms the header names: `all` (every row: the arms the build's contract reaches) or comma-separated indices (empty for none: a probe's)")
     ap.add_argument("--kernel", default="")
     ap.add_argument("--declared", action="append", default=[], help="a declaration, JSON")
     ap.add_argument("--archs", default="")
@@ -121,11 +121,11 @@ def main() -> int:
         a.out.write_text(json.dumps(merge(json.loads(a.base.read_text()), a.file), indent=2) + "\n")
         return 0
     key, rows = rows_of(a.rows)
-    knob = f"--//:{a.family}_arms"
+    knob = "--//:contract"
     picked = list(range(len(rows))) if a.selected == "all" else sorted(int(i) for i in a.selected.split(",") if i)
     for i in picked:
         if i >= len(rows):
-            raise SystemExit(f"{knob}: no such arm {i}; the list has {len(rows)} rows (0..{len(rows) - 1})")
+            raise SystemExit(f"{a.family}: no such arm {i}; the list has {len(rows)} rows (0..{len(rows) - 1})")
     if a.what == "selection":
         a.out.write_text(selection(a.family, key, rows, picked, a.includer, knob))
     elif a.what == "table":

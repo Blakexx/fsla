@@ -1,0 +1,9 @@
+{
+  "name": "calls/decode_narrow_d32_l2",
+  "doc": "a development build's subset of calls/decode: value widths up to the 32-wide arm, hierarchy depths 1 and 2, either decay. It promises less than the full contract (tests/unit/test_hardware_registry.py holds every narrowed context inside a full one).",
+  "facts": {
+    "d_v": {"value": {"lo": 2, "hi": 32}, "declared_by": "a narrowed contract for development builds: the value widths the 32-wide decode arm serves"},
+    "levels": {"value": [1, 2], "declared_by": "a narrowed contract for development builds: the two shallowest hierarchy depths"},
+    "decay": {"value": [0, 1], "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"}
+  }
+}

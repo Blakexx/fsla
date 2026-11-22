@@ -14,9 +14,6 @@ from fsla.ops._ext import device_index, extension
 
 __all__ = ["Card", "card_of", "window_of"]
 
-#: the families in `Family`'s order (`common/hardware.cuh`)
-FAMILIES = ("ampere", "hopper", "blackwell")
-
 
 @dataclasses.dataclass(frozen=True)
 class Card:
@@ -30,8 +27,8 @@ class Card:
 
 @functools.cache
 def _card_of(index: int) -> Card:
-    cc, family, window = (int(x) for x in extension().device_card(index))
-    return Card(cc, FAMILIES[family], window)
+    cc, family, window = extension().device_card(index)
+    return Card(int(cc), str(family), int(window))
 
 
 def card_of() -> Card:

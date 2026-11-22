@@ -35,33 +35,10 @@ def by_family(values: list[str], knob: str) -> dict[str, str]:
     return out
 
 
-def family_arms(table: Table, value: str, knob: str) -> list[int]:
-    """A family's arm scope from a build's spec (indices into its declared rows, or `all`); an empty spec is every row."""
-    spec = value.replace(",", " ").split()
-    n = len(table.arms)
-    if not spec:
-        return list(range(n))
-    out: list[int] = []
-    for tok in spec:
-        if tok == "all":
-            out += list(range(n))
-            continue
-        try:
-            i = int(tok)
-        except ValueError:
-            raise SystemExit(f"{knob}: {tok!r} is not an arm index or 'all'") from None
-        if not 0 <= i < n:
-            raise SystemExit(f"{knob}: no such arm {i}; the list has {n} rows (0..{n - 1})")
-        out.append(i)
-    return sorted(set(out))
-
-
-def is_iteration(scopes: dict[str, tuple[list[int], Table]], archs: list[str], built: list[str]) -> bool:
-    """A build whose arms (any family's, `scopes[family] = (the arms selected, its table)`) or architectures are not the
-    declared set is an ITERATION build: never a wheel, and self-identifying (docs/build.md#iteration). A build carrying
-    MORE than the declared rows is one too."""
-    return (any(set(want) != set(range(len(table.arms))) for want, table in scopes.values())
-            or {f"sm_{a}" for a in archs} != set(built))
+def is_iteration(contract: str, archs: list[str], built: list[str]) -> bool:
+    """A build whose contract is a narrowed one (`--//:contract=<name>`) or whose architectures are not the built set is an ITERATION build:
+    never a wheel, and self-identifying (docs/build.md#iteration). The arms it carries are those its contract reaches."""
+    return contract != "full" or {f"sm_{a}" for a in archs} != set(built)
 
 
 def check_built_arm_table(header: str | None, want: list[int], table: Table, family: str) -> list[str]:

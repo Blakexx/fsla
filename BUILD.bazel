@@ -2,7 +2,7 @@
 
     bazel build //:library                      # fsla_cu13/_C.abi3.so and its build record, the shipped build, in .bazel/bin
     bazel run //:library                        # the same, with the build's generated headers in build/generated
-    bazel run //:library --//:archs=90a --//:decode_arms=3    # an iteration build
+    bazel run //:library --//:archs=90a --//:contract=decode_d32_l2    # an iteration build
     bazel test //:derivation                    # tools/manifests/derivation.json is what the graph's harness writes
     bazel run //:derivation_update              # write it (and //:readme_update, //:devbox_image_update: docs/build-graph.md#committed-files)
     bazel run //:ratify -- --census             # every shipped instantiation's registers and spills (docs/ratification.md)
@@ -10,8 +10,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
-load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -36,12 +35,13 @@ string_list_flag(
     visibility = ["//visibility:public"],
 )
 
-#: one arm flag per shipped family (`ARM_FAMILIES`, bazel/arms.bzl)
-[string_list_flag(
-    name = "%s_arms" % family,
-    build_setting_default = [],
+#: THE CONTRACT the build compiles against: `full` (the default, what the gate and releases require) or a declared NARROWED contract of
+#: `hardware/descriptors/dev/` (a development build's subset: `arms_gen` compiles the arms it reaches, the run time refuses a call outside it)
+string_flag(
+    name = "contract",
+    build_setting_default = "full",
     visibility = ["//visibility:public"],
-) for family in ARM_FAMILIES]
+)
 
 fsla_extension(
     name = "library",
@@ -530,11 +530,18 @@ test_suite(
     ],
 )
 
+#: the gate's refusal of a narrowed contract: it fails, naming it, under any `--//:contract` but `full` (docs/build.md#narrowed)
+full_contract_test(
+    name = "full_contract",
+    size = "small",
+)
+
 #: THE GATE: every check the graph holds, the lab's experiments' checked build among them (docs/build-graph.md#checks)
 test_suite(
     name = "gate",
     tests = [
         ":commit_checks",
+        ":full_contract",
         ":lints",
         "//measure/lab:checked",
         "//tests:lab",

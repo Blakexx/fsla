@@ -141,12 +141,6 @@
   },
   {
    "path": "docs/rules.json",
-   "message": "owed rule KERNEL_STANDARDS#s15:every-family-carries-an-arm-subset-knob",
-   "line_sha256": "e3b0c44298fc1c14",
-   "count": 1
-  },
-  {
-   "path": "docs/rules.json",
    "message": "owed rule KERNEL_STANDARDS#s15:three-build-and-gate-cycles-a-stage",
    "line_sha256": "e3b0c44298fc1c14",
    "count": 1

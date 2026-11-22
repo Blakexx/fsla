@@ -23,12 +23,12 @@ silently.
 
 ```bash
 bazel run //:library                                   # every built architecture and arm, left in .bazel/bin/fsla_cu13/
-bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (below)
+bazel run //:library --//:archs=90a --//:contract=decode_d32_l2  # an iteration build (below)
 bazel run //:wheels                                    # the two wheels of a clean commit (below)
 ```
 
-A build's PARAMETERS are the graph's settings -- `--//:archs` and one `--//:<family>_arms` per family
-of `ARM_FAMILIES` (`--//:decode_arms`) ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
+A build's PARAMETERS are the graph's settings -- `--//:archs` and `--//:contract`
+([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
 `host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets: beyond the target count it buys
 nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
 machine-wide host budget, which the front door takes for it ([`build-graph.md`](build-graph.md#front-door)); any other
@@ -72,26 +72,28 @@ csrc stamp) are actions over their generators, and `bazel run //:library` copies
 a compile outside the graph reads them,. Only `common/build_stamp.cu` reads the csrc stamp, whose text
 changes with every `csrc/` edit.
 
-## <a id="iteration"></a><a id="arm-subset"></a>An iteration build compiles a subset
+## <a id="iteration"></a><a id="narrowed"></a><a id="arm-subset"></a>An iteration build compiles against a narrowed contract
 
-Instantiation is the dominant build resource, so a developer testing ONE arm may compile one arm on one
+Instantiation is the dominant build resource, so a developer testing a few arms compiles the arms of a DECLARED NARROWED CONTRACT on one
 architecture:
 
 ```bash
-bazel run //:library --//:archs=90a --//:decode_arms=5
+bazel run //:library --//:archs=90a --//:contract=decode_d32_l2
 ```
 
-Any parameter but a default makes an ITERATION build (`bazel/arms.py`'s `is_iteration`, which the record
-states), and three properties make it safe to have:
+A narrowed contract is a descriptor of its own (`hardware/descriptors/dev/<name>.json`, marked narrowed, composing a subset of the call parts;
+[`internals/hardware/registry.md#narrowed`](internals/hardware/registry.md#narrowed)); `--//:contract` names it, and `arms_gen` compiles exactly the arms it
+reaches (`decode_d32_l2`: 4 of the full contract's 16). There is no index into an arm list. Any parameter but a default makes an ITERATION build
+(`bazel/arms.py`'s `is_iteration`, which the record states), and three properties make it safe to have:
 
-* **The default is every declared arm and every built architecture.** An empty arm setting expands to the whole
-  list, so a plain build and every wheel are the closed-world one. There is no configuration in which a subset is the
-  default.
-* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.** `fsla.ops.<family>.arms()` (`fsla.ops.decode.arms()`)
-  returns the rows the fatbin actually carries, read off the same list the build compiled
-  from; asking a launch for any other shape is a `STD_TORCH_CHECK` refusal naming the arm, never a mis-launch.
-* **It is NOT SHIPPABLE, and its record says so.** A subset carries fewer instantiations than the declared set by
-  construction, so its record says `iteration: True` and `bazel run //:wheels` refuses it.
+* **The default is the full contract and every built architecture.** `--//:contract` defaults to `full`, so a plain build and every wheel are the
+  closed-world one, and `//:gate` refuses any other value (its `full_contract` test fails, naming it). There is no configuration in which a narrowed
+  contract is the default.
+* **A narrowed binary is SELF-IDENTIFYING and refuses what it lacks.** `fsla.ops.<family>.arms()` (`fsla.ops.decode.arms()`)
+  returns the rows the fatbin actually carries, read off the same list the build compiled from; the run time holds the narrowed contract, so a call outside it
+  is refused naming `NARROWED contract '<name>'`, never mis-launched.
+* **It is NOT SHIPPABLE, and its record says so.** A narrowed contract carries fewer instantiations than the full one by construction, so its record says
+  `iteration: True` and `bazel run //:wheels` refuses it.
 
 **AND NOTHING THAT CERTIFIES NUMBERS MAY READ A SCOPE THE BUILD DID NOT HAVE.** The incident: a decode subset that was a
 `-D` on a compile's command line reached a record that was not the build's, so the record held 393 entries carrying ONE
@@ -104,7 +106,7 @@ generated header (`<family>_selection.inc`; [`build-graph.md#arms`](build-graph.
 the build's own scope, so a flag naming WHAT WAS COMPILED, rather than HOW, never reaches a unit's command line. The one
 such flag is `-gencode`, the architectures, which the graph takes from the build.
 
-The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every built one.
+The same rule governs `--//:archs`: iterate on one architecture, gate and measure on the build of every built one, and on the full contract.
 
 ## <a id="compile-ledger"></a>Why the arm units are torch-free
 
