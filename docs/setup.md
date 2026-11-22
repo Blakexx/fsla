@@ -163,7 +163,7 @@ imports that worktree's `fsla`.
 ## 4. First build of the SHIPPED set
 
 ```bash
-bazel run //:library         # every built architecture, every arm: the shipped build, into fsla_cu13/
+bazel run //:library         # every built architecture, every arm: the shipped build, in .bazel/bin/fsla_cu13/
 bazel run //:ratify -- --census    # its registers and spills, read from the build's own compiles
 ```
 

@@ -1,5 +1,5 @@
 """THE GRAPH'S RULES: the generated headers for a build's parameters, and the library
--- `fsla_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which `bazel run` copies into the checkout
+-- `fsla_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which stay in the graph's output (`.bazel/bin`)
 (docs/build-graph.md#compile); and the checks -- over the tree's files, of the commit, and over each unit's own compile
 (docs/build-graph.md#checks)."""
 
@@ -112,22 +112,20 @@ _CUDA_LINKED = ("libcudart.so.13", "libcuda.so")
 
 _INSTALL = """\
 #!/bin/bash
-# writes the graph's library into the checkout, and the build's generated headers where the tools that compile the
-# tree's units read them (build/generated: tools/life_ranges.py): copies, never links into
-# Bazel's output tree, each through a temporary file renamed into place, so a reader never sees half a header
+# the graph's library stays a build output (`.bazel/bin/fsla_cu13/`, which the checkout's venv imports from, and which
+# the wheels, the tools and the box's copy read): nothing a commit does not hold is written into the source tree. What
+# is written is the build's generated headers, where the tools that compile the tree's units read them (build/generated,
+# ignored: tools/life_ranges.py): copies, never links into Bazel's output tree, each through a temporary file renamed
+# into place, so a reader never sees half a header
 set -euo pipefail
-dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/fsla_cu13"
-for f in {files}; do
-  install -m 0644 "$f" "$dest/$(basename "$f")"
-done
-chmod 0755 "$dest/_C.abi3.so"
+: "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
 generated="$BUILD_WORKSPACE_DIRECTORY/build/generated"
 mkdir -p "$generated"
 for f in {headers}; do
   to="$generated/$(basename "$f")"
   install -m 0644 "$f" "$to.graph" && mv -f "$to.graph" "$to"
 done
-echo "installed $(basename "$dest")/_C.abi3.so and _build_config.py, and the build's generated headers, from the graph"
+echo "the library is .bazel/bin/fsla_cu13/_C.abi3.so; installed the build's generated headers from the graph"
 """
 
 def _link(ctx, so):
@@ -175,14 +173,21 @@ def _gated(ctx):
     ctx.actions.write(declared, json.encode_indent({"architectures": spec}) + "\n")
     return declared, reports
 
+def warpline_root(ctx, target):
+    """The directory that holds the `warpline` package of `target` (a warpline module's target: the package's `__init__.py` is the
+    shared part's, which a module's runfiles carry), as the resolved path `FSLA_WARPLINE_PYTHON` names, and the files it holds."""
+    files = target[DefaultInfo].default_runfiles.files.to_list()
+    package = [f for f in files if f.path.endswith("/warpline/__init__.py")]
+    if len(package) != 1:
+        fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, target.label, len(package)))
+    return package[0], files
+
 def _sass_gate(ctx, so, verdict_path, flags = []):
     """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers and the
     checker it reads the code with (warpline's, `FSLA_WARPLINE_PYTHON`): its facts of every function and of the build's notices (the units'
     ptxas reports, read against the project's ledger), compared with the declarations stated beside the kernels (`_gated`), `flags` its own;
     its verdict, `verdict_path`, the action's output."""
-    package = [f for f in ctx.files._warpline if f.path.endswith("/warpline/__init__.py")]
-    if len(package) != 1:
-        fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr._warpline.label, len(package)))
+    package, warpline = warpline_root(ctx, ctx.attr._warpline)
     declared, reports = _gated(ctx)
     verdict = ctx.actions.declare_file(verdict_path)
     args = ctx.actions.args()
@@ -198,8 +203,8 @@ def _sass_gate(ctx, so, verdict_path, flags = []):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = ctx.files._gate_sources + ctx.files._warpline + reports + [declared, so, ctx.file._sass_gate, ctx.file._ledger, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt],
-        env = {"FSLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
+        inputs = ctx.files._gate_sources + warpline + reports + [declared, so, ctx.file._sass_gate, ctx.file._ledger, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt],
+        env = {"FSLA_WARPLINE_PYTHON": package.dirname.removesuffix("/warpline")},
         outputs = [verdict],
         mnemonic = "FslaSassGate",
         progress_message = "The SASS gate on %{label}'s library",
@@ -211,7 +216,7 @@ _SASS_GATE_ATTRS = {
     "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
     "_gate_sources": attr.label(default = "//bazel:gate_sources"),
     "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
-    "_warpline": attr.label(default = "@warpline//:warpline"),
+    "_warpline": attr.label(default = "@warpline//:checker"),
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
@@ -280,8 +285,7 @@ def _extension_impl(ctx):
     verdicts = [sass_verdict, arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     installed = [f for f in ctx.files._headers if f.extension in ("inc", "py")]
-    ctx.actions.write(install, _INSTALL.format(files = " ".join([f.short_path for f in (so, record)]),
-                                               headers = " ".join([f.short_path for f in installed])), is_executable = True)
+    ctx.actions.write(install, _INSTALL.format(headers = " ".join([f.short_path for f in installed])), is_executable = True)
     #: the verdicts are runfiles too: `bazel run` installs nothing a gate has not passed
     return [
         DefaultInfo(files = depset([so, record] + verdicts), executable = install,
@@ -318,16 +322,14 @@ fsla_extension = rule(
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
-    doc = "The extension `fsla_cu13/_C.abi3.so` and its build record; `bazel run` copies both into the checkout.",
+    doc = "The extension `fsla_cu13/_C.abi3.so` and its build record, left in the graph's output (`.bazel/bin`); `bazel run` copies the generated headers.",
 )
 
 _INSTALL_INSTRUMENT = """\
 #!/bin/bash
-# writes an instrument library into the checkout's fsla_cu13/, beside the extension (bazel/defs.bzl's fsla_instrument)
+# an instrument library stays a build output, beside the extension in `.bazel/bin/fsla_cu13/` (bazel/defs.bzl's fsla_instrument)
 set -euo pipefail
-dest="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}/fsla_cu13"
-install -m 0755 {so} "$dest/$(basename {so})"
-echo "installed $(basename "$dest")/$(basename {so}) from the graph"
+echo "the library is .bazel/bin/fsla_cu13/$(basename {so})"
 """
 
 def _instrument_impl(ctx):
@@ -652,18 +654,16 @@ exec "$venv/bin/python" {tool} "$@"
 """
 
 def _lab_run_impl(ctx):
-    package = [f for f in ctx.files.library if f.path.endswith("/warpline/__init__.py")]
-    if len(package) != 1:
-        fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr.library.label, len(package)))
+    package, files = warpline_root(ctx, ctx.attr.library)
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), package = shell.quote(package[0].short_path)), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = ctx.files.library))]
+    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), package = shell.quote(package.short_path)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files))]
 
 lab_run = rule(
     implementation = _lab_run_impl,
     executable = True,
     attrs = {
-        "library": attr.label(mandatory = True, doc = "warpline's reader and checker (`@warpline//:warpline`)"),
+        "library": attr.label(mandatory = True, doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
     },
     doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the directory of " +

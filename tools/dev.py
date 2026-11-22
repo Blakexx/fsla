@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
 import oci_layout  # noqa: E402
+from toolchains import BUILT  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 #: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
@@ -555,6 +556,9 @@ def cmd_dev_env(a) -> int:
     subprocess.run([a.uv, "venv", "--no-config", "--python", a.python, str(venv)], check=True)
     site = site_packages(venv)
     (site / f"aa_fsla_{checkout.name}.pth").write_text(f"{checkout}\n")
+    #: the graph's output beside it: the built `fsla_cu13` (the extension and its record) is found where the build left it,
+    #: never copied into the tree (`fsla_cu13/__init__.py` joins the two directories into the one package)
+    (site / f"ab_fsla_{checkout.name}_built.pth").write_text(f"{checkout / BUILT}\n")
     for pth, key in LINKED.items():
         (site / pth).write_text(f"{dev_config.get(key)}\n")
     (site / ENV_PTH).write_text(f"{site_packages(Path(a.env))}\n")

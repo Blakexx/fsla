@@ -6,6 +6,7 @@ ledger, the declarations' (`tools/lab_check.py`) -- are a validation action over
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cuda.bzl", "cuda_unit")
+load("//bazel:defs.bzl", "warpline_root")
 
 #: the lab's architecture: the one of this tree (`tools/lab.py`'s `ARCH`), and `lab.cuh`'s `kLabBuild` compute capability (`measure/hardware.py`'s
 #: `cc_of`: x 10, as `__CUDA_ARCH__` reads it)
@@ -75,15 +76,13 @@ def _lab_experiment_impl(ctx):
     check.add("--experiment", ctx.label.name)
     check.add("--arch", _ARCH)
     check.add("--verdict", verdict)
-    package = [f for f in ctx.files._warpline if f.path.endswith("/warpline/__init__.py")]
-    if len(package) != 1:
-        fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, ctx.attr._warpline.label, len(package)))
+    package, warpline = warpline_root(ctx, ctx.attr._warpline)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [check],
-        inputs = [binary, ctx.file.source, ctx.file._check, ctx.file._ledger, ctx.file._rules] + parts.values() + ctx.files._lab_sources + ctx.files._warpline,
+        inputs = [binary, ctx.file.source, ctx.file._check, ctx.file._ledger, ctx.file._rules] + parts.values() + ctx.files._lab_sources + warpline,
         outputs = [verdict],
-        env = {"FSLA_WARPLINE_PYTHON": package[0].dirname.removesuffix("/warpline")},
+        env = {"FSLA_WARPLINE_PYTHON": package.dirname.removesuffix("/warpline")},
         mnemonic = "LabCheck",
         progress_message = "Checking %s's code against what it declares" % ctx.label.name,
     )
@@ -105,7 +104,7 @@ _lab_experiment = rule(
         "_lab_sources": attr.label(default = "//tools:lab_sources"),
         "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
         "_rules": attr.label(default = "//:docs/rules.json", allow_single_file = True),
-        "_warpline": attr.label(default = "@warpline//:warpline"),
+        "_warpline": attr.label(default = "@warpline//:checker"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
         "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),

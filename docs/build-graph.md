@@ -72,9 +72,9 @@ fsla-devtools checkout `tools/bootstrap.py` finds.
 
 ## <a id="compile"></a>The extension's compile
 
-`//:library` is `fsla_cu13/_C.abi3.so` and its build record `fsla_cu13/_build_config.py`; `bazel run //:library` copies
-both into the checkout's `fsla_cu13/` (a copy: the library is imported from the checkout), and the build's generated
-headers into `build/generated`. `common/hardware.cuh` is one of the graph's generated headers and is checked in nowhere:
+`//:library` is `fsla_cu13/_C.abi3.so` and its build record `fsla_cu13/_build_config.py`; `bazel run //:library` leaves
+both where the build wrote them (`.bazel/bin/fsla_cu13/`: a build output is never written into the source tree, and the
+checkout's venv imports it from there, `docs/build.md#wheels`), and copies the build's generated headers into `build/generated`. `common/hardware.cuh` is one of the graph's generated headers and is checked in nowhere:
 the genrule `//csrc/fsla:hardware_header` writes it from `common/hardware.json` (`python -m measure.hardware --header`) into
 the include path every unit reads (`//csrc/fsla:headers`), whatever the build's parameters
 ([`internals/common/hardware.md`](internals/common/hardware.md)).
@@ -133,7 +133,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
   `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
 - AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `fsla_instrument`): a measurement's own kernels as
-  `fsla_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
+  `.bazel/bin/fsla_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
   none of the source's kernels, and its probes keep only the signatures their units' declarations name,
   [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#probes)), for the architectures `--//:archs` names; never shipped, so no record or arm gate. No instrument's library is declared on this line: a family's part harness (KERNEL_STANDARDS section 19) is
   the rule's user, with the family's first schedule.
@@ -323,7 +323,7 @@ names one).
     bazel test //:gate                                              # every check the graph holds
     bazel build //:compile_commands                                 # the editor's .bazel/bin/compile_commands.json
     bazel test //:lane                                              # every test tier
-    bazel run //:library                                            # the shipped build, into fsla_cu13/
+    bazel run //:library                                            # the shipped build, in .bazel/bin/fsla_cu13/
     bazel run //:library --//:archs=90a --//:decode_arms=3           # an iteration build
     bazel run //:image_load                                         # the devbox image, into Docker (docs/setup.md)
     bazel run //:image_push                                         # the devbox image, published to Docker Hub

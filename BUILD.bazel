@@ -1,7 +1,7 @@
 """THE ROOT PACKAGE: the build's parameters and the extension (docs/build-graph.md#compile).
 
-    bazel build //:library                      # fsla_cu13/_C.abi3.so and its build record, the shipped build
-    bazel run //:library                        # the same, copied into this checkout's fsla_cu13/
+    bazel build //:library                      # fsla_cu13/_C.abi3.so and its build record, the shipped build, in .bazel/bin
+    bazel run //:library                        # the same, with the build's generated headers in build/generated
     bazel run //:library --//:archs=90a --//:decode_arms=3    # an iteration build
     bazel test //:derivation                    # tools/manifests/derivation.json is what the graph's harness writes
     bazel run //:derivation_update              # write it (and //:readme_update, //:devbox_image_update: docs/build-graph.md#committed-files)
@@ -440,7 +440,7 @@ tree_test(
     name = "rules_table",
     size = "small",
     cmd = ["python3", "tools/lint/rules_table.py"],
-    data = [":tree", "@warpline//:warpline"],
+    data = [":tree", "@warpline//:shared", "@warpline//:checker"],
 )
 
 tree_test(

@@ -32,7 +32,7 @@ declared ones. A second spelling of the choice would be one that can disagree wi
 `fsla_cu13/_build_config.py` records the toolchain's name beside its `ptxas`, and `tools/supported.py` writes one README row
 per (toolchain, built architecture).
 
-`built_extension(root)` is the binary a checkout's in-place build produced, `fsla_<toolchain>/_C.*so`, inside the binary
+`built_extension(root)` is the binary a checkout's build produced, `.bazel/bin/fsla_<toolchain>/_C.*so`, inside the binary
 plugin the toolchain's build ships as ([`../../build.md#wheels`](../../build.md#wheels)). It refuses a checkout with none
 or with more than one toolchain's, and the tools that fingerprint or disassemble the binary take it from here.
 

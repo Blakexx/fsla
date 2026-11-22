@@ -3,7 +3,7 @@
 """THE TIMELINE OF A TRACED ROW (`lab trace`), read from warpline's native record (`lab.cuh`'s `trace_record` writes it;
 a directory of records beside the lab's record, one a traced row): the steady span, each role's phases with their
 durations and rates, and the launch (entry to exit in cycles and nanoseconds, the rate between them) are warpline's
-library's -- `warpline.reader.steady`, `.window.role_windows`, `.rates.analyze`, `.launch.launch_of`, `.check` -- and what
+library's -- `warpline.recorder.reader.steady`, `.window.role_windows`, `.rates.analyze`, `.launch.launch_of`, `.check` -- and what
 warpline has no notion of is the lab's, read from the record's stamps: each role's time by state, which warp's arrival
 released each wait, and the window's critical path walked back through those releases.
 
@@ -38,10 +38,10 @@ import dev_config
 if dev_config.warpline_python() is None:
     raise SystemExit("the lab's traces are read by warpline's library, which the graph hands it: bazel run //tools:lab -- ...")
 sys.path.insert(0, dev_config.warpline_python())
-from warpline import check, rates, reader  # noqa: E402
-from warpline import launch as wl_launch
-from warpline import record as wl_record
-from warpline import window as wl_window
+from warpline.recorder import check, rates, reader  # noqa: E402
+from warpline.recorder import launch as wl_launch
+from warpline.recorder import record as wl_record
+from warpline.recorder import window as wl_window
 
 PHASE, WAITS, WAITED, ARRIVES, ISSUES = 1, 2, 3, 4, 5
 BLOCKING = reader.BLOCKING

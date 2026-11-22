@@ -920,7 +920,7 @@ _TOOLS_DIR = ROOT / "tools"
 
 
 def _repo_build_config() -> dict | None:
-    """THIS TREE's `fsla_<toolchain>/_build_config.py`, loaded BY PATH, or None if unbuilt.
+    """THIS TREE's built `.bazel/bin/fsla_<toolchain>/_build_config.py`, loaded BY PATH, or None if unbuilt.
 
     Never `import fsla_cu13._build_config`. This module runs as a script, so `sys.path[0]`
     is `tools/lint/` and not the repository root: a plain import resolves `fsla` out of
@@ -931,7 +931,7 @@ def _repo_build_config() -> dict | None:
     """
     import importlib.util
 
-    found = sorted(ROOT.glob("fsla_*/_build_config.py"))
+    found = sorted((ROOT / ".bazel" / "bin").glob("fsla_*/_build_config.py"))
     if not found:
         return None
     path = found[0]

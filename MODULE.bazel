@@ -23,12 +23,12 @@ git_override(
 )
 
 #: WARPLINE'S MODULE: the header `warpline/stamp.cuh` the lab's `lab.cuh` includes (`@warpline//:stamp`, a dependency of each
-#: experiment's compile in bazel/lab.bzl), and the checker (`warpline.checker`, `@warpline//:warpline`) the experiments'
+#: experiment's compile in bazel/lab.bzl), the checker (`warpline.checker`, `@warpline//:checker`) the experiments'
 #: validation action runs for every hazard a rule computes -- at the public commit this tree is tested with, the one pin
 bazel_dep(name = "warpline", version = "0.1.0")
 git_override(
     module_name = "warpline",
-    commit = "48ba15c712f20a76f270c5694be5b91ff0485dbe",
+    commit = "8cf2fca40c76c3a07ee481ccf5a218e224d79de4",
     remote = "https://github.com/Blakexx/warpline.git",
 )
 

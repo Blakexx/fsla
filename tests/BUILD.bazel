@@ -127,7 +127,9 @@ pytest_tier(
     data = [
         "//:library",
         "//:tree",
-        "@warpline//:warpline",
+        "@warpline//:shared",
+        "@warpline//:checker",
+        "@warpline//:recorder",
         ":arm_switch_probe_built",
         ":arm_switch_probe_empty",
         ":fixture_arm_set",
@@ -153,7 +155,9 @@ pytest_tier(
     data = [
         "//:library",
         "//:tree",
-        "@warpline//:warpline",
+        "@warpline//:shared",
+        "@warpline//:checker",
+        "@warpline//:recorder",
     ],
     marks = "not cuda",
     tests = ["tests/" + f for f in glob(LAB_TESTS)],
@@ -165,7 +169,9 @@ pytest_tier(
     data = [
         "//:library",
         "//:tree",
-        "@warpline//:warpline",
+        "@warpline//:shared",
+        "@warpline//:checker",
+        "@warpline//:recorder",
         ":structure_switch_probe",
     ],
     device = True,

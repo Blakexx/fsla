@@ -41,9 +41,9 @@ def _portable(text: str) -> str:
 
 
 def binary() -> Path:
-    sos = sorted(CHECKOUT.glob("fsla_*/_C*.so"))
+    sos = sorted((CHECKOUT / ".bazel" / "bin").glob("fsla_*/_C*.so"))
     if not sos:
-        raise RuntimeError(f"no built extension in {CHECKOUT.name} (fsla_<toolchain>/_C*.so)")
+        raise RuntimeError(f"no built extension in {CHECKOUT.name} (.bazel/bin/fsla_<toolchain>/_C*.so)")
     return sos[0]
 
 

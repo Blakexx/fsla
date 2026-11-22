@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
 RECORDS = ROOT / "tools" / "toolchains"
+#: where the graph leaves a checkout's built library (`--symlink_prefix=.bazel/`): a build output, never written into the tree
+BUILT = Path(".bazel/bin")
 
 _FIELDS = {"ptxas": str, "readers": dict, "sanitizer": str, "cuda_major": int, "torch_index": str}
 #: the disassemblers the binary gates read with, each pinned by its whole `--version` text as the assembler is
@@ -35,11 +37,13 @@ class Toolchain:
 
 
 def built_extension(root: Path = ROOT) -> Path:
-    """The extension a checkout's in-place build produced: `fsla_<toolchain>/_C.*so`, inside the binary plugin the build
-    ships as (docs/build.md#wheels). Refuses a checkout with none, or with more than one toolchain's."""
-    found = sorted(root.glob("fsla_*/_C.*so"))
+    """The extension a checkout's build produced: `fsla_<toolchain>/_C.*so` in the graph's output (`.bazel/bin`, never the
+    source tree), inside the binary plugin the build ships as (docs/build.md#wheels). Refuses a checkout with none, or
+    with more than one toolchain's."""
+    built = root / BUILT
+    found = sorted(built.glob("fsla_*/_C.*so"))
     if len(found) != 1:
-        raise FileNotFoundError(f"{root} holds {len(found)} built extensions (fsla_<toolchain>/_C.*so): "
+        raise FileNotFoundError(f"{root} holds {len(found)} built extensions ({BUILT}/fsla_<toolchain>/_C.*so): "
                                 f"{[str(p.relative_to(root)) for p in found]}")
     return found[0]
 

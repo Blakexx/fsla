@@ -91,7 +91,7 @@ lab_run(
 #: THE SASS GATE by hand, handed the checker as the lab is (the graph's gate action reads the same way)
 lab_run(
     name = "sass_gate",
-    library = "@warpline//:warpline",
+    library = "@warpline//:checker",
     tool = "tools/sass_gate.py",
 )
 

@@ -22,7 +22,7 @@ silently.
 ## <a id="building"></a>Building
 
 ```bash
-bazel run //:library                                   # every built architecture and arm, into fsla_cu13/
+bazel run //:library                                   # every built architecture and arm, left in .bazel/bin/fsla_cu13/
 bazel run //:library --//:archs=90a --//:decode_arms=3  # an iteration build (below)
 bazel run //:wheels                                    # the two wheels of a clean commit (below)
 ```
@@ -195,7 +195,7 @@ codegen-affecting flag change is one edit in one file ([`ratification.md`'s clos
 
 ```bash
 python -c "from fsla_cu13 import _build_config; print(_build_config.show())"
-bazel run //tools:sass_gate -- fsla_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
+bazel run //tools:sass_gate -- .bazel/bin/fsla_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
 bazel run //:ratify -- --census                        # its registers and spills
 ```
 
@@ -233,8 +233,12 @@ plugin, or a mismatched one, the first kernel call raises, naming `pip install "
 parts (the oracle, the configuration objects) still import. The `cu13` extra, the wheel's only one, is the wheels tool's, not
 `pyproject.toml`'s, because it pins `fsla`'s own version; every other field of the metadata is `pyproject.toml`'s `[project]`.
 
-A checkout's binary sits where a wheel puts it: `bazel run //:library` copies it to `fsla_cu13/_C.abi3.so`, so a
-checkout and an installed wheel load the binary by one path. `tools/toolchains.py`'s `built_extension` is how the tools find it.
+A checkout's binary stays a build output: `bazel run //:library` writes nothing into the tree (a file nothing commits is never
+written into the source tree), and the library is at `.bazel/bin/fsla_cu13/_C.abi3.so`. The checkout's venv (`bazel run //:dev_env`)
+has a `.pth` file naming `.bazel/bin`, and the tracked package's `__init__` extends its path to the directories of
+that name on `sys.path`, so `import fsla_cu13._C` finds the built library and a wheel's one directory is the same package.
+`tools/toolchains.py`'s `built_extension` is how the tools find the file; a machine without Bazel (the rented box) puts a copy of
+`.bazel/bin/fsla_cu13/` where its `PYTHONPATH` names a parent of it.
 
 **The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes, then refuses the build unless its record names this
 version and the toolchain and is no iteration build. It writes

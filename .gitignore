@@ -1,11 +1,9 @@
 __pycache__/
 *.py[cod]
-*.so
 /build/
 dist/
 .pytest_cache/
 .ruff_cache/
-fsla_cu13/_build_config.py
 
 # Bazel's output links (`.bazelrc`'s `--symlink_prefix=.bazel/`); `.clangd` reads the compile database through `.bazel/bin`
 /.bazel/
