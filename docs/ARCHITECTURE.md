@@ -335,7 +335,7 @@ rather than at a threshold (R22).
 
 **A user of the Python package never registers an arm** (CONSTITUTION §R16). The shipped set is each family's
 compiled key above, per architecture, and every other shape a family serves is served by runtime addressing, checked
-at the seam: a call is either lawful and runs, or the refusal names the field (`fsla.expert.envelope_refusal`); no call runs a prefill yet, so every prefill call refuses.
+at the seam: a call is either lawful and runs, or the refusal names the field (the descriptor's, `fsla.expert.prefill_descriptor`); no call runs a prefill yet, so every prefill call refuses.
 
 **Closed-world codegen** is the rule for the binaries — pinned assembler, ahead-of-time only, the declared targets and the gates every build runs, and a device-side stamp asserted before any gate
 ([`ratification.md`](ratification.md), [`architecture/closed-world-codegen.md`](architecture/closed-world-codegen.md)).

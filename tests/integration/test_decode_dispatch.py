@@ -77,7 +77,7 @@ def _prime(layer, device, *, prefill=32, paged=True):
     from fsla.ops.paging import MMA_K_QUANTUM
 
     x = torch.randn(1, prefill, _HIDDEN, device=device)
-    state = fsla.state()
+    state = fsla.state(backing="paged" if paged else "dense")
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x)
         if paged:
@@ -85,10 +85,10 @@ def _prime(layer, device, *, prefill=32, paged=True):
                               routes.topology.N // MMA_K_QUANTUM,
                               dtype=torch.bool, device=device)
             _s, arena = state._kernel_entry(routes, bits, d_v=layer.d_v,
-                                            paging=True, BC=64)
+                                            BC=64)
             arena.wait()
         else:
-            state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
+            state._kernel_entry(routes, None, d_v=layer.d_v, BC=64)
             state._kernel_commit(planes.state_plane(routes, d_v=layer.d_v,
                                                     zeros=True))
     return state

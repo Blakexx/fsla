@@ -234,7 +234,7 @@ def test_the_two_backings_agree(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=41 + len(widths), support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")

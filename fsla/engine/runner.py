@@ -62,8 +62,6 @@ class Node:
     needs: tuple[str, ...]
     stream: str
     variants: tuple[Variant, ...]
-    waits: tuple[str, ...]
-    host_sync: bool
     pure_of: tuple[str, ...]
     per_state: bool
     #: this node may stand inside a CUDA-graph capture: it reads no device value on the
@@ -94,12 +92,10 @@ class Node:
 
 def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
          stream: str = "host", variants: tuple[Variant, ...] = (Variant.PREFILL_STATELESS, Variant.PREFILL_STATEFUL),
-         waits: tuple[str, ...] = (),  #: reserved: the prefill's arena join, which returns with the prefill launch function (open-work A-f)
-         host_sync: bool = False,  #: reserved: the prefill's state entry (a host read), which returns with the prefill launch function (open-work A-f)
          pure_of: tuple[str, ...] = (), per_state: bool = False,
          capturable: bool = False, reference_only: bool = False,
          ) -> Callable[[Callable], Node]:
-    """Declare a node. `host_sync` marks the ONE node permitted a device-to-host read."""
+    """Declare a node."""
 
     def declare(fn: Callable[[dict], Any]) -> Node:
         if stream not in _STREAMS:
@@ -110,13 +106,9 @@ def node(*, gives: tuple[str, ...] = (), needs: tuple[str, ...] = (),
             raise ValueError(
                 f"{fn.__name__}: pure_of names {sorted(set(pure_of) - set(needs))} it "
                 f"does not read; a memo key that is not an input is not a key")
-        if capturable and host_sync:
-            raise ValueError(
-                f"{fn.__name__}: a host_sync node reads a device value on the host, "
-                f"which is exactly what a capture forbids; it cannot be capturable")
         return Node(fn=fn, name=fn.__name__, gives=tuple(gives), needs=tuple(needs),
-                    stream=stream, variants=tuple(variants), waits=tuple(waits),
-                    host_sync=host_sync, pure_of=tuple(pure_of), per_state=per_state,
+                    stream=stream, variants=tuple(variants),
+                    pure_of=tuple(pure_of), per_state=per_state,
                     capturable=capturable, reference_only=reference_only,
                     memo=WeakKeyDictionary() if per_state else {})
 
@@ -175,14 +167,6 @@ def validate_dag(dag: tuple[Node, ...], seeds: tuple[str, ...]) -> None:
                 f"arrives later is a DAG authoring error")
         available.update(step.gives)
 
-    joins = [step.name for step in dag if step.waits]
-    if len(joins) > 1:
-        raise ValueError(
-            f"{joins}: exactly one Join per DAG. A second event is a second "
-            f"synchronization discipline.")
-    syncs = [step.name for step in dag if step.host_sync]
-    if len(syncs) > 1:
-        raise ValueError(f"{syncs}: at most one device-to-host read per DAG")
     enumerated = [step.name for step in dag if step.reference_only]
     if enumerated:
         raise ValueError(

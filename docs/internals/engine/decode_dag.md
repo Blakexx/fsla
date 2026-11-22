@@ -77,9 +77,8 @@ is asserted directly (`tests/unit/test_facts_memo.py`).
 
 Every node of `DECODE_STEP` declares `capturable=True`, and
 `fsla.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
-node cannot declare both `capturable` and `host_sync`: reading a device value on the host
-is precisely what a capture forbids, and the two attributes are one claim written from
-two ends — which is exactly why the verdict read lives in `growth_pending`, outside the
+captured node reads no device value on the host, which is precisely what a capture forbids —
+which is exactly why the verdict read lives in `growth_pending`, outside the
 captured tuple, and never inside `DECODE_STEP` itself.
 
 The declaration is what makes the property survive editing. A node added to the step that
@@ -90,7 +89,7 @@ the declaration is TRUE of a real capture.
 ## <a id="host-carrier"></a>5. The descriptor and the scratch, and why the scratch is memoized the way it is
 
 THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; a seed of the DAG and the
-memo key of the scratch), and what the old plan held is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
+memo key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
 `plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
 lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;
 `eps` is data and `ctas` a private keyword of the internal `step`. None of that is a derived axis. `BC` is deliberately NOT a

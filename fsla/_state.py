@@ -167,15 +167,24 @@ _BUILT_STRATEGY = "mutable"
 _DESIGNED_STRATEGY = "cow"
 
 
-def state(strategy: str = "mutable", pool_slack: float = 0.0) -> FSLAState:
-    """A fresh UNBOUND state. Everything but the two knobs binds at the first call.
+def state(
+    strategy: str = "mutable",  #: reserved: copy-on-write branching, designed and refused by name until built (s0_design.md)
+    pool_slack: float = 0.0,  #: reserved: the slack pool a decode step admits from (docs/internals/state.md#the-slack-pool)
+    *,
+    backing: str = "paged",
+) -> FSLAState:
+    """A fresh UNBOUND state. Everything but the knobs binds at the first call.
+
+    ``backing`` is the state's own format choice (R13: the state owns its format): ``"paged"`` -- the default -- is the
+    arena of the atoms a call realizes; ``"dense"`` pins one dense plane, the backing the bit-identity gate compares the
+    paged one against. Paging is bitwise invisible, so there is nothing to turn on.
 
     ``pool_slack`` is STORAGE MECHANICS, which is why it lives here and not on the op: a
     fraction of full residency, reserved per ``bh`` as physical slots a decode step can
     admit into by itself. ``0.0`` -- the default -- is exact commitment, and every growth
     step asks the host, exactly as it always did (docs/internals/state.md#the-slack-pool).
     """
-    return FSLAState(strategy=strategy, pool_slack=pool_slack)
+    return FSLAState(strategy=strategy, pool_slack=pool_slack, backing=backing)
 
 
 class FSLAState:
@@ -194,7 +203,7 @@ class FSLAState:
     place, old references alias the result; "cow", when built: writes never
     overwrite, every returned state stays valid, resubmission is branching).
     The BACKING (dense plane vs paged arena) is storage mechanics -- chosen by
-    the plan at bind, priced in footprint, and semantically invisible (the
+    the state's creation (`fsla.state(backing=)`), priced in footprint, and semantically invisible (the
     dense-vs-paged torch.equal gate is that claim). All four combinations are
     coherent; dense x cow is legal-but-degenerate (no table -> a full-plane
     copy per advance).
@@ -203,7 +212,7 @@ class FSLAState:
     __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
                  "_plane", "_format", "__weakref__")
 
-    def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0) -> None:
+    def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0, backing: str = "paged") -> None:
         if strategy == _DESIGNED_STRATEGY:
             raise NotImplementedError(
                 f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
@@ -213,11 +222,13 @@ class FSLAState:
         if strategy != _BUILT_STRATEGY:
             raise ValueError(
                 f"strategy must be {_BUILT_STRATEGY!r}, got {strategy!r}")
+        if backing not in ("paged", "dense"):
+            raise ValueError(f"backing must be 'paged' or 'dense', got {backing!r}")
         self.strategy = strategy
         self.pool_slack = float(pool_slack)
         self._shape: tuple[int, int, int, int] | None = None
         self._device: torch.device | None = None
-        self._paging = True
+        self._paging = backing == "paged"
         self._arena: PageArena | None = None
         self._plane: torch.Tensor | None = None
         self._format: StateFormat | None = None
@@ -337,24 +348,21 @@ class FSLAState:
         B, H, N, cols = self._shape
         return AtomKeying(N=N, cols=cols, BH=B * H)
 
-    def _wants_pages(self, paging: bool) -> bool:
-        """Whether this call needs an atom bitmap -- i.e. whether it will PAGE.
+    def _wants_pages(self) -> bool:
+        """Whether this call needs an atom bitmap -- i.e. whether it will PAGE: the state's own backing, fixed at creation.
 
         Asked by the facade before the stats pass, so a dense-backed state does not
-        pay for a bitmap nothing reads. Once bound, the state's own backing preference
-        answers it; the argument is only consulted on the call that binds.
+        pay for a bitmap nothing reads.
         """
-        return self._paging if self.bound else bool(paging)
+        return self._paging
 
-    def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, d_v: int,
-                      paging: bool, BC: int):
+    def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, d_v: int, BC: int):
         """`(s_in, arena)` for the kernel arm, with this call's pages committed.
 
-        The prefill DAG has already run the activity pass, so the only thing that
+        The caller has already folded the call's atom bits, so the only thing that
         happens here is `plan_exact` on the arena's side stream -- one device-to-host
-        size read, no other synchronization. The DAG's Join is what puts the
-        admission before anything reads the page table and before the launch
-        (docs/internals/engine/prefill_dag.md).
+        size read, no other synchronization. The admission is on the arena's side stream and
+        its one event is what the consumer launch waits on (`fsla.ops.paging`).
 
         `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
         extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by
@@ -366,7 +374,6 @@ class FSLAState:
         if not self.bound:
             self._shape = (routes.batch, routes.heads, routes.topology.N, d_v + 1)
             self._device = routes.device
-            self._paging = bool(paging)
             self._format = presented
         else:
             self._format.check(presented)

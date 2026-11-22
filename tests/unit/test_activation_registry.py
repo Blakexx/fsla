@@ -19,6 +19,7 @@ import torch
 
 import fsla
 import fsla.expert
+from fsla.engine.rules import envelope
 from fsla.routing.activations import (
     ACTIVATION_COLUMNS,
     ACTIVATION_REGISTRY,
@@ -218,9 +219,9 @@ def test_the_envelope_names_the_device_and_no_activation():
     ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True)
     try:
         topology = _topology(entmax(1.75), entmax(1.75))
-        bundle = type("Bundle", (), {"topology": topology, "device": torch.device("cuda")})()
-        refusal = fsla.expert.envelope_refusal(bundle, fsla.Values.from_projection(torch.zeros(1, 1, 1, 64)))
-        assert "activation" not in refusal
+        assert topology is not None
+        refusal = envelope(torch.device("cpu"))
+        assert "activation" not in refusal and envelope(torch.device("cuda")) is None
     finally:
         del ACTIVATION_REGISTRY[tag]
 

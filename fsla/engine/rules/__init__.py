@@ -8,8 +8,8 @@ declared with :func:`fsla.engine.runner.rule`, which is what makes this director
 listing the layer's inventory (docs/internals/engine/rules.md).
 """
 
-from fsla.engine.rules.envelope import envelope, prefill_envelope
-from fsla.engine.rules.paging import admission, paging_preference
+from fsla.engine.rules.envelope import envelope
+from fsla.engine.rules.paging import admission
 from fsla.engine.rules.run_table import run_table
 from fsla.engine.rules.variant import decode_variant, variant
 
@@ -17,8 +17,6 @@ __all__ = [
     "admission",
     "decode_variant",
     "envelope",
-    "paging_preference",
-    "prefill_envelope",
     "run_table",
     "variant",
 ]

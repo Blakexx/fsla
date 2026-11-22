@@ -1,53 +1,16 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""EnvelopeRule -- why the built kernel has no arm for a call, in one sentence.
-
-THE BUILT ENVELOPE IS THE WHOLE SURFACE (docs/api.md §1), so these folds hold every
-refusal TEXT the op can carry. They are three because the call sites need them at three
-different moments -- the arm matrix, the operand facts around it, and the one
-clause that exists only on the grad path -- and folding
-them into one would evaluate clauses a caller has not reached yet
-(docs/internals/engine/rules.md).
-"""
+"""EnvelopeRule -- the operand-side clause of the built surface: the arm is a CUDA kernel (docs/api.md §1).
+The one device refusal a call meets, whichever surface it comes through (docs/internals/engine/rules.md)."""
 from __future__ import annotations
-
-from typing import Any
 
 from fsla.engine import rule
 
 
-@rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "intra_reads", "intra_dv", "stateful"))
-def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, intra_reads: bool, intra_dv: int,
-                     stateful: bool) -> str:
-    """Why the prefill has no kernel for this segment. It always refuses, by name: no carry kernel is built on this line.
-
-    ``intra_reads`` is whether the intra kernel reads these level widths (`fsla.ops.intra.admits`) and ``intra_dv``
-    the value width it reads; ``stateful`` whether the call hands a state in or out. A segment that passes the clauses
-    before it is refused for want of a carry arm.
-    """
-    if decay is not None:
-        return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "
-                "use the reference arm")
-    if not intra_reads:
-        return (f"widths={widths}; the intra reads one or two levels, each a whole number of 16-digit granules up "
-                f"to 256")
-    if d_v != intra_dv:
-        return f"d_v={d_v}; the intra reads value width {intra_dv}"
-    if stateful:
-        return ("a state handed in or out: the carry takes no entry state yet (its segment boundary is not built); "
-                "call statelessly")
-    return f"widths={widths}, d_v={d_v}; this build carries no carry arm for the carve the planner picks"
-
-
 @rule(gives=("envelope",), needs=("device",))
 def envelope(device) -> str | None:
-    """The operand-side clause, which precedes the prefill's own.
-
-    It is separate from :func:`prefill_envelope` because it is a fact about the operands rather than about the
-    configuration, and because a CPU tensor must be named BEFORE a question about the built matrix is asked of a
-    device that may not have one. No activation is refused here: the op is agnostic to what produced its operands.
-    """
+    """The operand-side clause: a CPU tensor is named BEFORE any question about the built matrix is asked of a
+    device that may not have one. No activation is refused here: the op is agnostic to what produced its operands."""
     if device.type != "cuda":
         return f"the operands are on {device}; the arm is a CUDA kernel"
     return None

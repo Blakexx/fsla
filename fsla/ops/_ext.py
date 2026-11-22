@@ -161,11 +161,18 @@ def is_available() -> bool:
 
 def device_index(device) -> int:
     """A CUDA device's index for an entry's device argument: an index as given, else the device's, the current one for
-    ``None`` or an unindexed ``cuda``."""
+    ``None`` or an unindexed ``cuda``. A device that is not CUDA is refused by the envelope's own clause
+    (:func:`fsla.engine.rules.envelope.envelope`): THE ONE PLACE a non-CUDA call is refused, since every descriptor is made through it."""
     import torch
 
     if isinstance(device, int):
         return device
+    if device is not None:
+        from fsla.engine.rules.envelope import envelope
+
+        reason = envelope(torch.device(device))
+        if reason is not None:
+            raise NotImplementedError(reason)
     index = None if device is None else torch.device(device).index
     return torch.cuda.current_device() if index is None else index
 

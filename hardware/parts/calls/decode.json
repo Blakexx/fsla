@@ -34,20 +34,6 @@
     "stateful": {
       "value": 1,
       "declared_by": "a decode step continues a sequence: a state is handed in and out (fsla/_state.py `_require_carrying`)"
-    },
-    "dense_plane": {
-      "value": {
-        "lo": 0,
-        "hi": 1
-      },
-      "declared_by": "fsla/ops/produce.py decode_descriptor: the decode step takes its backing from the state it is handed, so the pin is not read; either value is a lawful call"
-    },
-    "memory_budget": {
-      "value": {
-        "lo": 0,
-        "hi": 4611686018427387904
-      },
-      "declared_by": "fsla/ops/produce.py decode_descriptor: a decode step allocates no working set beyond its sequence's scratch, so a declared budget is not read; any value is a lawful call"
     }
   }
 }

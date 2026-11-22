@@ -144,9 +144,9 @@ This table is **generated** by `tools/supported.py` from the contract (`hardware
 guarantees an arm for) and the architectures the build produces; the gate fails if it drifts. Change the contract, not the table.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
-| Compute capability | GPUs | d_v | levels | decay | prefill | tokens | batch_heads | stateful | dense_plane | memory_budget | width_bits_1 | width_bits_2 | width_bits_3 | width_bits_4 | read_listed_1 | read_listed_2 | read_listed_3 | read_listed_4 | write_listed_1 | write_listed_2 | write_listed_3 | write_listed_4 | Toolchain | Assembler | Status |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 2..64 | 1, 2, 3, 4 | 0, 1 | 0 | 1 | 1..536870911 | 1 | 0..1 | 0..4611686018427387904 | 4..8 | 0, 4..8 | 0, 4..8 | 0, 4..8 | 0..1 | 0, 0..1 | 0, 0..1 | 0, 0..1 | 0..1 | 0, 0..1 | 0, 0..1 | 0, 0..1 | `cu13` | ptxas 13.5.37 | built |
+| Compute capability | GPUs | d_v | levels | decay | prefill | tokens | batch_heads | stateful | width_bits_1 | width_bits_2 | width_bits_3 | width_bits_4 | read_listed_1 | read_listed_2 | read_listed_3 | read_listed_4 | write_listed_1 | write_listed_2 | write_listed_3 | write_listed_4 | Toolchain | Assembler | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `sm_90a` | H100 | 2..64 | 1, 2, 3, 4 | 0, 1 | 0 | 1 | 1..536870911 | 1 | 4..8 | 0, 4..8 | 0, 4..8 | 0, 4..8 | 0..1 | 0, 0..1 | 0, 0..1 | 0, 0..1 | 0..1 | 0, 0..1 | 0, 0..1 | 0, 0..1 | `cu13` | ptxas 13.5.37 | built |
 <!-- END GENERATED: tools/supported.py -->
 
 An architecture that is not built refuses to load. Bringing one up is a measurement:

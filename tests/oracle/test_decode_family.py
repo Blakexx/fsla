@@ -34,13 +34,11 @@ import math
 import pytest
 import torch
 
-from fsla.engine.facts.call import arm_refusal
 from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.paging import bytes_equal
 from fsla.ops.produce import decode_descriptor
-from fsla.routing.factors import RouteFactors
 from fsla.routing.types import LeafMassDecay
 from tests.oracle.fixtures import (
     assert_slots_close,
@@ -111,12 +109,6 @@ def _leaf_product(levels, widths):
     return out
 
 
-def _f32(d):
-    return {k: (tuple(x.float() for x in v) if isinstance(v, tuple)
-                else (None if v is None else v.float()))
-            for k, v in d.items()}
-
-
 def _bundles(step, topology):
     """A drawn step in the internal format: what the kernel reads, and whose values the oracle takes."""
     return step_bundles(step["v"], step["read"], with_gain(step["write"], step["g_write"]), topology)
@@ -148,15 +140,8 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
              LeafMassDecay(dials=_decay_dials(_WIDTHS, _H, gen, device)))
     pre = _draw(gen, device, T, 0.5, 0.4,
                 write_live=_WIDTHS[0] // 2)
-    f = _f32(pre)
-    bundle = RouteFactors.from_levels(topology, f["read"], with_gain(f["write"], f["g_write"]))
     if decay_on:
-        # The decay retirement: decay is not a feature of the operator. The
-        # kernel arm names the refusal and the dispatch routes such a call to
-        # the oracle; the refusal IS this cell's contract until the reopen
-        # conditions, and the oracle below keeps the handoff semantics alive.
-        reason = arm_refusal(bundle, decay, d_v=_DV)
-        assert reason is not None and "decay" in reason, reason
+        # The decay retirement: a decaying prefill is not built; the oracle below keeps the handoff semantics alive.
         naive_fsla(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay, output_final_state=True)
         return
     ref = oracle_run(pre["v"], pre["read"], with_gain(pre["write"], pre["g_write"]), topology, decay)

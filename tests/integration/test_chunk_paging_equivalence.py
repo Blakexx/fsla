@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.interface.fsla_op`).
 
-The paged arena is the default backing and the descriptor's `dense_plane` fact pins the dense plane (docs/api.md section 5):
+The paged arena is the default backing and `fsla.state(backing="dense")` pins the dense plane (docs/api.md section 5):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
 hands no state back. A call whose writes reach a strict subset of the leaves a previous call wrote leaves every other
 leaf exactly as it found it -- an idle resident page is neither loaded nor stored.
@@ -25,25 +25,25 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda requ
 
 #: cells with sparse, structured and dense support: every page touched, some pages never touched, a split read side
 CELLS = ("flagship-alt-k4", "flagship-cohort-k4", "flagship-struct25", "flat-small-multiwindow")
-DENSE = False
+DENSE = "dense"
 
 
 def operands(spec, tokens: slice = slice(None)):
     return bundle_of(spec, realize(spec), tokens)
 
 
-def run(operands_, state, paging=None):
-    """The op over one call's operands, the descriptor's `dense_plane` fact pinned when ``paging`` is ``False`` (the dense plane)."""
+def run(operands_, state):
+    """The op over one call's operands, against ``state`` (whose backing is its own)."""
     routes, values, masks = operands_
-    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None, dense_plane=paging is False)
+    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None)
     workspace = fsla.build_workspace(routes, values, masks, descriptor)
     return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state)
 
 
-def calls(spec, parts, paging=None):
-    """``(ys, state)``: the op over ``parts`` of the cell's tokens, one state carried through them."""
-    state = fsla.state()
-    ys = [run(operands(spec, part), state, paging)[0] for part in parts]
+def calls(spec, parts, backing="paged"):
+    """``(ys, state)``: the op over ``parts`` of the cell's tokens, one state of ``backing`` carried through them."""
+    state = fsla.state(backing=backing)
+    ys = [run(operands(spec, part), state)[0] for part in parts]
     return ys, state
 
 
@@ -97,10 +97,10 @@ def test_an_idle_resident_page_is_neither_loaded_nor_stored():
         touched = digits.view(shape) if touched is None else touched & digits.view(shape)
     untouched = ~touched.reshape(-1)
     assert bool(untouched.any()), "the cell's second half writes every leaf: the claim is vacuous"
-    for paging in (None, DENSE):
-        state = fsla.state()
-        run(first, state, paging)
+    for backing in ("paged", DENSE):
+        state = fsla.state(backing=backing)
+        run(first, state)
         before = state.materialize().clone()
-        run(second, state, paging)
+        run(second, state)
         after = state.materialize()
         assert torch.equal(after[..., untouched, :], before[..., untouched, :])

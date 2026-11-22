@@ -21,10 +21,8 @@ C++ — cannot be read as a set with the others, and cannot be exercised without
 | rule | reads | decides |
 |---|---|---|
 | `variant` | `CallClass` | which subgraph — PREFILL_STATELESS or PREFILL_STATEFUL |
-| `prefill_envelope` | `widths`, `d_v`, decay, whether the intra reads the widths, whether a state rides the call | the prefill's refusal (always one, by name, while no carry is built) |
-| `envelope` | device | the operand-side refusal, or None |
+| `envelope` | device | the operand-side refusal (the arm is a CUDA kernel), or None |
 | `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table (in no DAG: kept for the carry port) |
-| `paging_preference` | the plan's `paging` pin | dense or paged backing |
 | `admission` | the allocator's cursor, capacity, extent, count | the run's first slot |
 
 ## <a id="the-marker"></a>2. The marker is the inventory
@@ -49,8 +47,7 @@ inputs are the entry-state plane, the exit-state plane and the page table, and i
 reads exactly whether each is there.
 
 What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
-the import graph: `paging_preference` reads the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its `dense_plane` fact),
-which the engine handles as an opaque value, so no module here names
+the import graph: no rule here names the descriptor's type: the engine handles a descriptor as an opaque value, so no module here names
 `fsla.expert` or `fsla.interface` ([`engine.md` §8](engine.md#refusals)). The
 alternative shape — a rule reaching up into the facade for the type of a value it was
 handed — survives an import-graph check only while the import hides in a function body.
@@ -58,7 +55,7 @@ handed — survives an import-graph check only while the import hides in a funct
 ## <a id="rules-are-nodes"></a>3. Rules are nodes, not a phase
 
 There is no second executor and no rule pass. Band 2 runs INTERLEAVED with band 1 in
-the one walk — `paging_preference` at the head, `variant` the moment the call class
+the one walk — `variant` the moment the call class
 exists, `decode_variant` the moment the
 step's backing does — and every one of them sits on the DAG's parallel front, never on
 its critical path. That is why the layer costs nothing.
@@ -70,13 +67,9 @@ further argument.
 Two of the folds are not in a DAG tuple, and each for a stated reason rather than
 by oversight:
 
-* `prefill_envelope` / `envelope` are composed
-  by `facts/call.py`'s `envelope_refusal` and `require_envelope`, which
-  `validate_context` calls BEFORE the walk's first node so that no refusal can
-  arrive with the operands already consumed ([`engine.md` §8](engine.md#refusals)).
-  Placing them in the tuple would move a refusal after work. The composition is an
-  ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
-  fact values, so it carries no `rule` marker and could not live here (§2).
+* `envelope` is called by `fsla.ops._ext.device_index`, which every descriptor is made through, so a
+  non-CUDA call is refused BEFORE any descriptor exists and no refusal can arrive with the operands
+  already consumed ([`engine.md` §8](engine.md#refusals)). Placing it in the tuple would move a refusal after work.
 * `run_table` is in NO tuple: no kernel takes the skip table as a launch argument
   ([`#run-table`](#run-table)); no carry kernel is built.
 
@@ -88,7 +81,7 @@ the RULE once in readable form — the rows of
 it over all eight bit values. The kernel's predicate is then one shift and one AND with
 no call-class knowledge in it.
 
-Generalized: `prefill_envelope` derives from the binary's own censuses and never from a
+Generalized: a refusal derives from the binary's own censuses and the contract, and never from a
 threshold on `d_v` or `N` — what exists is what was built and measured.
 
 ## <a id="admission-splits"></a>5. AdmissionRule splits, and where the seam is
@@ -111,16 +104,14 @@ launch, a new variant and a new byte cost, separately. There is no third path in
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
 
-## <a id="carve"></a>The carve: the carry's box, owed to the prefill launch function
+## <a id="carve"></a>The carve: the carry's box, the prefill launch function's
 
 The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
-side's lists and the readout over the read side's. There is NO CARVE OBJECT on this line: the Python carve rule (`plan_carve`, `check_carve`,
-`Carve`, `SidePlan`, its tables and its tests) is deleted ([`../DELETIONS.md`](../DELETIONS.md), recover from `b6465d84`), and the carve is
-re-derived for the two-box Hopper CTA by the prefill's launch function in `common/plan/` (`docs/open-work.md` row A-f), from the call's
-facts -- each side's walk of each level (`read_listed_k`, `write_listed_k`) and the level widths -- and never an operand. That is the
-standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared flags, the binary's arms) and never
-of a routing statistic, because the routing distribution moves step to step and a layout chosen from it would make the state's shape
-depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).
+side's lists and the readout over the read side's. The prefill's launch function in `common/plan/` derives the carve for the two-box Hopper CTA
+(`docs/open-work.md` row A-f), from the call's descriptor facts -- each side's walk of each level (`read_listed_k`, `write_listed_k`) and the level
+widths -- and never an operand. That is the standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared
+flags, the binary's arms) and never of a routing statistic, because the routing distribution moves step to step and a layout chosen from it
+would make the state's shape depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

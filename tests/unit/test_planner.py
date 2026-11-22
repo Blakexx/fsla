@@ -24,7 +24,7 @@ def _full(call: str) -> str:
     (`width_bits_k` 4) for the levels it has, every level read by lists and no level written by lists (a dense innermost write)."""
     named = dict(cell.split("=") for cell in call.split(",") if "=" in cell)
     levels = int(named.get("levels", 0))
-    rest = {"prefill": 0, "tokens": 1, "batch_heads": 1, "stateful": 1, "dense_plane": 0, "memory_budget": 0,
+    rest = {"prefill": 0, "tokens": 1, "batch_heads": 1, "stateful": 1,
             **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)},
             **{f"read_listed_{k}": int(k <= levels) for k in (1, 2, 3, 4)},
             **{f"write_listed_{k}": 0 for k in (1, 2, 3, 4)}}
@@ -195,7 +195,7 @@ def test_the_documented_batch_heads_bound_is_the_contracts():
     assert f"{BATCH_HEADS_MAX}" in text[text.index('<a id="batch-heads">'):][:1200]
 
 
-PREFILL = "d_v=64,levels=2,decay=0,prefill=1,tokens=4096,batch_heads=8,stateful=0,dense_plane=0,memory_budget=0,write_listed_1=1"
+PREFILL = "d_v=64,levels=2,decay=0,prefill=1,tokens=4096,batch_heads=8,stateful=0,write_listed_1=1"
 
 
 def test_a_prefill_call_inside_an_owed_descriptor_is_refused_naming_each_owed_kernel_and_is_no_decode_arm():
@@ -214,3 +214,29 @@ def test_a_prefill_call_inside_an_owed_descriptor_is_refused_naming_each_owed_ke
 def test_a_prefill_call_in_no_owed_descriptor_is_outside_the_contract_naming_the_fact(call, named):
     run = _plan(None, call)
     assert run.returncode == 1 and "the call lies outside FSLA's contract" in run.stderr and named in run.stderr
+
+
+def _cell_prefill_calls():
+    """Every call a `requires_kernel("prefill")` or `requires_kernel("carry")` test builds: each central carry cell's prefill, each side's walk of each level
+    all listed or all not (the contract's range is 0..1), as the planner's `--call` states it."""
+    from measure.cells import carry_cells
+
+    for cell in carry_cells():
+        levels = len(cell.widths)
+        for listed in (0, 1):
+            facts = [f"d_v={cell.dv}", f"levels={levels}", "decay=0", "prefill=1", f"tokens={cell.tokens}", f"batch_heads={cell.heads * cell.group}",
+                     f"stateful={int(cell.state != 'none')}"]
+            for k, width in enumerate(cell.widths, 1):
+                facts += [f"width_bits_{k}={width.bit_length() - 1}", f"read_listed_{k}={listed}", f"write_listed_{k}={listed}"]
+            yield pytest.param(",".join(facts), id=f"{cell.name}-listed{listed}")
+
+
+@pytest.mark.parametrize("call", _cell_prefill_calls())
+def test_every_cell_a_prefill_test_builds_is_refused_as_owed_naming_the_prefill_kernel_never_as_outside_the_contract(call):
+    """THE CLASS OF FAILURE THE CPU TIER MUST SEE: a prefill test marked `requires_kernel("prefill")` is a strict xfail only if the call's descriptor is
+    refused as `KernelNotBuilt`. A cell no owed descriptor covers would be refused as outside the contract instead (a RuntimeError), and the xfail
+    would fail on a device. Every central carry cell is planned here against the synthetic Hopper device."""
+    run = _plan(None, call)
+    assert run.returncode == 1 and run.stdout == "", run.stdout
+    assert "OWED descriptors" in run.stderr and "not built: prefill." in run.stderr, run.stderr
+    assert "lies outside FSLA's contract" not in run.stderr

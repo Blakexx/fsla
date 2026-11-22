@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE INTRA, as a caller reaches it: every pair inside one window, over the bundle, reduced into the output planes.
 No intra kernel is built on this line: :func:`intra_forward` raises :class:`fsla.ops._ext.KernelNotBuilt`. What stands
-is the shape law the envelope reads (:func:`reads`, :func:`admits`).
+is the shape law the envelope reads (:func:`reads`).
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ MAX_LEVELS = 2
 WIDTH_GRANULE = 16
 MAX_LEVEL_WIDTH = 256
 
-__all__ = ["MAX_LEVELS", "MAX_LEVEL_WIDTH", "VALUE_WIDTH", "WIDTH_GRANULE", "admits", "intra_forward", "reads"]
+__all__ = ["MAX_LEVELS", "MAX_LEVEL_WIDTH", "VALUE_WIDTH", "WIDTH_GRANULE", "intra_forward", "reads"]
 
 
 def intra_forward(launch, num: torch.Tensor, den: torch.Tensor, **kwargs) -> None:
@@ -32,10 +32,3 @@ def reads(widths) -> bool:
     widths = tuple(int(width) for width in widths)
     return 1 <= len(widths) <= MAX_LEVELS and all(
         width % WIDTH_GRANULE == 0 and WIDTH_GRANULE <= width <= MAX_LEVEL_WIDTH for width in widths)
-
-
-def admits(widths, d_v: int) -> bool:
-    """Whether the intra runs a call at these level widths and value width: widths it :func:`reads` and ``d_v`` the
-    `VALUE_WIDTH`. Every width it reads fits every card's shared memory in every form: each build's walk is sized for the
-    widest rows (`Walk<B>`, asserted at compile time; docs/internals/intra/intra.md#block)."""
-    return d_v == VALUE_WIDTH and reads(widths)

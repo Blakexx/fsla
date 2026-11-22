@@ -186,18 +186,6 @@ def test_a_need_that_arrives_later_is_a_declaration_error():
         validate_dag((early, late), seeds=())
 
 
-def test_a_dag_declares_exactly_one_join_and_at_most_one_host_read():
-    first, _ = _counting(gives=("a",), waits=("residency",))
-    second, _ = _counting(gives=("b",), waits=("residency",))
-    with pytest.raises(ValueError, match="exactly one Join"):
-        validate_dag((first, second), seeds=())
-
-    reader, _ = _counting(gives=("a",), host_sync=True)
-    other, _ = _counting(gives=("b",), host_sync=True)
-    with pytest.raises(ValueError, match="one device-to-host read"):
-        validate_dag((reader, other), seeds=())
-
-
 def test_a_masked_out_node_leaves_its_facts_null():
     """The runtime-null OUTPUT skip: intra-variant variation is a null plan field, never
     a variant split, so a skipped band's facts must be PRESENT and null rather than
@@ -218,12 +206,6 @@ def test_a_supplied_fact_short_circuits_its_producer():
 # the decode family's two structural declarations
 # ---------------------------------------------------------------------------
 
-def test_a_capturable_node_may_not_read_the_device_on_the_host():
-    """The two attributes are one claim, so declaring both is refused at declaration."""
-    with pytest.raises(ValueError, match="cannot be capturable"):
-        node(gives=("grow",), host_sync=True, capturable=True)(lambda f: True)
-
-
 def test_the_decode_step_is_declared_capturable_end_to_end():
     """THE CAPTURABILITY CLAIM, structurally: no host read, and every node says so.
 
@@ -234,7 +216,6 @@ def test_the_decode_step_is_declared_capturable_end_to_end():
     from fsla.engine.dags.decode_dag import DECODE_STEP
 
     assert all(step.capturable for step in DECODE_STEP)
-    assert not any(step.host_sync for step in DECODE_STEP)
 
 
 def test_a_reference_only_node_is_refused_by_every_shipped_dag():
@@ -262,4 +243,3 @@ def test_the_decode_dag_ends_at_the_step_and_its_verdict_is_read_outside_it():
 
     assert all(isinstance(node, Node) for node in DECODE_STEP)
     assert DECODE_STEP[-1].name == "step", "the step is the last thing the decode tuple does"
-    assert not any(node.host_sync for node in DECODE_STEP), "a host read cannot be captured"

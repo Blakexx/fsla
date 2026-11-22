@@ -59,8 +59,8 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   (`fsla.ops.produce.decode_descriptor`), never padded to one inside it.
 * **intra** (`fsla.ops.intra.intra_forward`) pads nothing: it reads the bundle's rows
   where the producer stores them, at their own widths, each level a whole number of
-  16-digit granules up to 256 -- a bundle outside that is refused by the prefill
-  envelope (`fsla.ops.intra.admits`), never padded at the seam. The values are the
+  16-digit granules up to 256 (`fsla.ops.intra.reads`) -- a bundle outside that is never
+  padded at the seam. The values are the
   format's 64 channels.
 
 ## Where the shipped sets come from
@@ -71,9 +71,8 @@ value width, `fsla.ops.intra.VALUE_WIDTH`.
 
 The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as
 runtime addressing over the carve's channel extent, which the prefill launch function derives
-([`engine/rules.md#carve`](engine/rules.md#carve)); the prefill is refused by name until it is built. The prefill graph has no
-`box` node any more: the arena's allocation extent returns with the launch function
-([`docs/open-work.md`](../open-work.md) A-c and A-f).
+([`engine/rules.md#carve`](engine/rules.md#carve)); the prefill is refused by name until it is built. The arena's allocation
+extent is the launch function's too ([`docs/open-work.md`](../open-work.md) A-c and A-f).
 
 ## What this does not do
 

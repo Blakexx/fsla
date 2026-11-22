@@ -26,7 +26,7 @@ from fsla.engine import (
     validate_dag,
 )
 from fsla.engine.facts import nodes
-from fsla.engine.facts.call import require_envelope
+from fsla.engine.facts.call import refuse_backward
 from fsla.routing.masks import PREFILL, Masks
 
 _SEEDS = ("routes", "values", "masks", "decay", "state", "descriptor", "workspace", "want_state", "given_state_in", "given_arena")
@@ -83,7 +83,6 @@ def post(f):
 
 
 PREFILL_DAG = (
-    rules.paging_preference.node,
     nodes.topology,
     nodes.classify_call,
     rules.variant.node,
@@ -149,7 +148,7 @@ def validate_context(ctx: PrefillContext) -> None:
     if ctx.masks.consumer != PREFILL:
         raise ValueError(f"fsla_op takes the {PREFILL!r}-layout masks, got {ctx.masks.consumer!r}")
     ctx.masks.check(routes)
-    require_envelope(routes, values, decay, ctx.state)
+    refuse_backward(routes, values, decay)
 
 
 def run_prefill(ctx: PrefillContext) -> tuple[torch.Tensor, torch.Tensor | None]:

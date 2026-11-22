@@ -48,12 +48,12 @@ def _bundles(tokens: int, heads: int = 2):
     return routes, values, masks
 
 
-def _descriptor(routes, values, *, stateful=False, dense_plane=False, memory_budget=None):
+def _descriptor(routes, values, *, stateful=False):
     """The prefill's descriptor of a bundle, by the producer's rule: owed while the prefill kernel is not built, so it is refused here, by name."""
     from fsla.ops.produce import prefill_descriptor
 
     return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
-                              stateful=stateful, dense_plane=dense_plane, memory_budget=memory_budget, device=routes.device)
+                              stateful=stateful, device=routes.device)
 
 
 def _op(routes, values, masks, descriptor, **kwargs):
@@ -99,12 +99,12 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
     one state are the whole call to fp32 ULPs, in either backing."""
     routes, values, masks = _bundles(4 * window_of())
     with torch.no_grad():
-        whole, _ = _op(routes, values, masks, _descriptor(routes, values, dense_plane=not paging))
-        state = fsla.state()
+        whole, _ = _op(routes, values, masks, _descriptor(routes, values))
+        state = fsla.state(backing="paged" if paging else "dense")
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
             cut_routes, cut_values, cut_masks = _cut(routes, span), _cut(values, span), _cut_masks(masks, span)
-            y, state = _op(cut_routes, cut_values, cut_masks, _descriptor(cut_routes, cut_values, stateful=True, dense_plane=not paging),
+            y, state = _op(cut_routes, cut_values, cut_masks, _descriptor(cut_routes, cut_values, stateful=True),
                            state=state)
             parts.append(y)
     assert state.paged is paging
@@ -138,14 +138,13 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 
 
-def test_a_budgeted_call_is_refused_by_name_where_every_prefill_is_and_not_as_a_call_outside_the_contract():
-    """A budget is the `memory_budget` fact of the call's descriptor; the segment length is an output of the prefill launch function, which is not built.
-    So a budgeted call -- like every prefill -- is refused as `KernelNotBuilt` naming the prefill kernel when its descriptor is made, with or without a
-    budget, and never as a call the contract does not hold."""
+def test_a_budgeted_prefill_is_refused_by_name_before_anything_runs():
+    """A budget is the LAYER's: it would ask the planner how many tokens fit beside the state and loop over segments, and the planner's answer
+    is the prefill launch function's, which is not built. So a budgeted prefill is refused as `KernelNotBuilt` naming the prefill kernel at the
+    one place the layer would have segmented -- before the producer, the descriptor or any kernel -- and never as a call outside the contract."""
     from fsla.ops._ext import KernelNotBuilt
 
-    for budget in (None, 10 ** 9):
-        layer = _layer(memory_budget=budget).cuda().eval()
-        with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b") as refused:
-            layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
-        assert "outside FSLA's contract" not in str(refused.value)
+    layer = _layer(memory_budget=10 ** 9).cuda().eval()
+    with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b") as refused:
+        layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
+    assert "outside FSLA's contract" not in str(refused.value)

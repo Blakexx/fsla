@@ -49,8 +49,7 @@ it at all:
 * `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing, the write-atom
   bitmap and the atom fold of the masks (`planes.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
-  envelope authority they fold into — `envelope_refusal` and `require_envelope`
-  (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
+  gradient clause they fold into — `refuse_backward` (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
   a wrapper that defers its logic elsewhere; the primitive IS here.
 * `fsla/engine/rules/` — band 2, one declared fold per decision.
 * `fsla/engine/dags/` — the per-family compositions: the tuple, its context, its
@@ -115,26 +114,19 @@ fact is exactly what the two-purposes doctrine forbids.
 The round trip through DRAM at that boundary is not a cost to engineer away; it IS
 the pluggability seam.
 
-## <a id="streams-and-the-join"></a>6. Streams, the join, and the one host read
+## <a id="streams-and-the-join"></a>6. Streams and capture
 
 Node metadata declares the discipline the arena implements:
 
 * `stream="side"` — issued on the arena's side stream.
-* `waits=(...)` — a Join. **There is exactly one Join per DAG** and `validate_dag`
-  asserts it, because a second event would be a second synchronization discipline.
-* `host_sync=True` — the ONE node permitted a device-to-host read.
 * `capturable=True` — this node may stand inside a CUDA-graph capture: it reads no
-  device value on the host and allocates nothing per step. Declaring it beside
-  `host_sync` is refused; the two are one claim written from two ends, and
+  device value on the host and allocates nothing per step.
   `validate_capturable` refuses a captured recipe holding a node without it
   ([`decode_dag.md` §4](decode_dag.md#capturable)).
 * `reference_only=True` — this node is a GATE's independent second derivation of a
   fact the shipped path derives its own way. `validate_dag` refuses any DAG containing
   one, which is what keeps that independence from being deleted by a well-meaning
   wiring ([`decode_dag.md` §6](decode_dag.md#reference-only)).
-
-Where a Join sits is a correctness fact, not a scheduling preference: see
-[the prefill DAG's page](prefill_dag.md).
 
 ## <a id="memoization"></a>7. Memoization is a node attribute
 
@@ -161,8 +153,7 @@ raises on any attribute read, so the property is proven per node rather than dec
 
 A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
 not a node and no node memo reaches it: the binary's arm census (`fsla.ops.decode.arms`) is
-read by the envelope adapter in `facts/call.py` at each call. The intra's admitted widths are not one: they are a law
-over the widths and the value width (`fsla.ops.intra.admits`).
+read by the planner's launch function at each call.
 
 ## <a id="refusals"></a>8. Refusals are one call at the head
 
@@ -176,15 +167,14 @@ unreachable by construction.
 Every refusal names the clause that has no arm, and the message texts are gated
 (`tests/unit/test_api_contract.py`).
 
-The envelope half of that call is `facts/call.py`'s `require_envelope`, and it is
+The gradient half of that call is `facts/call.py`'s `refuse_backward`, and it is
 reached DOWNWARD: the engine composes the rule layer's clauses over its own adapters
-and the facade calls the engine, never the reverse. `envelope_refusal` beside it is the
-same composition without the raise, which is what lets a caller ask before calling —
-`fsla.expert` re-exports it as the public address (`docs/api.md` §5), and that
-re-export is the only direction the dependency runs.
+and the facade calls the engine, never the reverse. The device clause is the rule layer's
+`envelope`, called where every descriptor is made (`fsla.ops._ext.device_index`), and the unbuilt-kernel clause is the
+owed descriptor's (`docs/internals/hardware/registry.md#the-owed-folder`): a prefill has ONE path to each refusal.
 
 The descriptor is the same statement from the other end. A descriptor fact is a VALUE a rule
-folds — `rules/paging.py` reads the `dense_plane` fact and returns a bool — and the engine handles the descriptor as an opaque value; the
+folds — `the descriptor's facts are read by `common/plan/` and by the checks of its own surface — and the engine handles the descriptor as an opaque value; the
 type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
 `fsla.expert`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds

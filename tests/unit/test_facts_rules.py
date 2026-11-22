@@ -28,20 +28,13 @@ from fsla.engine.rules import (
     admission,
     decode_variant,
     envelope,
-    paging_preference,
     run_table,
     variant,
 )
 from fsla.engine.runner import Node
 from fsla.engine.types import CallClass, Variant
-from fsla.ops.descriptor import Descriptor
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _descriptor(**facts) -> Descriptor:
-    """A descriptor holding the call facts a rule reads (the planner is a device read; a rule reads the facts alone)."""
-    return Descriptor(device=0, call=tuple(sorted(facts.items())), words=())
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +74,6 @@ def test_a_rule_declares_the_host_band_and_no_memo():
                 continue
             where = f"{module.__name__}.{name}"
             assert declared.stream == "host", where
-            assert not declared.waits and not declared.host_sync, where
             assert declared.pure_of == () and not declared.per_state, where
             assert declared.pure is obj, where
 
@@ -102,10 +94,8 @@ def test_a_rule_runs_as_a_node_over_a_fact_bag():
     what the walk runs, and `.node` is the one it walks."""
     from fsla.engine.runner import run
 
-    facts = run((variant.node, paging_preference.node), {"call_class": CallClass(False, False, False, False),
-                                                      "descriptor": _descriptor(dense_plane=0)})
+    facts = run((variant.node,), {"call_class": CallClass(False, False, False, False)})
     assert facts["variant"] is Variant.PREFILL_STATELESS
-    assert facts["paging"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -150,15 +140,6 @@ def test_the_operand_envelope_names_the_device_and_no_activation():
     assert envelope(torch.device("cuda")) is None
     assert envelope(torch.device("cpu")) == (
         "the operands are on cpu; the arm is a CUDA kernel")
-
-
-# ---------------------------------------------------------------------------
-# PagingPreferenceRule
-# ---------------------------------------------------------------------------
-
-def test_paging_is_the_default_and_the_calls_dense_plane_fact_may_only_turn_it_off():
-    assert paging_preference(_descriptor(dense_plane=0)) is True
-    assert paging_preference(_descriptor(dense_plane=1)) is False
 
 
 # ---------------------------------------------------------------------------

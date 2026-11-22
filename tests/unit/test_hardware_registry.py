@@ -53,7 +53,7 @@ def test_the_decode_contract_is_the_value_widths_two_to_sixty_four_at_each_depth
         assert c.alternatives == ("decay",)
         assert c.facts["sm_count"] == (114, 132)
         assert c.facts["prefill"] == (0, 0) and c.facts["tokens"] == (1, 1) and c.facts["stateful"] == (1, 1)
-        assert c.facts["batch_heads"] == (1, BATCH_HEADS_MAX) and c.facts["dense_plane"] == (0, 1)
+        assert c.facts["batch_heads"] == (1, BATCH_HEADS_MAX)
         levels = c.facts["levels"][0]
         for side in ("read", "write"):
             assert [c.facts[f"{side}_listed_{k}"] for k in (1, 2, 3, 4)] == [(0, 1)] * levels + [(0, 0)] * (4 - levels)
@@ -105,7 +105,7 @@ def test_the_contract_header_holds_each_context_and_the_call_facts_in_the_schema
     assert text.count("out.push_back({\"hopper_decode_d") == 8
     assert "f.assign(\"d_v\", Interval{2, 64});" in text and "f.assign(\"sm_count\", Interval{114, 132});" in text
     assert "f.assign(\"tensor\", EnumSet{7});" in text
-    names = ["d_v", "levels", "decay", "prefill", "tokens", "batch_heads", "stateful", "dense_plane", "memory_budget", "width_bits_1", "width_bits_2",
+    names = ["d_v", "levels", "decay", "prefill", "tokens", "batch_heads", "stateful", "width_bits_1", "width_bits_2",
              "width_bits_3", "width_bits_4", *(f"{side}_listed_{k}" for side in ("read", "write") for k in (1, 2, 3, 4))]
     assert "kCallFactNames[] = {" + ", ".join(f'"{n}"' for n in names) + "}" in registry.facts_header(registry.schema())
 

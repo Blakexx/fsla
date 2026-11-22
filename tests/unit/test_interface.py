@@ -19,11 +19,12 @@ import pathlib
 
 import pytest
 import torch
-from conftest import build_layer, hand_descriptor, reference_produce
+from conftest import build_layer, hand_descriptor
 
 import fsla
-from fsla.expert import envelope_refusal, require_envelope
+from fsla.engine.rules import envelope
 from fsla.interface import BackwardNotImplemented, operands_of, requires_backward
+from fsla.ops._ext import KernelNotBuilt
 from fsla.values import Values
 
 # --- the predicate -----------------------------------------------------------
@@ -86,14 +87,13 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
 def test_a_grad_bearing_prefill_is_refused_loudly():
     """The prefill has no reverse pass until the native backward is rebuilt, so a call that carries a gradient
     must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
-    The gradient clause speaks before the envelope's: the same bundle on the CPU without a gradient is refused
-    for its device instead."""
+    The same bundle without a gradient is refused by name as an unbuilt prefill kernel."""
     v, routes, masks, descriptor = _tiny_routing(requires_grad=True)
     values = Values.from_projection(v)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
         fsla.fsla_op(routes, values, masks, descriptor)
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+    with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b"):
         fsla.fsla_op(routes, values, masks, descriptor)
 
 
@@ -127,32 +127,14 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     with torch.no_grad():
         assert requires_backward(v, *routes.tensors()) is False
         #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
-        assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
+        assert "CUDA kernel" in envelope(routes.device)
 
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
     v, routes, _masks, _descriptor = _tiny_routing(requires_grad=False)
     with torch.no_grad():
-        assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
-
-
-@pytest.mark.cuda
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_the_envelope_refuses_a_no_grad_cuda_bundle_for_want_of_a_carry_arm():
-    """The prefill envelope always refuses while no carry is built: an in-matrix no-grad CUDA bundle is
-    refused BY NAME (no carry arm), and `require_envelope` raises that sentence."""
-    torch.manual_seed(5)
-    layer = fsla.FSLA(fsla.Routing([fsla.split_routing(256, sparse_duty="write"),
-                                    fsla.split_routing(256, sparse_duty="read")]),
-                      hidden_size=32, num_heads=1, d_v=64).to("cuda").eval()
-    x = torch.randn(1, 512, 32, device="cuda")
-    v = torch.randn(1, 512, 1, 64, device="cuda")
-    with torch.no_grad():
-        routes, _values, _masks = reference_produce(layer, x)
-        assert "no carry arm" in envelope_refusal(routes, Values.from_projection(v))
-        with pytest.raises(NotImplementedError, match="no carry arm"):
-            require_envelope(routes, Values.from_projection(v))
+        assert "CUDA kernel" in envelope(routes.device)
 
 
 # --- the O-3 name contract ---------------------------------------------------

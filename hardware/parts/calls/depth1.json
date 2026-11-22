@@ -1,6 +1,6 @@
 {
   "name": "calls/depth1",
-  "doc": "a call's depth 1, the decode step's and the prefill's: `levels`, the log2 of each level's width and each side's per-level sparse flag, correlated (a level beyond `levels` has width_bits 0 and sparse flags 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside a call part (calls/decode, calls/prefill)",
+  "doc": "a call's depth 1, the decode step's and the prefill's: `levels`, the log2 of each level's width and each side's per-level walk (listed or not), correlated (a level beyond `levels` has width_bits 0 and walks 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside a call part (calls/decode, calls/prefill)",
   "facts": {
     "levels": {
       "value": 1,

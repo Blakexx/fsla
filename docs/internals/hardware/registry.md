@@ -34,8 +34,7 @@ parts, a fact the schema does not name, a schema fact no part states: refused), 
 contexts only. Two contexts identical in every fact are refused, whatever descriptors made them.
 
 THE CALL'S FACTS (all ints; the schema holds each one's unit and doc). The call's KIND is `prefill` (0 a decode step, 1 a prefill). Its extents are `d_v`,
-`tokens` (the sequence length T; decode's point 1), `batch_heads` (B times H) and `levels`; its dials are `decay`, `stateful` (a state in or out), `dense_plane` (pins the dense state
-plane, the bit-identity gate's backing) and `memory_budget` (bytes, 0 for none). Its per-level facts are the log2 of each level's width, `width_bits_1` .. `width_bits_4` (a level's width is a
+`tokens` (the sequence length T; decode's point 1), `batch_heads` (B times H) and `levels`; its dials are `decay` and `stateful` (a state in or out); the state's backing is the state's own (`fsla.state(backing=)`) and the memory budget the layer's, so neither is a fact. Its per-level facts are the log2 of each level's width, `width_bits_1` .. `width_bits_4` (a level's width is a
 power of two, `fsla/_state.py`'s `StateFormat`, so a range of the log2 states every width exactly; 0 for a level the call does not have) and each side's walk of each level,
 `read_listed_1..4` and `write_listed_1..4` (1 when that side of that level is WALKED BY ITS LISTS, 0 when every digit is walked: an action, chosen by the producer's rule `fsla.ops.produce.activation_walks` from the declaration -- a side whose activation has exact zeros is listed -- and any valid walk is lawful, a wrong one costing time and never the result). There is no `write_dense` fact: decode's launch
 function derives it (the innermost level's `write_listed` is 0). The depth and the per-level facts are correlated and a part's lists

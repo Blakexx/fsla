@@ -11,7 +11,7 @@ and returns a builder for every arm this checkout runs on it, or refuses the cel
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
 through `oneshot_argv`.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
-binary carries at the cell's shape (the carry arm the cell's carve selects for `prefill`, the decode arm for
+binary carries at the cell's shape (the carry arm the prefill launch function selects for the cell's call for `prefill`, the decode arm for
 `decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
 (`Subject.calls`), and on a layer cell `@layer=C` for each FSLA construction declared for that input
 (`measure.cells.layer.CONSTRUCTIONS`). Only the arm asked for is built.

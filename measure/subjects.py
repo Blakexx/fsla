@@ -17,7 +17,7 @@ the sequence enters with, which is what the carry family's oracle and probe run 
 (`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
 only way to price the producer's own solve or a decode step through the layer.
 
-**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle, the carve:
+**EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle and its descriptor:
 all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
 """
 from __future__ import annotations
@@ -105,13 +105,12 @@ def prefill_op(fx) -> Launch:
     return Launch(name=f"prefill|{spec.name}", call=run)
 
 
-def prefill_descriptor_of(routes, values, *, stateful: bool = False,  #: reserved: set by the prefill tests that carry a state
-                          dense_plane: bool = False):  #: reserved: set by the dense-plane bit-identity test
+def prefill_descriptor_of(routes, values, *, stateful: bool = False):  #: reserved: set by the prefill tests that carry a state
     """The prefill's descriptor of a bundle: the call the bundle is, stated by the producer's rule over its topology."""
     from fsla.ops.produce import prefill_descriptor
 
     return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
-                              stateful=stateful, dense_plane=dense_plane, device=routes.device)
+                              stateful=stateful, device=routes.device)
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
@@ -230,7 +229,7 @@ def decode_step(fx) -> Launch:
         seeded.clear()
         state = fsla.state()
         with torch.no_grad():
-            _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, paging=True, BC=ARENA_EXTENT)
+            _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, BC=ARENA_EXTENT)
             arena.wait()
         seeded.update(state=state, arena=arena)
 

@@ -137,7 +137,7 @@ def test_the_verdict_fires_exactly_when_the_preamble_would_admit(arm, support):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=hash((widths, support)) % 10_000, support=_SUPPORT[support])
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
 
@@ -172,7 +172,7 @@ def test_one_absent_atom_is_enough_to_fire(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=907 + len(widths), support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)
@@ -206,7 +206,7 @@ def test_an_absent_atom_the_step_does_not_write_is_not_growth(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=311 + len(widths), support=0.25)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)
@@ -249,7 +249,7 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=419 + len(widths), support=_SUPPORT[support])
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
 
@@ -305,7 +305,7 @@ def test_a_mixed_batch_advances_the_resident_batch_heads_and_no_others(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=2311, support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     assert BH > 1, "a mixed-batch cell needs more than one batch-head"
 
@@ -340,7 +340,7 @@ def test_the_admission_and_replay_advance_every_sequence_exactly_once(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=2317, support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)
@@ -380,7 +380,7 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=4801 + len(widths), support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)
@@ -424,7 +424,7 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=4909, support=0.5)
-    descriptor = _descriptor(widths)
+    descriptor = _descriptor(widths, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)

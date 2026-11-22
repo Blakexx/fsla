@@ -223,28 +223,23 @@ def decode_descriptor(topology, *, d_v: int, decay: bool, batch_heads: int, devi
 
 @cache
 def _decode_descriptor(topology, d_v: int, decay: bool, batch_heads: int, device: int) -> Descriptor:
-    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=0, tokens=1, batch_heads=batch_heads, stateful=1, dense_plane=0,
-                      memory_budget=0, **level_facts(topology, tuple(topology.widths)))
+    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=0, tokens=1, batch_heads=batch_heads, stateful=1,
+                      **level_facts(topology, tuple(topology.widths)))
 
 
-def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, dense_plane: bool = False,
-                       memory_budget: int | None = None, device=None) -> Descriptor:
+def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, device=None) -> Descriptor:
     """THE PRODUCER-OWNED PREFILL RULE: the prefill's validated descriptor on ``device`` (the current device for ``None``), the call's facts stated
     from the declaration (each side's walk of each level, each level's padded width as its log2) and from the caller: ``tokens``, the call's length;
-    ``batch_heads``, B times H; ``stateful``, whether a state is handed in or out; ``dense_plane``, which pins the state's dense plane (the
-    bit-identity gate's backing); ``memory_budget``, the declared budget in bytes (``None``: no budget, one segment).
+    ``batch_heads``, B times H; ``stateful``, whether a state is handed in or out. The state's backing is the state's own (``fsla.state(backing=)``) and
+    the memory budget the layer's: neither is a fact of the op's call.
 
     A call the contract holds only as OWED -- the prefill kernel is not built -- is refused here as :class:`fsla.ops._ext.KernelNotBuilt`
     naming each kernel it waits on; a call in neither the contract nor an owed descriptor is refused naming the facts, as every call is.
     Memoized by the call and the device."""
-    if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
-        raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
-    return _prefill_descriptor(topology, int(d_v), bool(decay), int(tokens), int(batch_heads), bool(stateful), bool(dense_plane),
-                               0 if memory_budget is None else memory_budget, device_index(device))
+    return _prefill_descriptor(topology, int(d_v), bool(decay), int(tokens), int(batch_heads), bool(stateful), device_index(device))
 
 
 @cache
-def _prefill_descriptor(topology, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, dense_plane: bool, memory_budget: int,
-                        device: int) -> Descriptor:
+def _prefill_descriptor(topology, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, device: int) -> Descriptor:
     return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=1, tokens=tokens, batch_heads=batch_heads, stateful=int(stateful),
-                      dense_plane=int(dense_plane), memory_budget=memory_budget, **level_facts(topology, tuple(topology.padded_widths)))
+                      **level_facts(topology, tuple(topology.padded_widths)))

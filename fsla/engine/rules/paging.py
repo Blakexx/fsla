@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The two paging decisions: which backing a state binds to, and where a run lands.
+"""The paging decision: where a run lands.
 
 AdmissionRule is the one rule that splits (design.md §B2.3): everything that MOVES
 BYTES is the arena's node, and the placement arithmetic -- the extent alignment and
@@ -10,19 +10,7 @@ this rule then places (docs/internals/engine/rules.md).
 """
 from __future__ import annotations
 
-from typing import Any
-
 from fsla.engine import rule
-
-
-@rule(gives=("paging",), needs=("descriptor",))
-def paging_preference(descriptor: Any) -> bool:
-    """Whether a state bound by this call gets a PAGED backing. Default: yes.
-
-    The call's ``dense_plane`` fact may pin the dense plane and nothing may pin the paged one: a stateful call pages by
-    default and paging is bitwise invisible, so there is nothing to turn on. The fact overrides the MAPPING only.
-    """
-    return not descriptor["dense_plane"]
 
 
 @rule(gives=("first_slot",), needs=("allocated", "capacity", "extent_atoms", "count"))

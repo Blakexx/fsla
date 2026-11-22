@@ -19,8 +19,8 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
     decode step without a prefill."""
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x)
-        state = fsla.state()
-        state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
+        state = fsla.state(backing="dense")
+        state._kernel_entry(routes, None, d_v=layer.d_v, BC=64)
         entry = 0.1 * torch.randn(routes.batch * routes.heads, layer.topology.N, layer.d_v + 1, device="cuda")
         entry[..., layer.d_v] = entry[..., layer.d_v].abs()
         state._kernel_commit(state_pages(entry))

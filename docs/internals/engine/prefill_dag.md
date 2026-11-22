@@ -10,7 +10,6 @@ length is an output of the prefill launch function (`docs/api.md` section 4.2, `
 
 | Node | Gives | What it does |
 |---|---|---|
-| `rules.paging_preference` | `paging` | whether a state bound here gets an arena (the expert may say no) |
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.variant` | `variant` | the variant: stateless or stateful |
@@ -18,9 +17,9 @@ length is an output of the prefill launch function (`docs/api.md` section 4.2, `
 | `launch` | `num`, `den` | the carry at its bytes (`num` and the v+1 channel `den`) and the intra into the same planes, each over the reader factor (`fsla.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
 | `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`fsla.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
 
-The prefill graph keeps only what runs. It has no `activity`, `residency`, `join` or `box` node: the state's entry (`FSLAState._kernel_entry`)
-needs the arena's allocation extent, the carry's box leaves, which only the prefill launch function's carve gives, so the state's entry on the
-prefill path returns with that function (`docs/open-work.md` rows A-c and A-f); a prefill is refused before any of it could run.
+The prefill graph holds the nodes that run over a descriptor and a workspace. The state's entry (`FSLAState._kernel_entry`) needs the arena's
+allocation extent, the carry's box leaves, which only the prefill launch function's carve gives, so the entry on the prefill path is that
+function's (`docs/open-work.md` rows A-c and A-f); a prefill is refused before any of it could run.
 
 ## The seam
 

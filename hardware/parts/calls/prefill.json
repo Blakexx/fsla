@@ -1,13 +1,13 @@
 {
   "name": "calls/prefill",
-  "doc": "the prefill call's contract, the facts that do not depend on the depth: `prefill` 1, the value width and the decay the carry will serve, the call's length and streams, whether a state rides it, the dense-plane pin and the declared budget. It is composed only by the OWED descriptors (hardware/descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths and the sparse flags are a depth part's (calls/depth1 .. calls/depth4).",
+  "doc": "the prefill call's contract, the facts that do not depend on the depth: `prefill` 1, the value width and the decay the carry will serve, the call's length and streams and whether a state rides it. It is composed only by the OWED descriptors (hardware/descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths and the per-level walks are a depth part's (calls/depth1 .. calls/depth4).",
   "facts": {
     "d_v": {
       "value": {
         "lo": 2,
-        "hi": 64
+        "hi": 128
       },
-      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths FSLA accepts, 2 up to the widest arm; the prefill's carry serves them by the same padding seam (docs/internals/padding.md); the arms it serves are fixed by the launch function of docs/open-work.md row A-f"
+      "declared_by": "docs/open-work.md row A-h: the value widths the carry's cells are drawn at, 2 up to 128 (the central carry cells' `dv` 32, 64 and 128); the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes the range when the carry is built; the padding seam (docs/internals/padding.md) serves the widths between"
     },
     "decay": {
       "value": [
@@ -40,20 +40,6 @@
         "hi": 1
       },
       "declared_by": "docs/api.md section 1: a prefill is stateless (None) or carries a state in and out; either is a lawful call"
-    },
-    "dense_plane": {
-      "value": {
-        "lo": 0,
-        "hi": 1
-      },
-      "declared_by": "docs/internals/state.md: 1 pins the state's dense plane, the bit-identity gate's backing (the former `paging=False`); either value is a lawful call"
-    },
-    "memory_budget": {
-      "value": {
-        "lo": 0,
-        "hi": 4611686018427387904
-      },
-      "declared_by": "docs/open-work.md row A-h: the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes this range when the carry is built; until then it is declared wide; 0 declares no budget (one segment)"
     }
   }
 }

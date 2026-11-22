@@ -138,7 +138,7 @@ def test_a_batch_head_that_cannot_address_its_writes_declines_which_is_why_lazin
     "this step does write it": the same step against a resident atom fills those rows.
     """
     fixture = _fixture(_WIDTHS, seed=11, support=0.5)
-    descriptor = _descriptor(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
 
     declined = _arena(_WIDTHS, _BC, BH)
@@ -175,7 +175,7 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
     the contract. The mixed batch is `test_decode_growth_trigger.py`'s cell.
     """
     fixture = _fixture(_WIDTHS, seed=12, support=0.5)
-    descriptor = _descriptor(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     arena = _arena(_WIDTHS, _BC, BH)
     bitmap = _absent_one_atom_per_bh(fixture, descriptor, arena)
@@ -206,7 +206,7 @@ def test_gated_step_then_admit_then_replay_matches_admitting_first():
     walk must re-read in the replay without depositing again.
     """
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
-    descriptor = _descriptor(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
     bitmap = _bitmap(write, descriptor)
@@ -278,8 +278,7 @@ def _sequence():
         bits = torch.ones(_B * _H, math.prod(_WIDTHS) // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
         state = fsla.state()
-        _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
-                                           BC=64)
+        _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, BC=64)
         arena.wait()
         _y_ref, oracle_state = naive_fsla(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, *lattice_of(_WIDTHS))
@@ -385,7 +384,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _bitmap(live_of(static, "write"), _descriptor(_WIDTHS))
+    written = _bitmap(live_of(static, "write"), _descriptor(_WIDTHS, _B * _H))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False

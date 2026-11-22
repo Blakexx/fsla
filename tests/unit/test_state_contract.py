@@ -203,7 +203,7 @@ def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_
     (call,) = captured
     assert (call["width_bits_1"], call["width_bits_2"], call["width_bits_3"], call["width_bits_4"]) == bits
     assert (call["device"], call["d_v"], call["levels"], call["decay"], call["batch_heads"]) == (0, 48, len(widths), 1, 4)
-    assert (call["prefill"], call["tokens"], call["stateful"], call["dense_plane"], call["memory_budget"]) == (0, 1, 1, 0, 0)
+    assert (call["prefill"], call["tokens"], call["stateful"]) == (0, 1, 1)
 
 
 def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_producers_rule_over_the_declaration(captured):
@@ -235,20 +235,21 @@ def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declaration
     each level's PADDED width as its log2 and each side's walk; a declared budget of `None` is the fact 0."""
     from fsla.ops.produce import prefill_descriptor
 
-    prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, dense_plane=True, memory_budget=10 ** 9, device=0)
+    prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, device=0)
     prefill_descriptor(_widths_topology((64, 64)), d_v=48, decay=True, tokens=1, batch_heads=1, stateful=False, device=0)
     first, second = captured
-    assert (first["prefill"], first["tokens"], first["batch_heads"], first["stateful"], first["dense_plane"], first["memory_budget"]) == (
-        1, 4096, 16, 1, 1, 10 ** 9)
+    assert (first["prefill"], first["tokens"], first["batch_heads"], first["stateful"]) == (1, 4096, 16, 1)
     assert (first["levels"], first["width_bits_1"], first["width_bits_2"], first["width_bits_3"]) == (2, 5, 4, 0), "24 pads to 32"
     assert [first[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [first[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
-    assert (second["decay"], second["stateful"], second["dense_plane"], second["memory_budget"], second["d_v"]) == (1, 0, 0, 0, 48)
+    assert (second["decay"], second["stateful"], second["d_v"]) == (1, 0, 48)
 
 
-@pytest.mark.parametrize("budget", [0, -1, 1.5, True])
-def test_prefill_descriptor_refuses_a_budget_that_is_not_a_positive_exact_int_or_none(captured, budget):
-    from fsla.ops.produce import prefill_descriptor
+def test_a_state_owns_its_backing_paged_by_default_and_dense_when_made_so():
+    """THE STATE'S BACKING is chosen when the state is made (R13: the state owns its format), the one way to choose it: paged by default, one
+    dense plane for `backing="dense"`; anything else is refused by name."""
+    import fsla
 
-    with pytest.raises(ValueError, match="memory_budget is a positive exact int of bytes, or None"):
-        prefill_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, tokens=8, batch_heads=1, stateful=False, memory_budget=budget, device=0)
-    assert not captured
+    assert fsla.state()._wants_pages() is True
+    assert fsla.state(backing="dense")._wants_pages() is False
+    with pytest.raises(ValueError, match="backing must be 'paged' or 'dense'"):
+        fsla.state(backing="sparse")

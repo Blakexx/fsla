@@ -47,13 +47,14 @@ import torch.nn as nn
 
 from fsla._inference_copy import InferenceCopy, reads_copy
 from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
-from fsla.engine.facts.call import require_envelope
+from fsla.engine.facts.call import refuse_backward
 from fsla.interface import (
     BackwardNotImplemented,
     fsla_op,
     operands_of,
     requires_backward,
 )
+from fsla.ops._ext import not_built
 from fsla.ops.prefill import build_workspace
 from fsla.ops.produce import (
     ProducerPlan,
@@ -125,9 +126,10 @@ class FSLA(nn.Module):
         decay: a decay source (:mod:`fsla.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
-        memory_budget: the caller's declared working-set budget in bytes, or ``None`` for none (one segment). It is stated to
-            the planner as the call's ``memory_budget`` fact (:func:`fsla.ops.produce.prefill_descriptor`); the segment length is
-            an output of the prefill launch function, which is not built, so a budgeted call is refused by name.
+        memory_budget: the caller's declared working-set budget in bytes, or ``None`` for none (one prefill is one op call). The
+            layer's, not the op's: with a budget the layer asks the planner how many tokens of the call fit it beside the state (a
+            function of the prefill launch function, docs/open-work.md row A-f) and loops over segments carrying the state. That
+            question cannot be answered yet, so a budgeted prefill is refused by name (:func:`fsla.ops._ext.not_built`, kernel ``prefill``).
     """
 
     def __init__(
@@ -139,7 +141,7 @@ class FSLA(nn.Module):
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
-        memory_budget: int | None = None,  #: reserved: the segment length, once the prefill launch function (open-work A-f) is written
+        memory_budget: int | None = None,  #: reserved: the segment loop, once the prefill launch function (open-work A-f) answers how many tokens fit
     ) -> None:
         super().__init__()
         if not isinstance(routing, Routing):
@@ -316,17 +318,18 @@ class FSLA(nn.Module):
         return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
-        """THE PREFILL, one segment (docs/api.md section 4.2): the descriptor of the call (:func:`fsla.ops.produce.prefill_descriptor`,
-        memoized process-wide: nothing is cached on the layer), the producer's one call, the workspace the public builder lays out and the op.
-        The declared ``memory_budget`` is a fact of the descriptor: the segment length is an output of the prefill launch function, which is
-        not built, so a budgeted call -- like every prefill -- is refused by name when the descriptor is made."""
+        """THE PREFILL (docs/api.md section 4.2). With no ``memory_budget`` it is one op call: the producer's one call, the descriptor of the call
+        (:func:`fsla.ops.produce.prefill_descriptor`, memoized process-wide: nothing is cached on the layer), the workspace the public builder
+        lays out and the op. WITH a budget the layer must ask the planner how many tokens fit it beside the state -- the answer is the prefill
+        launch function's (docs/open-work.md row A-f), which is not written -- and loop over segments carrying the state; until then a budgeted
+        prefill is refused by name here, the one place the layer would have segmented."""
+        if self.memory_budget is not None:
+            not_built("prefill")
         B, L, _ = x.shape
         routes, values, masks = self._produce(x, self.plan)
-        if routes.device.type != "cuda":
-            require_envelope(routes, values, decay, state)  #: a descriptor is made for a CUDA device: operands elsewhere meet the envelope's own refusal
+        refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
         descriptor = prefill_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, tokens=L,
-                                        batch_heads=B * self.num_heads, stateful=state is not None,
-                                        memory_budget=self.memory_budget, device=x.device)
+                                        batch_heads=B * self.num_heads, stateful=state is not None, device=x.device)
         workspace = build_workspace(routes, values, masks, descriptor)
         return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state, decay=decay)
 

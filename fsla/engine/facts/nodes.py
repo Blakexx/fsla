@@ -22,14 +22,14 @@ def topology(f):
 
 @node(gives=("call_class",),
       needs=("routes", "values", "decay", "state", "given_state_in", "given_arena",
-             "want_state", "paging"))
+             "want_state"))
 def classify_call(f):
     state, given_arena = f["state"], f["given_arena"]
     return CallClass(
         state_in=f["given_state_in"] is not None or state is not None,
         state_out=bool(f["want_state"]),
         paged=given_arena is not None or (state is not None
-                                          and state._wants_pages(f["paging"])),
+                                          and state._wants_pages()),
         grad=requires_backward(*operands_of(f["routes"], f["values"], f["decay"])))
 
 

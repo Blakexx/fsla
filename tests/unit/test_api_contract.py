@@ -67,10 +67,9 @@ def _context(routes, values):
 
 
 def _admitted(routes, v) -> None:
-    """The engine's validation ACCEPTED this call: everything about the bundle passed,
-    and the only clause left to refuse it is the device -- these fixtures are CPU fp64,
-    which is the oracle's dtype and not any kernel's."""
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+    """The engine's validation ACCEPTED this call: everything about the bundle passed and `validate_context` returned (a prefill is refused by name
+    where its descriptor is made, not here)."""
+    with torch.no_grad():
         _validate(routes, v)
 
 
@@ -421,7 +420,7 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     #: The set names what is BEHIND the door today; the RULE is what this row states
     #: and it does not move when the set does: launch geometry is behind the marked
     #: door, never at the top level.
-    quarantined = {"decode_descriptor", "prefill_descriptor", "requires_backward", "envelope_refusal"}
+    quarantined = {"decode_descriptor", "prefill_descriptor", "requires_backward"}
     import fsla.expert as expert
 
     assert quarantined.isdisjoint(fsla.__all__)
@@ -465,7 +464,7 @@ def test_the_op_and_its_planner_arguments_are_a_descriptor_and_a_workspace_and_n
     assert op["workspace"].default is None and op["state"].default is None and op["decay"].default is None
     assert list(inspect.signature(fsla.build_workspace).parameters) == ["routes", "values", "masks", "descriptor", "workspace"]
     assert list(inspect.signature(prefill_descriptor).parameters) == [
-        "topology", "d_v", "decay", "tokens", "batch_heads", "stateful", "dense_plane", "memory_budget", "device"]
+        "topology", "d_v", "decay", "tokens", "batch_heads", "stateful", "device"]
     assert fsla.workspace_bytes is not None
     for gone in ("PrefillPlan", "prefill_plan", "Carve", "SidePlan"):
         assert not hasattr(expert, gone) and not hasattr(engine, gone) and gone not in fsla.__all__
@@ -568,8 +567,8 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from fsla.layer import FSLA;"
             "from fsla.interface import fsla_op;"
             "from fsla.ops.decode import step_plane;"
-            "from fsla.engine.facts.call import require_envelope;"
-            "from fsla.engine.rules.envelope import prefill_envelope;"
+            "from fsla.engine.facts.call import refuse_backward;"
+            "from fsla.engine.rules.envelope import envelope;"
             "from fsla.engine.dags.prefill_dag import PrefillContext, run_prefill;"
             "from fsla.ops.prefill import prefill;"
             "from fsla.ops.decode import decode_launch;"

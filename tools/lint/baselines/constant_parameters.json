@@ -8,18 +8,6 @@
    "count": 1
   },
   {
-   "path": "fsla/_state.py",
-   "message": "state(..., pool_slack=) is only ever 0.0 -- across every call in this tree, nothing moves it",
-   "line_sha256": "2b3affefd366fbdd",
-   "count": 1
-  },
-  {
-   "path": "fsla/_state.py",
-   "message": "state(..., strategy=) is only ever 'mutable' -- across every call in this tree, nothing moves it",
-   "line_sha256": "2b3affefd366fbdd",
-   "count": 1
-  },
-  {
    "path": "fsla/layer.py",
    "message": "forward(..., attention_mask=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "7f344b4b34f30beb",
