@@ -34,6 +34,8 @@
 #include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_selection.inc"
+#include "plan/decode_launch.h"
+#include "plan/environment.h"
 #include "common/arm_switch.cuh"
 #include "decode_api.cuh"
 #include "decode_fold.cuh"
@@ -657,35 +659,47 @@ void fsla_decode_ledger_bind(const std::optional<Tensor>& ledger) {
   g_phase_ledger_ctas = ledger->size(0);
 }
 
-void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool decay,
-                        int64_t smem_budget) {
-  //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16`. What is NOT an axis -- -- see docs/internals/decode/decode.md#torchcheck
-  STD_TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
-  const size_t smem = decode_step_smem_bytes(detail::step_warps(card), p.total_rows, d_v, decay,
-                                             p.mask_total, p.olist_total, p.dlist_total);
-  STD_TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget,
+//: the dynamic shared memory a launch may take without opting in
+constexpr size_t kDefaultDynamicSmem = 48 * 1024;
+
+void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, const DecodeParams& p) {
+  const plan::DecodeArm& arm = launch.arm;
+  const plan::DecodeArgs& args = launch.args;
+  const size_t smem =
+      decode_step_smem_bytes(detail::step_warps(card), p.total_rows, arm.d_v, arm.decay != 0,
+                             p.mask_total, p.olist_total, p.dlist_total);
+  STD_TORCH_CHECK(static_cast<int64_t>(smem) <= args.smem_budget,
                   "the decode step's staged operands need ", smem,
-                  " B of shared memory against a per-block budget of ", smem_budget,
+                  " B of shared memory against a per-block budget of ", args.smem_budget,
                   " B; sum_l width_l = ", p.total_rows,
                   ". This is a declared capacity, refused loudly rather than taken as a "
                   "slower path.");
   auto stream = current_stream();
   //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three -- see docs/internals/decode/decode.md#launch
-  auto launch = [&](auto DV, auto LEVELS, auto DECAY) {
+  auto enqueue = [&](auto DV, auto LEVELS, auto DECAY) {
     constexpr int kDv = decltype(DV)::value, kLevels = decltype(LEVELS)::value;
     constexpr bool kDecay = decltype(DECAY)::value;
     build_switch(card, [&](auto b) {
       constexpr ::denseref::arch::Build kB = decltype(b)::build;
-      if constexpr (in_image(kB))
-        detail::decode_step_kernel<::denseref::arch::BuildTag<kB>, kDv, kLevels, kDecay>
-            <<<dim3(p.ctas), DecodePlan<kB>::kThreads, smem, stream>>>(p);
+      if constexpr (in_image(kB)) {
+        STD_TORCH_CHECK(args.threads == DecodePlan<kB>::kThreads, "the descriptor's CTA is ",
+                        args.threads, " threads, the step's compiled plan ",
+                        DecodePlan<kB>::kThreads);
+        auto kernel =
+            &detail::decode_step_kernel<::denseref::arch::BuildTag<kB>, kDv, kLevels, kDecay>;
+        if (smem > kDefaultDynamicSmem) {
+          FSLA_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                               static_cast<int>(smem)));
+        }
+        kernel<<<dim3(p.ctas), args.threads, smem, stream>>>(p);
+      }
     });
   };
-  arm_switch<DecodeArmSet>({{d_v, static_cast<int>(p.D), decay ? 1 : 0}}, [&](auto arm) {
-    constexpr int kDvArm = decltype(arm)::values[0], kLevelsArm = decltype(arm)::values[1];
-    constexpr bool kDecayArm = decltype(arm)::values[2] != 0;
-    launch(std::integral_constant<int, kDvArm>{}, std::integral_constant<int, kLevelsArm>{},
-           std::integral_constant<bool, kDecayArm>{});
+  arm_switch<DecodeArmSet>({{arm.d_v, arm.levels, arm.decay}}, [&](auto built) {
+    constexpr int kDvArm = decltype(built)::values[0], kLevelsArm = decltype(built)::values[1];
+    constexpr bool kDecayArm = decltype(built)::values[2] != 0;
+    enqueue(std::integral_constant<int, kDvArm>{}, std::integral_constant<int, kLevelsArm>{},
+            std::integral_constant<bool, kDecayArm>{});
   });
   FSLA_CUDA_LAUNCH_CHECK();
 }
@@ -743,25 +757,11 @@ int ilog2_exact(int64_t x, const char* what) {
   return e;
 }
 
-//: THE STEP'S PLAN at `card`'s build, for the host: its warps and its residency.
-StepPlan step_plan(const Card& card) {
-  StepPlan out{};
-  build_switch(card, [&](auto b) {
-    using Plan = DecodePlan<decltype(b)::build>;
-    out = StepPlan{Plan::kWarps, Plan::kBlocksPerSm};
-  });
-  return out;
-}
-
-int step_warps(const Card& card) { return step_plan(card).warps; }
-
-//: THE STEP'S RESIDENT GRID on `card`: one wave of the declared residency, at most `bh` heads' unit supply.
-//: -- see docs/internals/decode/decode.md#the-split-policy
-int grid_of(const Card& card, int64_t unit_ceiling, int64_t bh) {
-  const int64_t supply =
-      std::max<int64_t>(1, (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta);
-  return static_cast<int>(std::max<int64_t>(
-      1, std::min<int64_t>(int64_t{card.sms} * step_plan(card).blocks_per_sm, bh * supply)));
+//: THE STEP'S WARPS at `card`'s build, for the host.
+int step_warps(const Card& card) {
+  int warps = 0;
+  build_switch(card, [&](auto b) { warps = DecodePlan<decltype(b)::build>::kWarps; });
+  return warps;
 }
 
 //: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `fsla/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
@@ -864,13 +864,6 @@ int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
   return total_rows;
 }
 
-int64_t smem_budget_of(int64_t device_index) {
-  int smem_per_block = 0;
-  FSLA_CUDA_CHECK(cudaDeviceGetAttribute(&smem_per_block, cudaDevAttrMaxSharedMemoryPerBlock,
-                                         static_cast<int>(device_index)));
-  return smem_per_block;
-}
-
 }  // namespace detail
 
 int64_t fsla_decode_capacity() { return kDecodeMaxLevelWidth; }
@@ -896,14 +889,17 @@ int64_t fsla_decode_build_stamp() {
   return item<int64_t>(out);
 }
 
-Tensor fsla_decode_forward(
-    std::vector<Tensor> read, std::vector<Tensor> write, std::vector<Tensor> read_scale,
-    std::vector<Tensor> write_scale, std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
-    std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state, Tensor yacc, Tensor queue,
-    Tensor growth, Tensor growth_any, Tensor growth_ctr, Tensor done, Tensor atom_bits,
-    std::vector<int64_t> level_widths, std::vector<int64_t> level_row_offsets, int64_t lattice_k,
-    int64_t lattice_m, bool write_dense, int64_t ctas, double eps, std::optional<Tensor> page_table,
-    std::optional<Tensor> pool_slots, std::optional<Tensor> pool_cursor) {
+Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
+                           std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
+                           std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
+                           std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state,
+                           Tensor yacc, Tensor queue, Tensor growth, Tensor growth_any,
+                           Tensor growth_ctr, Tensor done, Tensor atom_bits,
+                           std::vector<int64_t> level_widths,
+                           std::vector<int64_t> level_row_offsets, int64_t lattice_k,
+                           int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
+                           std::vector<int64_t> descriptor, std::optional<Tensor> page_table,
+                           std::optional<Tensor> pool_slots, std::optional<Tensor> pool_cursor) {
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
@@ -918,6 +914,16 @@ Tensor fsla_decode_forward(
   const int BH = B * H;
   const int d_v = static_cast<int>(v.size(3));
   const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
+
+  //: THE DESCRIPTOR'S LAUNCH: the arm and its arguments from the call's facts, the one function; the call's operands must be the shape it says
+  const Card& card = card_of(v.get_device_index());
+  const plan::DecodeLaunch launch =
+      plan::decode_launch(plan::checked_descriptor(descriptor, v.get_device_index()));
+  STD_TORCH_CHECK(d_v == launch.arm.d_v, "v is ", d_v,
+                  " channels wide; the descriptor's arm serves ", launch.arm.d_v,
+                  " (the call's value width padded by ", launch.args.pad, ")");
+  STD_TORCH_CHECK(D == launch.arm.levels, "the call has ", D,
+                  " levels; the descriptor's arm serves ", launch.arm.levels);
 
   STD_TORCH_CHECK(state.is_cuda() && state.scalar_type() == Dtype::Byte && state.is_contiguous(),
                   "state is the int8 state format's pages, a contiguous CUDA uint8 tensor; got ",
@@ -1032,7 +1038,9 @@ Tensor fsla_decode_forward(
                   (1 << p.lat_local_bits), " (the innermost span must cover an atom)");
 
   const bool decay = dials.has_value();
-  const int64_t budget = detail::smem_budget_of(v.get_device_index());
+  STD_TORCH_CHECK(decay == (launch.arm.decay != 0), "the call's dials are ",
+                  decay ? "present" : "absent", "; the descriptor's arm is the ",
+                  launch.arm.decay != 0 ? "decaying" : "non-decaying", " one");
 
   if (decay) {
     detail::check_f32(*dials, "dials");
@@ -1077,8 +1085,7 @@ Tensor fsla_decode_forward(
   p.BH = BH;
   p.H = H;
   //: the step's grid: the card's (a unit a run of the innermost level's span), or a gate's forced count
-  p.ctas = ctas < 0 ? detail::grid_of(card_of(v.get_device_index()), N / p.lat_s[D - 1], BH)
-                    : static_cast<int>(ctas);
+  p.ctas = plan::decode_grid(launch.args, N / p.lat_s[D - 1], BH, ctas);
   p.total_rows = total_rows;
   p.eps = static_cast<float>(eps);
   p.ledger = g_phase_ledger;
@@ -1086,8 +1093,20 @@ Tensor fsla_decode_forward(
     STD_TORCH_CHECK(g_phase_ledger_ctas >= p.ctas, "the bound decode phase ledger covers ",
                     g_phase_ledger_ctas, " CTAs; this step launches ", p.ctas);
 
-  launch_decode_step(card_of(v.get_device_index()), p, d_v, decay, budget);
+  launch_decode_step(card, launch, p);
   return y;
+}
+
+//: THE LAUNCH A DESCRIPTOR MEANS, for the host: the arm's `d_v`, levels and decay, the padding of the call's
+//: value width, and the workspace's bytes and alignment
+std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t device) {
+  const plan::Descriptor d = plan::checked_descriptor(descriptor, static_cast<int>(device));
+  const auto launch = plan::decode_launch(d);
+  const auto workspace = plan::decode_workspace(d);
+  const auto& arm = launch.arm;
+  std::vector<int64_t> out = {arm.d_v, arm.levels, arm.decay, launch.args.pad};
+  out.insert(out.end(), {workspace.bytes, workspace.alignment});
+  return out;
 }
 
 }  // namespace decode

@@ -60,6 +60,9 @@ DEVICE_TUS = tuple(sorted(SRC.glob("*/*.cu")))
 _LAUNCHLESS = {
     "intra_footprint": "a host derivation over the widths; no device work",
     "fsla_decode_arms": "reads the built arm set out of compile-time constants",
+    "fsla_decode_launch": "a host derivation over a descriptor, which was made against the contract (the device's read); no device work",
+    "fsla_descriptor": "reads the device's facts once and checks them against the contract (common/plan/environment.cu); no device work",
+    "fsla_call_facts": "names the schema's call facts; no device work",
     "carry_build_stamp": "returns a compiled-in stamp",
     "intra_build_stamp": "returns a compiled-in stamp",
     "fsla_decode_build_stamp": "returns a compiled-in stamp",
@@ -114,9 +117,9 @@ def _check_arch_table_definitions() -> list[pathlib.Path]:
     return [tu for tu in DEVICE_TUS if "void check_arch_table() {" in tu.read_text()]
 
 
-def test_the_runtime_half_refuses_an_untabulated_architecture():
-    """``check_arch_table()`` admits the device's card, and the admission (``common/select.cu``'s ``admit``) keys on
-    ``tabulated``, on the driver's own numbers and on the builds the binary carries."""
+def test_the_runtime_half_refuses_a_device_the_contract_does_not_hold():
+    """``check_arch_table()`` admits the device's card, and the admission (``common/select.cu``'s ``admit``) takes the planner's read of the device
+    (``common/plan/environment.cu``: the driver's own numbers, checked against the contract) and the builds the binary carries."""
     defs = _check_arch_table_definitions()
     assert len(defs) == 1, (
         f"check_arch_table has {len(defs)} definitions "
@@ -129,16 +132,15 @@ def test_the_runtime_half_refuses_an_untabulated_architecture():
     body = text[text.index("Card admit(int device) {"):]
     body = body[:body.index("\n}\n") + 3]
     assert "carried(build)" in body, "the admission refuses a device whose build the binary does not carry"
-    assert "arch::tabulated(cc)" in body, (
-        "the runtime half must refuse an arch the TABLE does not carry -- an unbuilt "
-        "ARM and an untabulated ARCHITECTURE are different refusals")
-    assert "cudaGetDeviceProperties" in body and "cudaDeviceGetAttribute" in body, (
+    assert "plan::device_facts(device)" in body, "the admission takes the planner's read of the device, the one place a hardware fact is asked for"
+    environment = (SRC / "common" / "plan" / "environment.cu").read_text()
+    read = environment[environment.index("DeviceFacts read_device(int device) {"):]
+    read = read[:read.index("\n}\n") + 3]
+    assert "cudaGetDeviceProperties" in read and "cudaDeviceGetAttribute" in read, (
         "the check must read the DEVICE; a path or a hash cannot establish which "
         "device a compiled derivation was derived for")
-    for field in ("smem_per_sm", "smem_per_cta_max", "regs_per_sm", "max_threads_per_sm"):
-        assert f"want.{field}" in body, (
-            f"the table's {field} is an input to a compiled derivation and must be "
-            "compared against the driver")
+    assert "device_descriptor(" in read and "STD_TORCH_CHECK(planned.ok()" in read, (
+        "the read is checked against the contract and a device outside it is refused, by name")
 
 
 @pytest.mark.parametrize(("name", "entry"), ENTRIES, ids=[n for n, _ in ENTRIES])

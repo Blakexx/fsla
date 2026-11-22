@@ -165,9 +165,6 @@ def _gated(ctx):
         for arch in ([d.arch] if d.arch else archs):
             if arch in spec:
                 spec[arch]["declarations"].append({"kernel": d.kernel, "rule": d.rule, "allow": d.allow, "reason": d.reason})
-    for arm in depset(transitive = [i.arms for i in infos]).to_list():
-        if arm.arch in spec:
-            spec[arm.arch]["arms"].append({"family": arm.family, "arm": arm.arm, "kernel": arm.kernel})
     files = depset(transitive = [i.declaration_files for i in infos]).to_list()
     declared = ctx.actions.declare_file(ctx.label.name + "_declarations.json")
     if not files:
@@ -314,7 +311,6 @@ def _extension_impl(ctx):
         CudaUnitInfo(
             units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep]),
             declarations = depset(transitive = [dep[CudaUnitInfo].declarations for dep in ctx.attr.deps if CudaUnitInfo in dep]),
-            arms = depset(transitive = [dep[CudaUnitInfo].arms for dep in ctx.attr.deps if CudaUnitInfo in dep]),
             declaration_files = depset(transitive = [dep[CudaUnitInfo].declaration_files for dep in ctx.attr.deps if CudaUnitInfo in dep]),
         ),
     ]

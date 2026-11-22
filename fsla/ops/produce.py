@@ -206,10 +206,10 @@ def prefill_plan(topology, d_v: int, *, paging: bool | None = None, carve=None) 
     return PrefillPlan(carve=carve, paging=paging)
 
 
-def decode_plan(topology, *, d_v: int, decay: bool) -> DecodePlan:
+def decode_plan(topology, *, d_v: int, decay: bool, descriptor=None) -> DecodePlan:
     """THE PRODUCER-OWNED DECODE PLAN RULE: the step's static plan, ``write_dense`` -- deposit whole atoms -- chosen from
     the declaration: the innermost level's write activation has no exact zeros."""
     from fsla.ops.decode import derive_decode_plan
 
     write_dense = not activation_walks(topology)[1][-1]
-    return derive_decode_plan(topology, d_v=d_v, decay=decay, write_dense=write_dense)
+    return derive_decode_plan(topology, d_v=d_v, decay=decay, write_dense=write_dense, descriptor=descriptor)

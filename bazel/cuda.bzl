@@ -14,7 +14,6 @@ CudaUnitInfo = provider(
     fields = {
         "units": "depset of struct(source, report, object, sass): each unit's source, nvcc's diagnostics, its object, its SASS as text",
         "declarations": "depset of struct(arch, kernel, rule, allow, reason): the declarations stated beside the units (`declaration`), an arm family's among them",
-        "arms": "depset of struct(arch, family, arm, kernel): the arms a family declares, each with its exact kernel pattern, which the gate holds the binary to",
         "declaration_files": "depset of the files an action wrote for an arm family whose rows are known only when the build runs (`arm_declarations`): the same declarations and arms as JSON, merged by the gate",
     },
 )
@@ -40,7 +39,7 @@ def declaration(kernel, rule, allow, reason, arch = None):
         fail("declaration of %s on %r: arch is `sm_XX` (not %r)" % (rule, kernel, arch))
     return struct(kernel = kernel, rule = rule, allow = allow, reason = reason, arch = arch)
 
-def regex_escape(text):
+def _regex_escape(text):
     """A regex that matches the text and nothing else."""
     out = ""
     for ch in text.elems():
@@ -50,9 +49,16 @@ def regex_escape(text):
     return out
 
 def kernel_pattern(text):
-    """The exact pattern of a kernel over its demangled name: `text` is the name up to its parameter list (the toolkit's `cu++filt`),
-    anchored at the return type and the parameter list, as `kernel_pattern` of `bazel/arm_emit.py` anchors an arm's."""
-    return "^void " + regex_escape(text) + "\\("
+    """The exact pattern of a kernel over its demangled name, the ONE place a name is escaped and anchored: `text` is the name up to its
+    parameter list (the toolkit's `cu++filt`), anchored at the return type and the parameter list. A `@field@` in it is a template
+    argument the arm emitter (`bazel/arm_emit.py`) fills with an arm's value; it stays as it is."""
+    parts = text.split("@")
+    if len(parts) % 2 == 0:
+        fail("%s: an unbalanced `@`" % text)
+    out = ""
+    for i, part in enumerate(parts):
+        out += _regex_escape(part) if i % 2 == 0 else "@" + part + "@"
+    return "^void " + out + "\\("
 
 #: nvcc's options a unit never states: the compile's mode and the architectures are the rule's (`archs`), never a `copts` entry
 _FORBIDDEN_OPTS = ["--cuda", "-cuda", "--preprocess", "-E", "--compile", "-c", "--cubin", "-cubin", "--ptx", "-ptx", "--fatbin", "-fatbin", "--device-link", "-dlink", "--lib", "-lib", "--generate-dependencies", "-M", "--generate-nonsystem-dependencies", "-MM", "--run", "-run"]
@@ -181,7 +187,6 @@ def _cuda_unit_impl(ctx):
         CudaUnitInfo(
             units = depset(units),
             declarations = depset([declaration(**json.decode(d)) for d in ctx.attr.declarations]),
-            arms = depset(),
             declaration_files = depset(),
         ),
         cc_common.merge_cc_infos(direct_cc_infos = [CcInfo(linking_context = linking)], cc_infos = [merged]),

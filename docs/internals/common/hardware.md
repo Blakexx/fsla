@@ -18,11 +18,11 @@ the file holds:
   MMA rates the whitepaper's peak).
 - `product.<slug>`: a product's overrides over its architecture's defaults (the H100's has none yet). The slug is
   `measure/hardware.py`'s `slugify_gpu`: the device name with the vendor words dropped and cut at the first `-`
-  (`NVIDIA H100 80GB HBM3` -> `h10080gbhbm3`).
+  (`NVIDIA H100 80GB HBM3` -> `h10080gbhbm3`); the measurement side finds a device's product by it, the binary does not.
 
 A product's rates are its architecture's under its overrides (`hardware.resolve(product=...)`); an
 architecture's alone are `hardware.resolve(arch)`. A device with no product row runs on its architecture's
-defaults, which are what the SM design does.
+defaults, which are what the SM design does; the binary runs a device on its architecture's build whatever its name.
 
 <a id="families"></a>
 
@@ -62,10 +62,6 @@ architecture that is not built leaves it unchosen. sm_90a's is 1,024, provisiona
 picks it (Blake, 2026-11-09). The check
 (`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
 the family and `BUILD_TRAITS`, and a product overriding a trait outside `BUILD_TRAITS`.
-
-<a id="products"></a>
-`kProducts` names each product row's slug, architecture and variant: the host finds a device's product by the slug
-of its name and runs the product's variant, or its architecture's variant 0 when it has no row.
 
 <a id="consumers"></a>
 

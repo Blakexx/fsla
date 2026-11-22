@@ -614,12 +614,12 @@ bounded by the LEVEL WIDTHS and the OWNER-GRID EXTENTS, never by the leaf space 
 the state. The leaf-space bitmap this design replaced (`DELETIONS.md`) did carry a term in `N`.
 
 <a id="the-split-policy"></a>**THE GRID IS ONE WAVE OF THE DECLARED RESIDENCY**, work
-permitting: the step sizes it itself (`ctas` -1) from the card's `SMs * residency`, the residency the launch bound
+permitting: the step sizes it itself (`ctas` -1) from the descriptor's `SMs * residency` (`plan::decode_grid`), the residency the launch bound
 itself ([§30](#declared-residency)), bounded above by
 `BH` times the unit supply, so a small topology does not launch CTAs with nothing to claim. The UNIT SUPPLY is
 `ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one: `unit_ceiling = N / s_{D-1}` counts a walk unit a run of
 the innermost level's span -- exact where the atom rectangle is one level, an over-count where it spans more -- and
-`kDecodeUnitsPerCta` = 16 is the smallest share worth a CTA's prologue (its fold and factor tables), so a small
+`kDecodeUnitsPerCta` = 16 (`common/plan/decode_launch.h`) is the smallest share worth a CTA's prologue (its fold and factor tables), so a small
 topology is not split past the point the replicated prologue spends the parallelism. A
 second wave would pay a head's prologue for work the resident CTAs could claim. Both bounds are
 static facts, the same every step and baked into a captured launch; a gate forces a count to prove the result does

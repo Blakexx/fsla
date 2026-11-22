@@ -27,8 +27,9 @@ from fsla.engine import (
     validate_dag,
 )
 from fsla.ops import decode as bodies
+from fsla.ops.descriptor import check_workspace
 
-_SEEDS = ("routes", "values", "masks", "decay", "state", "plan")
+_SEEDS = ("routes", "values", "masks", "decay", "state", "plan", "descriptor")
 
 #: BOTH decode variants. A node carrying only `Variant.DECODE_PAGED` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
@@ -48,7 +49,9 @@ class DecodeContext:
     masks: Any
     state: Any
     plan: Any
+    descriptor: Any
     decay: Any = None
+    workspace: Any = None
 
 
 @node(gives=("BH", "device", "paged"), needs=("routes", "state"), variants=_DECODE, capturable=True)
@@ -94,7 +97,7 @@ def state_plane(f):
 
 
 @node(gives=("launch",),
-      needs=("plan", "routes", "values", "masks", "decay", "state_plane", "page_table", "scratch", "pool"),
+      needs=("plan", "descriptor", "routes", "values", "masks", "decay", "state_plane", "page_table", "scratch", "pool"),
       stream="main", variants=_DECODE, capturable=True)
 def build_launch(f):
     """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the static plan, the
@@ -107,6 +110,7 @@ def build_launch(f):
     routes, values, masks, plan = f["routes"], f["values"], f["masks"], f["plan"]
     return DecodeLaunch(
         plan=plan,
+        descriptor=f["descriptor"],
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
             write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
@@ -172,6 +176,13 @@ def validate_context(ctx: DecodeContext) -> None:
                         "fsla.ops.produce.decode_plan builds one from the declaration")
     if tuple(ctx.routes.topology.widths) != ctx.plan.widths:
         raise ValueError(f"the plan is for widths {ctx.plan.widths}, the bundle's are {tuple(ctx.routes.topology.widths)}")
+    launch = bodies.decode_launch(ctx.descriptor)
+    if (launch.d_v, launch.levels, bool(launch.decay)) != (ctx.plan.d_v, ctx.plan.D, ctx.plan.has_decay):
+        raise ValueError(f"the descriptor's arm serves d_v={launch.d_v}, levels={launch.levels}, decay={launch.decay}; the plan is for "
+                         f"d_v={ctx.plan.d_v}, levels={ctx.plan.D}, decay={int(ctx.plan.has_decay)}")
+    if ctx.descriptor.device != ctx.values.device.index:
+        raise ValueError(f"the descriptor was made for device {ctx.descriptor.device}; the values are on {ctx.values.device}")
+    check_workspace(ctx.workspace, ctx.descriptor)
     bodies.check_decode_masks(ctx.masks, ctx.routes)
     bodies.guard_no_grad((*ctx.values.tensors(), *ctx.routes.tensors(),
                           *(ctx.decay.dials if ctx.decay is not None else ())))
@@ -179,7 +190,7 @@ def validate_context(ctx: DecodeContext) -> None:
 
 def _facts(ctx: DecodeContext) -> dict:
     return {"routes": ctx.routes, "values": ctx.values, "masks": ctx.masks, "decay": ctx.decay, "state": ctx.state,
-            "plan": ctx.plan}
+            "plan": ctx.plan, "descriptor": ctx.descriptor}
 
 
 def _scratch_of(state):
@@ -195,7 +206,7 @@ def _scratch_of(state):
     return next(iter(table.values()))
 
 
-def decode_step_gated(routes, values, masks, state, *, plan, decay=None):
+def decode_step_gated(routes, values, masks, state, *, plan, decay=None, descriptor=None, workspace=None):  #: reserved: decode needs no per-call scratch (fsla.workspace_bytes is 0); the op's planner interface, checked when given
     """ONE decode step with NO host participation -- the decode entry, and CAPTURE-SAFE.
 
     Each batch-head is gated on the step's own device-side answer, so one whose write set
@@ -213,8 +224,15 @@ def decode_step_gated(routes, values, masks, state, *, plan, decay=None):
     sequence EXACTLY ONCE across the pair -- a batch-head that ran in the first walk
     carries a done flag into the second and re-reads for its `y` without depositing again
     (docs/internals/decode/decode.md#done-flags).
+
+    ``descriptor`` is the validated context of the call (:func:`fsla.descriptor`: the device's facts and ``d_v``, levels, decay), the planner's
+    launch function reads it for the arm and its arguments; none given, it is the plan's on the values' device. ``workspace`` is the call's
+    own scratch (:func:`fsla.workspace_bytes`: decode needs none), checked for size and alignment when given.
     """
-    ctx = DecodeContext(routes=routes, values=values, masks=masks, state=state, plan=plan, decay=decay)
+    if descriptor is None:
+        descriptor = bodies.descriptor_of(plan, values.device)
+    ctx = DecodeContext(routes=routes, values=values, masks=masks, state=state, plan=plan, descriptor=descriptor,
+                        decay=decay, workspace=workspace)
     validate_context(ctx)
     return run(DECODE_STEP, _facts(ctx))["y"], state
 

@@ -240,8 +240,21 @@ def facts_header(facts: dict[str, Fact]) -> str:
     out.append("struct Reader {\n")
     for f in facts.values():
         out.append(f"  static constexpr {'Interval' if f.type == 'int' else 'EnumSet'} {f.name}(const Facts& f) {{ return f.{f.name}_; }}\n")
+    for kind in ("Interval", "EnumSet"):
+        out.append(f"  static constexpr bool get(const Facts& f, std::string_view fact, {kind}& out) {{\n")
+        for f in facts.values():
+            if (f.type == "int") == (kind == "Interval"):
+                out.append(f"    if (fact == \"{f.name}\") {{ out = f.{f.name}_; return true; }}\n")
+        out.append("    return false;\n  }\n")
     out.append("};\n\n")
     out.append("inline constexpr std::string_view kFactNames[] = {" + ", ".join(f'"{n}"' for n in facts) + "};\n\n")
+    out.append("inline constexpr std::string_view kCallFactNames[] = {" + ", ".join(f'"{f.name}"' for f in facts.values() if f.read == "CALL") + "};\n\n")
+    out.append("//: whether the CALL supplies the fact at run time (the DEVICE's facts are read from the device)\n")
+    out.append("constexpr bool is_call(std::string_view fact) {\n")
+    for f in facts.values():
+        if f.read == "CALL":
+            out.append(f"  if (fact == \"{f.name}\") return true;\n")
+    out.append("  return false;\n}\n\n")
     out.append("constexpr bool is_set(std::string_view fact) {\n")
     for f in facts.values():
         if f.type == "set<enum>":
@@ -253,6 +266,25 @@ def facts_header(facts: dict[str, Fact]) -> str:
         for i, m in enumerate(f.members):
             out.append(f"  if (fact == \"{f.name}\" && member == \"{m}\") return {i};\n")
     out.append("  return -1;\n}\n\n}  // namespace fsla::plan\n")
+    return "".join(out)
+
+
+def contract_header(contexts_: list[Context], facts: dict[str, Fact]) -> str:
+    """`plan/contract.h`: the contract as the run time holds it, `contract()` a context each (its id and its facts, each a point or a range)."""
+    out = ["// GENERATED from hardware/descriptors by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
+           "#pragma once\n\n#include <vector>\n\n#include \"plan/facts.h\"\n\nnamespace fsla::plan {\n\n",
+           "struct ContractContext {\n  const char* id;\n  Facts facts;\n};\n\n",
+           "//: every context FSLA accepts\ninline const std::vector<ContractContext>& contract() {\n  static const std::vector<ContractContext> rows = [] {\n    std::vector<ContractContext> out;\n"]
+    for c in contexts_:
+        out.append("    {\n      Facts f;\n")
+        for name, value in c.facts.items():
+            if facts[name].type == "int":
+                out.append(f"      f.assign(\"{name}\", Interval{{{value[0]}, {value[1]}}});\n")
+            else:
+                bits = sum(1 << facts[name].members.index(m) for m in value)
+                out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
+        out.append(f"      out.push_back({{\"{c.id}\", f}});\n    }}\n")
+    out.append("    return out;\n  }();\n  return rows;\n}\n\n}  // namespace fsla::plan\n")
     return "".join(out)
 
 

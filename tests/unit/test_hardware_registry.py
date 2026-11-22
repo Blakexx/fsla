@@ -40,15 +40,16 @@ def test_every_file_of_the_registry_holds_the_schema():
             assert sum(k in record for k in registry.PROVENANCE) == 1
 
 
-def test_the_decode_contract_is_sixteen_contexts_of_points_each_stating_every_fact():
+def test_the_decode_contract_is_the_value_widths_two_to_sixty_four_at_each_depth_and_decay():
     contexts = registry.contexts()
-    assert len(contexts) == 16
+    assert len(contexts) == 8
     assert {tuple(c.facts[n] for n in ("d_v", "levels", "decay")) for c in contexts} == {
-        ((dv, dv), (lv, lv), (dc, dc)) for dv in (32, 64) for lv in (1, 2, 3, 4) for dc in (0, 1)}
+        ((2, 64), (lv, lv), (dc, dc)) for lv in (1, 2, 3, 4) for dc in (0, 1)}
     for c in contexts:
         assert set(c.facts) == set(registry.schema())
-        assert c.alternatives == ("d_v", "levels", "decay")
-    assert len({c.id for c in contexts}) == 16
+        assert c.alternatives == ("levels", "decay")
+        assert c.facts["sm_count"] == (114, 132)
+    assert len({c.id for c in contexts}) == 8
 
 
 def test_the_hopper_part_is_the_hardware_tables_values():
@@ -64,10 +65,10 @@ def test_the_hopper_part_is_the_hardware_tables_values():
 
 def test_the_contexts_text_is_a_line_a_context_the_matchers_tool_reads():
     lines = registry.contexts_text(registry.contexts()).splitlines()
-    assert len(lines) == 16
+    assert len(lines) == 8
     cells = lines[0].split("\t")
-    assert cells[0] == "hopper_decode d_v=32 levels=1 decay=0"
-    assert "cc=900:900" in cells and "d_v=32:32" in cells and "tensor={hmma_bf16_f32,hmma_f16_f32,imma_u8_s8_k32}" in cells
+    assert cells[0] == "hopper_decode levels=1 decay=0"
+    assert "cc=900:900" in cells and "d_v=2:64" in cells and "sm_count=114:132" in cells and "tensor={hmma_bf16_f32,hmma_f16_f32,imma_u8_s8_k32}" in cells
 
 
 def test_the_facts_header_has_a_member_for_each_fact():
@@ -75,6 +76,14 @@ def test_the_facts_header_has_a_member_for_each_fact():
     for name in registry.schema():
         assert f" {name}_{{}};" in text and "Reader" in text and f"{name}(const Facts& f)" in text
     assert "enum class Tensor : int { hmma_f16_f32, hmma_bf16_f32, imma_u8_s8_k32 };" in text
+
+
+def test_the_contract_header_holds_each_context_and_the_call_facts_in_the_schemas_order():
+    text = registry.contract_header(registry.contexts(), registry.schema())
+    assert text.count("out.push_back({\"hopper_decode ") == 8
+    assert "f.assign(\"d_v\", Interval{2, 64});" in text and "f.assign(\"sm_count\", Interval{114, 132});" in text
+    assert "f.assign(\"tensor\", EnumSet{7});" in text
+    assert "kCallFactNames[] = {\"d_v\", \"levels\", \"decay\"}" in registry.facts_header(registry.schema())
 
 
 def test_two_contexts_identical_in_every_fact_are_refused(tree):

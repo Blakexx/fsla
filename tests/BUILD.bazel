@@ -146,6 +146,7 @@ pytest_tier(
         ":arm_switch_probe_empty",
         "//csrc/fsla:decode_arms_gen",
         "//csrc/fsla:decode_plan",
+        "//csrc/fsla:plan_tool",
         ":fixture_arm_set",
         ":fixture_selection",
         ":fixture_table",

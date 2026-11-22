@@ -1,0 +1,121 @@
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""THE PLANNER ON ENVIRONMENTS THAT ARE NOT THIS MACHINE'S (`csrc/fsla/src/common/plan/planner.h`, `decode_launch.h`, docs/internals/common/plan/planner.md):
+`plan_tool` is the library's own planner on device facts and a call given by hand, with no GPU. A device in the contract's ranges plans; one
+outside it is refused naming the facts, as is a call outside it; the launch function maps a call's `d_v` into its arm's; the grid is the launch
+function's and a forced count replaces it."""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
+
+#: the Hopper device the registry's part describes: an H100 SXM's numbers, every integer fact a point
+HOPPER = dict(cc=900, regs_per_sm=65536, smem_per_sm=233472, smem_per_cta_optin=232448, max_threads_per_sm=2048, sm_count=132)
+
+
+def _plan(device: dict | None = None, call: str = "d_v=64,levels=2,decay=1", *extra: str):
+    facts = {**HOPPER, **(device or {})}
+    run = subprocess.run([str(TOOL), "--device", ",".join(f"{k}={v}" for k, v in facts.items()), "--call", call, *extra],
+                         capture_output=True, text=True, timeout=60)
+    return run
+
+
+def _lines(run) -> dict:
+    assert run.returncode == 0, run.stderr
+    return {line.split(": ", 1)[0]: line.split(": ", 1)[1] for line in run.stdout.splitlines()}
+
+
+def test_a_device_of_other_facts_in_the_ranges_plans_with_its_own_numbers():
+    for sms in (114, 120, 132):
+        out = _lines(_plan({"sm_count": sms}))
+        assert out["args"] == f"cc=900 threads=512 smem_budget=232448 pad=0 sms={sms}"
+        assert out["arm"] == "d_v=64 levels=2 decay=1"
+
+
+def test_a_device_out_of_a_range_is_refused_naming_the_fact_and_its_range():
+    for sms in (113, 133):
+        run = _plan({"sm_count": sms})
+        assert run.returncode == 1
+        assert f"sm_count={sms} (the contract: 114..132)" in run.stderr and "the device lies outside FSLA's contract" in run.stderr
+
+
+@pytest.mark.parametrize("fact, value, held", [
+    ("cc", 800, "900"), ("regs_per_sm", 32768, "65536"), ("smem_per_sm", 166912, "233472"),
+    ("smem_per_cta_optin", 166912, "232448"), ("max_threads_per_sm", 1536, "2048"),
+])
+def test_a_device_whose_point_fact_differs_is_refused_naming_it(fact, value, held):
+    run = _plan({fact: value})
+    assert run.returncode == 1 and f"{fact}={value} (the contract: {held})" in run.stderr
+
+
+def test_the_model_key_names_the_device_in_a_refusal_and_is_never_the_match():
+    model = "cc=900 pci=0x2330 name=NVIDIA H100 80GB HBM3"
+    run = _plan({"sm_count": 100}, "d_v=64,levels=2,decay=1", "--model", model)
+    assert run.returncode == 1 and f"the device: {model}" in run.stderr
+    assert _plan(None, "d_v=64,levels=2,decay=1", "--model", "a name that matches nothing").returncode == 0
+
+
+@pytest.mark.parametrize("d_v, arm, pad", [(2, 32, 30), (31, 32, 1), (32, 32, 0), (33, 64, 31), (48, 64, 16), (64, 64, 0)])
+def test_the_launch_function_maps_a_value_width_to_the_arm_that_holds_it(d_v, arm, pad):
+    out = _lines(_plan(None, f"d_v={d_v},levels=3,decay=0"))
+    assert out["arm"] == f"d_v={arm} levels=3 decay=0"
+    assert f"pad={pad} " in out["args"]
+
+
+@pytest.mark.parametrize("call, named", [
+    ("d_v=65,levels=2,decay=1", "d_v=65 (the contract: 2..64)"),
+    ("d_v=1,levels=2,decay=1", "d_v=1 (the contract: 2..64)"),
+    ("d_v=128,levels=2,decay=1", "d_v=128 (the contract: 2..64)"),
+    ("d_v=64,levels=5,decay=1", "levels=5 (the contract: "),
+    ("d_v=64,levels=2,decay=2", "decay=2 (the contract: "),
+])
+def test_a_call_outside_the_contract_is_refused_before_any_launch_naming_the_fact(call, named):
+    run = _plan(None, call)
+    assert run.returncode == 1 and "the call lies outside FSLA's contract" in run.stderr and named in run.stderr
+    assert run.stdout == ""
+
+
+@pytest.mark.parametrize("call, why", [
+    ("d_v=64,levels=2", "the call states no value for 'decay'"),
+    ("d_v=64,d_v=32,levels=2,decay=1", "the call supplies 'd_v' twice"),
+    ("d_v=64,levels=2,decay=1,warps=4", "the call names 'warps', which is no fact a call supplies"),
+    ("d_v=64,levels=2,decay=1,cc=900", "the call names 'cc', which is no fact a call supplies"),
+])
+def test_a_call_that_misstates_its_facts_is_refused_by_name(call, why):
+    run = _plan(None, call)
+    assert run.returncode == 1 and why in run.stderr
+
+
+def test_a_device_read_that_misstates_its_facts_is_refused_by_name():
+    run = subprocess.run([str(TOOL), "--device", "cc=900,regs_per_sm=65536", "--call", "d_v=64,levels=2,decay=1"], capture_output=True, text=True)
+    assert run.returncode == 1 and "the device read states no value for the schema's fact" in run.stderr
+    run = subprocess.run([str(TOOL), "--device", ",".join(f"{k}={v}" for k, v in {**HOPPER, "d_v": 64}.items()), "--call", "d_v=64,levels=2,decay=1"],
+                         capture_output=True, text=True)
+    assert run.returncode == 1 and "the device read names 'd_v', which is no integer fact the device supplies" in run.stderr
+
+
+def _grid(device: dict | None, ceiling: int, bh: int, forced: int) -> int:
+    run = _plan(device, "d_v=64,levels=2,decay=1", "--grid", f"unit_ceiling={ceiling},bh={bh},forced={forced}")
+    return int(_lines(run)["grid"])
+
+
+def test_the_grid_is_one_wave_of_the_devices_sms_at_most_the_heads_unit_supply():
+    assert _grid({"sm_count": 120}, ceiling=256, bh=64, forced=-1) == 120
+    assert _grid({"sm_count": 132}, ceiling=256, bh=64, forced=-1) == 132
+    assert _grid({"sm_count": 132}, ceiling=256, bh=2, forced=-1) == 32  # 2 heads of 16 CTAs' supply each
+    assert _grid({"sm_count": 132}, ceiling=16, bh=3, forced=-1) == 3  # one CTA's share a head
+    assert _grid({"sm_count": 132}, ceiling=1, bh=1, forced=-1) == 1
+
+
+def test_a_forced_grid_replaces_the_planned_one_at_every_count_the_device_could_plan():
+    """The forced-plan law's CPU half: a gate's count reaches the launch as it was given, whatever the device and the data; the device half
+    (the same data at each forced count matches the oracle) is the gated decode tests'."""
+    for sms in (114, 132):
+        planned = _grid({"sm_count": sms}, ceiling=256, bh=64, forced=-1)
+        for forced in (1, 2, planned - 1, planned, planned + 1, 4 * sms):
+            assert _grid({"sm_count": sms}, ceiling=256, bh=64, forced=forced) == forced

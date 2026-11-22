@@ -11,17 +11,12 @@ rather than a switch over compute capabilities in each kernel.
 <a id="card-of"></a>
 ## `card_of(device)`, `current_card()`
 
-A device's `Card`: its compute capability, its product row (`kProducts`' index, -1 where the device has none), its SM
-count (the driver's: a product's SKUs differ in it, so no table holds it), the build it runs and that build's traits. The first call for a device ADMITS it -- the closed-world checks
-([`arch_runtime.md#check-arch-table`](arch_runtime.md#check-arch-table)): its architecture tabulated, the
-driver's numbers its row's, and its build one this binary carries -- and keeps the card; every later call is a lookup.
+A device's `Card`: its compute capability, its SM
+count (the planner's read: a part's SKUs differ in it), the build it runs and that build's traits. The first call for a device ADMITS it -- the closed-world checks
+([`arch_runtime.md#check-arch-table`](arch_runtime.md#check-arch-table)): the planner's read of the device, refused when no context of the contract holds
+the driver's numbers ([`plan/environment.md`](plan/environment.md)), and its build one this binary carries -- and keeps the card; every later call is a lookup.
 A device whose build the binary does not carry is refused by name with the builds it does carry, so an architecture is
 never run on another's image (an sm_100 card is not run on the sm_90a image).
-
-<a id="slug"></a>
-The product is found by the slug of the device's name, `measure/hardware.py`'s `slugify_gpu` (the vendor words
-dropped, cut at the first `-`, alphanumerics lowercased): an H100 80GB HBM3 is `h10080gbhbm3`. The
-product's row names its build variant; a device without a row runs its architecture's variant 0.
 
 <a id="carried"></a>
 ## The builds a binary carries

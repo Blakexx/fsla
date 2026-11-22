@@ -6,5 +6,6 @@ selection that every kernel's host side calls. The library links them, and so do
 RUNTIME_UNITS = [
     "src/common/arch_runtime.cu",
     "src/common/geom.cu",
+    "src/common/plan/environment.cu",
     "src/common/select.cu",
 ]

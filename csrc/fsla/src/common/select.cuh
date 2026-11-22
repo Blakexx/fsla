@@ -1,4 +1,4 @@
-// csrc/fsla/src/common/select.cuh -- THE SELECTION LAYER: a device's card (its product and build), the builds this
+// csrc/fsla/src/common/select.cuh -- THE SELECTION LAYER: a device's card (its build), the builds this
 // binary carries, and the host's branch to the card's build at compile time. see docs/internals/common/select.md
 #pragma once
 
@@ -14,10 +14,9 @@ using ::denseref::arch::BuildTag;
 using ::denseref::arch::Traits;
 using ::denseref::arch::traits_of;
 
-//: A DEVICE'S CARD: its product row (-1 where it has none), its SMs (the driver's), the build it runs and that build's
-//: traits.
+//: A DEVICE'S CARD: its compute capability, its SMs (the planner's read), the build it runs and that build's traits.
 struct Card {
-  int device, cc, product, sms;
+  int device, cc, sms;
   Build build;
   Traits traits;
 };

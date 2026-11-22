@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE ARM FAMILIES' GENERATED FILES, written from a family's rows file (`{"key": [...], "arms": [[...], ...]}`): its selection header, its Python
 table and its declarations, and the merge of declaration files into the one file the SASS gate reads. Run by `bazel/arms.bzl`'s rules; the
-rows are a literal's (`arm_rows`) or `arms_gen`'s (docs/internals/plan/arms_gen.md). Docs: docs/build-graph.md#arms.
+rows are a literal's (`arm_rows`) or `arms_gen`'s (docs/internals/decode/arms_gen.md). Docs: docs/build-graph.md#arms.
 """
 from __future__ import annotations
 
@@ -21,25 +21,9 @@ def rows_of(path: Path) -> tuple[list[str], list[list[int]]]:
     if len({tuple(r) for r in arms}) != len(arms):
         raise SystemExit(f"{path}: a row is declared twice; a duplicate would give one kernel two indices")
     if arms != sorted(arms):
-        raise SystemExit(f"{path}: the rows are not in canonical order: an arm's index is named by the flag, the selection header and the units, "
+        raise SystemExit(f"{path}: the rows are not in canonical order: an arm's index is named by `--//:<family>_arms`, the selection header and the units, "
                          f"so it is a property of the declaration. Sorted: {sorted(arms)}")
     return key, arms
-
-
-def chosen(spec: str, rows: int, flag: str) -> list[int]:
-    """The arm indices a build's flag names: indices or `all`, empty for every arm, an index out of range refused."""
-    tokens = spec.replace(",", " ").split()
-    if not tokens:
-        return list(range(rows))
-    want: list[int] = []
-    for token in tokens:
-        if token == "all":
-            want += range(rows)
-        elif not token.isdigit() or int(token) >= rows:
-            raise SystemExit(f"{flag}: {token!r} is not an arm index or 'all'; the list has {rows} rows (0..{rows - 1})")
-        else:
-            want.append(int(token))
-    return sorted(set(want))
 
 
 def selection(family: str, key: list[str], rows: list[list[int]], picked: list[int], includer: str, flag: str) -> str:
@@ -79,27 +63,17 @@ def table(family: str, key: list[str], rows: list[list[int]]) -> str:
             f"ARMS = ({body})\n")
 
 
-def _escape(text: str) -> str:
-    return "".join("\\" + ch if ch in "\\.^$*+?{}[]|()" else ch for ch in text)
-
-
-def kernel_pattern(kernel: str, key: list[str], row: list[int], arch: str) -> str:
-    """The exact pattern of an arm's kernel, over its demangled name: `@<field>@` is a field of the key, `@cc@` the architecture's compute
-    capability as `__CUDA_ARCH__` reads it (`90a` is 900); anchored at the return type and the parameter list."""
-    parts = kernel.split("@")
-    if len(parts) % 2 == 0:
-        raise SystemExit(f"{kernel}: an unbalanced `@`")
+def kernel_pattern(pattern: str, key: list[str], row: list[int], arch: str) -> str:
+    """An arm's exact kernel pattern: `pattern` (escaped and anchored by `bazel/cuda.bzl`'s `kernel_pattern`, the one place a name is) with each `@<field>@` a
+    field of the key and `@cc@` the architecture's compute capability as `__CUDA_ARCH__` reads it (`90a` is 900)."""
     values = {field: str(value) for field, value in zip(key, row)}
     values["cc"] = str(int(arch.removesuffix("a")) * 10)
-    text = ""
-    for i, part in enumerate(parts):
-        if i % 2 == 0:
-            text += _escape(part)
-        elif part not in values:
-            raise SystemExit(f"{kernel}: `@{part}@` is no field of the key {key} (nor `cc`)")
-        else:
-            text += values[part]
-    return "^void " + text + "\\("
+    parts = pattern.split("@")
+    for i in range(1, len(parts), 2):
+        if parts[i] not in values:
+            raise SystemExit(f"{pattern}: `@{parts[i]}@` is no field of the key {key} (nor `cc`)")
+        parts[i] = values[parts[i]]
+    return "".join(parts)
 
 
 def declarations(family: str, key: list[str], rows: list[list[int]], picked: list[int], kernel: str, declared: list[dict], archs: list[str]) -> dict:
@@ -135,8 +109,7 @@ def main() -> int:
     ap.add_argument("--rows", type=Path)
     ap.add_argument("--family", default="")
     ap.add_argument("--includer", default="")
-    ap.add_argument("--flag", default=None, help="the build's arm flag value (indices or `all`); empty for every arm")
-    ap.add_argument("--selected", default=None, help="a fixed selection (comma-separated indices, empty for none) in place of the flag")
+    ap.add_argument("--selected", default="all", help="the arms the build carries: `all` or comma-separated indices (empty for none), as `bazel/arms.bzl` parsed the flag")
     ap.add_argument("--kernel", default="")
     ap.add_argument("--declared", action="append", default=[], help="a declaration, JSON")
     ap.add_argument("--archs", default="")
@@ -149,13 +122,10 @@ def main() -> int:
         return 0
     key, rows = rows_of(a.rows)
     knob = f"--//:{a.family}_arms"
-    if a.selected is not None:
-        picked = sorted(int(i) for i in a.selected.split(",") if i)
-        for i in picked:
-            if i >= len(rows):
-                raise SystemExit(f"{a.family}: no such arm {i}; the list has {len(rows)} rows")
-    else:
-        picked = chosen(a.flag or "", len(rows), knob)
+    picked = list(range(len(rows))) if a.selected == "all" else sorted(int(i) for i in a.selected.split(",") if i)
+    for i in picked:
+        if i >= len(rows):
+            raise SystemExit(f"{knob}: no such arm {i}; the list has {len(rows)} rows (0..{len(rows) - 1})")
     if a.what == "selection":
         a.out.write_text(selection(a.family, key, rows, picked, a.includer, knob))
     elif a.what == "table":

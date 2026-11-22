@@ -22,6 +22,7 @@
 #include "common/select.cuh"
 #include "common/torch_seam.cuh"
 #include "src/common/geom_api.cuh"
+#include "src/common/plan/plan_api.cuh"
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
@@ -89,10 +90,10 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
   return {probe.device, probe.supported, (int64_t)probe.allocation_granularity, probe.reason};
 }
 
-//: A DEVICE'S CARD (`common/select.cuh`): its compute capability, product row (-1: none), build variant, family and W
+//: A DEVICE'S CARD (`common/select.cuh`): its compute capability, build variant, family and W
 std::vector<int64_t> device_card_op(int64_t device) {
   const fsla::Card& c = fsla::card_of(static_cast<int>(device));
-  return {c.cc, c.product, c.build.variant, static_cast<int64_t>(c.traits.family), c.traits.window};
+  return {c.cc, c.build.variant, static_cast<int64_t>(c.traits.family), c.traits.window};
 }
 
 }  // namespace
@@ -142,9 +143,10 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "Tensor[] read_mask, Tensor[] write_mask, Tensor? dials, Tensor v, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "
-      "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, Tensor(i!)? page_table=None, "
+      "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, int[] descriptor, Tensor(i!)? page_table=None, "
       "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
   m.def("fsla_decode_build_stamp() -> int");
+  m.def("fsla_decode_launch(int[] descriptor, int device) -> int[]");
   m.def("fsla_decode_arms() -> int[][]");
   m.def("fsla_decode_ledger_bind(Tensor? ledger) -> ()");
   m.def("fsla_decode_ledger_warps() -> int");
@@ -168,6 +170,9 @@ STABLE_TORCH_LIBRARY(fsla, m) {
 STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("device_card", TORCH_BOX(&device_card_op));
   m.impl("segment_tokens", TORCH_BOX(&fsla::segment_tokens));
+  m.impl("fsla_call_facts", TORCH_BOX(&fsla::plan::fsla_call_facts));
+  m.impl("fsla_descriptor", TORCH_BOX(&fsla::plan::fsla_descriptor));
+  m.impl("fsla_decode_launch", TORCH_BOX(&fsla::decode::fsla_decode_launch));
 
   m.impl("csrc_build_stamp", TORCH_BOX(&fsla::csrc_build_stamp));
   m.impl("sm_clock_ghz", TORCH_BOX(&fsla::sm_clock_ghz));

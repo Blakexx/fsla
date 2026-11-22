@@ -911,6 +911,26 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
     return findings
 
 
+#: THE FACTS' ONLY FRIEND: the generated `Facts` (`hardware/registry.py`) is read through `Reader`, and only the planner's own files (`csrc/fsla/src/common/plan/`)
+#: name it, so a hardware fact reaches a kernel's launch only through the planner (docs/internals/common/plan/planner.md#the-reader)
+_READER_HOME = "csrc/fsla/src/common/plan/"
+_READER_RE = re.compile(r"\bReader\b")
+_CXX_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
+
+
+def check_facts_reader_confined() -> list[str]:
+    findings = []
+    for path in sorted((ROOT / "csrc").rglob("*")):
+        rel = path.relative_to(ROOT).as_posix()
+        if path.suffix not in _CXX_SUFFIXES or "third_party" in path.parts or rel.startswith(_READER_HOME) or not path.is_file():
+            continue
+        for idx, line in enumerate(path.read_text().splitlines(), start=1):
+            if _READER_RE.search(line):
+                findings.append(f"THE FACTS' ONLY FRIEND: {rel}:{idx}: names `Reader`, which only {_READER_HOME} may -- a hardware fact reaches a launch "
+                                f"through the planner's launch function, never a raw read -- {line.strip()!r}")
+    return findings
+
+
 #: K46 item 2 (Blake, 2026-08-29 "lints in test clothing"): a check that reads
 #: files/manifests/versions and asserts consistency is a LINT, not a test -- moved
 #: here, test file DELETED, from: test_generated_docs.py, test_shard_partition.py,
@@ -950,39 +970,6 @@ def check_hardware() -> list[str]:
     from measure import hardware
 
     return hardware.check()
-
-
-def check_arch_coverage() -> list[str]:
-    """Every architecture the contract holds (`hardware/`) is built, and the generated support table has its row: the contract is what is
-    built, so a context on an unbuilt architecture is a promise nothing keeps -- a hole on one arch is invisible to every other gate, which
-    all run on whichever arch the developer's own card happens to be. Device-free: reads the registry and `hardware.json` only.
-
-    THE PER-TOPOLOGY HALF WENT WITH THE STATS PASSES. It asserted that every built arch carried a facts arm
-    for every `(D, B)` class any other arch carried one for; there are no facts arms. It returns with the kernel, keyed
-    on the rebuilt family's own arm list, not restored against an empty one.
-    """
-    if str(_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_TOOLS_DIR))
-    try:
-        import supported
-    except ImportError as ex:
-        return [f"check_arch_coverage: could not import tools/supported.py: {ex}"]
-
-    from hardware import registry
-    from measure import hardware
-
-    built = set(hardware.built())
-    if not built:
-        return ["no tabulated arch is built; nothing was brought up"]
-
-    findings = []
-    table = supported.table()
-    for arch in sorted({c.arch for c in registry.contexts()}):
-        if arch not in built:
-            findings.append(f"the contract holds {arch}, which is not built: narrow the contract or bring the architecture up")
-        elif f"| `{arch}` |" not in table:
-            findings.append(f"the contract holds {arch} but the generated support table has no row for it")
-    return findings
 
 
 def check_vendored_pin() -> list[str]:
@@ -1230,7 +1217,7 @@ def main() -> int:
     gating_findings += check_docs_mirror()
     gating_findings += check_no_bare_flock_on_gpu_lock()
     gating_findings += check_hardware()
-    gating_findings += check_arch_coverage()
+    gating_findings += check_facts_reader_confined()
     gating_findings += check_vendored_pin()
     gating_findings += check_comment_density()
     gating_findings += check_no_long_comment_blocks()

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import cache
 
 import torch
 
@@ -39,8 +40,10 @@ from fsla.engine.plan import DecodeLaunch, DecodeOperands, DecodePlan, DecodeWor
 from fsla.ops._ext import extension
 from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decay import leaf_rate_dials
+from fsla.ops.descriptor import Descriptor
+from fsla.ops.descriptor import descriptor as make_descriptor
 from fsla.ops.lattice import derive_lattice, permutation
-from fsla.ops.padding import pad_v, padded_value_width, slice_y
+from fsla.ops.padding import pad_v, slice_y
 from fsla.ops.paging import MMA_K_QUANTUM, page_layout
 from fsla.routing.masks import DECODE
 from fsla.routing.types import Topology
@@ -80,20 +83,23 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
     extension().fsla_decode_ledger_bind(ledger)
 
 
-def _shipped_decode_dv(D: int, decay: bool) -> tuple[int, ...]:
-    """The ``DV`` values this binary's decode arms ship at this ``(D, decay)``.
+@dataclass(frozen=True, slots=True)
+class DecodeLaunchFacts:
+    """What the planner's launch function makes of a descriptor that Python reads (``common/plan/decode_launch.h``): the arm (``d_v``,
+    ``levels``, ``decay``), the zero columns the call's value width is padded by and the workspace the call needs (bytes, alignment)."""
 
-    Read off :func:`arms` (the binary's own declared arm set) rather than a literal
-    set: decode's shipped ``d_v`` axis is wider than carry's single ``D_V`` (a full
-    build carries ``d_v x D x decay``), and a literal tuple here would drift from
-    whatever the binary carries.
-    """
-    dv_at_shape = tuple(sorted({dv for dv, d, dec in arms() if d == D and dec == decay}))
-    if not dv_at_shape:
-        raise ValueError(
-            f"no shipped decode arm at D={D}, decay={decay} -- there is no DV this "
-            "call could be padded to")
-    return dv_at_shape
+    d_v: int
+    levels: int
+    decay: int
+    pad: int
+    workspace_bytes: int
+    workspace_alignment: int
+
+
+@cache
+def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
+    """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``."""
+    return DecodeLaunchFacts(*(int(x) for x in extension().fsla_decode_launch(list(descriptor.words), descriptor.device)))
 
 
 def _admit(widths: tuple[int, ...]) -> None:
@@ -109,9 +115,8 @@ def _admit(widths: tuple[int, ...]) -> None:
 
     Only the levels are this call's business: ``DV`` and ``ids`` are placeholders
     that satisfy the descriptor's OTHER fields (an even ``DV``, a page-aligned
-    ``N``, which every lawful ``widths`` already is) without asking
-    :func:`_shipped_decode_dv` -- that is decode's own, separate law, checked next,
-    and it alone needs the extension.
+    ``N``, which every lawful ``widths`` already is) without asking the
+    planner: the value width's law is the contract's (:func:`derive_decode_plan`).
     """
     StateFormat(D=len(widths), B=widths, order=CANONICAL_ORDER, page_bits=PAGE_RECTANGLE_BITS,
                 DV=2, dtype=SPLIT_PLANE_DTYPE, ids=1)
@@ -124,15 +129,16 @@ def derive_decode_plan(
     decay: bool,
     write_dense: bool,
     eps: float = READOUT_EPS,
+    descriptor: Descriptor | None = None,
 ) -> DecodePlan:
     """Build the static plan once, at the boundary. ``write_dense`` is the plan's action (deposit whole atoms), chosen by
     the producer's plan rule (:func:`fsla.ops.produce.decode_plan`); nothing here reads an activation.
 
     HOST-SIDE PADDING ("d_v padding is also host-side"): ``d_v`` is the caller's
     LOGICAL value width, and this is the SEAM -- the plan this returns carries
-    the padded ``DV`` (:func:`_shipped_decode_dv`), which is what the scratch sizing
-    and the launch address. Decode's arm key is ``(DV, D, decay)`` ONLY (:func:`arms`):
-    ``DV`` is padded to a shipped value, but the per-level widths carry no such
+    the padded ``DV`` (the planner's launch function maps the descriptor's ``d_v`` to its arm's: :func:`decode_launch`), which is what the
+    scratch sizing and the launch address. ``descriptor`` is the call's on the current device when none is given. Decode's arm key is
+    ``(DV, D, decay)`` ONLY (:func:`arms`): ``DV`` is padded to an arm's, but the per-level widths carry no such
     shipped set of their own, so ``topology.widths`` travels to the kernel exactly as
     the caller holds them -- past :func:`_admit`'s floor, which REFUSES rather than
     pads (R13: the kernel never pads or masks).
@@ -143,8 +149,13 @@ def derive_decode_plan(
     """
     widths = tuple(topology.widths)
     _admit(widths)
-    d_v = padded_value_width(d_v, shipped=_shipped_decode_dv(len(widths), decay))
     D = len(widths)
+    if descriptor is None:
+        descriptor = make_descriptor(d_v=d_v, levels=D, decay=decay)
+    elif (descriptor["d_v"], descriptor["levels"], bool(descriptor["decay"])) != (d_v, D, decay):
+        raise ValueError(f"the descriptor is for d_v={descriptor['d_v']}, levels={descriptor['levels']}, decay={descriptor['decay']}; "
+                         f"the plan is for d_v={d_v}, levels={D}, decay={int(decay)}")
+    d_v = decode_launch(descriptor).d_v
     k, m = derive_lattice(widths)
     row_offset = []
     acc = 0
@@ -315,6 +326,11 @@ def leaf_rate_dials_for(decay, config: DecodePlan, device) -> torch.Tensor | Non
     return leaf_rate_dials(decay, config).to(device).float()
 
 
+def descriptor_of(config: DecodePlan, device) -> Descriptor:
+    """The descriptor of ``config``'s call on ``device``: the plan's padded value width, which the arm serves unpadded."""
+    return make_descriptor(device=device, d_v=config.d_v, levels=config.D, decay=config.has_decay)
+
+
 def step(launch: DecodeLaunch) -> torch.Tensor:
     """THE STEP, in ONE launch, in place on ``launch.operands.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
@@ -359,6 +375,7 @@ def step(launch: DecodeLaunch) -> torch.Tensor:
         write_dense=config.write_dense,
         ctas=-1 if config.ctas is None else config.ctas,
         eps=config.eps,
+        descriptor=list(launch.descriptor.words),
         page_table=op.page_table,
         pool_slots=None if pool is None else pool.pool_slots,
         pool_cursor=None if pool is None else pool.pool_cursor,
@@ -431,6 +448,7 @@ def _decode_step(
         workspace = DecodeScratch.build(config, BH, v.device)
     y = step(DecodeLaunch(
         plan=config,
+        descriptor=descriptor_of(config, v.device),
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
             read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, config, v.device), v=v,

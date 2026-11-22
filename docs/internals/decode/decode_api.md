@@ -56,6 +56,12 @@ rows of the arms the build selected, so `fsla.ops.decode.arms()` cannot disagree
 dispatch and the readback both read it. An arm the binary does not carry is the switch's refusal, naming the field that
 misses and the built set, never a silent miss.
 
+<a id="fsla-decode-launch"></a>**THE LAUNCH IS THE DESCRIPTOR'S.** `fsla_decode_forward` takes the descriptor's words (`fsla.descriptor`, [`../common/plan/environment.md`](../common/plan/environment.md)),
+has the planner check them against the contract and the device the call runs on, and launches what `plan::decode_launch` says
+([`../common/plan/decode_launch.md`](../common/plan/decode_launch.md)): the arm, the CTA's threads, the shared-memory budget the launch opts in to, the
+grid. `v` must be the arm's value width: the seam pads the caller's `d_v` by the launch function's padding and slices `y` back.
+`fsla_decode_launch(descriptor, device)` returns that launch for Python (`fsla.ops.decode.decode_launch`).
+
 **A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: it carries fewer instantiations than the
 declaration by construction, so an iteration build is never a wheel ([`build.md#iteration`](../../build.md#iteration)).
 

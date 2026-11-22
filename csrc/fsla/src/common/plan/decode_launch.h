@@ -4,6 +4,7 @@
 // arguments, from a descriptor; the arm half is evaluable over ranges, the args half is not.
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -28,10 +29,14 @@ struct DecodeArm {
   }
 };
 
+//: what the launch takes besides the arm: the compute capability of the build to launch, the CTA's threads, the shared
+//: memory a CTA may opt in to, the zero columns the call's value width is padded by, and the device's SMs
 struct DecodeArgs {
+  int cc;
   int threads;
   int smem_budget;
   int pad;
+  int sms;
 };
 
 struct DecodeLaunch {
@@ -43,28 +48,67 @@ inline constexpr std::size_t kMaxDecodeArms = 64;
 
 using DecodeArmSet = ArmSet<DecodeArm, kMaxDecodeArms>;
 
+//: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight.
+//: -- see docs/internals/decode/decode.md#decode-threads
 inline constexpr int kDecodeRegsPerThread = 128;
 
+//: THE SMALLEST UNIT SHARE worth a CTA's prologue (its fold and factor tables): the grid's supply bound.
+//: -- see docs/internals/decode/decode.md#the-split-policy
+inline constexpr int kDecodeUnitsPerCta = 16;
+
+//: the CTAs an SM keeps resident: the step's declared residency (docs/internals/decode/decode.md#declared-residency)
+inline constexpr int kDecodeBlocksPerSm = 1;
+
+//: the value widths the decode arms are built at; a call's `d_v` is served by the narrowest arm that holds it
+inline constexpr int kDecodeArmWidths[] = {32, 64};
+
 constexpr DecodeArmSet decode_arms(const Descriptor& d) {
-  ArmSet<DecodeArm, kMaxDecodeArms> out;
-  constexpr int kWidths[] = {32, 64};
-  for (int d_v : kWidths)
+  DecodeArmSet out;
+  int narrower = 0;
+  for (int d_v : kDecodeArmWidths) {
     for (int levels = 1; levels <= 4; ++levels)
       for (int decay = 0; decay <= 1; ++decay) {
-        Truth reached = all(eq(Reader::cc(d), 900), eq(Reader::d_v(d), d_v),
+        Truth reached = all(eq(Reader::cc(d), 900), in(Reader::d_v(d), narrower + 1, d_v),
                             eq(Reader::levels(d), levels), eq(Reader::decay(d), decay));
         if (reached != Truth::No) out.add({d_v, levels, decay});
       }
+    narrower = d_v;
+  }
   return out;
 }
 
 //: exact values only: a range aborts
 constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
-  bool exact = Reader::regs_per_sm(d).point() && Reader::smem_per_cta_optin(d).point();
-  if (!exact || !Reader::d_v(d).point()) std::abort();
-  return {static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
+  bool exact = Reader::cc(d).point() && Reader::regs_per_sm(d).point()
+               && Reader::smem_per_cta_optin(d).point() && Reader::sm_count(d).point()
+               && Reader::d_v(d).point();
+  if (!exact) std::abort();
+  return {static_cast<int>(Reader::cc(d).lo),
+          static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
           static_cast<int>(Reader::smem_per_cta_optin(d).lo),
-          arm.d_v - static_cast<int>(Reader::d_v(d).lo)};
+          arm.d_v - static_cast<int>(Reader::d_v(d).lo), static_cast<int>(Reader::sm_count(d).lo)};
+}
+
+//: the scratch a call needs beside its operands: its bytes and the alignment of its address (decode has no per-call scratch: its buffers belong to
+//: the sequence)
+struct WorkspaceNeed {
+  std::int64_t bytes;
+  std::int64_t alignment;
+};
+
+constexpr WorkspaceNeed decode_workspace(const Descriptor&) { return {0, 256}; }
+
+//: THE STEP'S GRID, from exact values right before the launch: one wave of the declared residency, at most `bh` heads' unit supply of
+//: `unit_ceiling` units each; `forced` (a gate's count, at least 1) replaces it, -1 leaves it
+constexpr int decode_grid(const DecodeArgs& args, std::int64_t unit_ceiling, std::int64_t bh,
+                          std::int64_t forced) {
+  if (forced >= 1) return static_cast<int>(forced);
+  const std::int64_t supply = unit_ceiling > kDecodeUnitsPerCta
+                                  ? (unit_ceiling + kDecodeUnitsPerCta - 1) / kDecodeUnitsPerCta
+                                  : 1;
+  const std::int64_t resident = std::int64_t{args.sms} * kDecodeBlocksPerSm;
+  const std::int64_t grid = resident < bh * supply ? resident : bh * supply;
+  return static_cast<int>(grid > 1 ? grid : 1);
 }
 
 constexpr DecodeLaunch decode_launch(const Descriptor& d) {

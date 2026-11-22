@@ -8,6 +8,7 @@
 #include "common/geom.cuh"
 #include "common/hardware.cuh"
 #include "common/select.cuh"
+#include "plan/decode_launch.h"
 
 namespace fsla {
 namespace decode {
@@ -23,8 +24,8 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight. -- see docs/internals/decode/decode.md#decode-threads
-constexpr int kDecodeRegsPerThread = 128;
+//: THE WALK'S REGISTERS A THREAD, the planner's (common/plan/decode_launch.h): the one definition both the compiled CTA width and the launch's read
+using ::fsla::plan::kDecodeRegsPerThread;
 
 //: THE STEP'S PLAN at build `B`: ONE CTA an SM, of the threads the card's registers hold at `kDecodeRegsPerThread`.
 //: -- see docs/internals/decode/decode.md#declared-residency
@@ -33,7 +34,7 @@ struct DecodePlan {
   static constexpr int kThreads =
       ::denseref::arch::traits_of(B).caps.regs_per_sm / kDecodeRegsPerThread;
   static constexpr int kWarps = kThreads / 32;
-  static constexpr int kBlocksPerSm = 1;
+  static constexpr int kBlocksPerSm = ::fsla::plan::kDecodeBlocksPerSm;
   static_assert(kThreads % 32 == 0 && kThreads <= 1024,
                 "the step's CTA is whole warps, at most 1024 threads");
   static_assert((2 * kMaxLevels * kDecodeMaxLevelWidth) % kThreads == 0,
@@ -63,10 +64,6 @@ struct LeafLanes {
 
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
 enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
-
-//: THE SMALLEST UNIT SHARE worth a CTA's prologue (its fold and factor tables): the grid's supply bound.
-//: -- see docs/internals/decode/decode.md#the-split-policy
-constexpr int kDecodeUnitsPerCta = 16;
 
 constexpr int kAtomShift =
     fsla::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift
@@ -179,16 +176,10 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 
 size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
                               int olist_total, int dlist_total);
-void launch_decode_step(const Card& card, const DecodeParams& p, int d_v, bool decay,
-                        int64_t smem_budget);
+void launch_decode_step(const plan::DecodeLaunch& launch, const DecodeParams& p);
 
 namespace detail {
-//: THE STEP'S PLAN at a card's build, for the host: its warps and its residency (`DecodePlan`).
-struct StepPlan {
-  int warps, blocks_per_sm;
-};
-
-StepPlan step_plan(const Card& card);
+//: THE STEP'S WARPS at a card's build, for the host (`DecodePlan`).
 int step_warps(const Card& card);
 }  // namespace detail
 

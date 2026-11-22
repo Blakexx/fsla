@@ -55,6 +55,7 @@ from fsla.interface import (
     operands_of,
     requires_backward,
 )
+from fsla.ops.descriptor import descriptor
 from fsla.ops.prefill import launch_bytes_per_token
 from fsla.ops.produce import (
     ProducerPlan,
@@ -169,6 +170,7 @@ class FSLA(nn.Module):
         self._pinned = plan
         self._prefill_plan = None
         self._decode_plan = None
+        self._descriptor = None
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -335,8 +337,9 @@ class FSLA(nn.Module):
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
         if self._decode_plan is None:
-            self._decode_plan = decode_plan(self.topology, d_v=self.d_v, decay=self.decay is not None)
-        out, _state = decode_step_gated(routes, values, masks, state, plan=self._decode_plan, decay=decay)
+            self._descriptor = descriptor(device=x.device, d_v=self.d_v, levels=len(self.topology.widths), decay=self.decay is not None)
+            self._decode_plan = decode_plan(self.topology, d_v=self.d_v, decay=self.decay is not None, descriptor=self._descriptor)
+        out, _state = decode_step_gated(routes, values, masks, state, plan=self._decode_plan, descriptor=self._descriptor, decay=decay)
         return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
 
     def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:

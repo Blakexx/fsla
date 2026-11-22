@@ -32,6 +32,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `fsla_op` | STABLE, semver-major to break |
+| planner arguments | `descriptor`, `Descriptor`, `workspace_bytes` | STABLE |
 | feature map | `RouteFactors`, `Masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
@@ -49,6 +50,7 @@ __version__ = "0.1.0.dev0"
 from fsla._state import FSLAState, state
 from fsla.interface import fsla_op
 from fsla.layer import FSLA, LayerContinuation
+from fsla.ops.descriptor import Descriptor, descriptor, workspace_bytes
 from fsla.ops.naive import naive_fsla
 from fsla.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from fsla.routing.factors import RouteFactors
@@ -77,6 +79,10 @@ from fsla.values import Values
 __all__ = [
     # the op — the single autograd boundary (fsla/interface.py)
     "fsla_op",
+    # the op's planner arguments: the validated context of a call, and the scratch it needs (fsla/ops/descriptor.py)
+    "Descriptor",
+    "descriptor",
+    "workspace_bytes",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Masks",

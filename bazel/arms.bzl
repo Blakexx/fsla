@@ -24,7 +24,7 @@ parameters, its gates and its arm flags are made for each of them, and a family 
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
-load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration")
+load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration", "kernel_pattern")
 
 #: THE FAMILIES A BUILD SHIPS, each `arm_family`'d in `csrc/fsla/BUILD.bazel` with its declaration beside its kernel
 #: (`csrc/fsla/src/<family>/arms.bzl`): the build rules read this list and no other
@@ -105,15 +105,34 @@ def arm_declaration(rule, allow, reason, where = {}, arch = None):
     declaration("^", rule, allow, reason, arch)
     return struct(rule = rule, allow = allow, reason = reason, where = where, arch = arch)
 
+def _chosen(tokens, flag):
+    """THE GRAMMAR of a build's `--//:<family>_arms`, parsed once (the emitter and the arm set take its result): `all` (also an empty flag)
+    or the sorted indices it names. Whether an index is in range is checked where the row count is known."""
+    if not tokens:
+        return "all"
+    want = []
+    for token in tokens:
+        if token == "all":
+            return "all"
+        if not token.isdigit():
+            fail("%s: %r is not an arm index or 'all'" % (flag, token))
+        want.append(int(token))
+    return sorted({i: True for i in want}.keys())
+
+def _selected(tokens, flag):
+    """The emitter's `--selected`: `all` or the comma-separated indices."""
+    chosen = _chosen(tokens, flag)
+    return chosen if chosen == "all" else ",".join([str(i) for i in chosen])
+
 def _arm_declarations_impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".json")
-    args = ["--flag=" + ",".join(ctx.attr.flag[BuildSettingInfo].value), "--kernel", ctx.attr.kernel,
+    args = ["--selected=" + _selected(ctx.attr.flag[BuildSettingInfo].value, "--//:%s_arms" % ctx.attr.family), "--kernel", ctx.attr.kernel,
             "--archs", ",".join(ctx.attr.archs_flag[BuildSettingInfo].value)]
     for d in ctx.attr.declarations:
         args += ["--declared", d]
     _emit(ctx, "declarations", ctx.file.rows, out, args, "Writing %s's arm declarations")
     return [
-        CudaUnitInfo(units = depset(), declarations = depset(), arms = depset(), declaration_files = depset([out])),
+        CudaUnitInfo(units = depset(), declarations = depset(), declaration_files = depset([out])),
         CcInfo(),
     ]
 
@@ -122,7 +141,7 @@ arm_declarations = rule(
     attrs = _EMIT_ATTRS | {
         "family": attr.string(mandatory = True),
         "rows": attr.label(mandatory = True, allow_single_file = True, doc = "the family's rows file"),
-        "kernel": attr.string(mandatory = True, doc = "the arm's kernel name with `@field@` for its template arguments (`bazel/arm_emit.py`'s `kernel_pattern`)"),
+        "kernel": attr.string(mandatory = True, doc = "the arm's kernel pattern (`cuda.bzl`'s `kernel_pattern`), `@field@` standing for a template argument the emitter fills"),
         "declarations": attr.string_list(doc = "the family's declarations (`arm_declaration`), each as JSON"),
         "flag": attr.label(mandatory = True, providers = [BuildSettingInfo]),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
@@ -132,25 +151,10 @@ arm_declarations = rule(
           "architecture it carries, and the family's declarations on the arms they select. The SASS gate merges the file into what it reads.",
 )
 
-def _chosen(tokens, rows, flag):
-    """The arm indices a build's `--//:<family>_arms` names: indices or `all`, empty for every arm, an index out of range
-    refused."""
-    if not tokens:
-        return list(range(rows))
-    want = []
-    for token in tokens:
-        if token == "all":
-            want += range(rows)
-        elif not token.isdigit() or int(token) >= rows:
-            fail("%s: %r is not an arm index or 'all'; the list has %d rows (0..%d)" % (flag, token, rows, rows - 1))
-        else:
-            want.append(int(token))
-    return sorted({i: True for i in want}.keys())
-
 def _selection_impl(ctx):
     header = ctx.actions.declare_file("%s/%s_selection.inc" % (ctx.attr.dir, ctx.attr.family))
     if ctx.attr.flag:
-        args = ["--flag=" + ",".join(ctx.attr.flag[BuildSettingInfo].value)]
+        args = ["--selected=" + _selected(ctx.attr.flag[BuildSettingInfo].value, "--//:%s_arms" % ctx.attr.family)]
     else:
         args = ["--selected=" + ",".join(ctx.attr.selected)]
     _emit(ctx, "selection", ctx.file.rows, header, ["--includer", ctx.attr.includer] + args, "Writing %s's arm selection")
@@ -185,7 +189,12 @@ arm_table = rule(
 
 def _arm_set_impl(ctx):
     rows = ctx.attr.rows
-    want = _chosen(ctx.attr.flag[BuildSettingInfo].value, rows, "--//:%s_arms" % ctx.attr.family)
+    flag = "--//:%s_arms" % ctx.attr.family
+    want = _chosen(ctx.attr.flag[BuildSettingInfo].value, flag)
+    want = list(range(rows)) if want == "all" else want
+    for i in want:
+        if i >= rows:
+            fail("%s: %d is not an arm index; the list has %d rows (0..%d)" % (flag, i, rows, rows - 1))
     archs = ctx.attr.archs_flag[BuildSettingInfo].value
     chosen = []
     for unit, where in ctx.attr.units.items():
@@ -195,7 +204,7 @@ def _arm_set_impl(ctx):
     return [
         DefaultInfo(files = depset(transitive = [unit[DefaultInfo].files for unit in chosen])),
         cc_common.merge_cc_infos(cc_infos = [unit[CcInfo] for unit in chosen]),
-        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen]), declarations = depset(), arms = depset(), declaration_files = depset()),
+        CudaUnitInfo(units = depset(transitive = [unit[CudaUnitInfo].units for unit in chosen]), declarations = depset(), declaration_files = depset()),
     ]
 
 _arm_set = rule(
@@ -238,7 +247,7 @@ def arm_family(name, key, flag, includer, built_archs, arms = None, domains = No
       unit: None, or a dict(arm_header, define, copts, host_cc, deps): the header that defines the arm macro, the macro
         (`<NAME>_ARM_DEFINE`) and the CUDA rule's options and dependencies.
       kernel: None, or the arm's kernel name up to its parameter list, as the toolkit demangles it, with `@<field>@` for a template argument
-        and `@cc@` for the architecture (`bazel/arm_emit.py`'s `kernel_pattern`): `<name>_declarations` then holds each arm's exact pattern, which the SASS gate
+        and `@cc@` for the architecture (`bazel/cuda.bzl`'s `kernel_pattern`): `<name>_declarations` then holds each arm's exact pattern, which the SASS gate
         holds the binary to (every arm carried once), and the `declarations`.
       declarations: the family's declarations (`arm_declaration`), over the arms they select; they need `kernel`.
     """
@@ -269,7 +278,7 @@ def arm_family(name, key, flag, includer, built_archs, arms = None, domains = No
             name = name + "_declarations",
             family = name,
             rows = rows,
-            kernel = kernel,
+            kernel = kernel_pattern(kernel),
             declarations = [json.encode(d) for d in declarations],
             flag = flag,
         )

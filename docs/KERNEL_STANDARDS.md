@@ -163,10 +163,10 @@ TWO LEVELS, ONE HOME EACH (2026-11-07, the family foundation; constitution R8). 
 one name, its body selected per family where it is defined, in `common/atoms/`. A STRUCTURE difference is a schedule in
 `<kernel>/<family>/`, which holds only what differs in structure -- anything differing by an instruction alone moves to
 an atom. A kernel's semantics live in `<kernel>/`, shared by its schedules. THE SELECTION is one layer every kernel
-plugs into: the cards are data (hardware.json's arch and product rows, generated), a kernel's sizes come from its plan
+plugs into: the cards are data (hardware.json's arch rows, generated; the contract of `hardware/` admits a device), a kernel's sizes come from its plan
 alone (`Plan<build, arm>`: the card's build traits and the declaration's arm), and one host call selects the card and
-the arm, refusing by name an untabulated architecture, a build the binary does not carry and an unbuilt arm; a device
-with no product row runs its architecture's build. Products equal in their build traits share their kernels. THE
+the arm, refusing by name a device outside the contract, a build the binary does not carry and an unbuilt arm; a device
+runs its architecture's build. THE
 CAPABILITY ROWS hold only what is read -- the numeric facts plans and the admission read, the instruction flags atoms
 read; a fact nothing reads is not tabulated, and a family is declared on its row, never derived from flags. The design
 in one page: [`architecture/families.md`](architecture/families.md).

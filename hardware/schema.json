@@ -5,6 +5,7 @@
     {"name": "smem_per_sm", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerMultiprocessor"},
     {"name": "smem_per_cta_optin", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerBlockOptin: the opt-in dynamic maximum of one CTA"},
     {"name": "max_threads_per_sm", "type": "int", "unit": "threads", "read": "DEVICE", "doc": "resident threads one SM holds"},
+    {"name": "sm_count", "type": "int", "unit": "multiprocessors", "read": "DEVICE", "doc": "prop.multiProcessorCount: the streaming multiprocessors of the device (a slice reports its own)"},
     {"name": "tensor", "type": "set<enum>", "unit": "MMA instruction kinds", "read": "DEVICE",
      "members": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"], "doc": "the tensor-core instruction kinds the device issues"},
     {"name": "instructions", "type": "set<enum>", "unit": "instruction capabilities", "read": "DEVICE",

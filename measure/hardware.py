@@ -183,16 +183,15 @@ def builds_header(archs: list[str]) -> str:
             f"#define FSLA_BUILDS(F) {cases}\n")
 
 
-def variant_of(product: str, cfg: dict | None = None) -> int:
+def variant_of(product: str, cfg: dict) -> int:
     """The build variant a product runs: the one whose traits are its architecture's under its own overrides."""
-    cfg = cfg or load()
     row = cfg["product"][product]
     traits = {"window": 0, **cfg["arch"][row["arch"]]["build"], **row.get("build", {})}
     return next(v for a, v, t in builds(cfg) if a == row["arch"] and t == traits)
 
 
 def _build_lines(cfg: dict) -> list[str]:
-    """The families, the build key, each build's traits and the product table, as `hardware.cuh` carries them."""
+    """The families, the build key, each build's traits, as `hardware.cuh` carries them."""
     out = ["//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families",
            "enum class Family : int { " + ", ".join(_camel(f) for f in FAMILIES) + " };", "",
            "//: A BUILD: the key a kernel compiles at, its compute capability and variant. see docs/internals/common/hardware.md#builds",
@@ -208,13 +207,8 @@ def _build_lines(cfg: dict) -> list[str]:
     out += ["  return Traits{};", "}", "",
             "//: A BUILD AS A TYPE, the form a kernel takes it in: docs/internals/common/hardware.md#build-tag",
             "template <Build B>", "struct BuildTag {", "  static constexpr Build build = B;",
-            "  static constexpr Traits traits = traits_of(B);", "};", "",
-            "//: THE PRODUCTS: a device's product by its name's slug, and the build variant it runs. see docs/internals/common/hardware.md#products",
-            "struct ProductRow {", "  int cc;", "  const char* slug;", "  int variant;", "};", "",
-            "inline constexpr ProductRow kProducts[] = {"]
-    for slug in sorted(cfg["product"]):
-        out.append(f'  {{{cc_of(cfg["product"][slug]["arch"])}, "{slug}", {variant_of(slug, cfg)}}},')
-    return out + ["};", ""]
+            "  static constexpr Traits traits = traits_of(B);", "};", ""]
+    return out
 
 
 @dataclass(frozen=True)

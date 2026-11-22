@@ -85,11 +85,14 @@ def test_a_dropped_sequence_drops_its_scratch():
 #: below. A node arriving with no bag fails there BY NAME, which is what makes the
 #: discipline a gate rather than a habit.
 def _decode_scratch_facts():
-    from fsla.ops.produce import decode_plan
-    from tests.oracle.oracle_fixtures import _topology
+    from fsla.engine.plan import DecodePlan
+    from fsla.ops.constants import READOUT_EPS
+    from fsla.ops.lattice import derive_lattice
 
-    return {"plan": decode_plan(_topology((16, 16)), d_v=64, decay=False),
-            "BH": 2, "device": "cpu"}
+    k, m = derive_lattice((16, 16))
+    plan = DecodePlan(D=2, widths=(16, 16), level_row_offset=(0, 16), lattice_k=k, lattice_m=m, d_v=64, has_decay=False,
+                      eps=READOUT_EPS, ctas=None, write_dense=True)
+    return {"plan": plan, "BH": 2, "device": "cpu"}
 
 
 PER_STATE_FACTS = {"scratch": _decode_scratch_facts}

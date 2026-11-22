@@ -51,3 +51,22 @@ genrule(
         "@fsla_env//:python",
     ],
 )
+
+genrule(
+    name = "contract_header",
+    srcs = [":registry"],
+    outs = ["plan/contract.h"],
+    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --contract-header $@",
+    tools = [
+        "emit.py",
+        "@fsla_env//:python",
+    ],
+)
+
+#: `plan/contract.h`, the contract as a table the run time holds: `contract()`, a context each
+cc_library(
+    name = "contract",
+    hdrs = [":contract_header"],
+    includes = ["."],
+    deps = [":facts"],
+)

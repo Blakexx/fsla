@@ -1,9 +1,9 @@
 {
   "name": "calls/decode",
-  "doc": "the decode call's contract: every (d_v, levels, decay) FSLA accepts. A list is alternatives, each its own context.",
+  "doc": "the decode call's contract: every (d_v, levels, decay) FSLA accepts. A list is alternatives, each its own context; a range is one context. d_v is a range because the seam pads any value width up to the arm that serves it (decode's launch function maps d_v into the arm's, common/plan/decode_launch.h).",
   "facts": {
-    "d_v": {"value": [32, 64], "declared_by": "docs/internals/decode/decode.md#decode-arm-0: the decode family's declared d_v domain"},
-    "levels": {"value": [1, 2, 3, 4], "declared_by": "docs/internals/decode/decode.md#decode-arm-0: the decode family's declared levels domain"},
-    "decay": {"value": [0, 1], "declared_by": "docs/internals/decode/decode.md#decode-arm-0: the decode family's declared decay domain"}
+    "d_v": {"value": {"lo": 2, "hi": 64}, "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"},
+    "levels": {"value": [1, 2, 3, 4], "declared_by": "docs/internals/decode/decode.md#kmaxlevels-2: kMaxLevels, the hierarchy depths the step's per-level arrays hold"},
+    "decay": {"value": [0, 1], "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"}
   }
 }

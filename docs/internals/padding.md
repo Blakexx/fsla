@@ -52,8 +52,8 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   >= 16, the register-shape floor), and `v` to the smallest shipped value width that
   admits it.
 * **decode** (`fsla.ops.decode.derive_decode_plan`, `_decode_step`) pads ONLY
-  `d_v` -> the smallest `DV` its own shipped arm table
-  (`fsla.ops.decode.arms`, keyed `(DV, D, decay)`) carries at that `(D, decay)`. Its
+  `d_v` -> the `DV` of the arm the planner's launch function
+  (`fsla.ops.decode.decode_launch`, [`common/plan/decode_launch.md`](common/plan/decode_launch.md)) maps it to: the narrowest arm that holds it. Its
   per-level widths carry NO floor of their own -- `derive_lattice`/`box_shape`
   degenerate to `k = m = 1` for an unfactorable width rather than refusing, and the
   existing `D = 4, B = 8` conformance cell (`tests/oracle/test_decode_vs_oracle.py`)
@@ -67,10 +67,9 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 
 ## Where the shipped sets come from
 
-Decode's shipped value widths are read off `fsla.ops.decode.arms()` at call time -- the
-binary's own declared arm set -- never a literal tuple, because a literal would drift the
-moment the binary's arm table changed and a call would silently pad to a width the loaded
-`.so` does not carry. The intra reads one value width, `fsla.ops.intra.VALUE_WIDTH`.
+Decode's value widths are the launch function's: it maps a call's `d_v` into the arm that holds it (`fsla.ops.decode.decode_launch`), and the
+contract bounds it (`hardware/parts/calls/decode.json`), so no literal tuple here can drift from what the binary carries. The intra reads one
+value width, `fsla.ops.intra.VALUE_WIDTH`.
 
 The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as
 runtime addressing over the carve's channel extent

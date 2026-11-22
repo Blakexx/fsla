@@ -144,7 +144,7 @@ guarantees an arm for) and the architectures the build produces; the gate fails 
 <!-- BEGIN GENERATED: tools/supported.py -->
 | Compute capability | GPUs | d_v | levels | decay | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 32, 64 | 1, 2, 3, 4 | 0, 1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..64 | 1, 2, 3, 4 | 0, 1 | `cu13` | ptxas 13.5.37 | built |
 <!-- END GENERATED: tools/supported.py -->
 
 An architecture that is not built refuses to load. Bringing one up is a measurement:

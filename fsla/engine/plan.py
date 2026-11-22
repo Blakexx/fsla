@@ -155,9 +155,11 @@ class DecodeWorkspace:
 
 @dataclass(frozen=True, slots=True)
 class DecodeLaunch:
-    """Everything one decode launch reads, in three named parts: the static ``plan``, the ``operands`` and the
+    """Everything one decode launch reads, in four named parts: the static ``plan``, the ``descriptor``, the ``operands`` and the
     ``workspace``. NO FIELD IS DERIVED AT THE LAUNCH SITE."""
 
     plan: DecodePlan
+    #: the validated context the planner's launch function reads (:class:`fsla.ops.descriptor.Descriptor`)
+    descriptor: object
     operands: DecodeOperands
     workspace: DecodeWorkspace

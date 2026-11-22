@@ -15,8 +15,8 @@ name, an unknown type or read, no unit, or a set without members. `emit.py` writ
 per fact (an `Interval`, an `EnumSet`), so the arm half of a launch function is written over the same names the registry states
 ([`../common/plan/rules.md`](../common/plan/rules.md)).
 
-`sm_count` and `l2_bytes` are not facts yet: no probe has measured either, and a context states a value for every fact. They enter with
-the device probe on the H100.
+`sm_count` is a DEVICE fact of the Hopper context as a range (114 to 132, the H100 PCIe and SXM parts' counts); `l2_bytes` is not a fact yet: no probe
+has measured it, and a context states a value for every fact.
 
 <a id="parts"></a>
 
@@ -31,9 +31,9 @@ covers (`gpus`, the README's label). `registry.contexts()` expands every descrip
 parts, a fact the schema does not name, a schema fact no part states: refused), the alternatives crossed. A matcher and the run time see
 contexts only. Two contexts identical in every fact are refused, whatever descriptors made them.
 
-The hopper device part holds the hardware table's sm_90a values for the facts the schema names, and
-`tests/unit/test_hardware_registry.py` holds them equal: the table is still what `hardware.cuh` is generated from (the run-time card's
-admission reads the driver against it) until the run-time planner replaces that read.
+The hopper device part holds the hardware table's sm_90a values for the facts the table names, and
+`tests/unit/test_hardware_registry.py` holds them equal: the table is what `hardware.cuh` is generated from, the contract is what a device is
+admitted against (`common/plan/environment.cu`).
 
 MIG and MPS register no context: neither is documented to report a slice's own SM count, L2 share or shared memory, so a context for them waits
 for a measurement on a real slice and until then the run time refuses them.
@@ -46,5 +46,5 @@ for a measurement on a real slice and until then the run time refuses them.
 |---|---|
 | `//hardware:facts` | the schema: `plan/facts.h` |
 | `//hardware:contexts` | the contract, a line a context (`registry.contexts_text`): `arms_gen`'s input |
+| `//hardware:contract` | the contract as a table the run time holds: `plan/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
 | `tools/supported.py` | the contract: the README's support table |
-| `tools/lint/lint_standards.py`'s `check_arch_coverage` | the contract's architectures: each must be built |

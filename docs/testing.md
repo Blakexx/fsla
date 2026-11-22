@@ -197,11 +197,6 @@ names none, a scope names indices or `all` and refuses the rest, and every arm h
 defining its own kernel and no other. The library's record action and arm gate run the same helpers on every build
 (`bazel/arms.py`), and `tests/unit/test_arm_switch.py` runs the host dispatch against a synthetic selection header.
 
-**`check_arch_coverage`** is the same claim across ARCHITECTURES, the failure no single-card battery can see:
-every architecture the contract (`hardware/`) holds is built and has its row in the table `tools/supported.py` prints from it;
-a tabulated architecture the contract does not hold is outside what FSLA accepts and refuses at run time. The registry and the
-hardware table only, no device.
-
 **`tests/unit/test_closed_world_arch_gate.py`** holds the RUNTIME refusal: closed-world rule R4 forbids a launch on a
 device whose arch was never measured, as a pair of clauses — `static_assert(tabulated(kArch))` in
 `csrc/fsla/src/common/arch_caps.cuh` and `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`) as the first
