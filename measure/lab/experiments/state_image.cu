@@ -165,6 +165,9 @@ int main(int argc, char** argv) {
     const std::string k = lab::kernel("image", {form});
     b.expect(k, "HGMMA", form & kRead ? ">=" : "==", form & kRead ? 1 : 0);
     b.expect(k, "SHFL", "==", form & kPairs ? 64 : 0);
+    //: the readout's 16 steps are one rolled loop by design (their two descriptors the only registers beside the state's
+    //: 128) with the group's one wait after it: one rolled step, predates the rule
+    if (form & kRead) b.expect(k, "STEP_ROLLED", "<=", 1);
     b.exempt(k, "an image probe: the state's stores beside the readout's steps, no kernel's step");
   }
   if (b.expect_only) return 0;

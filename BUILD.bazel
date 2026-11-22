@@ -529,12 +529,13 @@ test_suite(
     ],
 )
 
-#: THE GATE: every check the graph holds (docs/build-graph.md#checks)
+#: THE GATE: every check the graph holds, the lab's experiments' checked build among them (docs/build-graph.md#checks)
 test_suite(
     name = "gate",
     tests = [
         ":commit_checks",
         ":lints",
+        "//measure/lab:checked",
         "//tests:lab",
         "//tools/lint:lint_fixtures",
     ],

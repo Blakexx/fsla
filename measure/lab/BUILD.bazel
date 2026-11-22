@@ -3,7 +3,7 @@ read by the graph's disassemblers, checked by the lab's checks as the target's v
 `bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR`, which builds it with its checks and copies its outputs."""
 
 load("//bazel:defs.bzl", "include_root", "tree_part")
-load("//bazel:lab.bzl", "lab_experiment")
+load("//bazel:lab.bzl", "lab_checked_test", "lab_experiment")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -27,3 +27,10 @@ _INCLUDES = {
     src = src,
     includes = _INCLUDES.get(src[len("experiments/"):-len(".cu")], []),
 ) for src in glob(["experiments/*.cu"])]
+
+#: THE GATE'S LAB BUILD (`//:gate`): every experiment's checked build -- its compile, its facts and its LabCheck -- so a commit that
+#: breaks one is refused; a cached build costs nothing, a cold one the experiments' compiles (docs/build-graph.md#checks)
+lab_checked_test(
+    name = "checked",
+    experiments = [":" + src[len("experiments/"):-len(".cu")] for src in glob(["experiments/*.cu"])],
+)

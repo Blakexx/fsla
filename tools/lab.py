@@ -174,6 +174,7 @@ HAZARD_RULES = {
     "STEP_ROLLED": "step_rolled", "STEP_PORT": "step_port", "STEP_WORK": "step_work",
     "STEP_SERIALIZED": "step_serialized", "ACCUMULATOR_MOVED": "accumulator_moved", "WAIT_ALL_WITH_WORK": "wait_all_with_work",
     "STEPS_SERIALIZED": "mma_serialized", "WAIT_INJECTED": "wait_injected",
+    "REGISTER_SPILL": "register_spill", "LOCAL_MEMORY_USED": "local_memory_used",
     "BANK_CONFLICT": "shared_wavefronts_excess",
 }
 #: the hazards an experiment may declare a count of, beside its opcodes
@@ -183,6 +184,8 @@ HAZARD_STATES = {
     "STEPS_SERIALIZED": "the toolkit serialized its asynchronous MMAs, each step waiting out the one before",
     "WAIT_INJECTED": "the toolkit injected a `warpgroup.wait` into the step stream, to let code read registers a tensor step defines",
 }
+#: the hazards that are counts of the toolkit's notices which the refusal prints in the notice's own words (the function, the bytes)
+NOTICE_HAZARDS = ("REGISTER_SPILL", "LOCAL_MEMORY_USED")
 #: an expectation that is a permit, no count: the opcode an experiment means to keep (`BSSY`, `CALL...`) or the form it means
 #: (`STEP_XU`, `STEP_GLOBAL`) allows the rule it names any number of findings in the kernels it matches
 PRESENCE_RULES = {"STEP_XU": "step_conversion", "STEP_GLOBAL": "step_global", "BSSY": "step_branches"}
@@ -327,8 +330,9 @@ def guidance() -> dict[str, str]:
 
 def is_notice_rule(rule: str) -> bool:
     """A rule the project's ledger counts notices under and the lab renders as the notice's own words: not a hazard an experiment declares a
-    count of (`HAZARD_STATES`)."""
-    return rule in checked.checker().ledgers.row_rules(checked.project_ledger()) and rule not in _RULE_HAZARDS
+    count of (`HAZARD_STATES`; the `NOTICE_HAZARDS` are counts and are rendered so)."""
+    return rule in checked.checker().ledgers.row_rules(checked.project_ledger()) and (
+        rule not in _RULE_HAZARDS or _RULE_HAZARDS[rule] in NOTICE_HAZARDS)
 
 
 def render_refusal(r, experiment: str = "the build") -> list[str]:

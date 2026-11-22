@@ -147,3 +147,33 @@ def lab_experiment(name, src, includes = []):
         unit = ":%s_unit" % name,
         source = src,
     )
+
+_CHECKED_TEST = """\
+#!/bin/sh
+# the lab's checks passed to build these verdicts (a check that refuses fails its action, so a verdict exists only for an experiment that passed): each is there and says so
+status=0
+for verdict in {verdicts}; do
+  if ! test -s "$TEST_SRCDIR/_main/$verdict"; then
+    echo "no verdict: $verdict" >&2
+    status=1
+  fi
+done
+exit $status
+"""
+
+def _lab_checked_test_impl(ctx):
+    verdicts = []
+    for experiment in ctx.attr.experiments:
+        files = experiment[OutputGroupInfo]._validation.to_list()
+        verdicts.extend(files)
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, _CHECKED_TEST.format(verdicts = " ".join(["'%s'" % v.short_path for v in verdicts])), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = verdicts))]
+
+lab_checked_test = rule(
+    implementation = _lab_checked_test_impl,
+    test = True,
+    attrs = {"experiments": attr.label_list(mandatory = True, providers = [OutputGroupInfo], doc = "the lab's experiments (`lab_experiment`), each whose verdict (its LabCheck action's output) the test depends on")},
+    doc = "The gate's lab build: depends on every experiment's verdict, so each experiment is compiled and read by the graph's disassemblers " +
+          "and refused by the lab's checks in the commit that breaks it (the lab build is cached; `bazel build //measure/lab/...` runs the same).",
+)

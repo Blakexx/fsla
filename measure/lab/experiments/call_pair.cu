@@ -31,9 +31,22 @@ int main(int argc, char** argv) {
   using namespace call_pair;
   lab::Bench b(argc, argv);
   if (b.expect_only) {
-    //: the kernels this binary holds are the two labs': each states its own expectations
+    //: the kernels this binary holds are the two labs': each states its own expectations, and this binary's compile adds
+    //: findings of its own, each declared below with its count
     carry_window_main(argc, argv);
-    return intra_window_main(argc, argv);
+    const int intra_status = intra_window_main(argc, argv);
+    //: the intra's window kernels wait on their group straight after its steps, twice a kernel: the intra lab's debt
+    //: (`_PRE_WAIT`), whose rule this experiment's rows are held to; predates the rule
+    b.expect("intra_window::window", "WAIT_AFTER_ISSUE", "<=", 2);
+    for (long long roles : {70756767629603LL, 289356664086200611LL}) {
+      const std::string k = lab::kernel("carry_window::window", {roles});
+      //: two of the carry lab's rows (not the carry this experiment launches) spill 8 to 12 bytes at their 128 registers in
+      //: this binary, which holds the intra's kernels beside the carry lab's; the carry lab's own binary spills none of them
+      b.expect(k, "REGISTER_SPILL", "<=", 1);
+      //: the same two rows keep an 8-byte stack frame for those spills
+      b.expect(k, "LOCAL_MEMORY_USED", "<=", 1);
+    }
+    return intra_status;
   }
   if (b.sms < kCarryCtas) {
     std::fprintf(stderr, "call_pair: the cell is %d carry CTAs; this card has %d multiprocessors\n", kCarryCtas, b.sms);
@@ -55,7 +68,7 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaStreamCreate(&second));
   const auto launch_carry = [&](cudaStream_t s) {
     carry_kernel<<<kCarryCtas, carry_window::threads_of<kCarry>, carry_window::kSmemBytes, s>>>(
-        b.times, carry.waits, b.sinks, carry.values, carry.dense, carry.state, carry.out, kCalls * kCallWindows);
+        b.times, carry.waits, b.sinks, carry.values, carry.dense, carry.state, carry.out, nullptr, kCalls * kCallWindows);
   };
   const auto launch_intra = [&](cudaStream_t s) {
     intra_kernel<<<intra_ctas, intra_window::kThreads, intra_window::kSmemBytes, s>>>(

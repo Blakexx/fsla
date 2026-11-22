@@ -126,7 +126,7 @@ runs the rules and shows each refusal under the hazard's name the experiment dec
 | `ACCUMULATOR_MOVED` | `accumulator_moved` | an instruction that is no step, writes a register of a step's destination and reads one, between two steps of a chain or a step and its wait (a copy or an update of an accumulator) |
 | `WAIT_ALL_WITH_WORK` | `wait_all_with_work` | a `DEPBAR` 0 after which nothing up to the next step touches the newest group's registers while work of substance is on its path: a wait for fewer groups would let it overlap |
 | `STEP_PORT`, `STEP_WORK` | `step_port`, `step_work` | a BOUND, declared `<=`: the bytes a step puts through the shared-memory port, the instructions a thread issues a step |
-| `STEPS_SERIALIZED`, `WAIT_INJECTED` | `mma_serialized`, `wait_injected` | the toolkit's notices ([below](#ledger)) |
+| `STEPS_SERIALIZED`, `WAIT_INJECTED`, `REGISTER_SPILL`, `LOCAL_MEMORY_USED` | `mma_serialized`, `wait_injected`, `register_spill`, `local_memory_used` | the toolkit's notices ([below](#ledger)): the count a kernel may have, declared with its reason (the spill and the stack frame an experiment's compile leaves in a kernel it means) |
 | `BANK_CONFLICT` | `shared_wavefronts_excess` | a PROFILE rule, run by `ledger` on the dumps, not by `check`: the shared-memory wavefronts over the conflict-free count, by instruction, declared a CTA-window of the profiled launch (`--per`), never a launch's total |
 | `BSSY`, `STEP_XU`, `STEP_GLOBAL`, a `CALL` opcode | `step_branches`, `step_conversion`, `step_global`, `convergence_call` | always checked in every kernel; an expectation of one of these names is a PERMIT (any number in the kernels it matches), not a count |
 

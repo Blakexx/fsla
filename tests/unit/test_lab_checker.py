@@ -49,7 +49,7 @@ def test_a_reason_is_read_where_the_declaration_is_one_line_with_a_condition():
 
 def test_every_hazard_has_a_rule_and_a_refusal_text_and_the_notice_ones_a_statement():
     for hazard, rule in lab.HAZARD_RULES.items():
-        assert rule in lab.REFUSAL_TEXT or hazard in lab.HAZARD_STATES, hazard
+        assert rule in lab.REFUSAL_TEXT or hazard in lab.HAZARD_STATES or hazard in lab.NOTICE_HAZARDS, hazard
     for rule in lab.PRESENCE_RULES.values():
         assert rule in lab.REFUSAL_TEXT
     assert "convergence_call" in lab.REFUSAL_TEXT

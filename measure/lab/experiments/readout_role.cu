@@ -188,6 +188,9 @@ int main(int argc, char** argv) {
     b.exempt(k, "a role probe: the readout's steps beside its panel and drain, no kernel's step");
     //: once a chunk: a role's `__syncwarp` before its one-lane arrival is a convergence call
     b.expect(k, "LOOP_CONVERGENCE", "<=", 8);
+    //: the readout's one-lane arrival follows its stores to the panel, which the drain warps' own loads read, not a step:
+    //: its arrival needs no fence (the one unfenced arrival predates the rule)
+    b.expect(k, "STORE_UNFENCED", "<=", 1);
     //: the chunk's loop holds its steps and its barriers' polled waits: the waits' branches are the step's
     b.expect(k, "BSSY", ">=", 0);
   }

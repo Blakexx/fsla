@@ -3,7 +3,7 @@
 // the block index or a kernel argument? METHOD: 8 shuffle chains in a runtime-trip loop with no branch (every warp
 // shuffles), under `if (threadIdx.x >> 5 >= 4)`, with the role taken by the trip count, under `if (blockIdx.x < n)` or
 // under `if (flag)` (`n`, `flag` arguments); the SASS expectations state the compiled form (inline SHFL, or a CALL into
-// a convergence subroutine), the timing a shuffle's cycles in each. see docs/internals/tools/lab.md#collective-branch
+// a convergence subroutine; on sm_90a an inline WARPSYNC.COLLECTIVE a shuffle), the timing a shuffle's cycles in each. see docs/internals/tools/lab.md#collective-branch
 #include "lab.cuh"
 
 namespace collective_branch {
@@ -45,7 +45,10 @@ void form(const lab::Bench& b) {
   const std::string name = lab::kernel("shuffles", {FORM});
   b.expect(name, "SHFL", ">=", 8);
   const bool role = FORM == 1 || FORM == 2;
-  b.expect(name, "CALL", role ? ">=" : "==", role ? 8 : 0);
+  //: sm_90a: no form calls a convergence subroutine (the sm_86 record's CALL is gone from this toolkit's Hopper code); the
+  //: forms under a role's branch hold one inline `WARPSYNC.COLLECTIVE` before each of the 8 shuffles, the others none
+  b.expect(name, "CALL", "==", 0);
+  b.expect(name, "WARPSYNC", "==", role ? 8 : 0);
   if (b.expect_only) return;
   //: one shuffling warp a scheduler in every form: the forms without a warp role launch the 4 shuffling warps alone
   const int warps = role ? 8 : 4, first = role ? 4 : 0;
