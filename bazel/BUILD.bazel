@@ -1,7 +1,7 @@
 """THE GRAPH'S OWN MACHINERY: the target platform, the environment's builder, the flag emitter, the header generator
 and the record writer, the CUDA runtime's headers, and the sources their actions read (docs/build-graph.md)."""
 
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load(":defs.bzl", "cuda_root", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
@@ -15,26 +15,24 @@ platform(
     ],
 )
 
-#: THE CUDA RUNTIME'S HEADERS, without its libraries: the units' runtime (the library links the runtime itself). The
-#: components rules_cuda's runtime target carries for CUDA 13 (its own `cuda_headers` names a component CUDA 13 lacks),
-#: and CCCL's libraries under `include/cccl`, the root an installed toolkit's nvcc.profile adds.
-cc_library(
+#: THE CUDA RUNTIME'S HEADERS, without its libraries: the units' runtime (the library links the runtime itself), the pinned
+#: toolkit's `include/` and CCCL's `include/cccl`, the roots an installed toolkit's nvcc.profile adds
+alias(
     name = "cuda_headers",
-    deps = [
-        "@cuda//:cccl_headers",
-        "@cuda//:crt_headers",
-        "@cuda//:cub",
-        "@cuda//:cudart_headers",
-        "@cuda//:libcudacxx",
-        "@cuda//:nvcc_headers",
-        "@cuda//:thrust",
-    ],
+    actual = "@cuda_tools//:cuda_headers",
+)
+
+#: the architectures the graph's CUDA units compile for, as the compile's specs (`compute_90a:sm_90a`, `;` between); the library's
+#: transition writes it from `--//:archs`, a unit's `archs` overrides it
+string_flag(
+    name = "cuda_archs",
+    build_setting_default = "",
 )
 
 #: the CUDA root clang's front end reads, for the unit lints and the editor
 cuda_root(
     name = "cuda_root",
-    cudart = "@cuda//:cudart_headers",
+    cudart = ":cuda_headers",
     curand = "@cuda_tools//:curand_headers",
 )
 

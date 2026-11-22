@@ -974,7 +974,7 @@ Every visit derives its head's tables itself before it walks
 - **Phase A -- every operand's load at once.** A value channel's digits and scale
   (the arithmetic deferred past the digit pass, so its load does not queue ahead of the
   digits'), the decay dials, and the digit pass: a warp a mask word, each lane loading its
-  digit and its row's scale together, staging `raw * scale / full_scale` and balloting the word
+  digit and its row's scale together, staging `raw * scale / full_scale` where the supplied mask's bit is on and storing the mask's word
   ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)).
 - **Phase B -- one warp a job.** Warp `l` the level's owner lists, warp `D + l` its write
   digit list ([`decode_lattice.md#build-lists`](decode_lattice.md#build-lists)), and at a

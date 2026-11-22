@@ -43,15 +43,15 @@ formulas. This doc is their authority; `decode.cuh` merely carries them.
 
 ---
 
-## <a id="the-digit-mask"></a>1. The digit masks — one bit per digit, balloted in the fold
+## <a id="the-digit-mask"></a>1. The digit masks — one bit per digit, the supplied mask's words
 
 A side's DIGIT MASK is `sum_l ceil(B_l/32)` words, one bit per digit of every
 level, packed level by level (`mask_off[l]` / `mask_words[l]` locate a level's
 slice, `mask_total` the whole plane). The fold's digit pass
 ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)) gives a warp one mask word:
-each lane loads its digit, and one `__ballot_sync` of the exact-nonzero test -- the one
-spec LATTICE-1 assumes throughout, never a threshold -- IS the word, stored by lane 0. No
-atomic, no second pass, no re-read of the staged amplitudes.
+the word is the decode plan's supplied mask (digit-packed, one load, its bits past the level's
+width dropped), stored by every lane. The op uses it blindly: no test of the rows, no atomic,
+no second pass.
 
 <a id="levelslice"></a>`level_slice` reads `count <= kDecodeMaxSpan` digits of one level as a single
 word through `extract_bits` (`decode.md#extract-bits` — the funnel shift is

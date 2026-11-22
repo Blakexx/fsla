@@ -89,8 +89,8 @@ is the whole closed-world point. Budget it as a measurement run, not as a config
 change.
 
 1. **Pin the toolkit**: `tools/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
-   components and the folder, and MODULE.bazel's `cuda.redist_json` names the same manifest
-   (`tests/unit/test_cuda_toolkit_pin.py` holds them together); the graph fetches it (`@cuda_tools`), and
+   components and the folder; the graph fetches it (`@cuda_tools`) and compiles with it, the one toolkit
+   (`tests/unit/test_cuda_toolkit_pin.py` holds the components the compile reads to the pin's), and
    `bazel run //:check` holds its nvcc to the pin. The archives place
    libraries in `lib/`, where `nvcc` and torch look in `lib64/`, so the pin's `links` add `lib64 -> lib`.
 2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the whole

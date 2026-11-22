@@ -1,4 +1,4 @@
-"""THE BUILD GRAPH'S MODULE: its rule sets and the hermetic CUDA toolkit it declares (docs/build-graph.md)."""
+"""THE BUILD GRAPH'S MODULE: its rule sets and the pinned CUDA toolkit it declares (docs/build-graph.md)."""
 
 module(name = "fsla")
 
@@ -7,7 +7,6 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_cc", version = "0.2.28")
 bazel_dep(name = "rules_python", version = "2.4.6")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "rules_cuda", version = "0.3.0")
 bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "rules_distroless", version = "0.9.4")
 bazel_dep(name = "tar.bzl", version = "0.7.0")
@@ -31,28 +30,6 @@ git_override(
     commit = "8cf2fca40c76c3a07ee481ccf5a218e224d79de4",
     remote = "https://github.com/Blakexx/warpline.git",
 )
-
-#: THE CUDA TOOLKIT, HERMETIC: NVIDIA's redistributable components at the toolchain pin's version
-#: (tools/toolchains/cu13.json: release 13.0, nvcc V13.0.48), fetched once into the repository cache.
-cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
-cuda.redist_json(
-    name = "cuda_13_0_0",
-    #: the compiler and what it reads, nothing more (rules_cuda's short names): NVIDIA's whole redistributable set is
-    #: 4.7 GB, these ~75 MB
-    components = [
-        "cccl",
-        "crt",
-        "cudart",
-        "culibos",
-        "nvcc",
-        "nvvm",
-    ],
-    #: redistrib_13.0.0.json's own digest: the component versions it names (nvcc 13.0.48, cuobjdump 13.0.39) are the pin
-    sha256 = "fe6a86b54450d03ae709123a52717870c49046d65d45303ce585c7aa8a83a217",
-    version = "13.0.0",
-)
-cuda.toolkit(name = "cuda")
-use_repo(cuda, "cuda")
 
 #: THE GRAPH'S ENVIRONMENT (fsla-devtools' environment extension, docs/build-graph.md#environment): the pinned uv; the
 #: Python environment built from requirements.lock into the shared store, fsla-devtools from its module's source, the

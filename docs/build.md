@@ -39,8 +39,8 @@ CPU-heavy command runs under the same pool with `python -m fsla_devtools.locks.h
 The library's record action and gates ([`build-graph.md`](build-graph.md#gates)) refuse a build that breaks a
 closed-world rule ([`ratification.md`](ratification.md#the-four-closed-world-rules)):
 
-1. **R2 — cubins only.** Each architecture is compiled `code=sm_XX` alone (the library's transition writes rules_cuda's
-   spec `compute_XX:sm_XX`), and the SASS gate refuses a library carrying a PTX image. A `code=compute_XX` entry would
+1. **R2 — cubins only.** Each architecture is compiled `code=sm_XX` alone (the library's transition writes the compile's
+   spec `compute_XX:sm_XX`, `//bazel:cuda_archs`), and the SASS gate refuses a library carrying a PTX image. A `code=compute_XX` entry would
    embed PTX and let the driver just-in-time compile for an architecture whose register and spill behaviour was never
    measured.
 2. **R3 — built archs.** Every arch being built must be a built one: its row in `common/hardware.json` chooses a window

@@ -58,7 +58,7 @@ cc_binary(
     name = "derivation_harness",
     deps = [
         ":derivation_unit",
-        "@cuda//:cuda_runtime_static",
+        "@cuda_tools//:cuda_runtime_static",
     ],
 )
 

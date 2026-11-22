@@ -138,7 +138,7 @@ def lab_experiment(name, src, includes = []):
         name = "%s.%s" % (name, _ARCH),
         deps = [
             ":%s_unit" % name,
-            "@cuda//:cuda_runtime_static",
+            "@cuda_tools//:cuda_runtime_static",
         ],
     )
     _lab_experiment(

@@ -5,7 +5,7 @@
 with the environment's own interpreter from `tools/build_flags.py` -- the one source of the flag list -- so the graph
 states no flag of its own.
 
-`NVCC_FLAGS` are the codegen flags without the `-gencode` targets, which rules_cuda writes from the build's
+`NVCC_FLAGS` are the codegen flags without the `-gencode` targets, which the compile rule writes from the build's
 architectures; `BUILT_ARCHS` are the hardware table's built architectures (`measure.hardware.built`), the build's
 default; `TORCH` and `CXX11_ABI` are the environment's torch, for the build record. Docs: docs/build-graph.md#compile.
 """

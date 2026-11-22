@@ -22,11 +22,10 @@ semaphores, which Bazel cannot do for an action.
 | the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the devbox image (`//:image`, docs/setup.md#the-devbox-image) | the image |
 | bazelisk, Bazel's launcher | `tools/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
-| the graph's CUDA toolkit | NVIDIA's redistributable components at release 13.0.0 (`MODULE.bazel`'s `cuda.redist_json`: nvcc 13.0.48), only the compiler's (~75 MB of the 4.7 GB set) | the shared repository cache, unpacked once in Bazel's repo contents cache and linked from every checkout |
 | the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (fsla-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and fsla-devtools from its module's source, by fsla-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@fsla_env`; `fsla_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, fsla-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@fsla_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment; the store is bounded by `host.store_max_gb` and `host.store_max_age_days`: each environment build sweeps the idle or oversized environments and wheels, and a swept environment is rebuilt, never read wrong |
 | the linker | mold at `tools/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at `tools/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
-| the pinned toolkit | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the compiler's, held equal by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree (`@cuda_tools`, the toolkit every tool outside the graph's rules reads too, through `dev_config.cuda_home()`): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`FSLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
+| the pinned toolkit, the one CUDA toolkit (the graph's compile takes nvcc, its headers and the runtime from it) | `tools/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest (the components the compile reads, held to the pin by `tests/unit/test_cuda_toolkit_pin.py`), every component it names by the manifest's digest, unpacked into one tree (`@cuda_tools`, the toolkit every tool outside the graph's rules reads too, through `dev_config.cuda_home()`): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`FSLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
 | the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
@@ -85,11 +84,10 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   indices; empty is every arm). Any value but a default makes an iteration build, which its record says.
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@fsla_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
-  none of its own. rules_cuda's own additions are off on every unit (its extended lambdas, compilation-mode flags,
-  random seed and host toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`,
-  `-ccbin` and the include roots.
+  none of its own. the compile adds nothing of its own (no extended lambdas, compilation-mode flags, random seed or host
+  toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`, `-ccbin` and the include roots.
 - EACH UNIT IS ONE ACTION OF THE GRAPH'S OWN RULE (`bazel/cuda.bzl`'s `cuda_unit`, which runs
-  `bazel/cuda_compile.py`): rules_cuda's toolchain, flags and command line, as its `cuda_library` builds them, one
+  `bazel/cuda_compile.py`): nvcc is the pinned toolkit's (`@cuda_tools`, the one CUDA toolkit: no second declaration), its command line written by the rule, one
   position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
   header the unit did not read becomes the action's `unused_inputs_list`, so the unit's cache key holds what it read:
   a header edit recompiles the units that include it and no other. The file
@@ -98,7 +96,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
   diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console
   shows them without the report's lines.
-- ONE ARCHITECTURE SPEC A CARD: the library's transition writes `--@rules_cuda//cuda:archs` as
+- ONE ARCHITECTURE SPEC A CARD: the library's transition writes `//bazel:cuda_archs` as
   `compute_90a:sm_90a`, one spec an architecture; a comma list is one spec, which compiles every card from the
   lowest virtual architecture.
 - THE INCLUDE ORDER IS SETUP.PY'S: the repository's headers, then CUTLASS's, then the generated headers (and the stamp,
@@ -131,7 +129,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
-  `//bazel:cuda_headers` -- rules_cuda 0.3.0's own `@cuda//:cuda_headers` names a component CUDA 13 lacks).
+  `//bazel:cuda_headers`, the pinned toolkit's `include/` and `include/cccl`).
 - AN INSTRUMENT'S LIBRARY (`bazel/defs.bzl`'s `fsla_instrument`): a measurement's own kernels as
   `.bazel/bin/fsla_cu13/<module>.abi3.so` beside the extension, linked as it is and SASS-gated as it is (`--probes`: it owes
   none of the source's kernels, and its probes keep only the signatures their units' declarations name,
@@ -300,9 +298,8 @@ names one).
     environment's packages from the store, which the sandbox does not hold (the store path on its command line carries
     the environment's key); the checks of the commit, whose input is the checkout itself (rule 15); and the test
     tiers, which take the machine's locks in `/tmp`, a sandbox's own.
-11. CUDA THROUGH RULES_CUDA'S OWN SETTINGS: the architectures through `--@rules_cuda//cuda:archs`, one spec a card
-    (cubins only, no PTX); a host compile flag reaches nvcc's host pass only through rules_cuda's host options; an external repository's
-    headers through the target's include options.
+11. CUDA THROUGH THE RULE'S OWN SETTINGS: the architectures through `//bazel:cuda_archs`, one spec a card
+    (cubins only, no PTX); an external repository's headers through the target's include options.
 12. AN ACTION'S SCRIPT FINDS ITS SIBLINGS UNRESOLVED (`Path(__file__).absolute()`): in the sandbox it is a link, and
     resolving it imports the checkout's files instead of the action's declared inputs.
 13. TWO SCHEDULERS SHARE ONE HOST through the host budget: the front door holds it for every build phase and never for

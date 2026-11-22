@@ -48,7 +48,7 @@ cc_binary(
     name = "structure_switch_probe",
     deps = [
         ":structure_switch_unit",
-        "@cuda//:cuda_runtime_static",
+        "@cuda_tools//:cuda_runtime_static",
     ],
 )
 

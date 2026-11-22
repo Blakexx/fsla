@@ -88,13 +88,12 @@ include_root = rule(
     doc = "Source headers under `-I` roots, searched before any dependency's (docs/build-graph.md#compile).",
 )
 
-#: the build's architectures as rules_cuda's, and its runtime as headers alone: the library links the runtime itself, so
-#: no unit carries a dynamic library whose search path the link would write into the binary
+#: the build's architectures as the compile's (`//bazel:cuda_archs`): the units carry the runtime's headers alone, the library links
+#: the runtime itself, so no unit carries a dynamic library whose search path the link would write into the binary
 def _cuda_settings(archs):
     return {
         #: one spec an architecture, each its own virtual one: a comma list would compile every card from the first's
-        "@rules_cuda//cuda:archs": ";".join(["compute_%s:sm_%s" % (a, a) for a in archs]),
-        "@rules_cuda//cuda:runtime": str(Label("//bazel:cuda_headers")),
+        str(Label("//bazel:cuda_archs")): ";".join(["compute_%s:sm_%s" % (a, a) for a in archs]),
     }
 
 def _archs_transition_impl(settings, _attr):
@@ -103,7 +102,7 @@ def _archs_transition_impl(settings, _attr):
 _archs_transition = transition(
     implementation = _archs_transition_impl,
     inputs = [str(Label("//:archs"))],
-    outputs = ["@rules_cuda//cuda:archs", "@rules_cuda//cuda:runtime"],
+    outputs = [str(Label("//bazel:cuda_archs"))],
 )
 
 #: the libraries the extension links by path: torch's two, the CUDA runtime and the driver's stub (the real driver at
@@ -139,7 +138,7 @@ def _link(ctx, so):
         unsupported_features = ctx.disabled_features,
     )
     ld = [f for f in ctx.files._linker if f.basename == "ld.mold"][0]
-    linked = ctx.files.shared_libraries + [f for f in ctx.files._cudart if f.basename in _CUDA_LINKED]
+    linked = ctx.files.shared_libraries + [f for f in ctx.files._runtime_libs if f.basename in _CUDA_LINKED]
     if len(linked) != len(ctx.files.shared_libraries) + len(_CUDA_LINKED):
         fail("the CUDA runtime's files lack one of %s" % (_CUDA_LINKED,))
     cc_common.link(
@@ -230,7 +229,7 @@ def _extension_impl(ctx):
     #: THE BUILD GATES AND THE RECORD: rules 1, 3 and 5, then the record (bazel/record.py)
     record = ctx.actions.declare_file("fsla_cu13/_build_config.py")
     tables = {f.basename.removesuffix("_arms.py"): f for f in ctx.files._headers if f.basename.endswith("_arms.py")}
-    ptxas = [f for f in ctx.files._nvcc if f.basename == "ptxas"][0]
+    ptxas = ctx.file._ptxas
     args = ctx.actions.args()
     args.add(ctx.file._record)
     args.add("--out", record)
@@ -258,7 +257,7 @@ def _extension_impl(ctx):
     sass_verdict = _sass_gate(ctx, so, "fsla_cu13/sass_gate.json")
     arm_verdict = ctx.actions.declare_file("fsla_cu13/arm_gate.txt")
     headers = {family: [f for f in ctx.files._headers if f.basename == "%s_selection.inc" % family][0] for family in ARM_FAMILIES}
-    stub = [f for f in ctx.files._cudart if f.path.endswith("stubs/libcuda.so")][0]
+    stub = [f for f in ctx.files._runtime_libs if f.path.endswith("stubs/libcuda.so")][0]
     arm_args = ctx.actions.args()
     arm_args.add(ctx.file._arm_gate)
     arm_args.add("--so", so)
@@ -312,8 +311,8 @@ fsla_extension = rule(
         "toolchain": attr.string(mandatory = True, doc = "the toolchain's name (its record)"),
         "cxx11_abi": attr.bool(mandatory = True, doc = "the environment's torch ABI flag"),
         "_linker": attr.label(default = "@mold//:linker"),
-        "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
-        "_cudart": attr.label(default = "@cuda//:cudart_all_files"),
+        "_ptxas": attr.label(default = "@cuda_tools//:bin/ptxas", allow_single_file = True),
+        "_runtime_libs": attr.label(default = "@cuda_tools//:runtime_libs"),
         "_record": attr.label(default = "//bazel:record.py", allow_single_file = True),
         "_record_sources": attr.label(default = "//bazel:record_sources"),
         "_sources": attr.label(default = "//bazel:generator_sources"),
@@ -353,7 +352,7 @@ fsla_instrument = rule(
         "deps": attr.label_list(providers = [CcInfo], doc = "its units, whose declarations are the signatures its probes keep on purpose (docs/internals/tools/sass_gate.md#probes)"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries it links"),
         "_linker": attr.label(default = "@mold//:linker"),
-        "_cudart": attr.label(default = "@cuda//:cudart_all_files"),
+        "_runtime_libs": attr.label(default = "@cuda_tools//:runtime_libs"),
         "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
@@ -381,7 +380,7 @@ unit_sass = rule(
 def _census_impl(ctx):
     units = ctx.attr.library[CudaUnitInfo].units.to_list()
     tools = {
-        "ptxas": [f for f in ctx.files._nvcc if f.basename == "ptxas"][0],
+        "ptxas": ctx.file._ptxas,
         "cuobjdump": ctx.file._cuobjdump,
         "nvdisasm": ctx.file._nvdisasm,
     }
@@ -401,7 +400,7 @@ ratify_census = rule(
     implementation = _census_impl,
     attrs = _setting_attrs() | {
         "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library whose units are counted"),
-        "_nvcc": attr.label(default = "@cuda//:nvcc_all_files"),
+        "_ptxas": attr.label(default = "@cuda_tools//:bin/ptxas", allow_single_file = True),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True),
     },
@@ -683,7 +682,7 @@ def _one_arch(arch):
     settings[str(Label("//:archs"))] = [arch]
     return settings
 
-_ARCH_OUTPUTS = [str(Label("//:archs")), "@rules_cuda//cuda:archs", "@rules_cuda//cuda:runtime"]
+_ARCH_OUTPUTS = [str(Label("//:archs")), str(Label("//bazel:cuda_archs"))]
 
 def _each_built_arch_impl(_settings, _attr):
     return {arch: _one_arch(arch) for arch in BUILT_ARCHS}
