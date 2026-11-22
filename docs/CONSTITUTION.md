@@ -300,7 +300,8 @@ MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns
 box, executed as four 64-column steps on one run of value lines, is the four-digit window, exact; and a kernel holding a
 per-list fold and a grouped fold, choosing by a word read before the loop, costs nothing a window
 ([`lab/carry_token.md`](lab/carry_token.md)).
-NOT YET SO: the lab's grouped folds issue a fixed number of steps a window; a run-time count a group is owed; and R8's
-blackwell form of this rule is not stated -- the step-shape half as written is hopper's (a wgmma step's shape pins its
-accumulator's registers, and the 64-column price is an H100 record), blackwell's owed with its bring-up
+NOT YET SO: the lab's grouped folds issue a fixed number of steps a window; a run-time count a group is owed
 ([`open-work.md`](open-work.md)).
+ON BLACKWELL (R8; Blake, 2026-11-22) the layout half holds unchanged. The step-shape half as written is hopper's: a wgmma
+step's shape pins its accumulator's registers, and the 64-column price is an H100 record. Blackwell's widest step and
+where its shape is chosen are owed with its bring-up ([`open-work.md`](open-work.md)).

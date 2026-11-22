@@ -2,7 +2,7 @@
 """THE TENSOR STEP'S WIDTH LINT (gating, CONSTITUTION R25): no library kernel issues a `wgmma.mma_async` step wider than 64
 columns. A GROUP is a layout and its steps are shaped to it, narrow up to 64 columns and never wider: a layout wider than a
 step is several 64-column steps (a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns, `docs/lab/wgmma_width.md`: past 64 a wider
-step buys no tensor time). Hopper's form: blackwell's steps are not read (CONSTITUTION R25, BLACKWELL).
+step buys no tensor time). Hopper's form: blackwell's steps are not read (CONSTITUTION R25, ON BLACKWELL: its step-shape half is owed with the bring-up).
 
 Reads every device and host source of `csrc/fsla` (the library's own; `csrc/third_party` is vendored and `measure/lab/` is exempt:
 `wgmma_width` measures the wide steps on purpose) and fails on a `wgmma.mma_async` mnemonic of shape `m<M>n<N>k<K>` with N over 64.
