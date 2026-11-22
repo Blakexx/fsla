@@ -1,14 +1,14 @@
 {
     "name": "nsight_systems",
-    "role": "the timeline profiler (`nsys`, docs/measurement.md), a developer's (the devbox, docs/setup.md). NVIDIA's redistributable component at the toolkit's manifest, by its digest, as compute-sanitizer is. The archive's top-level bin/nsys expects a full CUDA install; the versioned launcher inside it is the one that runs from the archive.",
-    "upstream": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json",
-    "manifest": "redistrib_13.0.0.json (MODULE.bazel's toolkit manifest, by its digest)",
-    "version": "2025.3.2.367",
+    "role": "the timeline profiler (`nsys`, docs/measurement.md), a developer's (the devbox, docs/setup.md). NVIDIA's redistributable component at the toolkit's manifest, by its digest, as compute-sanitizer is.",
+    "upstream": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.5.0.json",
+    "manifest": "redistrib_13.5.0.json (the toolkit pin's manifest, tools/cuda_toolkit_pin.json, by its digest)",
+    "version": "2026.5.2.323",
     "command": "nsys",
-    "release_asset": "nsight_systems-linux-x86_64-2025.3.2.367-archive.tar.xz",
-    "release_url": "https://developer.download.nvidia.com/compute/cuda/redist/nsight_systems/linux-x86_64/nsight_systems-linux-x86_64-2025.3.2.367-archive.tar.xz",
-    "asset_sha256": "3f9efdad576112c17e6e344bb366382027f1c96b0372460dc5453a93354015e8",
-    "archive_root": "nsight_systems-linux-x86_64-2025.3.2.367-archive",
-    "binary_path": "nsight-systems/2025.3.2/bin/nsys",
-    "version_string": "NVIDIA Nsight Systems version 2025.3.2.367-253236224375v0"
+    "release_asset": "nsight_systems-linux-x86_64-2026.5.2.323-archive.tar.xz",
+    "release_url": "https://developer.download.nvidia.com/compute/cuda/redist/nsight_systems/linux-x86_64/nsight_systems-linux-x86_64-2026.5.2.323-archive.tar.xz",
+    "asset_sha256": "09689609f34fb4e6b1a26935605630dfb8da273d3fba11cdbd356ea1e7f0e342",
+    "archive_root": "nsight_systems-linux-x86_64-2026.5.2.323-archive",
+    "binary_path": "bin/nsys",
+    "version_string": "NVIDIA Nsight Systems version 2026.5.2.323-265239015215v0"
 }

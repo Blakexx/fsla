@@ -41,8 +41,8 @@ int main(int argc, char** argv) {
     for (long long roles : {70756767629603LL, 289356664086200611LL}) {
       const std::string k = lab::kernel("carry_window::window", {roles});
       //: two of the carry lab's rows (not the carry this experiment launches) spill 8 to 12 bytes at their 128 registers in
-      //: this binary, which holds the intra's kernels beside the carry lab's; under toolkit 13.0 the carry lab's own binary
-      //: spilled none of them (under 13.5 it spills three other rows, declared in `carry_window.cu`)
+      //: this binary, which holds the intra's kernels beside the carry lab's (the carry lab's own binary spills three
+      //: other rows, declared in `carry_window.cu`)
       b.expect(k, "REGISTER_SPILL", "<=", 1);
       //: the same two rows keep an 8-byte stack frame for those spills
       b.expect(k, "LOCAL_MEMORY_USED", "<=", 1);

@@ -182,7 +182,7 @@ HAZARDS = tuple(HAZARD_RULES)
 #: the two hazards the notice ledger's rows count a kernel's notices under (`mma_serialized`, `wait_injected`), and what each says of a kernel past its count
 HAZARD_STATES = {
     "STEPS_SERIALIZED": "the toolkit serialized its asynchronous MMAs, each step waiting out the one before",
-    "WAIT_INJECTED": "the toolkit injected a wait (`wgmma.wait_group`; `warpgroup.wait` under toolkit 13.0) into the step stream, to let code read registers a tensor step defines",
+    "WAIT_INJECTED": "the toolkit injected a wait (`wgmma.wait_group`) into the step stream, to let code read registers a tensor step defines",
 }
 #: the hazards that are counts of the toolkit's notices which the refusal prints in the notice's own words (the function, the bytes)
 NOTICE_HAZARDS = ("REGISTER_SPILL", "LOCAL_MEMORY_USED")

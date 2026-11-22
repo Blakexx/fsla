@@ -3,32 +3,32 @@
  "rows": [
   {
    "tool": "ptxas",
-   "code": "C7511",
-   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function '{}'",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function '{}' in line {}",
    "rule": "mma_serialized",
    "reason": "The toolkit serialized the kernel's asynchronous MMAs because the function's register count cannot hold the steps' operand sets, so each step waits out the one before and the kernel does not measure the steps its source states.",
-   "fix": "C7511: a role's work after a join is compiled at the lower register count -- state the count at entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)"
-  },
-  {
-   "tool": "ptxas",
-   "code": "C7512",
-   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the wgmma pipeline in the function '{}'",
-   "rule": "mma_serialized",
-   "reason": "The toolkit serialized the kernel's asynchronous MMAs because the role is over the registers the pipeline needs, so each step waits out the one before and the kernel does not measure the steps its source states.",
-   "fix": "C7512: a step's operand registers are written before its commit group and the role holds the count they need"
-  },
-  {
-   "tool": "ptxas",
-   "code": "C7520",
-   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.AR in divergent path in the function '{}'",
-   "rule": "mma_serialized",
-   "reason": "The toolkit serialized the kernel's asynchronous MMAs because a step sits under a branch it cannot prove every thread takes, so each step waits out the one before and the kernel does not measure the steps its source states.",
-   "fix": "C7520: a tensor step under a branch -- write the steps a straight block, a step that may be absent under a forward branch behind its own `wg_fence` (not a rolled loop: STEP_ROLLED)"
+   "fix": "the function's registers: a role's work after a join is compiled at the lower register count -- state the count at entry and put each role's whole body inside its own branch (docs/lab/reg_trade.md)"
   },
   {
    "tool": "ptxas",
    "code": null,
-   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.DP in divergent path in the function '{}'",
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the wgmma pipeline in the function '{}' in line {}",
+   "rule": "mma_serialized",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because the role is over the registers the pipeline needs, so each step waits out the one before and the kernel does not measure the steps its source states.",
+   "fix": "C7511 (the pipeline's registers): a step's operand registers are written before its commit group and the role holds the count they need"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.AR in divergent path in the function '{}' in line {}",
+   "rule": "mma_serialized",
+   "reason": "The toolkit serialized the kernel's asynchronous MMAs because a step sits under a branch it cannot prove every thread takes, so each step waits out the one before and the kernel does not measure the steps its source states.",
+   "fix": "C7519 (the divergent arrive): a tensor step under a branch -- write the steps a straight block, a step that may be absent under a forward branch behind its own `wg_fence` (not a rolled loop: STEP_ROLLED)"
+  },
+  {
+   "tool": "ptxas",
+   "code": null,
+   "text": "Potential Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on compiler-inserted WG.DP in divergent path in the function '{}' in line {}",
    "rule": "mma_serialized",
    "reason": "The toolkit serialized the kernel's asynchronous MMAs because a step sits under a branch it cannot prove every thread takes (the dependence-proof barrier form of C7520), so each step waits out the one before.",
    "fix": "a tensor step under a branch -- write the steps a straight block, a step that may be absent under a forward branch behind its own `wg_fence`"

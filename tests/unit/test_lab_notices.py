@@ -29,8 +29,6 @@ C7520 = ("ptxas info    : (C7520) Potential Performance Loss: wgmma.mma_async in
 #: a code no build has emitted yet, in the toolkit's template for extern calls (a row with no code)
 C7599 = ("ptxas info    : (C7599) Potential Performance Loss: wgmma.mma_async instructions are serialized due to the "
          "presence of Extern calls in the function '{}'")
-C7511 = ("ptxas info    : (C7511) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
-         "insufficient register resources for the function '{}'")
 C7517 = ("ptxas info    : (C7517) warpgroup.wait is injected in around line 3928 by compiler to allow use of registers "
          "defined by GMMA in function '{}'")
 C7519 = ("ptxas info    : (C7519) warpgroup.arrive is injected in around line 9191 by compiler to allow use of "
@@ -41,6 +39,8 @@ C7511_135 = ("ptxas info    : (C7511) Potential Performance Loss: wgmma.mma_asyn
              "insufficient register resources for the wgmma pipeline in the function '{}' in line 168")
 C7519_135 = ("ptxas info    : (C7519) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
              "program dependence on compiler-inserted WG.AR in divergent path in the function '{}' in line 245")
+C7511_FUNCTION_135 = ("ptxas info    : (C7511) Potential Performance Loss: wgmma.mma_async instructions are serialized due to "
+                      "insufficient register resources for the function '{}' in line 168")
 C7517_135 = ("ptxas info    : (C7517) wgmma.wait_group is injected in around line 3928 by compiler to allow use of registers "
              "defined by GMMA in function '{}'")
 SETMAXNREG = "ptxas info    : (C7505) Potential Performance Loss: 'setmaxnreg' ignored to allow debugging."
@@ -124,14 +124,14 @@ def test_a_variable_used_before_its_value_is_set_refuses_naming_it_and_its_line(
 
 @needs_checker
 def test_a_declare_row_allows_the_count_its_experiment_declares_a_kernel_summed_over_its_codes(tmp_path, monkeypatch):
-    lines = (C7599.format("k"), C7520.format("k"))
+    lines = (C7599.format("k"), C7519_135.format("k"))
     failures = failures_of(tmp_path, monkeypatch, *lines)
     assert len(failures) == 1 and "k: the toolkit serialized" in failures[0]
     assert "the presence of Extern calls" in failures[0] and AR in failures[0]
-    #: the project's own row for C7520 words the fix: the lab's page, not the module's text
+    #: the project's own row for the divergent arrive words the fix: the lab's page, not the module's text
     assert "forward branch" in failures[0] and "STEP_ROLLED" in failures[0] and "0 declared (STEPS_SERIALIZED)" in failures[0]
     assert failures_of(tmp_path, monkeypatch, *lines, declared=[declare("k", "STEPS_SERIALIZED", 2)]) == []
-    assert failures_of(tmp_path, monkeypatch, *lines, C7520.format("k"),
+    assert failures_of(tmp_path, monkeypatch, *lines, C7519_135.format("k"),
                        declared=[declare("k", "STEPS_SERIALIZED", 2)]) != []
     #: a declaration is for the kernels its regex names
     assert failures_of(tmp_path, monkeypatch, *lines, declared=[declare("other", "STEPS_SERIALIZED", 9)]) != []
@@ -148,7 +148,7 @@ def test_each_serializing_notice_of_a_kernel_is_counted_by_its_code_and_cause(tm
 
 @needs_checker
 def test_a_register_notice_of_c7511_is_the_known_code_it_is(tmp_path, monkeypatch):
-    failures = failures_of(tmp_path, monkeypatch, C7511.format("k"))
+    failures = failures_of(tmp_path, monkeypatch, C7511_FUNCTION_135.format("k"))
     assert len(failures) == 1 and "each role's whole body inside its own branch" in failures[0]
 
 

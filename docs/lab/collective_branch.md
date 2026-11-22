@@ -9,7 +9,7 @@ the warp id (13.6) or with the role setting the trip count (13.9) it is a CALL i
 Record: `measure/lab/results/collective_branch/sm_86.json`.
 
 ON HOPPER THE ROW NO LONGER REPRODUCES. The record above is sm_86 (RTX 3080 Ti, 2026-10-04): there the role-dependent
-forms compiled to a CALL into a convergence subroutine. This tree's toolkit (CUDA 13.0.48) builds the same source for sm_90a
+forms compiled to a CALL into a convergence subroutine. This tree's toolkit (CUDA 13.5, `tools/cuda_toolkit_pin.json`) builds the same source for sm_90a
 with no CALL in any of the five forms: the shuffle stays an inline `SHFL`, and the forms under a role's branch (the warp-id
 branch and the trip-count role) hold one inline `WARPSYNC.COLLECTIVE` before each of the 8 shuffles, the others none. The
 experiment declares that form (CALL 0, WARPSYNC 8 under a role, 0 otherwise). The 1.65x is the cost of the sm_86 subroutine
