@@ -153,13 +153,12 @@ raises on any attribute read, so the property is proven per node rather than dec
 
 A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
 not a node and no node memo reaches it: the binary's arm census (`fsla.ops.decode.arms`) is
-read by the planner's launch function at each call.
+read by the bench provider, never by a call.
 
 ## <a id="refusals"></a>8. Refusals are one call at the head
 
 Each kernel family has ONE `validate_context(ctx)`, run immediately after the context
-is built and before any fact node. It consolidates the operand-type refusals, the
-configuration envelope, the gradient refusal and the suppliable-set closure. Scattering preconditions across the DAG
+is built and before any fact node. It consolidates the operand-type refusals, the descriptor's checks against the call, the gradient refusal and the suppliable-set closure (the prefill's device and unbuilt-kernel refusals are made earlier, where its descriptor is). Scattering preconditions across the DAG
 would allow a refusal three
 launches in, with the operands already consumed; one call at the head makes that
 unreachable by construction.
@@ -173,8 +172,7 @@ and the facade calls the engine, never the reverse. The device clause is the rul
 `envelope`, called where every descriptor is made (`fsla.ops._ext.device_index`), and the unbuilt-kernel clause is the
 owed descriptor's (`docs/internals/hardware/registry.md#the-owed-folder`): a prefill has ONE path to each refusal.
 
-The descriptor is the same statement from the other end. A descriptor fact is a VALUE a rule
-folds — `the descriptor's facts are read by `common/plan/` and by the checks of its own surface — and the engine handles the descriptor as an opaque value; the
+The descriptor is the same statement from the other end. Its facts are read by `common/plan/` and by the checks of its own surface, and the engine handles the descriptor as an opaque value; the
 type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
 `fsla.expert`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds

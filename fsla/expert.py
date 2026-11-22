@@ -10,7 +10,7 @@ a package into its privates is worse than a marked door.
 
 **The contract for everything here: STABLE CONSTRUCTION, ADVISORY CONTENTS.** Build
 these objects and pass them; do not assert on their fields. What
-:func:`~fsla.engine.facts.call.envelope_refusal` reports moves with the built matrix.
+a descriptor's refusal says moves with the built matrix.
 
 Importing this module is a statement that you accept that. The op never requires it.
 """

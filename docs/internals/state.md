@@ -203,8 +203,7 @@ primary emission needs the carve as a kernel axis, and the carve is derived at t
 sites the runtime-addressing stage owns — G1 built the page-grain half it consumes, and
 the warp-box half lands with that stage rather than in a fifth derivation of the carve.
 
-`paging=True` is REFUSED: paging is on by default, so there is nothing to turn on, and
-the expert overrides the MAPPING only. Dense and paged are ONE kernel, one ABI, one
+The backing is chosen when the state is made, `fsla.state(backing="paged")` (the default) or `"dense"`, and is the state's own. Dense and paged are ONE kernel, one ABI, one
 accumulation order and one base translation — `torch.equal`, not a tolerance
 (`tests/integration/test_decode_paging.py`). A caller cannot observe
 which backing a state has except by asking (`state.paged`), and no result depends on

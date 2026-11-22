@@ -168,7 +168,7 @@ _DESIGNED_STRATEGY = "cow"
 
 
 def state(
-    strategy: str = "mutable",  #: reserved: copy-on-write branching, designed and refused by name until built (s0_design.md)
+    strategy: str = "mutable",  #: reserved: copy-on-write branching, refused by name until it is built (its slot refcounts and per-branch tables do not exist)
     pool_slack: float = 0.0,  #: reserved: the slack pool a decode step admits from (docs/internals/state.md#the-slack-pool)
     *,
     backing: str = "paged",
@@ -216,7 +216,7 @@ class FSLAState:
         if strategy == _DESIGNED_STRATEGY:
             raise NotImplementedError(
                 f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
-                "branching is named future work (s0_design.md), and its slot refcounts "
+                "branching is named future work, and its slot refcounts "
                 f"and per-branch tables do not exist yet. The built strategy is "
                 f"{_BUILT_STRATEGY!r}.")
         if strategy != _BUILT_STRATEGY:
@@ -316,7 +316,7 @@ class FSLAState:
 
         The copy shares nothing: a paged state's copy gets its own arena with the
         same residency, a dense one's its own plane. Changing strategy crosses a
-        clone by rule (`s0_design.md` amendment 10 revised) -- a live ancestor is a
+        clone by rule -- a live ancestor is a
         standing alias onto shared slots, so a cheaper transition would hand a
         descendant a guarantee its ancestor can break.
         """

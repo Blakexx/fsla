@@ -95,7 +95,8 @@ validate_dag(PREFILL_DAG, _SEEDS)
 
 
 def validate_context(ctx: PrefillContext) -> None:
-    """THE FAST-FAIL, in ONE call: everything a prefill call can be refused for.
+    """THE FAST-FAIL, in ONE call: the operand-type, descriptor, mask and gradient refusals of a prefill call (the device refusal is
+    `fsla.ops._ext.device_index`'s and the unbuilt-kernel refusal the owed descriptor's, both when the descriptor is made).
 
     It runs before the DAG's first node, so nothing here can refuse a call whose
     operands a launch has already consumed.

@@ -239,8 +239,8 @@ The engine's DAG framework is host-only, so its battery is too.
 `pure_of`'s plain dict and `per_state`'s `WeakKeyDictionary`, including the weakness itself (a dropped sequence drops
 its buffers) and the TRANSIENTS-ONLY discipline (a `per_state` node's body runs against a state that raises on any
 attribute read) — and the structural refusals that fire at DAG declaration: a need that arrives later than its reader,
-a second Join, a second device-to-host read, a memo key that is not one of the node's inputs. It holds the decode
-family's structural declarations too: every node of `DECODE_STEP` declares `capturable` and none declares `host_sync`,
+a memo key that is not one of the node's inputs. It holds the decode
+family's structural declarations too: every node of `DECODE_STEP` declares `capturable`,
 and no shipped DAG contains a `reference_only` node, which keeps the growth gate's independent second derivation from
 being wired in. The CAPTURE ITSELF is `tests/integration/test_decode_graph_step.py`'s.
 

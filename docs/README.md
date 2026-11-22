@@ -11,7 +11,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`rules.json`](rules.json) | the rules table: every rule of the two documents above, with the mechanism that enforces it and what that mechanism leaves unchecked ([`internals/tools/lint.md`](internals/tools/lint.md#rules-table)) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | what the family computes, the leaf lattice, the state format, the carve, each kernel, the launch policy, portability, and the index from mechanism to page |
 | [`architecture/`](architecture/README.md) | the permanent decisions and their arguments: the self-masking theorem, the affine recurrence, the factored representation, fp32 accumulation, closed-world codegen, the guarantee/choice/preference taxonomy |
-| [`api.md`](api.md) | the public surface and its envelope: `fsla_op`, the bundle, the routing and producer, decay, the layer, the expert pins |
+| [`api.md`](api.md) | the public surface and its envelope: `fsla_op`, the bundle, the routing and producer, decay, the layer, the expert descriptors |
 | [`build.md`](build.md) | building: what the build checks, iteration subsets, the arm lists, a kernel's identity, fatbin compression, the stable ABI, the wheels |
 | [`build-graph.md`](build-graph.md) | the build graph: Bazel through its front door (the machine's caches, the host budget), the environment's layers, the graph's rules |
 | [`ratification.md`](ratification.md) | the closed world (the declared targets and the per-build gates), the census, the derivation's goldens, the closed-world rules |
