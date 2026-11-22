@@ -28,6 +28,8 @@ Run: ``bazel test //tests:integration --test_filter=test_decode_dispatch``
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import torch
 from conftest import build_layer, reference_produce
@@ -35,6 +37,7 @@ from conftest import build_layer, reference_produce
 import fsla
 from fsla import LayerContinuation
 from fsla.interface import BackwardNotImplemented
+from fsla.ops._ext import KernelNotBuilt
 from fsla.ops.produce import prefill_plan
 from tests.oracle.fixtures import masks_of, with_gain
 
@@ -99,6 +102,18 @@ def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
     return x, out
 
 
+def _refuses(error, match, call):
+    """`call` raises `error` whose message matches `match`. The layer's producer runs before the prefill envelope speaks, so
+    while the produce kernel is not built the call is refused by IT (`KernelNotBuilt` naming the produce kernel): that is
+    the `requires_kernel("produce")` owed refusal, not a mismatch, and it propagates to the marker."""
+    with pytest.raises(error) as seen:
+        call()
+    refusal = seen.value
+    if isinstance(refusal, KernelNotBuilt) and re.search(r"\bproduce kernel\b", str(refusal)):
+        raise refusal
+    assert re.search(match, str(refusal)), f"{error.__name__} {str(refusal)!r} does not match {match!r}"
+
+
 # ---------------------------------------------------------------------------
 # the dispatch table
 # ---------------------------------------------------------------------------
@@ -129,7 +144,8 @@ _REFUSALS = {
         # reentrant checkpointing shape (training=True under no_grad), which is why
         # that is its own row. It reaches decode only when a state is CARRIED.
         (True, True, True, 1, True, "refuses-training"),
-        (True, False, True, 1, True, "refuses-training"),
+        #: no gradient is in sight, so the layer runs the producer kernel before decode speaks
+        pytest.param(True, False, True, 1, True, "refuses-training", marks=_PRODUCE),
         # an UNCARRIED one-token call is a degenerate PREFILL, and a grad-bearing prefill
         # is refused by its own sentence -- a different one from decode's, which is the point.
         (True, True, True, 1, False, "refuses-prefill-grad"),
@@ -157,9 +173,8 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
 
     if expected.startswith("refuses"):
         error, match = _REFUSALS[expected]
-        with pytest.raises(error, match=match):
-            _step(layer, cache, device, L=L, requires_grad=requires_grad,
-                  grad_enabled=grad_enabled)
+        _refuses(error, match, lambda: _step(layer, cache, device, L=L, requires_grad=requires_grad,
+                                             grad_enabled=grad_enabled))
         assert layer.last_execution_backend == before, (
             "the refusal must happen BEFORE a kernel runs; a recorded arm that moved "
             "means some backend ran and then the call unwound")
@@ -311,8 +326,7 @@ def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     plain = _layer(device).eval()
     cache = _prime(plain, device) if carried else fsla.state()
     layer = _layer(device, decay="leaf_mass").eval()
-    with pytest.raises(NotImplementedError, match="decay is not implemented"):
-        _step(layer, cache, device, L=L, grad_enabled=False)
+    _refuses(NotImplementedError, "decay is not implemented", lambda: _step(layer, cache, device, L=L, grad_enabled=False))
     assert layer.last_execution_backend is None, (
         "the refusal must happen BEFORE a kernel runs; a recorded arm means some "
         "backend ran and then the call unwound")

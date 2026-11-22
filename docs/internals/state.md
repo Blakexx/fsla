@@ -176,7 +176,7 @@ NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
 
 <a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE MASKS', and only the second one decides what a call TOUCHES.** Activity now decides one
 thing more: which PLANES an atom moves (read-only → hi; written → both), which is why
-the byte saving and the skip are the same mechanism. The host's fold of the masks' words (`page_bits(gather_words(masks))`) gives
+the byte saving and the skip are the same mechanism. The host's fold of the masks (`planes.atom_bits`) gives
 two orthogonal bits per atom — READ and WRITTEN, never pre-ORed — beside the table,
 and every body with state sweeps derives the same two predicates from them, under
 either backing: LOAD an atom iff it is RESIDENT and (read or written); STORE it iff

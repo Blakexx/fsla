@@ -868,7 +868,7 @@ reason: a fixture using the kernel's own answer could not catch the kernel.
 The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
 digit is nonzero, so the write support is the Cartesian product of the per-level
 exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `fsla.engine.facts.liveness.page_bits` folds from the facts pass's words and the same
+object `fsla.engine.facts.planes.atom_bits` folds from the prefill masks and the same
 one the step condenses, reached by neither's route.
 
 ## <a id="elsewhere"></a>40. Declarations whose reasoning lives on another page

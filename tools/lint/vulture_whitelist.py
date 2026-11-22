@@ -67,10 +67,6 @@ class _Whitelist:
     _host_budget_worker_slot = None
     _take_gpu_lock = None
 
-    # THE LAYOUT IS COMPLETE BY CONSTRUCTION: `LivenessLayout`'s members are the layout's whole address surface, which a
-    # Hopper schedule of the words reads member for member (no facts kernel is built on this line).
-    token_bit = None
-
     # DOCUMENTED PUBLIC SURFACE, read by a user rather than by this tree: the paging facade's `backing_kind` and
     # `closed` (`docs/internals/fsla_api.md`), the arena's `owners_total` and `free`, and `Activation`, the spec-facing
     # type alias (`docs/api.md`).

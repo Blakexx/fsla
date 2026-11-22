@@ -54,7 +54,7 @@ def aligned_rows(B: int, T: int, H: int, width: int, device, dtype: torch.dtype 
 @dataclass(frozen=True, slots=True)
 class Form:
     """A SCALED BLOCK'S STORAGE FORM: the stored type, whether an entry may be negative, the stored value of a row's max
-    (``top``) and whether its rows lie under the row alignment law (the routing form: the facts pass reads them in
+    (``top``) and whether its rows lie under the row alignment law (the routing form: a kernel reads them in
     32-byte grains)."""
 
     name: str

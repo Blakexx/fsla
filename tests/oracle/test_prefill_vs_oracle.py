@@ -3,13 +3,14 @@
 """THE OP AGAINST THE fp64 ORACLE: `fsla.interface.fsla_op`'s output and its handed-back state, per slot.
 
 THE REFERENCE IS `fsla.ops.naive.naive_fsla` DIRECTLY, on the bundle's own dequantized levels and values -- the op gate
-compares on the same quantized inputs the kernels read (ruling 2026-09-26). The facts pass, the carry, the den pass,
+compares on the same quantized inputs the kernels read (ruling 2026-09-26). The atom fold, the carry, the den pass,
 the intra and the epilogue run as one call and the whole answer is compared against the recurrence itself, so a
 window-grid disagreement, a double-counted diagonal or a dropped tile pair has nowhere to hide.
 
-RED BY PLAN (ruling 2026-09-29): a cell outside the built envelope fails by its refusing clause -- a carve no carry
-arm carries, depth three or four, a value width other than 64, a carried state. The rule's own teeth
-and the decomposition's non-vacuity run no kernel.
+OWED BY STRICT XFAIL (docs/testing.md): no prefill kernel is built on this line, so each test that calls the op carries
+`requires_kernel("prefill")` (`tests/conftest.py`): the refusal `fsla.ops._ext.KernelNotBuilt` is the expected failure,
+a pass is a failure, and the marker comes off in the commit that builds the kernel. The rule's own teeth and the
+decomposition's non-vacuity run no kernel.
 
 Symbols: ``W`` the window, ``L`` tokens, ``y`` the op's output ``[B, T, H, d_v]``.
 """
@@ -36,7 +37,7 @@ IDS = [c.name for c in CELLS]
 
 def operands(spec, tokens: slice = slice(None)):
     """``(routes, values, masks, plan)``: the cell's draw over ``tokens`` in the format the kernels read."""
-    routes, values, masks, plan, _layout = bundle_of(spec, realize(spec), tokens)
+    routes, values, masks, plan = bundle_of(spec, realize(spec), tokens)
     return routes, values, masks, plan
 
 

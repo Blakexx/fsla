@@ -19,7 +19,7 @@ import pathlib
 
 import pytest
 import torch
-from conftest import build_layer
+from conftest import build_layer, reference_produce
 
 import fsla
 from fsla.engine import PrefillPlan
@@ -151,7 +151,7 @@ def test_the_envelope_refuses_a_no_grad_cuda_bundle_for_want_of_a_carry_arm():
     x = torch.randn(1, 512, 32, device="cuda")
     v = torch.randn(1, 512, 1, 64, device="cuda")
     with torch.no_grad():
-        routes, _values, _masks = layer._produce(x)
+        routes, _values, _masks = reference_produce(layer, x)
         assert "no carry arm" in envelope_refusal(routes, Values.from_projection(v))
         with pytest.raises(NotImplementedError, match="no carry arm"):
             require_envelope(routes, Values.from_projection(v))

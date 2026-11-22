@@ -555,7 +555,6 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from fsla.interface import fsla_op;"
             "from fsla.ops.decode import step_plane;"
             "from fsla.engine.facts.call import require_envelope;"
-            "from fsla.ops.facts import facts;"
             "from fsla.engine.rules.envelope import prefill_envelope;"
             "from fsla.engine.dags.prefill_dag import PrefillContext, run_prefill;"
             "from fsla.ops.prefill import prefill;"

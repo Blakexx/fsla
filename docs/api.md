@@ -69,7 +69,7 @@ decode step pad below the op, and the intra reads the rows at their own widths.
 
 ### 1.1 The built envelope IS the surface
 
-The prefill is the carry and the intra (the facts pass is deleted: its node raises `KernelNotBuilt`) over a BUILT MATRIX
+The prefill is the carry and the intra (the facts pass is deleted: there is no pass node) over a BUILT MATRIX
 (`fsla.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
 fp64 oracle
 (`fsla.ops.naive.naive_fsla`) is the executable spec — what tests and measurements

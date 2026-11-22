@@ -52,12 +52,17 @@ def test_a_raw_tensor_is_not_a_state():
     the deletion refusal and speaks before it reads its arguments.
     """
     from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
+    from fsla.ops.produce import prefill_plan
+    from fsla.routing.masks import PREFILL
     from fsla.values import Values
+    from tests.oracle.fixtures import masks_of
 
     producer, (x, v) = _producer(), _inputs()
+    routes = producer(x)
     with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
-        validate_context(PrefillContext(routes=producer(x), values=Values.from_projection(v),
-                                      state=torch.zeros(1), want_state=True))
+        validate_context(PrefillContext(routes=routes, values=Values.from_projection(v),
+                                        masks=masks_of(routes, PREFILL), plan=prefill_plan(routes.topology, _DV),
+                                        state=torch.zeros(1), want_state=True))
 
 
 def test_an_unbuilt_strategy_is_refused_by_name():

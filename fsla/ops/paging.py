@@ -743,7 +743,7 @@ class PageArena:
         """The PLANNED-EXACT-ASYNC admission, from the atom condensation.
 
         ``atom_bitmap`` is ``[BH, atoms_per_bh]`` bool -- the per-leaf write set
-        condensed to the atom quantum, as :func:`fsla.engine.facts.liveness.page_bits` folds it. It
+        condensed to the atom quantum, as :func:`fsla.engine.facts.planes.atom_bits` folds it. It
         is the EXACT set of atoms this call touches on the write side, so the pool is
         SIZED rather than grown and there is nothing for an allocator to discover.
 

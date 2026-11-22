@@ -180,8 +180,8 @@ never on a measured path, since allocating that tensor is exactly what paging ex
 ### 3.4 Activity
 
 Residency is the arena's fact; **activity is the masks' fact**, and only the second decides what a call touches
-(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the masks'
-words (`page_bits(gather_words(masks))`, `fsla.engine.facts.liveness`): exact allocation admits an atom iff it is WRITTEN this call; a
+(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the masks
+(`fsla.engine.facts.planes.atom_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
 state sweep LOADS an atom iff it is resident and `(read ∨ written)` and STORES it iff `written`. Dense and paged touch
 the identical atom set, so the byte gate certifies the skip logic and not merely the addressing, and a resident but
 idle atom costs no state traffic. The price is the in-place law: an atom a sweep skips must already hold what it
@@ -391,7 +391,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |
 | the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve), [`internals/engine/carve.md`](internals/engine/carve.md) |
 | the host order of a call | [`internals/engine/prefill_dag.md`](internals/engine/prefill_dag.md), [`internals/engine/decode_dag.md`](internals/engine/decode_dag.md) |
-| the liveness words (the facts pass is deleted) | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
+| the digits, the row alignment law and the atom byte (the facts pass is deleted) | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |

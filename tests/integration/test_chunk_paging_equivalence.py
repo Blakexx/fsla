@@ -7,8 +7,9 @@ the two give the same readout and the same state, bit for bit, on a fresh call a
 hands no state back. A call whose writes reach a strict subset of the leaves a previous call wrote leaves every other
 leaf exactly as it found it -- an idle resident page is neither loaded nor stored.
 
-RED BY PLAN (ruling 2026-09-29) until the prefill composition and the carry's segment boundary are ported: every cell
-fails by name.
+OWED BY STRICT XFAIL (docs/testing.md) until the prefill composition and the carry's segment boundary are built: each
+test that calls the op carries `requires_kernel("prefill")` (`tests/conftest.py`), the refusal
+`fsla.ops._ext.KernelNotBuilt` is the expected failure, and a pass is a failure.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ DENSE = False
 
 
 def operands(spec, tokens: slice = slice(None)):
-    routes, values, masks, plan, _layout = bundle_of(spec, realize(spec), tokens)
+    routes, values, masks, plan = bundle_of(spec, realize(spec), tokens)
     return routes, values, masks, plan
 
 

@@ -14,8 +14,7 @@ against the state the call is handed. `fsla.fsla_op` validates the context in th
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.variant` | `variant` | the variant: stateless or stateful |
-| `facts` | `facts`, `layout` | the pass over the supplied masks (NOT BUILT: `fsla.ops.facts.facts` raises `KernelNotBuilt` on this line, so the node does, and everything after it is unreached), with the layout the words are read in (`fsla.ops.facts`); it reads the masks and nothing else |
-| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, the host fold of the masks' words (`gather_words`): the state's write set (`fsla.engine.facts.liveness.page_bits`) |
+| `activity` (stateful) | `atom_bits` | the per-atom `WRITTEN | READ` byte, the host fold of the masks: the state's write set (`fsla.engine.facts.planes.atom_bits`) |
 | `box` (stateful) | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |

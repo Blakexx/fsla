@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The prefill family's DAG, read top to bottom, and the context it runs over.
 
-ONE SEGMENT in, its readout out: the facts pass over the segment's masks, the
+ONE SEGMENT in, its readout out: the atom fold over the segment's masks, the
 carry and the intra, then the post pass ``y = num / (den + eps / r)``. The stateless and
 stateful bands are one tuple, the stateless being the stateful with the residency band
 masked out. Segmentation is the LAYER's (docs/internals/engine/prefill_dag.md): this
@@ -28,7 +28,7 @@ from fsla.engine import (
     run,
     validate_dag,
 )
-from fsla.engine.facts import liveness, nodes
+from fsla.engine.facts import nodes, planes
 from fsla.engine.facts.call import require_envelope
 from fsla.routing.masks import PREFILL, Masks
 
@@ -56,21 +56,12 @@ class PrefillContext:
     supplied: Mapping[str, Any] = field(default_factory=dict)
 
 
-@node(gives=("facts", "layout"), needs=("routes", "masks"), stream="main")
-def facts(f):
-    """THE FACTS PASS over the call's masks (NOT BUILT: `fsla.ops.facts.facts` raises `KernelNotBuilt`), with the layout
-    the words are read in -- the topology's padded widths (`fsla.ops.facts`). It reads the masks and nothing else."""
-    from fsla.ops import facts as facts_ops
-
-    layout = facts_ops.call_layout(f["routes"])
-    return facts_ops.facts(f["masks"], layout), layout
-
-
-@node(gives=("atom_bits",), needs=("facts", "masks", "layout"), stream="main", variants=(Variant.PREFILL_STATEFUL,))
+@node(gives=("atom_bits",), needs=("routes", "masks"), stream="main", variants=(Variant.PREFILL_STATEFUL,))
 def activity(f):
-    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the masks' words: the state's write set
-    (`fsla.engine.facts.liveness.page_bits`)."""
-    return liveness.page_bits(liveness.gather_words(f["masks"], f["layout"]), f["layout"])
+    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the masks: the state's write set
+    (`fsla.engine.facts.planes.atom_bits`)."""
+    routes = f["routes"]
+    return planes.atom_bits(f["masks"], routes.topology.padded_widths, routes.tokens)
 
 
 @node(gives=("bc",), needs=("d_v",), variants=(Variant.PREFILL_STATEFUL,))
@@ -95,8 +86,7 @@ def residency(f):
 
 
 @node(gives=("num", "den"),
-      needs=("plan", "routes", "values", "masks", "decay", "facts", "layout", "state_in", "page_table", "arena",
-             "state_out"),
+      needs=("plan", "routes", "values", "masks", "decay", "state_in", "page_table", "arena", "state_out"),
       stream="main")
 def launch(f):
     """The carry at its bytes and the intra into the same planes: ``num [BH, T, d_v]`` and
@@ -109,7 +99,7 @@ def launch(f):
         operands=PrefillOperands(routes=f["routes"], values=f["values"], masks=f["masks"], decay=f["decay"],
                                  state_in=f["state_in"], page_table=f["page_table"]),
         workspace=PrefillWorkspace(arena=f["arena"], state_out=f["state_out"]))
-    return prefill_ops.prefill(bundle, f["facts"], f["layout"])
+    return prefill_ops.prefill(bundle)
 
 
 @node(gives=("y",), needs=("num", "den", "routes"), stream="main")
@@ -125,7 +115,6 @@ PREFILL_DAG = (
     nodes.topology,
     nodes.classify_call,
     rules.variant.node,
-    facts,
     activity,
     box,
     residency,
@@ -201,7 +190,7 @@ def run_prefill(ctx: PrefillContext) -> tuple[torch.Tensor, torch.Tensor | None]
     """Walk the prefill DAG over a VALIDATED `ctx` (:func:`validate_context`, which the caller runs in its own
     grad mode): ``(y, state_out)``, the plane the call stored into or ``None``.
 
-    The facts pass and the intra read the bundle; the carry leg's floating operands are `fsla.ops.prefill`'s,
+    The intra reads the bundle; the carry leg's floating operands are `fsla.ops.prefill`'s,
     dequantized there once a call until the carry reads the rows.
     """
     facts = {"routes": ctx.routes, "values": ctx.values, "masks": ctx.masks, "decay": ctx.decay, "state": ctx.state,

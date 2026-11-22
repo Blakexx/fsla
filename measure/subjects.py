@@ -98,7 +98,7 @@ def prefill_op(fx) -> Launch:
     from measure.cells import realize
 
     spec = fx["cell"]
-    routes, values, masks, plan, _layout = bundle_of(spec, realize(spec))
+    routes, values, masks, plan = bundle_of(spec, realize(spec))
 
     def run():
         return fsla_op(routes, values, masks, plan=plan)
@@ -108,12 +108,11 @@ def prefill_op(fx) -> Launch:
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
-    """``(routes, values, masks, plan, layout)``: the cell's draw over ``tokens`` in the format the kernels read, the
+    """``(routes, values, masks, plan)``: the cell's draw over ``tokens`` in the format the kernels read, the
     masks the draw's own nonzero digits (the producer knows what it gives), and the plan the cell's declared sparsity
     names: the levels each side walks by lists."""
     from fsla.engine import PrefillPlan
     from fsla.engine.carve import plan_carve
-    from fsla.ops import facts as facts_ops
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import PREFILL, Masks, pack_tokens
     from fsla.routing.types import OpaqueRouting, Topology
@@ -131,7 +130,7 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     values = Values.from_projection(drawn.v[:, tokens])
     walks = tuple(tuple(sparse[side] for sparse in declared) for side in (0, 1))
     plan = PrefillPlan(carve=plan_carve(tuple(topology.padded_widths), *walks, values.v.shape[-1]))
-    return routes, values, masks, plan, facts_ops.call_layout(routes)
+    return routes, values, masks, plan
 
 
 # ------------------------------------------------------------------ layer cells
@@ -205,8 +204,7 @@ def decode_step(fx) -> Launch:
     import fsla
     from fsla.engine.constants import box_leaves
     from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
-    from fsla.engine.facts import liveness as lv
-    from fsla.ops import facts as facts_ops
+    from fsla.engine.facts import planes
     from fsla.ops.produce import decode_plan
 
     spec = fx["cell"]
@@ -218,12 +216,10 @@ def decode_step(fx) -> Launch:
     layer = fx["layer"]
     plan = decode_plan(layer.topology, d_v=layer.d_v, decay=layer.decay is not None)
     routes = fx["routes"]
-    layout = facts_ops.call_layout(routes)
-    #: THE WORDS BY THE MODEL (no facts kernel is built on this line): the seed needs the bits, which the model states
-    #: bit for bit from the masks the producer emits beside the rows
+    #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
     with torch.no_grad():
         masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
-    bits = lv.page_bits(lv.gather_words(masks, layout), layout)
+    bits = planes.atom_bits(masks, routes.topology.padded_widths, routes.tokens)
     seeded: dict = {}
 
     def reset():

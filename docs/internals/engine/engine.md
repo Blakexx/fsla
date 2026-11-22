@@ -48,8 +48,8 @@ it at all:
   decides — the carry's carve — `Carve`, `SidePlan` — and the
   refusal every no-backward clause raises —
   `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, `DecodePlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan`, `operands`, `workspace`).
-* `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
-  bitmap (`planes.py`), the liveness words and their folds (`liveness.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
+* `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing, the write-atom
+  bitmap and the atom fold of the masks (`planes.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
   envelope authority they fold into — `envelope_refusal` and `require_envelope`
   (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not

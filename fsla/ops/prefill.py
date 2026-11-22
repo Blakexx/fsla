@@ -21,7 +21,7 @@ from fsla.ops._ext import not_built
 __all__ = ["launch_bytes_per_token", "prefill", "reader_factor", "readout"]
 
 
-def prefill(launch, facts, layout, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+def prefill(launch, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
     """``launch`` is the :class:`fsla.engine.plan.PrefillLaunch`. ``(num, den)`` fp32 ``[BH, L, d_v]`` and ``[BH, L]`` over ``r`` (:func:`readout` divides by it), the carry's and
     the intra's reduced into the same planes: not built on this line (:func:`fsla.ops._ext.not_built`)."""
     not_built("prefill")
