@@ -517,8 +517,9 @@ layer = fsla.FSLA(routes, plan=prefill_plan(routes.topology, d_v, paging=False))
 
 | name | what it is |
 |---|---|
-| `PrefillPlan`, `DecodePlan` | the frozen static plans, one per kernel family -- what to do only: `PrefillPlan(carve, paging)`, and `DecodePlan` (the decode step's geometry, `write_dense` -- deposit whole atoms -- and the CTA count) |
-| `prefill_plan(topology, d_v, ...)` / `decode_plan(topology, ...)` | the producer-owned plan rules: they choose from the declaration alone (the levels each side walks by lists, whole-atom deposits) |
+| `PrefillPlan` | the frozen static prefill plan -- what to do only: `PrefillPlan(carve, paging)` |
+| `prefill_plan(topology, d_v, ...)` | the producer-owned plan rule: it chooses from the declaration alone (the levels each side walks by lists) |
+| `decode_descriptor(topology, *, d_v, decay, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and `write_dense` (deposit whole atoms) -- which the decode step takes beside its data: `decode_step_gated(routes, values, masks, state, descriptor)`. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
 | `envelope_refusal(routes, v, decay=None)` / `require_envelope(...)` | why a call has no arm, asked before making it — the refusing clause in its own words (it always refuses on this line). `v` is named rather than assumed: the `d_v` clause is a fact about the value stream, so the answer is a property of the configuration AND of `v.shape[-1]` |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
@@ -535,8 +536,8 @@ checks a pinned carve against the declaration exactly as it checks its own
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve)).
 
 **A plan is static and reads no operand.** The carry's launch geometry is the carve -- the rule's, or a pinned one checked
-the same way -- and the plan is what to do, hashable, the arm and the cache key. Inside, one launch bundle per kernel
-family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the `plan`, the `operands` (the data, masks included)
+the same way -- and the plan is what to do, hashable, the arm and the cache key. Decode has no plan: its op takes the descriptor. Inside, one launch bundle per kernel
+family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the `plan` (prefill's) or the `descriptor` (decode's), the `operands` (the data, masks included)
 and the `workspace` (scratch, pool) -- built at a DAG's terminal node and never public. A conformance family drives the
 envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and `envelope_refusal` answers the same question before a call.

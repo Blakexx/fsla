@@ -43,6 +43,7 @@ Run: ``bazel test //tests:integration --test_filter=test_decode_graph_step``
 """
 from __future__ import annotations
 
+import math
 from dataclasses import fields
 
 import pytest
@@ -50,7 +51,7 @@ import torch
 from conftest import reference_produce
 
 from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
-from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_lattice
 from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
 from fsla.values import Values
@@ -58,8 +59,9 @@ from tests.integration.test_decode_paging import (
     _COLS,
     _DV,
     _arena,
+    _bitmap,
     _bundles,
-    _config,
+    _descriptor,
     _fixture,
 )
 from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of
@@ -72,10 +74,10 @@ pytestmark = [
 _WIDTHS, _BC = (64, 64), 128
 
 
-def _absent_one_written_atom(fixture, config, arena):
+def _absent_one_written_atom(fixture, descriptor, arena):
     """Admit the step's write set except ONE atom, and say which one. `(bitmap, atom)`."""
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
     held_out[row, column] = False
@@ -84,14 +86,14 @@ def _absent_one_written_atom(fixture, config, arena):
     return bitmap, (row, column)
 
 
-def _step(fixture, config, arena, *, workspace=None):
+def _step(fixture, descriptor, arena, *, workspace=None):
     routes, values = _bundles(fixture)
-    y, _state, workspace = _decode_step(routes, values, masks_of(routes), config, arena.state,
+    y, _state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
                                         workspace=workspace, page_table=arena.page_table)
     return y, workspace
 
 
-def _absent_one_atom_per_bh(fixture, config, arena):
+def _absent_one_atom_per_bh(fixture, descriptor, arena):
     """Admit the step's write set except ONE atom of EVERY batch-head. Returns the set.
 
     Every batch-head needy is what makes cell 2's claim the WHOLE plane; with the verdict
@@ -99,7 +101,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
     and the cell would be asserting the mechanism the design replaced.
     """
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
     held_out = bitmap.clone()
     for row in range(bitmap.shape[0]):
         held_out[row, int(bitmap[row].nonzero()[0])] = False
@@ -136,12 +138,12 @@ def test_a_batch_head_that_cannot_address_its_writes_declines_which_is_why_lazin
     "this step does write it": the same step against a resident atom fills those rows.
     """
     fixture = _fixture(_WIDTHS, seed=11, support=0.5)
-    config = _config(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
 
     declined = _arena(_WIDTHS, _BC, BH)
-    bitmap, (row, column) = _absent_one_written_atom(fixture, config, declined)
-    _step(fixture, config, declined)
+    bitmap, (row, column) = _absent_one_written_atom(fixture, descriptor, declined)
+    _step(fixture, descriptor, declined)
     #: Admitting AFTER the step is exactly what a lazy host would do one token late.
     declined.plan_exact(bitmap, fresh=False)
     declined.wait()
@@ -150,7 +152,7 @@ def test_a_batch_head_that_cannot_address_its_writes_declines_which_is_why_lazin
     kept = _arena(_WIDTHS, _BC, BH)
     kept.plan_exact(bitmap, fresh=True)
     kept.wait()
-    _step(fixture, config, kept)
+    _step(fixture, descriptor, kept)
     deposited = _atom_rows(kept, row, column)
 
     assert float(deposited.abs().max()) > 0.0, "the fixture's held-out atom is never written"
@@ -173,20 +175,20 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
     the contract. The mixed batch is `test_decode_growth_trigger.py`'s cell.
     """
     fixture = _fixture(_WIDTHS, seed=12, support=0.5)
-    config = _config(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
     arena = _arena(_WIDTHS, _BC, BH)
-    bitmap = _absent_one_atom_per_bh(fixture, config, arena)
+    bitmap = _absent_one_atom_per_bh(fixture, descriptor, arena)
 
     before = arena.state.clone()
-    _step(fixture, config, arena)
+    _step(fixture, descriptor, arena)
     assert bytes_equal(arena.state, before), "a step no batch-head could address wrote state"
 
     #: And the same step against the admitted set is the ordinary step, on the same
     #: buffers -- residency is an input, never a mode.
     arena.plan_exact(bitmap, fresh=False)
     arena.wait()
-    _step(fixture, config, arena)
+    _step(fixture, descriptor, arena)
     assert not bytes_equal(arena.state, before), "the admitted step did not run"
 
 
@@ -204,24 +206,24 @@ def test_gated_step_then_admit_then_replay_matches_admitting_first():
     walk must re-read in the replay without depositing again.
     """
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
-    config = _config(_WIDTHS)
+    descriptor = _descriptor(_WIDTHS)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     reference = _arena(_WIDTHS, _BC, BH)
     reference.plan_exact(bitmap, fresh=True)
     reference.wait()
-    y_reference, _ = _step(fixture, config, reference)
+    y_reference, _ = _step(fixture, descriptor, reference)
 
     #: The gated order: a batch-head that cannot address its writes runs as a no-op, the
     #: admission follows, and the replay is the step.
     gated = _arena(_WIDTHS, _BC, BH)
-    _absent_one_written_atom(fixture, config, gated)
-    _y, workspace = _step(fixture, config, gated)
+    _absent_one_written_atom(fixture, descriptor, gated)
+    _y, workspace = _step(fixture, descriptor, gated)
     gated.plan_exact(bitmap, fresh=False)
     gated.wait()
-    y_gated, _ = _step(fixture, config, gated, workspace=workspace)
+    y_gated, _ = _step(fixture, descriptor, gated, workspace=workspace)
 
     assert_reordered_close(y_gated, y_reference, "the gated step's y")
     assert bytes_equal(_gathered(reference, BH), _gathered(gated, BH))
@@ -273,16 +275,14 @@ def _sequence():
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x[:, :_T])
-        config = _config(_WIDTHS)
-        bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
+        bits = torch.ones(_B * _H, math.prod(_WIDTHS) // MMA_K_QUANTUM, dtype=torch.bool,
                           device="cuda")
         state = fsla.state()
         _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
                                            BC=64)
         arena.wait()
         _y_ref, oracle_state = naive_fsla(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
-        lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
-                             config.lattice_m)
+        lattice = to_lattice(oracle_state.float(), _WIDTHS, *lattice_of(_WIDTHS))
         #: THE ARENA HOLDS THE STORED FORM (the int8 state pages).
         atoms = encode_pages(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
         table = arena.page_table
@@ -314,11 +314,11 @@ def _copy_tensors(static, fresh):
                 buffer.copy_(level)
 
 
-def _step_plan(layer):
-    """The decode plan the layer's one-token step runs under (`fsla.ops.produce.decode_plan`)."""
-    from fsla.ops.produce import decode_plan
+def _step_descriptor(layer):
+    """The descriptor the layer's one-token step runs under (`fsla.ops.produce.decode_descriptor`)."""
+    from fsla.ops.produce import decode_descriptor
 
-    return decode_plan(layer.topology, d_v=layer.d_v, decay=layer.decay is not None)
+    return decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, device=layer.route_W.device)
 
 
 def _static(routes, v, masks):
@@ -332,17 +332,17 @@ def _fill(static, static_v, static_masks, routes, v, masks):
     _copy_tensors(static_masks, masks)
 
 
-def _capture(static, static_v, static_masks, state, plan):
+def _capture(static, static_v, static_masks, state, descriptor):
     """Warm up on a side stream, then capture ONE gated step. Returns `(graph, y)`."""
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side):
         for _ in range(3):
-            decode_step_gated(static, static_v, static_masks, state, plan=plan)
+            decode_step_gated(static, static_v, static_masks, state, descriptor)
     torch.cuda.current_stream().wait_stream(side)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        y, _ = decode_step_gated(static, static_v, static_masks, state, plan=plan)
+        y, _ = decode_step_gated(static, static_v, static_masks, state, descriptor)
     return graph, y
 
 
@@ -352,14 +352,14 @@ def test_the_captured_step_is_the_eager_step():
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
     routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
-    plan = _step_plan(layer)
+    descriptor = _step_descriptor(layer)
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
-    graph, y_graph = _capture(static, static_v, static_masks, state, plan)
+    graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)
 
     #: Make the token's write set resident FIRST, so neither run is the vacuous no-op
     #: cell 5 is about.
-    decode_step_gated(static, static_v, static_masks, state, plan=plan)
+    decode_step_gated(static, static_v, static_masks, state, descriptor)
     if growth_pending(state):
         admit_growth(state)
     plane = state._arena.state
@@ -371,7 +371,7 @@ def test_the_captured_step_is_the_eager_step():
     assert not bytes_equal(captured_plane, snapshot), "the compared step did nothing"
 
     plane.copy_(snapshot)
-    eager_y, _ = decode_step_gated(static, static_v, static_masks, state, plan=plan)
+    eager_y, _ = decode_step_gated(static, static_v, static_masks, state, descriptor)
     torch.cuda.synchronize()
     assert_reordered_close(captured_y, eager_y, "the captured step's y")
     assert bytes_equal(captured_plane, plane)
@@ -384,7 +384,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(live_of(static, "write"), _config(_WIDTHS))
+    written = _bitmap(live_of(static, "write"), _descriptor(_WIDTHS))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False
@@ -410,10 +410,10 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
     routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
-    plan = _step_plan(layer)
+    descriptor = _step_descriptor(layer)
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
-    graph, y_graph = _capture(static, static_v, static_masks, state, plan)
+    graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)
 
     row, column = _make_growth(state, static)
     plane = state._arena.state
@@ -445,10 +445,10 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     _fill(eager_static, eager_static_v, eager_static_masks, eager_routes, v2[:, token], eager_masks)
     assert _make_growth(eager_state, eager_static) == (row, column), (
         "the two sequences are not the same sequence")
-    decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, plan=plan)
+    decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, descriptor)
     assert growth_pending(eager_state)
     admit_growth(eager_state)
-    eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, plan=plan)
+    eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, descriptor)
     torch.cuda.synchronize()
 
     assert_reordered_close(landed_y, eager_y, "the landed step's y")

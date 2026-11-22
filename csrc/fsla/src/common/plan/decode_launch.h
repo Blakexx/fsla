@@ -30,14 +30,21 @@ struct DecodeArm {
   }
 };
 
+inline constexpr int kDecodeMaxLevels = 4;
+
 //: what the launch takes besides the arm: the compute capability of the build to launch, the CTA's threads, the shared
-//: memory a CTA may opt in to, the zero columns the call's value width is padded by, and the device's SMs
+//: memory a CTA may opt in to, the zero columns the call's value width is padded by, the device's SMs, each level's width
+//: (0 beyond the call's `levels`) and its offset into the flattened per-level rows (the prefix sums of the widths), and
+//: whether the step deposits whole atoms (0 or 1)
 struct DecodeArgs {
   int cc;
   int threads;
   int smem_budget;
   int pad;
   int sms;
+  int widths[kDecodeMaxLevels];
+  int row_offsets[kDecodeMaxLevels];
+  int write_dense;
 };
 
 struct DecodeLaunch {
@@ -93,16 +100,44 @@ constexpr DecodeReach decode_reach(const Descriptor& d) {
 //: the arm of a point: the same walk, which over a point visits one leaf; a range, or a point no arm serves, aborts
 constexpr DecodeArm decode_arm(const Descriptor& d) { return decode_reach(d).one(); }
 
+//: the call's width fact of level `l` (0-based): the log2 of that level's width
+constexpr Interval decode_width_bits(const Descriptor& d, int l) {
+  switch (l) {
+    case 0:
+      return Reader::width_bits_1(d);
+    case 1:
+      return Reader::width_bits_2(d);
+    case 2:
+      return Reader::width_bits_3(d);
+    default:
+      return Reader::width_bits_4(d);
+  }
+}
+
 //: exact values only: a range aborts
 constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
   bool exact = Reader::cc(d).point() && Reader::regs_per_sm(d).point()
                && Reader::smem_per_cta_optin(d).point() && Reader::sm_count(d).point()
-               && Reader::d_v(d).point();
+               && Reader::d_v(d).point() && Reader::levels(d).point()
+               && Reader::write_dense(d).point();
+  for (int l = 0; l < kDecodeMaxLevels; ++l) exact = exact && decode_width_bits(d, l).point();
   if (!exact) std::abort();
-  return {static_cast<int>(Reader::cc(d).lo),
-          static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
-          static_cast<int>(Reader::smem_per_cta_optin(d).lo),
-          arm.d_v - static_cast<int>(Reader::d_v(d).lo), static_cast<int>(Reader::sm_count(d).lo)};
+  DecodeArgs args{static_cast<int>(Reader::cc(d).lo),
+                  static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
+                  static_cast<int>(Reader::smem_per_cta_optin(d).lo),
+                  arm.d_v - static_cast<int>(Reader::d_v(d).lo),
+                  static_cast<int>(Reader::sm_count(d).lo),
+                  {},
+                  {},
+                  static_cast<int>(Reader::write_dense(d).lo)};
+  int offset = 0;
+  for (int l = 0; l < arm.levels; ++l) {
+    const auto bits = decode_width_bits(d, l).lo;
+    args.widths[l] = bits > 0 ? 1 << bits : 0;
+    args.row_offsets[l] = offset;
+    offset += args.widths[l];
+  }
+  return args;
 }
 
 //: the scratch a call needs beside its operands: its bytes and the alignment of its address (decode has no per-call scratch: its buffers belong to

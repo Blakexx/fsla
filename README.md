@@ -69,12 +69,12 @@ y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode 
 
 `fsla.union_routing(width, alpha)` is the alternative level: one shared entmax solve split across the two duties.
 
-The same call through the op: the producer makes a call's factors, values and masks (`produce`), the plan is static
-(`prefill_plan`, `decode_plan`), and `fsla_op` or the decode step takes them.
+The same call through the op: the producer makes a call's factors, values and masks (`produce`), prefill's plan is static
+(`prefill_plan`), decode takes the validated descriptor of its call (`decode_descriptor`), and `fsla_op` or the decode step takes them.
 
 ```python
 import torch
-from fsla.ops.produce import ProducerPlan, ProducerWeights, produce, prefill_plan, decode_plan, projection_dtype
+from fsla.ops.produce import ProducerPlan, ProducerWeights, produce, prefill_plan, decode_descriptor, projection_dtype
 from fsla.routing.masks import DECODE          # PREFILL is the default consumer
 from fsla.engine.dags.decode_dag import decode_step_gated, growth_pending, admit_growth
 
@@ -92,15 +92,14 @@ routes, values, masks = produce(x, plan, weights)
 state = fsla.state()
 y, state = fsla.fsla_op(routes, values, masks, plan=prefill_plan(routing.topology, d_v), state=state)
 
-# decode: the same producer, the masks in the decode layout, and the decode plan
+# decode: the same producer, the masks in the decode layout, and the descriptor of the call on this device
 step_plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v, consumer=DECODE)
 routes, values, masks = produce(x_token, step_plan, weights)       # x_token: [B, 1, hidden]
-y, state = decode_step_gated(routes, values, masks, state,
-                             plan=decode_plan(routing.topology, d_v=d_v, decay=False))
+descriptor = decode_descriptor(routing.topology, d_v=d_v, decay=False, device=x_token.device)
+y, state = decode_step_gated(routes, values, masks, state, descriptor)
 if growth_pending(state):                       # a head whose state needed one more atom skipped itself
     admit_growth(state)
-    y, state = decode_step_gated(routes, values, masks, state,
-                                 plan=decode_plan(routing.topology, d_v=d_v, decay=False))
+    y, state = decode_step_gated(routes, values, masks, state, descriptor)
 ```
 
 The masks' layouts: **prefill**, int32 `[B, H, ceil(T / 32), width_l]` per level and side, token-packed (bit `t % 32` of
@@ -142,9 +141,9 @@ This table is **generated** by `tools/supported.py` from the contract (`hardware
 guarantees an arm for) and the architectures the build produces; the gate fails if it drifts. Change the contract, not the table.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
-| Compute capability | GPUs | d_v | levels | decay | Toolchain | Assembler | Status |
-|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 2..64 | 1, 2, 3, 4 | 0, 1 | `cu13` | ptxas 13.5.37 | built |
+| Compute capability | GPUs | d_v | levels | decay | write_dense | width_bits_1 | width_bits_2 | width_bits_3 | width_bits_4 | Toolchain | Assembler | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `sm_90a` | H100 | 2..64 | 1, 2, 3, 4 | 0, 1 | 0..1 | 4..8 | 0, 4..8 | 0, 4..8 | 0, 4..8 | `cu13` | ptxas 13.5.37 | built |
 <!-- END GENERATED: tools/supported.py -->
 
 An architecture that is not built refuses to load. Bringing one up is a measurement:

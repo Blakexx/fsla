@@ -11,8 +11,9 @@ A host tool the graph builds (`//csrc/fsla:decode_arms_gen`) and runs (`//csrc/f
 
 <a id="the-contract"></a>
 THE CONTRACT IS GUARANTEED: a context whose `decode_reach` walk reaches NONE fails the tool with the context's id and the facts the launch function reads, so
-the build fails; the fix is an arm, or a narrower contract in the same commit. Decode's contract is `hardware/parts/calls/decode.json`: `d_v`
-from 2 (the value width `fsla/_state.py`'s `StateFormat` admits) to 64, one to four `levels`, `decay` 0 or 1. The value width is a RANGE
+the build fails; the fix is an arm, or a narrower contract in the same commit. Decode's contract is `hardware/parts/calls/decode.json` and one depth part each of the four hierarchy depths beside it
+(`hardware/parts/calls`; the registry page names them): `d_v`
+from 2 (the value width `fsla/_state.py`'s `StateFormat` admits) to 64, one to four `levels`, `decay` 0 or 1 (and the level widths and `write_dense`, which the arm half does not read: the arm key stays `d_v`, `levels`, `decay`). The value width is a RANGE
 because the seam pads any width up to the arm that holds it, and the launch function maps it ([`../common/plan/decode_launch.md`](../common/plan/decode_launch.md)).
 
 <a id="coverage"></a>
@@ -26,6 +27,6 @@ walk against every point of seeded ranges. The other half, a point reaches exact
 points inside each context, each of which must reach, through `plan::decode_arm`, an arm of the context's reach.
 
 `//hardware:contexts` is the contract the build names (`--//:contract`, default `full`): under a declared narrowed contract
-([`../hardware/registry.md#narrowed`](../hardware/registry.md#narrowed)) the tool reaches only the arms that contract does (`decode_d32_l2`: 4 of the 16), and the
+([`../hardware/registry.md#narrowed`](../hardware/registry.md#narrowed)) the tool reaches only the arms that contract does (`decode_d32_l2`: 2 of the 16), and the
 build is an iteration build that is never a wheel. The first line of the contexts file names the contract; the selection record repeats it.
 `tests/unit/test_narrowed_contract.py` holds the counts.

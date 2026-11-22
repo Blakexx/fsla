@@ -205,7 +205,7 @@ def decode_step(fx) -> Launch:
     from fsla.engine.constants import box_leaves
     from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
     from fsla.engine.facts import planes
-    from fsla.ops.produce import decode_plan
+    from fsla.ops.produce import decode_descriptor
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -214,7 +214,7 @@ def decode_step(fx) -> Launch:
     #: routing writes -- a decode step's cost is a function of residency and routing,
     #: not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
-    plan = decode_plan(layer.topology, d_v=layer.d_v, decay=layer.decay is not None)
+    descriptor = decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, device=fx["x"].device)
     routes = fx["routes"]
     #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
     with torch.no_grad():
@@ -238,10 +238,10 @@ def decode_step(fx) -> Launch:
         with torch.no_grad():
             routes, _values, masks = layer._produce(token, layer.step_plan)
             values = fsla.Values.from_projection(v_token)
-            y, state = decode_step_gated(routes, values, masks, seeded["state"], plan=plan)
+            y, state = decode_step_gated(routes, values, masks, seeded["state"], descriptor)
             if growth_pending(state):
                 admit_growth(state)
-                y, state = decode_step_gated(routes, values, masks, state, plan=plan)
+                y, state = decode_step_gated(routes, values, masks, state, descriptor)
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory

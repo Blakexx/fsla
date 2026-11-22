@@ -55,12 +55,11 @@ from fsla.interface import (
     operands_of,
     requires_backward,
 )
-from fsla.ops.descriptor import descriptor
 from fsla.ops.prefill import launch_bytes_per_token
 from fsla.ops.produce import (
     ProducerPlan,
     ProducerWeights,
-    decode_plan,
+    decode_descriptor,
     hidden_contiguous,
     prefill_plan,
     produce,
@@ -165,12 +164,10 @@ class FSLA(nn.Module):
 
         if plan is not None and type(plan) is not PrefillPlan:
             raise TypeError(f"plan is a fsla.expert.PrefillPlan or None, got {type(plan).__name__}")
-        #: THE STATIC PLANS, compiled once from the declaration at their first use: a declaration no carve admits is
-        #: refused there, and the decode step's arm table is the binary's
+        #: THE STATIC PLAN, compiled once from the declaration at its first use: a declaration no carve admits is
+        #: refused there
         self._pinned = plan
         self._prefill_plan = None
-        self._decode_plan = None
-        self._descriptor = None
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -326,7 +323,9 @@ class FSLA(nn.Module):
 
     def _step(self, x: torch.Tensor, state) -> torch.Tensor:
         """ONE DECODED TOKEN WITH NO HOST READ INSIDE: the producer's launch, the gated decode step and the output
-        projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable. A batch-head
+        projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable: the descriptor is
+        asked for on every step (:func:`fsla.ops.produce.decode_descriptor`, memoized process-wide: no device read after the
+        first). A batch-head
         whose write atoms the state can neither address nor admit is a no-op; the caller owns the verdict at its own
         synchronization -- ``growth_pending(state)``, then ``admit_growth(state)`` and the step again (a captured
         step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
@@ -336,10 +335,8 @@ class FSLA(nn.Module):
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
-        if self._decode_plan is None:
-            self._descriptor = descriptor(device=x.device, d_v=self.d_v, levels=len(self.topology.widths), decay=self.decay is not None)
-            self._decode_plan = decode_plan(self.topology, d_v=self.d_v, decay=self.decay is not None, descriptor=self._descriptor)
-        out, _state = decode_step_gated(routes, values, masks, state, plan=self._decode_plan, descriptor=self._descriptor, decay=decay)
+        descriptor = decode_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, device=x.device)
+        out, _state = decode_step_gated(routes, values, masks, state, descriptor, decay=decay)
         return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
 
     def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:

@@ -3,5 +3,9 @@
   "narrowed": true,
   "gpus": "H100",
   "arch": "sm_90a",
-  "compose": ["device/hopper_sm90a", "calls/decode_narrow_d32_l2"]
+  "compose": [
+    "device/hopper_sm90a",
+    "calls/decode_narrow_d32",
+    "calls/depth2"
+  ]
 }

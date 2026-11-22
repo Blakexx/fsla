@@ -1,0 +1,35 @@
+{
+  "name": "calls/depth3",
+  "doc": "the decode call's depth 3: `levels` and the log2 of each level's width, correlated (a level beyond `levels` has width_bits 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside calls/decode",
+  "facts": {
+    "levels": {
+      "value": 3,
+      "declared_by": "docs/internals/decode/decode.md#kmaxlevels-2: kMaxLevels, the hierarchy depths the step's per-level arrays hold; this part is depth 3"
+    },
+    "width_bits_1": {
+      "value": {
+        "lo": 4,
+        "hi": 8
+      },
+      "declared_by": "the log2 of level 1's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "width_bits_2": {
+      "value": {
+        "lo": 4,
+        "hi": 8
+      },
+      "declared_by": "the log2 of level 2's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "width_bits_3": {
+      "value": {
+        "lo": 4,
+        "hi": 8
+      },
+      "declared_by": "the log2 of level 3's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "width_bits_4": {
+      "value": 0,
+      "declared_by": "a depth-3 call has no level 4: its width fact is 0"
+    }
+  }
+}

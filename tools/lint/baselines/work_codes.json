@@ -968,18 +968,6 @@
    "count": 1
   },
   {
-   "path": "fsla/ops/decode.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "f6afe79f98508718",
-   "count": 1
-  },
-  {
-   "path": "fsla/ops/decode.py",
-   "message": "names the work code 'K53'",
-   "line_sha256": "942322dd781d5cf1",
-   "count": 1
-  },
-  {
    "path": "tests/integration/test_decode_dispatch.py",
    "message": "names the work code 'K31'",
    "line_sha256": "3ba319609445ccd5",
@@ -1222,12 +1210,6 @@
   {
    "path": "tests/oracle/test_padding_seam.py",
    "message": "names the work code 'K50'",
-   "line_sha256": "1b3497dc07526823",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_padding_seam.py",
-   "message": "names the work code 'K50'",
    "line_sha256": "332ca4310409cc2a",
    "count": 1
   },
@@ -1445,24 +1427,6 @@
    "path": "tests/unit/test_state_contract.py",
    "message": "names the work code 'K50'",
    "line_sha256": "bb5518db96c0e760",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_state_contract.py",
-   "message": "names the work code 'K53'",
-   "line_sha256": "1ebd9ea445098afe",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_state_contract.py",
-   "message": "names the work code 'K53'",
-   "line_sha256": "8788dd11111514e5",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_state_contract.py",
-   "message": "names the work code 'K53'",
-   "line_sha256": "af36becdf3dc8c1f",
    "count": 1
   },
   {

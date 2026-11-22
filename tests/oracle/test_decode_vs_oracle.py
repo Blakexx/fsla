@@ -48,16 +48,15 @@ Run: ``bazel test //tests:oracle --test_filter=test_decode_vs_oracle``
 
 from __future__ import annotations
 
-import dataclasses
 import math
 
 import pytest
 import torch
 
-from fsla.ops.decode import _decode_step
+from fsla.ops.decode import _decode_step, decode_launch, lattice_of
 from fsla.ops.lattice import permutation, to_canonical, to_lattice
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.types import LeafMassDecay
@@ -112,16 +111,16 @@ def _chunk_tokens() -> int:
 #:
 #: The order is positional in the parametrize ids and does not change.
 #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29; K53): every row here is a
-#: descriptor `StateFormat`/decode's own `_admit` both accept -- depth two, three and four,
+#: descriptor `StateFormat` and decode's contract (`width_bits_k`) both accept -- depth two, three and four,
 #: each with every level at or above the floor. The ragged ones this list used to carry --
 #: (33,), (7, 9), (3, 5, 7), (2, 3, 4, 4) -- are gone with the ragged state: no descriptor can
 #: name them.
 _TOPOLOGIES = [(64, 64), (16, 16, 16), (16, 16, 16, 16)]
 
 
-def _lattice_mask(mask, config):
+def _lattice_mask(mask, widths):
     """A ``[BH, N]`` CANONICAL leaf mask, re-read in LATTICE order."""
-    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=mask.device)
+    pi = permutation(widths, *lattice_of(widths), device=mask.device)
     out = torch.empty_like(mask)
     out.index_copy_(1, pi, mask)
     return out
@@ -163,15 +162,15 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     """
     topology = _topology(widths)
     N = math.prod(widths)
-    config = decode_plan(topology, d_v=d_v, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
     empty = tuple(quant.aligned_rows(*r.shape, r.device) for r in rows)
     routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
-    state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
-    _y, state, _ws = _decode_step(routes, values, masks_of(routes), config, state)
+    state = state_pages(torch.zeros(B, H, N, decode_launch(descriptor).cols, **f32))
+    _y, state, _ws = _decode_step(routes, values, masks_of(routes), descriptor, state)
     return (logical_state(state, d_v) != 0).any(-1)
 
 
@@ -217,9 +216,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         ref = ref._replace(state=state_rounded(ref.state))
 
     # ---- decode ---------------------------------------------------------------
-    config = decode_plan(topology, d_v=d_v, decay=decay is not None)
-    if ctas is not None:
-        config = dataclasses.replace(config, ctas=ctas)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=decay is not None)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
     #: THE STORED FORM IS THE INT8 STATE PAGE: the seam packs after the lattice
     #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
@@ -227,16 +224,15 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     state = state_pages(
         torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
         if initial_state is None
-        else to_lattice(initial_state.to(torch.float32), widths,
-                        config.lattice_k, config.lattice_m))
+        else to_lattice(initial_state.to(torch.float32), widths, *lattice_of(widths)))
     workspace = None
     y_outs = []
     for routes, values in bundles:
-        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, state, decay=decay, workspace=workspace, ctas=ctas)
         y_outs.append(y)
-    state = to_canonical(logical_state(state, d_v).reshape(B, H, N, cols), widths, config.lattice_k, config.lattice_m)
+    state = to_canonical(logical_state(state, d_v).reshape(B, H, N, cols), widths, *lattice_of(widths))
 
-    return dict(y=y_outs, state=state, y_refs=y_refs, ref=ref, config=config, workspace=workspace,
+    return dict(y=y_outs, state=state, y_refs=y_refs, ref=ref, descriptor=descriptor, workspace=workspace,
                 routes=[routes for routes, _ in bundles], drawn_write=drawn_write,
                 widths=widths, B=B, H=H, N=N, device=device)
 
@@ -278,10 +274,10 @@ def test_g3_expansion_is_the_exact_leaf_support(widths, p_read, p_write):
     Both sides go through the SAME device path, so both are stated here.
     """
     out = _case(widths, 64, 2, 3, "global", p_read, p_write, seed=17)
-    B, H, device, config = out["B"], out["H"], out["device"], out["config"]
+    B, H, device = out["B"], out["H"], out["device"]
     routes = out["routes"][0]
-    want_r = _lattice_mask(_leaf_support(live_of(routes, "read"), widths, B, H, device), config)
-    want_w = _lattice_mask(_leaf_support(live_of(routes, "write"), widths, B, H, device), config)
+    want_r = _lattice_mask(_leaf_support(live_of(routes, "read"), widths, B, H, device), widths)
+    want_w = _lattice_mask(_leaf_support(live_of(routes, "write"), widths, B, H, device), widths)
     assert torch.equal(_kernel_realized_support(routes, "read", widths, B, H, device),
                        want_r), "the read walk is not the exact read support"
     assert torch.equal(_kernel_realized_support(routes, "write", widths, B, H, device),
@@ -330,11 +326,12 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
-    config = decode_plan(topology, d_v=d_v, decay=False)
-    m0 = state_pages(0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32))
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+    launch = decode_launch(descriptor)
+    m0 = state_pages(0.1 * torch.randn(B, H, launch.N, launch.cols, device=device, dtype=torch.float32))
     state = m0.clone()
     routes, values = step_bundles(v, zeros, with_gain(zeros, g_write), topology)
-    y, state, _workspace = _decode_step(routes, values, masks_of(routes), config, state)
+    y, state, _workspace = _decode_step(routes, values, masks_of(routes), descriptor, state)
     assert not _leaf_support(live_of(routes, "write"), widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
@@ -541,15 +538,15 @@ def test_g7_prefill_decode_seam(widths):
     step_gw = torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=gen) + 0.5
     step_v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=gen)
 
-    config = decode_plan(pre["topology"], d_v=d_v, decay=False)
+    descriptor = decode_descriptor(pre["topology"], d_v=d_v, decay=False)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
-    entry = state_pages(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
+    entry = state_pages(to_lattice(pre["state"], widths, *lattice_of(widths)))
     routes, values = step_bundles(step_v, step_read, with_gain(step_write, step_gw), pre["topology"])
-    y_dec, state_dec, _ = _decode_step(routes, values, masks_of(routes), config, entry)
+    y_dec, state_dec, _ = _decode_step(routes, values, masks_of(routes), descriptor, entry)
     step_v, step_read, step_write = bundle_operands(routes, values)
-    state_dec = to_canonical(logical_state(state_dec, d_v).reshape(B, H, config.N, d_v + 1), widths,
-                             config.lattice_k, config.lattice_m)
+    state_dec = to_canonical(logical_state(state_dec, d_v).reshape(B, H, decode_launch(descriptor).N, d_v + 1), widths,
+                             *lattice_of(widths))
 
     #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
     #: reference sees exactly what the two kernel legs together saw.

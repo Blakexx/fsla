@@ -241,9 +241,9 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     same class of failure (two implementations behind one call) that the layer's guard
     exists to prevent, pointed the other way.
     """
-    from fsla.ops.decode import _decode_step
+    from fsla.ops.decode import _decode_step, decode_launch
     from fsla.ops.paging import page_layout
-    from fsla.ops.produce import decode_plan
+    from fsla.ops.produce import decode_descriptor
     from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
     from tests.oracle.fixtures import step_bundles
 
@@ -252,14 +252,15 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in widths))
-    config = decode_plan(topology, d_v=d_v, decay=False)
+    descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+    launch = decode_launch(descriptor)
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)
     routes, values = step_bundles(v, levels, with_gain(levels, g_write), topology)
-    state = torch.zeros(1, config.N // 16, page_layout(config.d_v).bytes, dtype=torch.uint8, device=device)
+    state = torch.zeros(1, launch.N // 16, page_layout(launch.d_v).bytes, dtype=torch.uint8, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
-        _decode_step(routes, values, masks_of(routes), config, state)
+        _decode_step(routes, values, masks_of(routes), descriptor, state)
 
 
 @pytest.mark.cuda

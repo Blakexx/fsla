@@ -35,23 +35,20 @@ from functools import cache
 
 import torch
 
-from fsla._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
-from fsla.engine.plan import DecodeLaunch, DecodeOperands, DecodePlan, DecodeWorkspace
+from fsla.engine.plan import DecodeLaunch, DecodeOperands, DecodeWorkspace
 from fsla.ops._ext import extension
 from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decay import leaf_rate_dials
 from fsla.ops.descriptor import Descriptor
-from fsla.ops.descriptor import descriptor as make_descriptor
 from fsla.ops.lattice import derive_lattice, permutation
 from fsla.ops.padding import pad_v, slice_y
 from fsla.ops.paging import MMA_K_QUANTUM, page_layout
 from fsla.routing.masks import DECODE
-from fsla.routing.types import Topology
 
 __all__ = [
     "DecodeScratch",
     "arms",
-    "derive_decode_plan",
+    "lattice_of",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
@@ -87,7 +84,8 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
 @dataclass(frozen=True, slots=True)
 class DecodeLaunchFacts:
     """What the planner's launch function makes of a descriptor that Python reads (``common/plan/decode_launch.h``): the arm (``d_v``,
-    ``levels``, ``decay``), the zero columns the call's value width is padded by and the workspace the call needs (bytes, alignment)."""
+    ``levels``, ``decay``), the zero columns the call's value width is padded by, the workspace the call needs (bytes, alignment) and
+    each level's width (``widths``, one a level)."""
 
     d_v: int
     levels: int
@@ -95,78 +93,32 @@ class DecodeLaunchFacts:
     pad: int
     workspace_bytes: int
     workspace_alignment: int
+    widths: tuple[int, ...]
+
+    @property
+    def N(self) -> int:
+        return math.prod(self.widths)
+
+    @property
+    def cols(self) -> int:
+        return self.d_v + 1  # the mass column is unconditional (raw is dead)
+
+
+_MAX_LEVELS = 4
 
 
 @cache
 def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
     """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``."""
-    return DecodeLaunchFacts(*(int(x) for x in extension().fsla_decode_launch(list(descriptor.words), descriptor.device)))
+    words = [int(x) for x in extension().fsla_decode_launch(list(descriptor.words), descriptor.device)]
+    return DecodeLaunchFacts(*words[:6], widths=tuple(words[6:6 + words[1]]))
 
 
-def _admit(widths: tuple[int, ...]) -> None:
-    """DECODE'S OP ENTRY, THE SAME DESCRIPTOR CHECK AS PREFILL (K53).
-
-    K50 declared ONE admission law for both arms; until now decode's own entry
-    never asked it -- :class:`~fsla._state.StateFormat` is what
-    ``FSLAState._kernel_entry`` builds a call's presented descriptor through, and
-    this is the SAME class, so a topology narrower than its floor (every ``B_l`` a
-    power of two at or above :data:`~fsla._state.MIN_LEVEL_WIDTH`) is refused by
-    name here exactly as it would be at prefill's seam, rather than only wherever a
-    call happens to route through a bound :class:`~fsla._state.FSLAState`.
-
-    Only the levels are this call's business: ``DV`` and ``ids`` are placeholders
-    that satisfy the descriptor's OTHER fields (an even ``DV``, a page-aligned
-    ``N``, which every lawful ``widths`` already is) without asking the
-    planner: the value width's law is the contract's (:func:`derive_decode_plan`).
-    """
-    StateFormat(D=len(widths), B=widths, order=CANONICAL_ORDER, page_bits=PAGE_RECTANGLE_BITS,
-                DV=2, dtype=SPLIT_PLANE_DTYPE, ids=1)
-
-
-def derive_decode_plan(
-    topology: Topology,
-    *,
-    d_v: int,
-    decay: bool,
-    write_dense: bool,
-    eps: float = READOUT_EPS,
-    descriptor: Descriptor | None = None,
-) -> DecodePlan:
-    """Build the static plan once, at the boundary. ``write_dense`` is the plan's action (deposit whole atoms), chosen by
-    the producer's plan rule (:func:`fsla.ops.produce.decode_plan`); nothing here reads an activation.
-
-    HOST-SIDE PADDING ("d_v padding is also host-side"): ``d_v`` is the caller's
-    LOGICAL value width, and this is the SEAM -- the plan this returns carries
-    the padded ``DV`` (the planner's launch function maps the descriptor's ``d_v`` to its arm's: :func:`decode_launch`), which is what the
-    scratch sizing and the launch address. ``descriptor`` is the call's on the current device when none is given. Decode's arm key is
-    ``(DV, D, decay)`` ONLY (:func:`arms`): ``DV`` is padded to an arm's, but the per-level widths carry no such
-    shipped set of their own, so ``topology.widths`` travels to the kernel exactly as
-    the caller holds them -- past :func:`_admit`'s floor, which REFUSES rather than
-    pads (R13: the kernel never pads or masks).
-
-    ``ctas`` is ``None``: the step sizes its grid itself from the card, the same every step (one wave of the
-    declared residency, at most the heads' unit supply; docs/internals/decode/decode.md#the-split-policy), and the work
-    queue balances it inside the launch; a gate forces a count by replacing it.
-    """
-    widths = tuple(topology.widths)
-    _admit(widths)
-    D = len(widths)
-    if descriptor is None:
-        descriptor = make_descriptor(d_v=d_v, levels=D, decay=decay)
-    elif (descriptor["d_v"], descriptor["levels"], bool(descriptor["decay"])) != (d_v, D, decay):
-        raise ValueError(f"the descriptor is for d_v={descriptor['d_v']}, levels={descriptor['levels']}, decay={descriptor['decay']}; "
-                         f"the plan is for d_v={d_v}, levels={D}, decay={int(decay)}")
-    d_v = decode_launch(descriptor).d_v
-    k, m = derive_lattice(widths)
-    row_offset = []
-    acc = 0
-    for w in widths:
-        row_offset.append(acc)
-        acc += w
-
-    return DecodePlan(
-        D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
-        d_v=int(d_v), has_decay=decay, eps=eps, ctas=None, write_dense=write_dense)
+@cache
+def lattice_of(widths: tuple[int, ...]) -> tuple[int, int]:
+    """The ``(k, m)`` box the state plane's leaves are ordered by, derived from the state's format
+    (:func:`fsla.ops.lattice.derive_lattice`, the one authority); the leaf order travels with the plane."""
+    return derive_lattice(widths)
 
 
 @dataclass(slots=True)
@@ -205,19 +157,20 @@ class DecodeScratch:
     atom_bits: torch.Tensor
 
     @staticmethod
-    def build(config: DecodePlan, BH: int, device) -> DecodeScratch:
+    def build(descriptor: Descriptor, BH: int, device) -> DecodeScratch:
+        launch = decode_launch(descriptor)
         i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
         return DecodeScratch(
-            yacc=torch.zeros(BH, config.cols, **f32),
+            yacc=torch.zeros(BH, launch.cols, **f32),
             queue=_fresh_queue(BH, device),
             growth=torch.zeros(BH, **i32),
             growth_any=torch.zeros(1, **i32),
             growth_ctr=torch.zeros(1, **i32),
             growth_host=torch.empty(1, dtype=torch.int32, pin_memory=cuda),
             done=torch.zeros(BH, **i32),
-            atom_bits=torch.empty(BH, config.N // MMA_K_QUANTUM, dtype=torch.bool,
+            atom_bits=torch.empty(BH, launch.N // MMA_K_QUANTUM, dtype=torch.bool,
                                   device=device))
 
 
@@ -275,7 +228,7 @@ def guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-def step_plane(v: torch.Tensor, config: DecodePlan, decay,
+def step_plane(v: torch.Tensor, descriptor: Descriptor, decay,
                state: torch.Tensor, page_table: torch.Tensor | None) -> torch.Tensor:
     """The plane the kernel indexes, and the per-step agreement checks that find it.
 
@@ -286,21 +239,22 @@ def step_plane(v: torch.Tensor, config: DecodePlan, decay,
     """
     if v.dim() != 4:
         raise ValueError(f"v must be [B, 1, H, d_v], got {tuple(v.shape)}")
+    launch = decode_launch(descriptor)
     B, _T, H, d_v = v.shape
     BH = B * H
-    if d_v != config.d_v:
-        raise ValueError(f"v's d_v={d_v} disagrees with the frozen config's {config.d_v}")
-    if (decay is not None) != config.has_decay:
+    if d_v != launch.d_v:
+        raise ValueError(f"v's d_v={d_v} disagrees with the descriptor's arm width {launch.d_v}")
+    if (decay is not None) != bool(launch.decay):
         raise ValueError(
-            f"the frozen config says has_decay={config.has_decay} but decay is "
-            f"{'absent' if decay is None else 'present'}; the config is frozen for the "
+            f"the descriptor says decay={launch.decay} but decay is "
+            f"{'absent' if decay is None else 'present'}; the descriptor is for the "
             "sequence and the decay arm is part of it")
     page_bytes = page_layout(d_v).bytes
     if page_table is None:
         #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the dense
         #: plane is the same page sequence with every page resident, and `N` is page
         #: aligned by construction (docs/internals/state.md#format).
-        expected = (BH, config.N // MMA_K_QUANTUM, page_bytes)
+        expected = (BH, launch.N // MMA_K_QUANTUM, page_bytes)
         if tuple(state.shape) != expected:
             raise ValueError(f"a dense state is [BH, N / {MMA_K_QUANTUM}, page_bytes] = {expected}, "
                              f"got {tuple(state.shape)}")
@@ -308,14 +262,14 @@ def step_plane(v: torch.Tensor, config: DecodePlan, decay,
     if state.dim() != 2 or state.shape[1] != page_bytes:
         raise ValueError(
             f"under a page table the state is the arena's plane, [slots, {page_bytes}], got {tuple(state.shape)}")
-    if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
+    if tuple(page_table.shape) != (BH, launch.N // MMA_K_QUANTUM):
         raise ValueError(
             f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "
-            f"{(BH, config.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
+            f"{(BH, launch.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
     return state
 
 
-def leaf_rate_dials_for(decay, config: DecodePlan, device) -> torch.Tensor | None:
+def leaf_rate_dials_for(decay, descriptor: Descriptor, device) -> torch.Tensor | None:
     """``[H, sum_l width_l]`` fp32 -- the decay arm's per-HEAD constant, or ``None``.
 
     It is the ONE operand the step kernel does not fold: a per-HEAD constant rather than a
@@ -324,15 +278,10 @@ def leaf_rate_dials_for(decay, config: DecodePlan, device) -> torch.Tensor | Non
     """
     if decay is None:
         return None
-    return leaf_rate_dials(decay, config).to(device).float()
+    return leaf_rate_dials(decay, decode_launch(descriptor).levels).to(device).float()
 
 
-def descriptor_of(config: DecodePlan, device) -> Descriptor:
-    """The descriptor of ``config``'s call on ``device``: the plan's padded value width, which the arm serves unpadded."""
-    return make_descriptor(device=device, d_v=config.d_v, levels=config.D, decay=config.has_decay)
-
-
-def step(launch: DecodeLaunch) -> torch.Tensor:
+def step(launch: DecodeLaunch, *, ctas: int | None = None, eps: float = READOUT_EPS) -> torch.Tensor:  #: reserved: ``ctas`` is a gate's forced CTA count (None is the launch function's own grid, docs/internals/decode/decode.md#the-split-policy), ``eps`` the readout's constant
     """THE STEP, in ONE launch, in place on ``launch.operands.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
     Fold, expand and walk are one kernel: the per-token operands are gathered from the
@@ -349,7 +298,7 @@ def step(launch: DecodeLaunch) -> torch.Tensor:
     and the verdict it publishes is per batch-head
     (docs/internals/decode/decode.md#absorbed-verdict).
     """
-    config, op, pool = launch.plan, launch.operands, launch.workspace.pool
+    op, pool = launch.operands, launch.workspace.pool
     scratch = launch.workspace.scratch
     y = extension().fsla_decode_forward(
         read=list(op.read),
@@ -369,23 +318,20 @@ def step(launch: DecodeLaunch) -> torch.Tensor:
         growth_ctr=scratch.growth_ctr,
         done=scratch.done,
         atom_bits=scratch.atom_bits,
-        level_widths=list(config.widths),
-        level_row_offsets=list(config.level_row_offset),
-        lattice_k=config.lattice_k,
-        lattice_m=config.lattice_m,
-        write_dense=config.write_dense,
-        ctas=-1 if config.ctas is None else config.ctas,
-        eps=config.eps,
+        lattice_k=op.state_lattice[0],
+        lattice_m=op.state_lattice[1],
+        ctas=-1 if ctas is None else ctas,
+        eps=eps,
         descriptor=list(launch.descriptor.words),
         page_table=op.page_table,
         pool_slots=None if pool is None else pool.pool_slots,
         pool_cursor=None if pool is None else pool.pool_cursor,
     )
-    B, _T, H, _d_v = op.v.shape
-    return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
+    B, _T, H, d_v = op.v.shape
+    return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous()
 
 
-def _write_atom_bitmap(write_live, config: DecodePlan) -> torch.Tensor:
+def _write_atom_bitmap(write_live, widths: tuple[int, ...], lattice: tuple[int, int]) -> torch.Tensor:
     """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY, from each write level's live
     digits: the write masks' bits (:meth:`~fsla.routing.masks.Masks.bits`), ``[B, 1, H, width_l]`` bool a level.
 
@@ -396,29 +342,30 @@ def _write_atom_bitmap(write_live, config: DecodePlan) -> torch.Tensor:
     step of the kernel's own enumeration.
     """
     device = write_live[0].device
-    index = torch.arange(config.N, device=device)
+    index = torch.arange(math.prod(widths), device=device)
     live = None
-    for level, width in enumerate(config.widths):
-        digit = (index // math.prod(config.widths[level + 1:])) % width
+    for level, width in enumerate(widths):
+        digit = (index // math.prod(widths[level + 1:])) % width
         column = _fold(write_live[level])[:, digit]
         live = column if live is None else (live & column)
-    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
+    pi = permutation(widths, *lattice, device=device)
     lattice_live = torch.empty_like(live)
     lattice_live.index_copy_(1, pi, live)
-    return lattice_live.view(-1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
+    return lattice_live.view(-1, math.prod(widths) // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
 
 
 def _decode_step(
     routes,
     values,
     masks,
-    config: DecodePlan,
+    descriptor: Descriptor,
     state: torch.Tensor,
     *,
     decay=None,
     workspace: DecodeScratch | None = None,
     page_table: torch.Tensor | None = None,
     pool=None,
+    ctas: int | None = None,  #: reserved: a gate's forced CTA count, the step's own keyword
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
     """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
 
@@ -429,11 +376,10 @@ def _decode_step(
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
-    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_plan`), which is what makes this the SEAM
-    for decode's value width: the values are padded to ``config.d_v`` with zero columns and the returned ``y``
-    is sliced back to the caller's ``d_v`` (``fsla.ops.padding``). Per-level widths are NOT padded --
-    :func:`derive_decode_plan` already refused ``config`` past :func:`_admit`'s floor rather than pad it, so the
-    rows reach the kernel exactly as the bundle holds them.
+    ``descriptor`` ALREADY HOLDS THE PADDED ``DV`` (:func:`decode_launch` maps the call's ``d_v`` to its arm's), which is what
+    makes this the SEAM for decode's value width: the values are padded to the arm's width with zero columns and the returned
+    ``y`` is sliced back to the caller's ``d_v`` (``fsla.ops.padding``). Per-level widths are NOT padded -- the descriptor
+    refuses a width outside the contract when it is made, so the rows reach the kernel exactly as the bundle holds them.
     """
     guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
     check_decode_masks(masks, routes)
@@ -441,18 +387,23 @@ def _decode_step(
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
+    launch = decode_launch(descriptor)
+    widths = tuple(routes.topology.widths)
+    if widths != launch.widths:
+        raise ValueError(f"the descriptor is for widths {launch.widths}, the bundle's are {widths}")
+    if descriptor.device != values.v.device.index:
+        raise ValueError(f"the descriptor was made for device {descriptor.device}; the values are on {values.v.device}")
     logical_d_v = values.d_v
-    v = pad_v(values.v, config.d_v)
-    plane = step_plane(v, config, decay, state, page_table)
+    v = pad_v(values.v, launch.d_v)
+    plane = step_plane(v, descriptor, decay, state, page_table)
     BH = values.batch * values.heads
     if workspace is None:
-        workspace = DecodeScratch.build(config, BH, v.device)
+        workspace = DecodeScratch.build(descriptor, BH, v.device)
     y = step(DecodeLaunch(
-        plan=config,
-        descriptor=descriptor_of(config, v.device),
+        descriptor=descriptor,
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
-            read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, config, v.device), v=v,
-            v_scale=values.scale, state_plane=plane, page_table=page_table),
-        workspace=DecodeWorkspace(scratch=workspace, pool=pool)))
+            read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, descriptor, v.device), v=v,
+            v_scale=values.scale, state_plane=plane, state_lattice=lattice_of(widths), page_table=page_table),
+        workspace=DecodeWorkspace(scratch=workspace, pool=pool)), ctas=ctas)
     return slice_y(y, logical_d_v), state, workspace

@@ -18,9 +18,17 @@ TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
 HOPPER = dict(cc=900, regs_per_sm=65536, smem_per_sm=233472, smem_per_cta_optin=232448, max_threads_per_sm=2048, sm_count=132)
 
 
+def _full(call: str) -> str:
+    """The call with the facts it does not name given a lawful value: `write_dense` 1 and 16-wide levels (`width_bits_k` 4) for the levels it has."""
+    named = dict(cell.split("=") for cell in call.split(",") if "=" in cell)
+    levels = int(named.get("levels", 0))
+    rest = {"write_dense": 1, **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)}}
+    return ",".join([call, *(f"{k}={v}" for k, v in rest.items() if k not in named)])
+
+
 def _plan(device: dict | None = None, call: str = "d_v=64,levels=2,decay=1", *extra: str):
     facts = {**HOPPER, **(device or {})}
-    run = subprocess.run([str(TOOL), "--device", ",".join(f"{k}={v}" for k, v in facts.items()), "--call", call, *extra],
+    run = subprocess.run([str(TOOL), "--device", ",".join(f"{k}={v}" for k, v in facts.items()), "--call", _full(call), *extra],
                          capture_output=True, text=True, timeout=60)
     return run
 
@@ -35,6 +43,28 @@ def test_a_device_of_other_facts_in_the_ranges_plans_with_its_own_numbers():
         out = _lines(_plan({"sm_count": sms}))
         assert out["args"] == f"cc=900 threads=512 smem_budget=232448 pad=0 sms={sms}"
         assert out["arm"] == "d_v=64 levels=2 decay=1"
+
+
+@pytest.mark.parametrize("call, widths, offsets, dense", [
+    ("d_v=64,levels=1,decay=0,width_bits_1=8", "256", "0", 1),
+    ("d_v=64,levels=2,decay=1,width_bits_1=5,width_bits_2=4,write_dense=0", "32,16", "0,32", 0),
+    ("d_v=64,levels=4,decay=0,width_bits_1=4,width_bits_2=5,width_bits_3=6,width_bits_4=7", "16,32,64,128", "0,16,48,112", 1),
+])
+def test_the_launch_function_takes_each_levels_width_and_its_row_offset_from_the_calls_facts(call, widths, offsets, dense):
+    out = _lines(_plan(None, call))
+    assert out["levels"] == f"widths={widths} row_offsets={offsets} write_dense={dense}"
+
+
+@pytest.mark.parametrize("call, named", [
+    ("d_v=64,levels=2,decay=1,width_bits_1=3", "width_bits_1=3 (the contract: 4..8)"),
+    ("d_v=64,levels=2,decay=1,width_bits_2=9", "width_bits_2=9 (the contract: 4..8)"),
+    ("d_v=64,levels=2,decay=1,width_bits_3=4", "width_bits_3=4 (the contract: 0)"),
+    ("d_v=64,levels=2,decay=1,write_dense=2", "write_dense=2 (the contract: 0..1)"),
+])
+def test_a_width_or_an_action_outside_the_contract_is_refused_naming_the_fact(call, named):
+    run = _plan(None, call)
+    assert run.returncode == 1 and "the call lies outside FSLA's contract" in run.stderr and named in run.stderr
+    assert run.stdout == ""
 
 
 def test_a_device_out_of_a_range_is_refused_naming_the_fact_and_its_range():

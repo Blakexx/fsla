@@ -168,41 +168,56 @@ def test_format_of_sources_dv_from_the_value_stream_not_the_routing():
     assert "d_v" in inspect.signature(_format_of).parameters
 
 
-# -- K53: DECODE'S OWN OP ENTRY ASKS THE SAME LAW, NOT ONLY A BOUND STATE ------------------
+# -- DECODE'S OWN OP ENTRY: THE WIDTHS ARE FACTS OF ITS DESCRIPTOR, AND THE CONTRACT IS THE LAW -----
 
-def test_decode_op_entry_reuses_state_format_not_a_second_copy():
-    """STRUCTURAL PIN, decode's side of `test_kernel_entry_and_decode_entry_both_call_the_one_admission_law`.
+def _widths_topology(widths, *, write=None):
+    from fsla.routing.types import IndependentRouting, OpaqueRouting, Topology
 
-    That test pins `FSLAState._decode_entry` (a BOUND state's own check); this pins
-    `fsla.ops.decode`'s OP ENTRY, which a call reaches directly with no `FSLAState` in
-    play at all (every oracle/integration fixture in `tests/oracle/test_decode_*.py` and
-    `tests/integration/test_decode_*.py` calls `derive_decode_plan` this way). Before
-    K53 that path asked no floor at all -- `StateFormat` is imported here rather than a
-    hand-rolled power-of-two check, so a future rewrite that duplicates the rule instead
-    of asking the one class shows up as a source diff here.
-    """
-    from fsla.ops import decode as decode_ops
-
-    src = inspect.getsource(decode_ops._admit)
-    assert "StateFormat(" in src, "_admit does not route through StateFormat"
-    geometry_src = inspect.getsource(decode_ops.derive_decode_plan)
-    assert "_admit(" in geometry_src, "derive_decode_plan does not call _admit"
+    if write is None:
+        return Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
+    return Topology(levels=tuple(IndependentRouting(width=w, read=write, write=write) for w in widths))
 
 
-def test_decode_op_entry_refuses_an_unlawful_topology_by_name():
-    """K53: decode's D=4 arm's OLD topology, `(8, 8, 8, 8)`, is unlawful under the floor
-    every prefill call already refuses at -- decode's own entry now refuses it by the
-    SAME name (`StateFormat`'s), not a decode-shaped message of its own."""
-    from fsla.ops import decode as decode_ops
+@pytest.fixture()
+def captured(monkeypatch):
+    """`decode_descriptor` with the planner replaced by a recorder of the call it states: the facts are the producer's, the check is the contract's."""
+    from fsla.ops import produce
 
-    with pytest.raises(ValueError, match="level 0 is 8"):
-        decode_ops._admit((8, 8, 8, 8))
+    seen = []
+    monkeypatch.setattr(produce, "descriptor", lambda **call: seen.append(call) or call)
+    produce._decode_descriptor.cache_clear()
+    yield seen
+    produce._decode_descriptor.cache_clear()
 
 
-@pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
-def test_decode_op_entry_accepts_every_shipped_decode_topology(widths):
-    """The three topologies `test_decode_vs_oracle.py` carries post-K53 -- none of them
-    is refused by the law that replaced the missing floor."""
-    from fsla.ops import decode as decode_ops
+@pytest.mark.parametrize("widths, bits", [((64, 64), (6, 6, 0, 0)), ((16, 16, 16), (4, 4, 4, 0)), ((16, 32, 64, 256), (4, 5, 6, 8)),
+                                          ((8, 8, 8, 8), (3, 3, 3, 3))])
+def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_the_depth(captured, widths, bits):
+    """THE WIDTHS ARE CALL FACTS: `width_bits_k` is the log2 of level k's width, 0 for a level the call does not have; the depth is `levels`. A width
+    below the floor (8) is stated as it is: the contract refuses it, naming `width_bits_k` (`tests/unit/test_planner.py`)."""
+    from fsla.ops.produce import decode_descriptor
 
-    decode_ops._admit(widths)  # no raise
+    decode_descriptor(_widths_topology(widths), d_v=48, decay=True, device=0)
+    (call,) = captured
+    assert (call["width_bits_1"], call["width_bits_2"], call["width_bits_3"], call["width_bits_4"]) == bits
+    assert (call["device"], call["d_v"], call["levels"], call["decay"]) == (0, 48, len(widths), 1)
+
+
+def test_decode_descriptor_takes_write_dense_from_the_producers_rule_over_the_declaration(captured):
+    """THE PRODUCER'S RULE: whole atoms are deposited (1) when the innermost level's write activation has no exact zeros; an opaque level may have them (0)."""
+    from fsla.ops.produce import decode_descriptor
+    from fsla.routing.types import SoftmaxActivation
+
+    decode_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, device=0)
+    decode_descriptor(_widths_topology((16, 16), write=SoftmaxActivation()), d_v=64, decay=False, device=0)
+    assert [call["write_dense"] for call in captured] == [0, 1]
+
+
+@pytest.mark.parametrize("widths, level, width", [((24, 16), 1, 24), ((16, 31), 2, 31)])
+def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_level(captured, widths, level, width):
+    """A width the contract states by its log2 must be one: the refusal names the level and the fact, before the planner is asked."""
+    from fsla.ops.produce import decode_descriptor
+
+    with pytest.raises(ValueError, match=rf"level {level}'s width is {width}: a level's width is a power of two .*width_bits_{level}"):
+        decode_descriptor(_widths_topology(widths), d_v=64, decay=False, device=0)
+    assert not captured

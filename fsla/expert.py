@@ -19,17 +19,16 @@ Importing this module is a statement that you accept that. The op never requires
 
 from __future__ import annotations
 
-from fsla.engine import DecodePlan, PrefillPlan
+from fsla.engine import PrefillPlan
 from fsla.engine.facts.call import envelope_refusal, require_envelope
 from fsla.interface import requires_backward
-from fsla.ops.produce import decode_plan, prefill_plan
+from fsla.ops.produce import decode_descriptor, prefill_plan
 from fsla.routing.side_gain import GainConfig
 
 __all__ = [
-    "DecodePlan",
     "GainConfig",
     "PrefillPlan",
-    "decode_plan",
+    "decode_descriptor",
     "envelope_refusal",
     "prefill_plan",
     "require_envelope",

@@ -17,7 +17,6 @@ from typing import Any
 from fsla.engine import (
     DecodeLaunch,
     DecodeOperands,
-    DecodePlan,
     DecodeWorkspace,
     Variant,
     node,
@@ -27,9 +26,9 @@ from fsla.engine import (
     validate_dag,
 )
 from fsla.ops import decode as bodies
-from fsla.ops.descriptor import check_workspace
+from fsla.ops.descriptor import Descriptor, check_workspace
 
-_SEEDS = ("routes", "values", "masks", "decay", "state", "plan", "descriptor")
+_SEEDS = ("routes", "values", "masks", "decay", "state", "descriptor")
 
 #: BOTH decode variants. A node carrying only `Variant.DECODE_PAGED` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
@@ -48,7 +47,6 @@ class DecodeContext:
     values: Any
     masks: Any
     state: Any
-    plan: Any
     descriptor: Any
     decay: Any = None
     workspace: Any = None
@@ -61,8 +59,8 @@ def decode_call(f):
     return routes.batch * routes.heads, routes.device, bool(state.paged)
 
 
-@node(gives=("scratch",), needs=("state", "plan", "BH", "device"),
-      per_state=True, pure_of=("plan", "BH", "device"), variants=_DECODE,
+@node(gives=("scratch",), needs=("state", "descriptor", "BH", "device"),
+      per_state=True, pure_of=("descriptor", "BH", "device"), variants=_DECODE,
       capturable=True)
 def scratch(f):
     """The per-sequence buffers, held WEAKLY against the state that owns them.
@@ -72,7 +70,7 @@ def scratch(f):
     also what hoists the allocation and the one-time zeroing of the counters and flags above
     any captured region (docs/internals/decode/decode.md#capture).
     """
-    return bodies.DecodeScratch.build(f["plan"], f["BH"], f["device"])
+    return bodies.DecodeScratch.build(f["descriptor"], f["BH"], f["device"])
 
 
 @node(gives=("carried_plane", "page_table", "pool"), needs=("state", "routes"),
@@ -88,34 +86,35 @@ def backing(f):
 
 
 @node(gives=("state_plane",),
-      needs=("values", "plan", "decay", "carried_plane", "page_table"),
+      needs=("values", "descriptor", "decay", "carried_plane", "page_table"),
       variants=_DECODE, capturable=True)
 def state_plane(f):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
-    return bodies.step_plane(f["values"].v, f["plan"], f["decay"],
+    return bodies.step_plane(f["values"].v, f["descriptor"], f["decay"],
                              f["carried_plane"], f["page_table"])
 
 
 @node(gives=("launch",),
-      needs=("plan", "descriptor", "routes", "values", "masks", "decay", "state_plane", "page_table", "scratch", "pool"),
+      needs=("descriptor", "routes", "values", "masks", "decay", "state", "state_plane", "page_table", "scratch", "pool"),
       stream="main", variants=_DECODE, capturable=True)
 def build_launch(f):
-    """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the static plan, the
+    """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the descriptor, the
     operands and the workspace (:class:`fsla.engine.plan.DecodeLaunch`).
 
     It carries a stream because the decay arm's dials are derived here: a per-HEAD
     constant, the one operand the step kernel does not fold
-    (docs/internals/decode/decode_fold.md).
+    (docs/internals/decode/decode_fold.md). The state plane's leaf order is derived from the state's format
+    (:func:`fsla.ops.decode.lattice_of`): the state does not carry it.
     """
-    routes, values, masks, plan = f["routes"], f["values"], f["masks"], f["plan"]
+    routes, values, masks, descriptor = f["routes"], f["values"], f["masks"], f["descriptor"]
     return DecodeLaunch(
-        plan=plan,
-        descriptor=f["descriptor"],
+        descriptor=descriptor,
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
             write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
-            dials=bodies.leaf_rate_dials_for(f["decay"], plan, values.device), v=values.v, v_scale=values.scale,
-            state_plane=f["state_plane"], page_table=f["page_table"]),
+            dials=bodies.leaf_rate_dials_for(f["decay"], descriptor, values.device), v=values.v, v_scale=values.scale,
+            state_plane=f["state_plane"], state_lattice=bodies.lattice_of(tuple(f["state"].format.B)),
+            page_table=f["page_table"]),
         workspace=DecodeWorkspace(scratch=f["scratch"], pool=f["pool"]))
 
 
@@ -125,7 +124,7 @@ def step(f):
     return bodies.step(f["launch"])
 
 
-@node(gives=("atom_bits",), needs=("masks", "plan"), variants=_DECODE,
+@node(gives=("atom_bits",), needs=("masks", "descriptor"), variants=_DECODE,
       reference_only=True)
 def write_atom_bitmap(f):
     """The gate's INDEPENDENT second derivation of the write-atom set.
@@ -136,8 +135,9 @@ def write_atom_bitmap(f):
     (docs/internals/decode/decode.md#second-derivation).
     """
     masks = f["masks"]
-    live = tuple(masks.bits("write", level, 1, width) for level, width in enumerate(f["plan"].widths))
-    return bodies._write_atom_bitmap(live, f["plan"])
+    widths = bodies.decode_launch(f["descriptor"]).widths
+    live = tuple(masks.bits("write", level, 1, width) for level, width in enumerate(widths))
+    return bodies._write_atom_bitmap(live, widths, bodies.lattice_of(widths))
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph
@@ -171,15 +171,13 @@ def validate_context(ctx: DecodeContext) -> None:
     if ctx.routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={ctx.routes.tokens}")
-    if type(ctx.plan) is not DecodePlan:
-        raise TypeError(f"the decode step takes a DecodePlan, got {type(ctx.plan).__name__}; "
-                        "fsla.ops.produce.decode_plan builds one from the declaration")
-    if tuple(ctx.routes.topology.widths) != ctx.plan.widths:
-        raise ValueError(f"the plan is for widths {ctx.plan.widths}, the bundle's are {tuple(ctx.routes.topology.widths)}")
+    if type(ctx.descriptor) is not Descriptor:
+        raise TypeError(f"the decode step takes a fsla.Descriptor, got {type(ctx.descriptor).__name__}; "
+                        "fsla.ops.produce.decode_descriptor builds one from the declaration")
     launch = bodies.decode_launch(ctx.descriptor)
-    if (launch.d_v, launch.levels, bool(launch.decay)) != (ctx.plan.d_v, ctx.plan.D, ctx.plan.has_decay):
-        raise ValueError(f"the descriptor's arm serves d_v={launch.d_v}, levels={launch.levels}, decay={launch.decay}; the plan is for "
-                         f"d_v={ctx.plan.d_v}, levels={ctx.plan.D}, decay={int(ctx.plan.has_decay)}")
+    widths = tuple(ctx.routes.topology.widths)
+    if widths != launch.widths:
+        raise ValueError(f"the descriptor is for widths {launch.widths}, the bundle's are {widths}")
     if ctx.descriptor.device != ctx.values.device.index:
         raise ValueError(f"the descriptor was made for device {ctx.descriptor.device}; the values are on {ctx.values.device}")
     check_workspace(ctx.workspace, ctx.descriptor)
@@ -190,7 +188,7 @@ def validate_context(ctx: DecodeContext) -> None:
 
 def _facts(ctx: DecodeContext) -> dict:
     return {"routes": ctx.routes, "values": ctx.values, "masks": ctx.masks, "decay": ctx.decay, "state": ctx.state,
-            "plan": ctx.plan, "descriptor": ctx.descriptor}
+            "descriptor": ctx.descriptor}
 
 
 def _scratch_of(state):
@@ -206,7 +204,7 @@ def _scratch_of(state):
     return next(iter(table.values()))
 
 
-def decode_step_gated(routes, values, masks, state, *, plan, decay=None, descriptor=None, workspace=None):  #: reserved: decode needs no per-call scratch (fsla.workspace_bytes is 0); the op's planner interface, checked when given
+def decode_step_gated(routes, values, masks, state, descriptor, *, workspace=None, decay=None):  #: reserved: decode needs no per-call scratch (fsla.workspace_bytes is 0); the op's planner interface, checked when given
     """ONE decode step with NO host participation -- the decode entry, and CAPTURE-SAFE.
 
     Each batch-head is gated on the step's own device-side answer, so one whose write set
@@ -225,13 +223,11 @@ def decode_step_gated(routes, values, masks, state, *, plan, decay=None, descrip
     carries a done flag into the second and re-reads for its `y` without depositing again
     (docs/internals/decode/decode.md#done-flags).
 
-    ``descriptor`` is the validated context of the call (:func:`fsla.descriptor`: the device's facts and ``d_v``, levels, decay), the planner's
-    launch function reads it for the arm and its arguments; none given, it is the plan's on the values' device. ``workspace`` is the call's
-    own scratch (:func:`fsla.workspace_bytes`: decode needs none), checked for size and alignment when given.
+    ``descriptor`` is the validated context of the call (:func:`fsla.ops.produce.decode_descriptor`, or :func:`fsla.descriptor`: the device's
+    facts and the call's), the planner's launch function reads it for the arm and its arguments. ``workspace`` is the call's own scratch
+    (:func:`fsla.workspace_bytes`: decode needs none), checked for size and alignment when given.
     """
-    if descriptor is None:
-        descriptor = bodies.descriptor_of(plan, values.device)
-    ctx = DecodeContext(routes=routes, values=values, masks=masks, state=state, plan=plan, descriptor=descriptor,
+    ctx = DecodeContext(routes=routes, values=values, masks=masks, state=state, descriptor=descriptor,
                         decay=decay, workspace=workspace)
     validate_context(ctx)
     return run(DECODE_STEP, _facts(ctx))["y"], state

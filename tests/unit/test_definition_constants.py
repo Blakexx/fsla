@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 #: below refuses.
 EPS_SITES = (
     ("fsla/ops/naive.py", "naive_fsla"),
-    ("fsla/ops/decode.py", "derive_decode_plan"),
+    ("fsla/ops/decode.py", "step"),
 )
 
 #: The retired tiled consumer's row is dropped. Its replacement is NOT
@@ -87,10 +87,10 @@ def test_every_eps_default_is_the_named_constant_not_a_literal(relative, functio
 
 def test_every_eps_default_is_the_same_value_at_runtime():
     """Rule 1, through the signature a caller actually binds against."""
-    from fsla.ops.decode import derive_decode_plan
+    from fsla.ops.decode import step
     from fsla.ops.naive import naive_fsla
 
-    for fn in (naive_fsla, derive_decode_plan):
+    for fn in (naive_fsla, step):
         default = inspect.signature(fn).parameters["eps"].default
         assert default == READOUT_EPS, f"{fn.__qualname__} binds eps={default}"
 

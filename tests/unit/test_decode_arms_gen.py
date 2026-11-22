@@ -38,8 +38,9 @@ def _run(contexts: str, tmp_path: Path):
     return subprocess.run([str(TOOL), "--contexts", str(path), "--out-dir", str(out)], capture_output=True, text=True, timeout=60), out
 
 
-def _contract_with(tmp_path: Path, parts: dict | None = None, **call_facts) -> str:
-    """The contract's text with the decode call part's facts replaced (`d_v=[32, 64, 128]`), and any other part's (`{"device/hopper_sm90a": {...}}`)."""
+def _contract_with(tmp_path: Path, parts: dict | None = None, levels=None, **call_facts) -> str:
+    """The contract's text with the decode call part's facts replaced (`d_v=[32, 64, 128]`), and any other part's (`{"device/hopper_sm90a": {...}}`).
+    `levels` replaces the depth: the contract is then the depth-1 descriptor alone, its part's `levels` the given value."""
     root = tmp_path / "registry"
     root.mkdir()
     for name in ("schema.json",):
@@ -50,8 +51,10 @@ def _contract_with(tmp_path: Path, parts: dict | None = None, **call_facts) -> s
         target.write_text((registry.ROOT / "parts" / f"{part}.json").read_text())
     (root / "descriptors").mkdir()
     for path in (registry.ROOT / "descriptors").glob("*.json"):
-        (root / "descriptors" / path.name).write_text(path.read_text())
-    for part, facts in {"calls/decode": call_facts, **(parts or {})}.items():
+        if levels is None or path.stem == "hopper_decode_d1":
+            (root / "descriptors" / path.name).write_text(path.read_text())
+    depth = {"calls/depth1": {"levels": levels}} if levels is not None else {}
+    for part, facts in {"calls/decode": call_facts, **depth, **(parts or {})}.items():
         file = root / "parts" / f"{part}.json"
         data = json.loads(file.read_text())
         for fact, value in facts.items():
@@ -73,8 +76,9 @@ def test_the_graphs_arm_list_is_that_list_and_each_context_reaches_both_value_wi
     assert len(lines) == 8
     for line in lines:
         context, reach = line.split("\t-> ")
-        levels, decay = (int(cell.split("=")[1]) for cell in context.split()[1:])
-        assert context == f"hopper_decode levels={levels} decay={decay}"
+        name, decay_cell = context.split()
+        levels, decay = int(name.removeprefix("hopper_decode_d")), int(decay_cell.split("=")[1])
+        assert context == f"hopper_decode_d{levels} decay={decay}"
         indices = [REACHED.index([dv, levels, decay]) for dv in (32, 64)]
         assert reach == " ".join(f"{i}(d_v={REACHED[i][0]}, levels={levels}, decay={decay})" for i in indices)
 

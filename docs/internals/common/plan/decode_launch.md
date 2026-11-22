@@ -14,19 +14,31 @@ parts are composed from two functions and stay structurally separate:
   of the walk's registers a thread: `decode.cuh`'s `DecodePlan` derives its compiled width from it, and the launch refuses a descriptor whose
   threads differ from the compiled plan's), the shared memory a CTA may opt in to (`smem_per_cta_optin`: the launch opts the kernel in above the
   48 KB every launch has), the padding of the call's `d_v` to the arm's (`arm.d_v - d_v`: the value width is a contract range and the arm
-  holds it, so the padding is the launch function's, not a second law beside it) and the device's SMs.
+  holds it, so the padding is the launch function's, not a second law beside it), the device's SMs, and what the call states of its levels:
+  each level's width (`widths`, `1 << width_bits_k` for a level the call has, 0 beyond its `levels`), its offset into the flattened per-level rows
+  (`row_offsets`, the prefix sums of the widths) and `write_dense` (whether the step deposits whole atoms).
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)).
 - `decode_workspace(const Descriptor&)` is the scratch a call needs beside its operands: none (decode's buffers belong to the sequence and its
   state, never to the call), at the alignment every workspace carries.
 
+THERE IS NO DECODE PLAN. The op takes data and the descriptor (`op(data..., descriptor, workspace=None)`): the descriptor is every device fact and every call fact,
+immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the grid) is computed by this one launch
+function right before the launch and never stored. The level widths and `write_dense` are CALL FACTS because the caller's declaration decides them
+(`fsla.ops.produce.decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and
+`write_dense` from the producer's rule over the declaration); a width the contract does not hold is refused when the descriptor is made, naming the fact
+([`../../hardware/registry.md`](../../hardware/registry.md#parts)). The state plane's leaf order (`lattice_k`, `lattice_m`) is no fact of the call: it travels with the
+state plane, which `fsla.ops.decode` derives from the state's format (`fsla.ops.lattice.derive_lattice`, the one authority) and passes with the state operand; the
+readout's `eps` is data, and the grid is the launch function's own (a gate's forced count is a private keyword of the internal step).
+
 THE DESCRIPTOR IS READ HERE ONLY. `Facts` (`Descriptor`) is generated from the schema with private members; `Reader`, its only friend, is the
 accessor of the functions of `common/plan/` ([`planner.md#the-reader`](planner.md#the-reader)). A launcher or a kernel holds a `DecodeLaunch`,
 never a raw fact.
 
-`decode.cu`'s `fsla_decode_forward` takes the descriptor's words, has the planner check them against the contract and this device, and
-launches the arm `decode_launch` names with its arguments. A call outside a narrowed contract is refused by name at that check
+`decode.cu`'s `fsla_decode_forward` takes the descriptor's words (and the state's `lattice_k`, `lattice_m`, the readout's `eps` and a gate's `ctas`), has the planner check them
+against the contract and this device, and launches the arm `decode_launch` names with its arguments, the level widths, the row offsets and `write_dense`
+among them. A call outside a narrowed contract is refused by name at that check
 ([`planner.md`](planner.md)), before any launch; the compiled arms (`arm_switch<DecodeArmSet>`) are by construction exactly the arms the
 build's contract reaches, so the launch finds the arm the rules named, and its refusal of an arm the build did not compile is the
 backstop for a rule that names one the contract does not reach.

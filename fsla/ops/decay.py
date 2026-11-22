@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import torch
 import torch.nn.functional as F
-
-if TYPE_CHECKING:
-    from fsla.routing.types import Topology
 
 PUBLIC_DECAY_KERNELS = ("rla", "gla_static", "gla_mass_detached")
 
@@ -201,7 +196,7 @@ def batch_compact_log_gamma(
     ).contiguous()
 
 
-def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
+def leaf_rate_dials(decay, levels: int) -> torch.Tensor:
     """Flatten ``LeafMassDecay.dials`` to ``[H, sum_l width_l]``, rows at ``level_offsets``.
 
     The leaf rate is ``rate[s] = prod_l delta_l[d_l(s)]`` -- a plain
@@ -225,9 +220,9 @@ def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
     invariant enforced at the boundary where it actually has to hold.
     """
     dials = tuple(decay.dials)
-    if len(dials) != topology.D:
+    if len(dials) != levels:
         raise ValueError(
-            f"decay.dials must contain one tensor per level (D={topology.D}), got {len(dials)}")
+            f"decay.dials must contain one tensor per level (D={levels}), got {len(dials)}")
     cast = [dial.to(torch.float32) for dial in dials]
     for level, (original, rounded) in enumerate(zip(dials, cast)):
         if torch.any(rounded >= 1.0):

@@ -85,14 +85,18 @@ def test_a_dropped_sequence_drops_its_scratch():
 #: below. A node arriving with no bag fails there BY NAME, which is what makes the
 #: discipline a gate rather than a habit.
 def _decode_scratch_facts():
-    from fsla.engine.plan import DecodePlan
-    from fsla.ops.constants import READOUT_EPS
-    from fsla.ops.lattice import derive_lattice
+    from fsla.ops.descriptor import Descriptor
 
-    k, m = derive_lattice((16, 16))
-    plan = DecodePlan(D=2, widths=(16, 16), level_row_offset=(0, 16), lattice_k=k, lattice_m=m, d_v=64, has_decay=False,
-                      eps=READOUT_EPS, ctas=None, write_dense=True)
-    return {"plan": plan, "BH": 2, "device": "cpu"}
+    return {"descriptor": Descriptor(device=0, call=(), words=()), "BH": 2, "device": "cpu"}
+
+
+def _device_free_launch(monkeypatch):
+    """The planner's launch function of a descriptor is the extension's, which reads a device: the discipline gate is device-free by charter, so the
+    one launch it sizes a scratch by is given as the planner would answer it (depth 2, 16-wide levels, a 64-wide arm)."""
+    from fsla.ops import decode as bodies
+
+    launch = bodies.DecodeLaunchFacts(d_v=64, levels=2, decay=0, pad=0, workspace_bytes=0, workspace_alignment=256, widths=(16, 16))
+    monkeypatch.setattr(bodies, "decode_launch", lambda descriptor: launch)
 
 
 PER_STATE_FACTS = {"scratch": _decode_scratch_facts}
@@ -115,7 +119,7 @@ class _Poison:
         raise AssertionError(f"a per_state node read the sequence: state.{item}")
 
 
-def test_a_per_state_node_reads_the_state_as_a_KEY_and_never_as_an_INPUT():
+def test_a_per_state_node_reads_the_state_as_a_KEY_and_never_as_an_INPUT(monkeypatch):
     """THE DISCIPLINE: a `per_state` cache holds REBUILDABLE TRANSIENTS and nothing else.
 
     Two halves, and together they are the claim. STRUCTURALLY, every need but `state`
@@ -133,6 +137,7 @@ def test_a_per_state_node_reads_the_state_as_a_KEY_and_never_as_an_INPUT():
     admission against eager. This file is device-free by charter, and running one pair
     of steps here would sample one geometry where the poison probe covers every field.
     """
+    _device_free_launch(monkeypatch)
     nodes = _shipped_per_state_nodes()
     assert nodes, "no shipped node is per_state; this gate lost its subject"
 
@@ -246,7 +251,7 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     for dag in (PREFILL_DAG, DECODE_STEP):
         assert not any(step.reference_only for step in dag)
     with pytest.raises(ValueError, match="second derivation"):
-        validate_dag((write_atom_bitmap,), ("masks", "plan"))
+        validate_dag((write_atom_bitmap,), ("masks", "descriptor"))
 
 
 def test_the_decode_dag_ends_at_the_step_and_its_verdict_is_read_outside_it():

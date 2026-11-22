@@ -47,9 +47,23 @@ def test_the_decode_contract_is_the_value_widths_two_to_sixty_four_at_each_depth
         ((2, 64), (lv, lv), (dc, dc)) for lv in (1, 2, 3, 4) for dc in (0, 1)}
     for c in contexts:
         assert set(c.facts) == set(registry.schema())
-        assert c.alternatives == ("levels", "decay")
+        assert c.alternatives == ("decay",)
         assert c.facts["sm_count"] == (114, 132)
+        assert c.facts["write_dense"] == (0, 1)
     assert len({c.id for c in contexts}) == 8
+    assert {c.descriptor for c in contexts} == {f"hopper_decode_d{lv}" for lv in (1, 2, 3, 4)}
+
+
+def test_a_level_beyond_the_depth_has_no_width_and_a_level_it_has_is_a_width_from_sixteen_to_two_hundred_fifty_six():
+    """The depth and the widths are correlated, so each depth is a part of its own: width_bits k is the log2 range 4..8 (16 to 256) at a level the call
+    has and the point 0 beyond (the floor is `fsla._state.MIN_LEVEL_WIDTH`)."""
+    from fsla._state import MIN_LEVEL_WIDTH
+
+    for c in registry.contexts():
+        depth = c.facts["levels"][0]
+        for level in (1, 2, 3, 4):
+            want = (MIN_LEVEL_WIDTH.bit_length() - 1, 8) if level <= depth else (0, 0)
+            assert c.facts[f"width_bits_{level}"] == want, (c.id, level)
 
 
 def test_the_hopper_part_is_the_hardware_tables_values():
@@ -68,7 +82,7 @@ def test_the_contexts_text_is_a_line_a_context_the_matchers_tool_reads():
     assert lines.pop(0) == "# contract: full"
     assert len(lines) == 8
     cells = lines[0].split("\t")
-    assert cells[0] == "hopper_decode levels=1 decay=0"
+    assert cells[0] == "hopper_decode_d1 decay=0"
     assert "cc=900:900" in cells and "d_v=2:64" in cells and "sm_count=114:132" in cells and "tensor={hmma_bf16_f32,hmma_f16_f32,imma_u8_s8_k32}" in cells
 
 
@@ -81,14 +95,16 @@ def test_the_facts_header_has_a_member_for_each_fact():
 
 def test_the_contract_header_holds_each_context_and_the_call_facts_in_the_schemas_order():
     text = registry.contract_header(registry.contexts(), registry.schema())
-    assert text.count("out.push_back({\"hopper_decode ") == 8
+    assert text.count("out.push_back({\"hopper_decode_d") == 8
     assert "f.assign(\"d_v\", Interval{2, 64});" in text and "f.assign(\"sm_count\", Interval{114, 132});" in text
     assert "f.assign(\"tensor\", EnumSet{7});" in text
-    assert "kCallFactNames[] = {\"d_v\", \"levels\", \"decay\"}" in registry.facts_header(registry.schema())
+    assert ("kCallFactNames[] = {\"d_v\", \"levels\", \"decay\", \"write_dense\", \"width_bits_1\", \"width_bits_2\", \"width_bits_3\", "
+            "\"width_bits_4\"}") in registry.facts_header(registry.schema())
 
 
 def test_two_contexts_identical_in_every_fact_are_refused(tree):
-    _write(tree / "descriptors" / "twin.json", {"name": "twin", "gpus": "H100", "arch": "sm_90a", "compose": ["device/hopper_sm90a", "calls/decode"]})
+    _write(tree / "descriptors" / "twin.json", {"name": "twin", "gpus": "H100", "arch": "sm_90a",
+                                                 "compose": ["device/hopper_sm90a", "calls/decode", "calls/depth1"]})
     with pytest.raises(registry.RegistryError, match="identical in every fact"):
         registry.contexts(tree)
 
@@ -96,14 +112,14 @@ def test_two_contexts_identical_in_every_fact_are_refused(tree):
 def test_a_fact_stated_by_two_parts_is_refused(tree):
     _write(tree / "parts" / "calls" / "also_dv.json", {"name": "calls/also_dv", "facts": {
         "d_v": {"value": 128, "declared_by": "a test"}}})
-    _write(tree / "descriptors" / "hopper_decode.json", {"name": "hopper_decode", "gpus": "H100", "arch": "sm_90a",
-                                                       "compose": ["device/hopper_sm90a", "calls/decode", "calls/also_dv"]})
+    _write(tree / "descriptors" / "hopper_decode_d1.json", {"name": "hopper_decode_d1", "gpus": "H100", "arch": "sm_90a",
+                                                          "compose": ["device/hopper_sm90a", "calls/decode", "calls/depth1", "calls/also_dv"]})
     with pytest.raises(registry.RegistryError, match="d_v is stated by another part"):
         registry.contexts(tree)
 
 
 def test_a_descriptor_leaving_a_fact_out_is_refused(tree):
-    _write(tree / "descriptors" / "hopper_decode.json", {"name": "hopper_decode", "gpus": "H100", "arch": "sm_90a", "compose": ["calls/decode"]})
+    _write(tree / "descriptors" / "hopper_decode_d1.json", {"name": "hopper_decode_d1", "gpus": "H100", "arch": "sm_90a", "compose": ["calls/decode"]})
     with pytest.raises(registry.RegistryError, match="states no value for"):
         registry.contexts(tree)
 
@@ -143,11 +159,11 @@ def test_a_malformed_schema_is_refused(tree, edit, match):
 def test_ranges_and_sets_expand_without_crossing(tree):
     _write(tree / "parts" / "calls" / "decode.json", {"name": "calls/decode", "facts": {
         "d_v": {"value": {"lo": 65, "hi": 128}, "declared_by": "a test"},
-        "levels": {"value": 2, "declared_by": "a test"},
-        "decay": {"value": [0, 1], "declared_by": "a test"}}})
+        "decay": {"value": [0, 1], "declared_by": "a test"},
+        "write_dense": {"value": {"lo": 0, "hi": 1}, "declared_by": "a test"}}})
     contexts = registry.contexts(tree)
-    assert len(contexts) == 2 and contexts[0].facts["d_v"] == (65, 128)
-    assert contexts[0].id == "hopper_decode decay=0"
+    assert len(contexts) == 8 and contexts[0].facts["d_v"] == (65, 128)
+    assert contexts[0].id == "hopper_decode_d1 decay=0"
 
 
 def test_a_part_lacking_a_schema_fact_is_refused_by_name(tree):
@@ -175,7 +191,7 @@ def test_a_candidate_file_is_refused_until_it_is_renamed_to_a_part(tree):
 
 def test_a_descriptor_composing_a_candidate_is_refused(tree):
     _write(tree / "parts" / "device" / "cc900_x.candidate.json", {"name": "device/cc900_x", "facts": {"cc": {"value": 900, "measured_by": "a record"}}})
-    _write(tree / "descriptors" / "hopper_decode.json", {"name": "hopper_decode", "gpus": "H100", "arch": "sm_90a",
-                                                           "compose": ["device/cc900_x.candidate", "calls/decode"]})
+    _write(tree / "descriptors" / "hopper_decode_d1.json", {"name": "hopper_decode_d1", "gpus": "H100", "arch": "sm_90a",
+                                                              "compose": ["device/cc900_x.candidate", "calls/decode"]})
     with pytest.raises(registry.RegistryError, match="CANDIDATE part"):
         registry.contexts(tree)

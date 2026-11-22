@@ -30,12 +30,12 @@ import math
 import pytest
 import torch
 
-from fsla.ops.decode import _decode_step
+from fsla.ops.decode import _decode_step, decode_launch, lattice_of
 from fsla.ops.lattice import box_shape, to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.padding import pad_routes, pad_v
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
 from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.fixtures import assert_reordered_close, logical_state, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
@@ -148,22 +148,23 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
     v_logical = torch.randn(B, 1, H, d_v_logical, device=device, dtype=torch.float64,
                             generator=generator)
 
-    config = decode_plan(topology, d_v=d_v_logical, decay=False)
-    assert config.d_v == DV, "d_v=48 must pad up to the shipped DV=64, not run at 48 directly"
+    descriptor = decode_descriptor(topology, d_v=d_v_logical, decay=False)
+    launch = decode_launch(descriptor)
+    assert launch.d_v == DV, "d_v=48 must pad up to the shipped DV=64, not run at 48 directly"
 
     def run(v):
-        #: THE STATE PLANE IS ALWAYS SIZED AT THE PADDED `config.cols` (K50: pages
+        #: THE STATE PLANE IS ALWAYS SIZED AT THE PADDED `launch.cols` (pages
         #: carry the padded width) -- whether `v` here is the caller's logical
         #: d_v=48 or the test's own hand-padded DV=64, the plane the kernel writes
         #: into is the SAME shape either way, which is exactly the claim under test.
-        cols = config.cols
+        cols = launch.cols
         state = state_pages(
             to_lattice(torch.zeros(B, H, N, cols, device=device, dtype=torch.float32),
-                      widths, config.lattice_k, config.lattice_m))
+                      widths, *lattice_of(widths)))
         routes, values = step_bundles(v, read_levels, with_gain(write_levels, g_write), topology)
-        y, state, _ = _decode_step(routes, values, masks_of(routes), config, state, decay=None)
-        logical = logical_state(state, config.d_v).reshape(B, H, N, cols)
-        return y, to_canonical(logical, widths, config.lattice_k, config.lattice_m)
+        y, state, _ = _decode_step(routes, values, masks_of(routes), descriptor, state, decay=None)
+        logical = logical_state(state, launch.d_v).reshape(B, H, N, cols)
+        return y, to_canonical(logical, widths, *lattice_of(widths))
 
     #: THE PADDED CALL: v at the caller's logical d_v=48.
     y_padded, state_padded = run(v_logical)

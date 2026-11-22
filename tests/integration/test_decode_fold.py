@@ -24,14 +24,16 @@ Run: ``bazel test //tests:integration --test_filter=test_decode_fold``
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
 from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decode import _decode_step, fold_levels
-from fsla.ops.lattice import permutation
+from fsla.ops.lattice import derive_lattice, permutation
 from fsla.ops.paging import decode_pages
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.types import Topology, UnionRouting
@@ -51,14 +53,14 @@ def logical_read_only(stored):
     return decode_pages(stored, _DV, hi_only=True).reshape(stored.shape[0], -1, _DV + 1)
 
 
-def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
+def _single_leaf_state(BH: int, widths, s0: int, device, seed: int):
     """A ``[BH, N, d_v + 1]`` logical state, STORED as int8 state pages -- zero everywhere but CANONICAL leaf ``s0``,
     in the plane's own LATTICE order. Returns ``(state, e, m)``: ``state`` in the stored form the step reads, and
     ``e``/``m`` the values a READ-ONLY load reconstructs (the hi plane at its group exponent, the fp32 mass) -- the
     reference must be built from what the kernel reads, not from the fp32 draw that never reaches it whole."""
     gen = torch.Generator(device=device).manual_seed(seed)
-    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
-    state = torch.zeros(BH, config.N, _DV + 1, dtype=torch.float32, device=device)
+    pi = permutation(widths, *derive_lattice(widths), device=device)
+    state = torch.zeros(BH, math.prod(widths), _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
     state[:, int(pi[s0])] = row
     stored = state_pages(state)
@@ -83,9 +85,9 @@ def _y_of(rows, scale, *, seed, s0=0):
     #: NO DEPOSIT: an all-zero write side leaves `supp(W)` empty, so every touched row is
     #: read-only and the state the readout sees is the state that was placed.
     values = Values.from_projection(torch.zeros(B, rows.shape[1], H, _DV, device=device))
-    config = decode_plan(routes.topology, d_v=_DV, decay=False)
-    state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
-    y, _state, _ws = _decode_step(routes, values, masks_of(routes), config, state)
+    descriptor = decode_descriptor(routes.topology, d_v=_DV, decay=False, device=device)
+    state, e, m = _single_leaf_state(BH, tuple(routes.topology.widths), s0, device, seed + 1)
+    y, _state, _ws = _decode_step(routes, values, masks_of(routes), descriptor, state)
     return y.reshape(BH, _DV), e, m
 
 

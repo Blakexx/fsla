@@ -1,20 +1,21 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The plan objects, and the one bundle a launch travels in.
+"""The prefill plan, and the bundles a launch travels in.
 
-A PLAN is WHAT TO DO and nothing else: frozen, static, hashable -- the arm and the cache key. The plan says what to do,
+PREFILL'S PLAN is WHAT TO DO and nothing else: frozen, static, hashable -- the arm and the cache key. The plan says what to do,
 not what you are giving (ruled 2026-11-11), and it changes at most rounding within the oracle's tolerance, never the
-mathematical output: that is the DATA's (ruled 2026-11-22). Nothing static reads an operand.
+mathematical output: that is the DATA's (ruled 2026-11-22). Nothing static reads an operand. DECODE HAS NO PLAN: its op takes
+the validated descriptor (:class:`fsla.ops.descriptor.Descriptor`), and everything derived from the descriptor's facts is the
+planner's launch function's, computed right before the launch and never stored (docs/internals/common/plan/decode_launch.md).
 
 A LAUNCH is one internal bundle per kernel family (:class:`DecodeLaunch`, :class:`PrefillLaunch`), built at a DAG's
-terminal node and passed to the launcher, never public. It holds three named parts: ``plan`` (the static plan),
-``operands`` (the data -- rows, scales, values, masks, dials, the state and its page table -- what the oracle also takes)
-and ``workspace`` (what the op allocates for itself). The public op takes the operands as arguments and the plan; the
-launch is how they travel inside it (docs/internals/engine/engine.md).
+terminal node and passed to the launcher, never public. It holds three named parts: prefill's ``plan`` or decode's
+``descriptor``, the ``operands`` (the data -- rows, scales, values, masks, dials, the state and its page table -- what the
+oracle also takes) and the ``workspace`` (what the op allocates for itself). The public op takes the operands as arguments
+and the plan or descriptor; the launch is how they travel inside it (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import torch
@@ -82,53 +83,11 @@ class PrefillLaunch:
 
 
 @dataclass(frozen=True, slots=True)
-class DecodePlan:
-    """WHAT THE DECODE STEP DOES, static for the sequence: what the topology, `d_v` and the declaration fix.
-
-    It is the per-shape memo key (the operands and the workspace beside it in :class:`DecodeLaunch` are per-step and
-    never cached; docs/internals/engine/decode_dag.md). It reads no operand: the masks and the rows are the step's data.
-
-    ``BC`` IS NOT A FIELD and must not become one. Owner blocking is a property of how
-    the tiled consumer amortizes a ``[BC, cols]`` block across many tokens; with one
-    token there is nothing to amortize, and the decode kernels are BC-blind by
-    construction (``tests/integration/test_decode_bc_blindness.py`` asserts
-    byte-identical decode output under prefill ``BC`` in ``{16, 32, 64}``).
-    """
-
-    D: int
-    widths: tuple[int, ...]
-    level_row_offset: tuple[int, ...]
-    #: The `(k, m)` BOX the state plane's leaves are ordered by — the leaf order travels
-    #: with the plane rather than being assumed (`fsla.ops.lattice`).
-    lattice_k: int
-    lattice_m: int
-    d_v: int
-    has_decay: bool
-    eps: float
-    #: THE RESIDENT GRID: ``None`` for the step's own (the binary sizes it from the card,
-    #: docs/internals/decode/decode.md#the-split-policy), or a gate's forced CTA count; the CTAs claim work from every
-    #: batch-head's queue (docs/internals/decode/decode.md#queue).
-    ctas: int | None
-    #: THE ACTION: deposit whole atoms. The plan says the innermost level's write side is walked as whole atoms (a
-    #: choice the producer's plan rule makes from the declaration), so every write unit is a whole atom
-    #: (docs/internals/decode/decode.md#whole-atoms).
-    write_dense: bool
-
-    @property
-    def N(self) -> int:
-        return math.prod(self.widths)
-
-    @property
-    def cols(self) -> int:
-        return self.d_v + 1  # the mass column is unconditional (raw is dead)
-
-
-@dataclass(frozen=True, slots=True)
 class DecodeOperands:
     """The decode step's data. The bundle's own ``[B, 1, H, width_l]`` unit-max coefficient rows (u8) and their fp32
     ``[B, 1, H]`` maxima, per side; the masks' per-level words, DIGIT-packed int32 ``[B, H, ceil(width_l / 32)]`` per
     side (the step computes with ``r * m``; :mod:`fsla.routing.masks`); the dials; the value ``[B, 1, H, d_v]`` bf16
-    against the token's largest channel and its fp32 ``[B, 1, H]`` scale; the state plane and the page table."""
+    against the token's largest channel and its fp32 ``[B, 1, H]`` scale; the state plane, its leaf order and the page table."""
 
     read: tuple[torch.Tensor, ...]
     write: tuple[torch.Tensor, ...]
@@ -140,6 +99,9 @@ class DecodeOperands:
     v: torch.Tensor
     v_scale: torch.Tensor
     state_plane: torch.Tensor
+    #: The `(k, m)` BOX the state plane's leaves are ordered by: the leaf order travels with the plane
+    #: (`fsla.ops.lattice`), an attribute of the state operand and not a value of any plan.
+    state_lattice: tuple[int, int]
     page_table: torch.Tensor | None
 
 
@@ -155,11 +117,9 @@ class DecodeWorkspace:
 
 @dataclass(frozen=True, slots=True)
 class DecodeLaunch:
-    """Everything one decode launch reads, in four named parts: the static ``plan``, the ``descriptor``, the ``operands`` and the
-    ``workspace``. NO FIELD IS DERIVED AT THE LAUNCH SITE."""
+    """Everything one decode launch reads, in three named parts: the ``descriptor`` (the validated context the planner's launch
+    function reads, :class:`fsla.ops.descriptor.Descriptor`), the ``operands`` and the ``workspace``. NO FIELD IS DERIVED AT THE LAUNCH SITE."""
 
-    plan: DecodePlan
-    #: the validated context the planner's launch function reads (:class:`fsla.ops.descriptor.Descriptor`)
     descriptor: object
     operands: DecodeOperands
     workspace: DecodeWorkspace

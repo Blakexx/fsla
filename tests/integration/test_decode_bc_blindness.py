@@ -21,23 +21,22 @@ at ``BC = 16`` and one at ``BC = 64`` produce entry states that differ in their 
 (different summation trees), so feeding decode the two real prefill outputs would
 compare two different inputs and prove nothing about ``BC``. The dependence being tested
 is decode's, so the state is held identical and the ``BC`` is varied everywhere it could
-possibly enter: the plan, the plan's construction, and the config object.
+possibly enter: the descriptor and its construction.
 
 Run: ``bazel test //tests:integration --test_filter=test_decode_bc_blindness``
 """
 
 from __future__ import annotations
 
-import dataclasses
 import math
 
 import pytest
 import torch
 
-from fsla.engine.plan import DecodePlan
 from fsla.ops.decode import _decode_step
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
+from hardware import registry
 from tests.oracle.fixtures import assert_reordered_close, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
@@ -51,17 +50,17 @@ pytestmark = [
 _BCS = [32, 64, 128, 256, 1024]
 
 
-def test_no_field_of_the_static_plan_names_bc():
-    """The structural half: ``BC`` is not a field, and cannot become one by accident.
+def test_no_fact_of_the_decode_descriptor_names_bc():
+    """The structural half: ``BC`` is not a fact, and cannot become one by accident.
 
-    A field-level check rather than a comment, because the plan is the one object
-    that could plausibly acquire a ``BC`` (it is built from a plan that has one), and a
-    field added there would be invisible to the numeric gate below until something
-    started reading it.
+    A schema-level check rather than a comment, because the descriptor is the one object
+    that could plausibly acquire a ``BC`` (it states the call to a planner that serves
+    prefill too), and a fact added there would be invisible to the numeric gate below
+    until something started reading it.
     """
-    names = {f.name.lower() for f in dataclasses.fields(DecodePlan)}
+    names = {name.lower() for name in registry.schema()}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
-        f"DecodePlan has acquired a BC-shaped field: {sorted(names)}")
+        f"the contract has acquired a BC-shaped fact: {sorted(names)}")
 
 
 @pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
@@ -86,23 +85,23 @@ def test_decode_is_blind_to_prefill_bc(widths):
     routes, values = step_bundles(v, read_levels, with_gain(write_levels, g_write), topology)
 
     results = []
-    configs = []
+    descriptors = []
     for BC in _BCS:
         # `BC` is here to be IGNORED: it belongs to a prefill's built arm and is
         # not host-selectable, so the loop varies the number a prefill COULD have
         # run at and asserts there is no channel through which it could reach the
-        # static plan. `decode_plan` is called inside the loop because
-        # it must be a pure function of the topology, `d_v` and `decay`.
+        # descriptor. `decode_descriptor` is called inside the loop because
+        # it must be a pure function of the topology, `d_v`, `decay` and the device.
         assert BC in _BCS
-        config = decode_plan(topology, d_v=d_v, decay=False)
-        configs.append(config)
+        descriptor = decode_descriptor(topology, d_v=d_v, decay=False)
+        descriptors.append(descriptor)
         state = m0.clone()
-        y, state, _ = _decode_step(routes, values, masks_of(routes), config, state)
+        y, state, _ = _decode_step(routes, values, masks_of(routes), descriptor, state)
         results.append((y, state))
 
-    assert configs[0] == configs[1] == configs[2], (
-        "the static plan moved with the prefill's BC; it must be a pure function of "
-        "the topology, `d_v` and `decay`")
+    assert descriptors[0] == descriptors[1] == descriptors[2], (
+        "the descriptor moved with the prefill's BC; it must be a pure function of "
+        "the topology, `d_v`, `decay` and the device")
     for BC, (y, state) in zip(_BCS[1:], results[1:]):
         assert_reordered_close(y, results[0][0], f"decode's y at prefill BC={BC}")
         assert bytes_equal(results[0][1], state), (

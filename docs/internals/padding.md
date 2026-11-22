@@ -16,7 +16,7 @@ would break both pins for no reason: nothing downstream of the producer needs a 
 `RouteFactors` to exist as an object.
 
 **KERNEL CONTRACT.** The two padding seams -- the prefill's carry leg (`fsla.ops.prefill`)
-and the decode step (`fsla.ops.decode.derive_decode_plan`/`_decode_step`) -- receive the
+and the decode step (`fsla.ops.decode._decode_step`) -- receive the
 caller's logical tensors and widths and pad INTERNALLY, once, before any launch-facing
 derivation. The kernel itself is never handed a width other than its own; `y` is sliced
 back to the caller's own `d_v` before it leaves the op.
@@ -51,14 +51,12 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   BOTH axes: every level to `fsla.routing.topology.padded_level_width` (next power of two
   >= 16, the register-shape floor), and `v` to the smallest shipped value width that
   admits it.
-* **decode** (`fsla.ops.decode.derive_decode_plan`, `_decode_step`) pads ONLY
+* **decode** (`fsla.ops.decode._decode_step`) pads ONLY
   `d_v` -> the `DV` of the arm the planner's launch function
   (`fsla.ops.decode.decode_launch`, [`common/plan/decode_launch.md`](common/plan/decode_launch.md)) maps it to: the narrowest arm that holds it. Its
-  per-level widths carry NO floor of their own -- `derive_lattice`/`box_shape`
-  degenerate to `k = m = 1` for an unfactorable width rather than refusing, and the
-  existing `D = 4, B = 8` conformance cell (`tests/oracle/test_decode_vs_oracle.py`)
-  is proof this binary already runs a width the carry floor would refuse. Padding
-  levels here would import the carry's constraint into a kernel that does not have it.
+  per-level widths are NEVER padded: a level's width is a call fact of the descriptor (`width_bits_k`, its log2, [`docs/internals/hardware/registry.md`](hardware/registry.md#parts)), the contract's
+  range runs from the state format's floor (`fsla._state.MIN_LEVEL_WIDTH`) to the decode path's capacity, and a width outside it is refused when the descriptor is made
+  (`fsla.ops.produce.decode_descriptor`), never padded to one inside it.
 * **intra** (`fsla.ops.intra.intra_forward`) pads nothing: it reads the bundle's rows
   where the producer stores them, at their own widths, each level a whole number of
   16-digit granules up to 256 -- a bundle outside that is refused by the prefill

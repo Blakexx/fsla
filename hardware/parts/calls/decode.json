@@ -1,9 +1,27 @@
 {
   "name": "calls/decode",
-  "doc": "the decode call's contract: every (d_v, levels, decay) FSLA accepts. A list is alternatives, each its own context; a range is one context. d_v is a range because the seam pads any value width up to the arm that serves it (decode's launch function maps d_v into the arm's, common/plan/decode_launch.h).",
+  "doc": "the decode call's contract, the facts that do not depend on the depth: every (d_v, decay) FSLA accepts and the step's write_dense. A list is alternatives, each its own context; a range is one context. d_v is a range because the seam pads any value width up to the arm that serves it (decode's launch function maps d_v into the arm's, common/plan/decode_launch.h). The depth and the level widths are a depth part's (calls/depth1 .. calls/depth4), composed beside this one.",
   "facts": {
-    "d_v": {"value": {"lo": 2, "hi": 64}, "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"},
-    "levels": {"value": [1, 2, 3, 4], "declared_by": "docs/internals/decode/decode.md#kmaxlevels-2: kMaxLevels, the hierarchy depths the step's per-level arrays hold"},
-    "decay": {"value": [0, 1], "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"}
+    "d_v": {
+      "value": {
+        "lo": 2,
+        "hi": 64
+      },
+      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"
+    },
+    "decay": {
+      "value": [
+        0,
+        1
+      ],
+      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
+    },
+    "write_dense": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla/ops/produce.py decode_descriptor: the producer's rule from the declaration chooses it, 1 when the innermost level's write activation has no exact zeros (docs/internals/decode/decode.md#whole-atoms); either value is a lawful call"
+    }
   }
 }

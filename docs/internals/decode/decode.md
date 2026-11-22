@@ -76,8 +76,8 @@ big one.
 
 ## <a id="bc-absent"></a>3. `BC` is the lattice's owner, never a launch shape or an address term
 
-With one token there is nothing to amortize across a block of leaves, so `DecodePlan`
-carries no launch-shape `BC` ([`engine/plan.py`](../../../fsla/engine/plan.py)). The `(k, m)`
+With one token there is nothing to amortize across a block of leaves, so the decode descriptor
+states no launch-shape `BC` (the contract's schema names none, `hardware/schema.json`; `tests/integration/test_decode_bc_blindness.py`). The `(k, m)`
 lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
 walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
 construction). No address in either backing is computed from it: both are keyed to the
@@ -373,9 +373,9 @@ the lattice's fields as scalars under the lattice's own names (§9).
 <a id="kproducermaxbranchwidth"></a>
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
-The CEILING below is the producer's; the FLOOR is `fsla.ops.decode._admit`, which
-refuses a `B_l` below the one admission law's floor through `fsla._state.StateFormat`,
-the same check prefill's seam runs, before a call reaches this capacity check at all.
+The CEILING below is the producer's; the FLOOR is the contract's: a level's width is a call fact of the descriptor (`width_bits_k`, its log2), whose range runs from
+`fsla._state.MIN_LEVEL_WIDTH` (the one admission law's floor, the same one prefill's seam runs) to this capacity (the depth parts of `hardware/parts/calls`), so a width
+outside it is refused when the descriptor is made, naming the fact, before a call reaches this capacity check at all.
 
 `fsla/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the
 PRODUCER will emit. A decode path whose capacity were narrower would accept a
@@ -421,7 +421,7 @@ R23](../../CONSTITUTION.md#r23)): u8 digits at every level, a zero an exact zero
 the kernel needs it on the innermost path.
 
 The remaining per-level integers are `level_width[l] = b_l` and
-`level_row_offset[l]`, an offset into the flattened per-head dial array. Everything a
+`level_row_offset[l]`, an offset into the flattened per-head dial array (both the launch function's, `plan::DecodeArgs`: the widths from the descriptor's `width_bits_k`, the offsets their prefix sums). Everything a
 LEAF-order walk would need beyond that — a level's stride or span in the flattened leaf
 space — has no counterpart here: the walk never addresses a leaf as a flat integer, only
 as the `(owner, fixed run offsets, innermost digit)` decomposition the `(k, m)` box's fields carry
@@ -997,7 +997,7 @@ instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 
 ## The write term by whole atoms
 
 When the innermost level's WRITE side is dense by declaration (its activation has no exact
-zeros; `DecodePlan.write_dense`, chosen by the producer's plan rule `fsla.ops.produce.decode_plan` from `Topology.activation_properties`) and the innermost
+zeros; the descriptor's `write_dense`, chosen by the producer's rule `fsla.ops.produce.decode_descriptor` from `Topology.activation_properties`) and the innermost
 run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
 takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
 (leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a

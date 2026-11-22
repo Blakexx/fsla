@@ -61,10 +61,10 @@ import math
 import pytest
 import torch
 
-from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.decode import _decode_step, _write_atom_bitmap, decode_launch, lattice_of
 from fsla.ops.lattice import permutation, to_canonical
 from fsla.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
 
 pytestmark = [
     pytest.mark.cuda,
@@ -154,11 +154,17 @@ def _bundles(fixture):
     return fixture["bundles"]
 
 
-def _config(widths):
-    return decode_plan(_topology(widths), d_v=_DV, decay=False)
+def _descriptor(widths):
+    return decode_descriptor(_topology(widths), d_v=_DV, decay=False)
 
 
-def _leaf_support(levels, widths, config):
+def _bitmap(write, descriptor):
+    """The step's write-atom set (`_write_atom_bitmap`) of the call `descriptor` states."""
+    widths = decode_launch(descriptor).widths
+    return _write_atom_bitmap(write, widths, lattice_of(widths))
+
+
+def _leaf_support(levels, widths):
     """`[BH, N]` bool from the DEFINITION, in LATTICE order -- the plane's own order.
 
     `schedule.py`'s `write_mask` at leaf granularity, in torch, so the derivation under
@@ -175,7 +181,7 @@ def _leaf_support(levels, widths, config):
         digit = (index // strides[level]) % width
         folded = levels[level].permute(0, 2, 1, 3).reshape(B * H, width)
         mask &= folded[:, digit] != 0
-    pi = permutation(widths, config.lattice_k, config.lattice_m, device=mask.device)
+    pi = permutation(widths, *lattice_of(widths), device=mask.device)
     lattice = torch.empty_like(mask)
     lattice.index_copy_(1, pi, mask)
     return lattice
@@ -237,12 +243,11 @@ def test_the_step_write_atom_set_is_exact(arm, support):
     """
     widths, _BC = arm
     fixture = _fixture(widths, seed=len(widths) * 31 + 7, support=_SUPPORTS[support])
-    config = _config(widths)
     write = live_of(_bundles(fixture)[0], "write")
 
-    got = _write_atom_bitmap(write, config)
-    want = _leaf_support(write, widths, config).view(
-        -1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
+    got = _write_atom_bitmap(write, widths, lattice_of(widths))
+    want = _leaf_support(write, widths).view(
+        -1, math.prod(widths) // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
     assert torch.equal(got, want), "the step's write-atom set is not the write support"
     if _SUPPORTS[support] < 1.0:
         assert not bool(got.all()), (
@@ -259,23 +264,23 @@ def test_the_step_write_atom_set_is_exact(arm, support):
 def test_the_paged_backing_matches_the_dense_one(arm, support):
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 97 + BC, support=_SUPPORTS[support])
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")
 
     arena = _arena(widths, BC, BH)
-    arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
+    arena.plan_exact(_write_atom_bitmap(write, widths, lattice_of(widths)), fresh=True)
     arena.wait()
 
-    entry = torch.randn(BH, config.N, _COLS, device="cuda", dtype=torch.float32)
+    entry = torch.randn(BH, math.prod(widths), _COLS, device="cuda", dtype=torch.float32)
     entry[..., _DV] = entry[..., _DV].abs()
     dense = _dense_masked_to(arena, entry)
     _seed_from_dense(arena, dense)
 
-    y_dense, dense_out, _ = _decode_step(routes, values, masks_of(routes), config,
+    y_dense, dense_out, _ = _decode_step(routes, values, masks_of(routes), descriptor,
         state_pages(dense.clone()))
-    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
+    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
         page_table=arena.page_table)
 
     assert_reordered_close(y_paged, y_dense, "the two backings' y")
@@ -307,13 +312,13 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 13 + 5, support=0.25)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")
 
     arena = _arena(widths, BC, BH)
-    arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
+    arena.plan_exact(_write_atom_bitmap(write, widths, lattice_of(widths)), fresh=True)
     arena.wait()
     resident = arena.allocated_pages
     assert resident < arena.logical_pages, "every atom is resident; nothing is absent"
@@ -321,15 +326,15 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     #: admission zeroes only what it COMMITS, so the pages beyond the committed run are
     #: free to carry a poison the step must not touch.
     arena.state[resident:] = _POISON
-    entry = torch.randn(BH, config.N, _COLS, device="cuda", dtype=torch.float32)
+    entry = torch.randn(BH, math.prod(widths), _COLS, device="cuda", dtype=torch.float32)
     entry[..., _DV] = entry[..., _DV].abs()
     dense = _dense_masked_to(arena, entry)
     _seed_from_dense(arena, dense)
     table_before = arena.page_table.clone()
 
-    y_dense, _, _ = _decode_step(routes, values, masks_of(routes), config,
+    y_dense, _, _ = _decode_step(routes, values, masks_of(routes), descriptor,
         state_pages(dense.clone()))
-    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
+    y_paged, _, _ = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
         page_table=arena.page_table)
 
     assert bytes_equal(arena.state[resident:],
@@ -354,12 +359,12 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     what makes this a planned-exact claim rather than a "grew somehow" one.
     """
     widths, BC = arm
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
 
-    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), config) for step in (first, second)]
+    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), widths, lattice_of(widths)) for step in (first, second)]
     new_atoms = int((bits[1] & ~bits[0]).sum())
     assert new_atoms > 0, "the second step reaches no new atom; the cell is vacuous"
 
@@ -378,7 +383,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
         arena.plan_exact(bitmap, fresh=False)
         arena.wait()
         routes, values = _bundles(step)
-        y, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
+        y, _, _ = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
                                page_table=arena.page_table)
         ys.append(y)
 
@@ -401,8 +406,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     for step in (first, second):
         ref = oracle_run(*bundle_operands(*_bundles(step)), _topology(widths), entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
-    state = to_canonical(arena.materialize(), widths, config.lattice_k,
-                         config.lattice_m).view(2, 3, config.N, _COLS)
+    state = to_canonical(arena.materialize(), widths, *lattice_of(widths)).view(2, 3, math.prod(widths), _COLS)
     assert_slots_close(ys[-1], ref.y, output=DECODE_Y, envelope=ref.y_envelope, what="the grown step's y")
     assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what="the grown state",
                        derived_atol=2 * state_quantum(ref.state))
@@ -420,11 +424,11 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     indistinguishable from an atom `plan_exact` admitted.
     """
     widths, BC = arm
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
-    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), config) for step in (first, second)]
+    bits = [_write_atom_bitmap(live_of(_bundles(step)[0], "write"), widths, lattice_of(widths)) for step in (first, second)]
     assert int((bits[1] & ~bits[0]).sum()) > 0, "the second step grows nothing here"
 
     admitted = _arena(widths, BC, BH)
@@ -437,7 +441,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
                 arena.plan_exact(bitmap, fresh=False)
                 arena.wait()
             routes, values = _bundles(step)
-            y, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
+            y, _, _ = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
                                    page_table=arena.page_table, pool=pool)
             out.append(y)
         ys[name] = out
@@ -453,8 +457,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     for step in (first, second):
         ref = oracle_run(*bundle_operands(*_bundles(step)), _topology(widths), entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
-    state = to_canonical(pooled.materialize(), widths, config.lattice_k,
-                         config.lattice_m).view(2, 3, config.N, _COLS)
+    state = to_canonical(pooled.materialize(), widths, *lattice_of(widths)).view(2, 3, math.prod(widths), _COLS)
     assert_slots_close(ys["pool"][-1], ref.y, output=DECODE_Y, envelope=ref.y_envelope, what="the pool-admitted y")
     assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
                        what="the pool-admitted state", derived_atol=2 * state_quantum(ref.state))

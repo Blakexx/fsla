@@ -53,13 +53,14 @@ import torch
 from fsla.ops.decode import (
     DecodeScratch,
     _decode_step,
-    _write_atom_bitmap,
+    decode_launch,
 )
 from fsla.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal
 from tests.integration.test_decode_paging import (
     _ARMS,
+    _bitmap,
     _bundles,
-    _config,
+    _descriptor,
     _fixture,
     _leaf_support,
 )
@@ -73,24 +74,24 @@ pytestmark = [
 ]
 
 
-def _step(fixture, config, arena, *, workspace=None, pool=None):
+def _step(fixture, descriptor, arena, *, workspace=None, pool=None):
     """One step at the ABI, on the residency the arena has. `(y, workspace)`."""
     routes, values = _bundles(fixture)
     BH = fixture["B"] * fixture["H"]
     if workspace is None:
-        workspace = DecodeScratch.build(config, BH, torch.device("cuda"))
-    y, _state, workspace = _decode_step(routes, values, masks_of(routes), config, arena.state, workspace=workspace,
+        workspace = DecodeScratch.build(descriptor, BH, torch.device("cuda"))
+    y, _state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, arena.state, workspace=workspace,
         page_table=arena.page_table, pool=pool)
     return y, workspace
 
 
-def _verdict(fixture, config, arena, *, pool=None):
+def _verdict(fixture, descriptor, arena, *, pool=None):
     """The step's own answer, and the workspace it ran on. A FRESH workspace each call.
 
     Fresh because the done flags are per-STEP state: a workspace carried across two
     independent calls would answer for the first one's batch-heads.
     """
-    _y, workspace = _step(fixture, config, arena, pool=pool)
+    _y, workspace = _step(fixture, descriptor, arena, pool=pool)
     workspace.growth_host.copy_(workspace.growth_any)
     fired = bool(workspace.growth_host[0])
     #: The reduction the host reads and the per-`bh` vector it reduces must agree, on
@@ -99,10 +100,10 @@ def _verdict(fixture, config, arena, *, pool=None):
     return fired, workspace
 
 
-def _would_admit(fixture, config, arena) -> int:
+def _would_admit(fixture, descriptor, arena) -> int:
     """What the EXACT preamble would admit, run here and nowhere near the shipped path."""
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
     return int((bitmap & (arena.page_table < 0)).sum())
 
 
@@ -136,25 +137,25 @@ def test_the_verdict_fires_exactly_when_the_preamble_would_admit(arm, support):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=hash((widths, support)) % 10_000, support=_SUPPORT[support])
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
 
     #: EMPTY: nothing is mapped, so every atom this step writes is new.
     arena = _arena(widths, BC, BH)
-    admits_before = _would_admit(fixture, config, arena)
+    admits_before = _would_admit(fixture, descriptor, arena)
     assert admits_before > 0, "this cell needs a step that writes something"
-    fired, _ = _verdict(fixture, config, arena)
+    fired, _ = _verdict(fixture, descriptor, arena)
     assert fired, (
         f"the verdict missed a step the preamble would admit {admits_before} atoms for; "
         "the step would have deposited into an absent atom and lost it")
 
     #: SETTLED: this exact write set is now resident, so there is nothing to admit.
-    arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
+    arena.plan_exact(_bitmap(write, descriptor), fresh=True)
     arena.wait()
     torch.cuda.synchronize()
-    assert _would_admit(fixture, config, arena) == 0, "the fixture's own precondition"
-    fired, _ = _verdict(fixture, config, arena)
+    assert _would_admit(fixture, descriptor, arena) == 0, "the fixture's own precondition"
+    fired, _ = _verdict(fixture, descriptor, arena)
     assert not fired, (
         "the verdict fired on a step with nothing to admit; the preamble it exists to "
         "skip would be paid on every settled step of the sequence")
@@ -171,28 +172,28 @@ def test_one_absent_atom_is_enough_to_fire(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=907 + len(widths), support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(bitmap, fresh=True)
     arena.wait()
     torch.cuda.synchronize()
-    assert not _verdict(fixture, config, arena)[0], "the fixture's own precondition"
+    assert not _verdict(fixture, descriptor, arena)[0], "the fixture's own precondition"
 
     written = bitmap.nonzero()
     for pick in (0, written.shape[0] // 2, written.shape[0] - 1):
         bh, atom = (int(x) for x in written[pick])
         slot = int(arena.page_table[bh, atom])
         arena.page_table[bh, atom] = -1
-        fired, _ = _verdict(fixture, config, arena)
+        fired, _ = _verdict(fixture, descriptor, arena)
         arena.page_table[bh, atom] = slot
         assert fired, (
             f"evicting the single atom ({bh}, {atom}) this step writes did not fire the "
             "verdict")
-    assert not _verdict(fixture, config, arena)[0], "restoring the slot did not settle it"
+    assert not _verdict(fixture, descriptor, arena)[0], "restoring the slot did not settle it"
 
 
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
@@ -205,10 +206,10 @@ def test_an_absent_atom_the_step_does_not_write_is_not_growth(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=311 + len(widths), support=0.25)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(bitmap, fresh=True)
@@ -216,7 +217,7 @@ def test_an_absent_atom_the_step_does_not_write_is_not_growth(arm):
     torch.cuda.synchronize()
     absent = int((arena.page_table < 0).sum())
     assert absent > 0, "this cell needs a routing that leaves atoms absent"
-    assert not _verdict(fixture, config, arena)[0], (
+    assert not _verdict(fixture, descriptor, arena)[0], (
         f"{absent} atoms are absent and the verdict fired, but the step writes none of "
         "them")
 
@@ -248,22 +249,22 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=419 + len(widths), support=_SUPPORT[support])
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
 
     arena = _arena(widths, BC, BH)
-    fired, workspace = _verdict(fixture, config, arena)
+    fired, workspace = _verdict(fixture, descriptor, arena)
     torch.cuda.synchronize()
-    reference = _write_atom_bitmap(write, config)
+    reference = _bitmap(write, descriptor)
     assert fired, "an empty table and a step that writes: this cell IS a growth step"
     assert reference.any(), "a vacuous cell would compare two empty bitmaps"
     assert torch.equal(workspace.atom_bits, reference), (
         "the set the step published is not the set the definition derives, so a growth "
         "step would admit the wrong atoms")
     assert torch.equal(
-        reference, _leaf_support(write, widths, config).view(
-            BH, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)), (
+        reference, _leaf_support(write, widths).view(
+            BH, decode_launch(descriptor).N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)), (
         "the enumerated reference and the leaf support's own definition condense "
         "differently")
 
@@ -272,7 +273,7 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
     arena.plan_exact(workspace.atom_bits, fresh=False)
     arena.wait()
     torch.cuda.synchronize()
-    assert not _verdict(fixture, config, arena)[0], (
+    assert not _verdict(fixture, descriptor, arena)[0], (
         "admitting the step's own published set did not settle the verdict")
 
 
@@ -280,10 +281,10 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
 # 3. the verdict is PER BATCH-HEAD
 # ---------------------------------------------------------------------------
 
-def _hold_out_one_atom_of_one_bh(fixture, config, arena):
+def _hold_out_one_atom_of_one_bh(fixture, descriptor, arena):
     """Admit the whole write set except one atom of ONE batch-head. `(bitmap, bh)`."""
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
     held_out[row, column] = False
@@ -304,14 +305,14 @@ def test_a_mixed_batch_advances_the_resident_batch_heads_and_no_others(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=2311, support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     assert BH > 1, "a mixed-batch cell needs more than one batch-head"
 
     arena = _arena(widths, BC, BH)
-    _bitmap, needy = _hold_out_one_atom_of_one_bh(fixture, config, arena)
+    _bitmap, needy = _hold_out_one_atom_of_one_bh(fixture, descriptor, arena)
     before = _gathered(arena, BH)
-    fired, workspace = _verdict(fixture, config, arena)
+    fired, workspace = _verdict(fixture, descriptor, arena)
     torch.cuda.synchronize()
     after = _gathered(arena, BH)
 
@@ -339,22 +340,22 @@ def test_the_admission_and_replay_advance_every_sequence_exactly_once(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=2317, support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     reference = _arena(widths, BC, BH)
     reference.plan_exact(bitmap, fresh=True)
     reference.wait()
-    y_reference, _ = _step(fixture, config, reference)
+    y_reference, _ = _step(fixture, descriptor, reference)
 
     replayed = _arena(widths, BC, BH)
-    _hold_out_one_atom_of_one_bh(fixture, config, replayed)
-    _y, workspace = _step(fixture, config, replayed)
+    _hold_out_one_atom_of_one_bh(fixture, descriptor, replayed)
+    _y, workspace = _step(fixture, descriptor, replayed)
     replayed.plan_exact(workspace.atom_bits, fresh=False)
     replayed.wait()
-    y_replayed, _ = _step(fixture, config, replayed, workspace=workspace)
+    y_replayed, _ = _step(fixture, descriptor, replayed, workspace=workspace)
     torch.cuda.synchronize()
 
     assert reordered_close(y_replayed, y_reference), (
@@ -379,18 +380,18 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=4801 + len(widths), support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     reference = _arena(widths, BC, BH)
     reference.plan_exact(bitmap, fresh=True)
     reference.wait()
-    y_reference, _ = _step(fixture, config, reference)
+    y_reference, _ = _step(fixture, descriptor, reference)
 
     pooled = _arena(widths, BC, BH, pool_slack=1.0)
-    fired, workspace = _verdict(fixture, config, pooled, pool=pooled)
+    fired, workspace = _verdict(fixture, descriptor, pooled, pool=pooled)
     torch.cuda.synchronize()
     assert not fired, (
         "a pool that covers the step's demand still sent the host a verdict; there is "
@@ -399,13 +400,13 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
         "the device claim did not land in the table")
     assert pooled.pool_headroom() == pooled.pool_capacity - int(bitmap.sum(1).max()), (
         "the pool cursor did not advance by the batch-head's own demand")
-    y_pooled, _ = _step(fixture, config, pooled, workspace=workspace, pool=pooled)
+    y_pooled, _ = _step(fixture, descriptor, pooled, workspace=workspace, pool=pooled)
     torch.cuda.synchronize()
     assert not reordered_close(y_pooled, y_reference), (
         "the second pooled step must differ -- it deposits on top of the first")
 
     fresh = _arena(widths, BC, BH, pool_slack=1.0)
-    y_first, _ = _step(fixture, config, fresh, pool=fresh)
+    y_first, _ = _step(fixture, descriptor, fresh, pool=fresh)
     torch.cuda.synchronize()
     assert reordered_close(y_first, y_reference), (
         "a pool-admitted atom is distinguishable from a host-admitted one; it must not be")
@@ -423,23 +424,23 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=4909, support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
     demand = int(bitmap.sum(1).max())
 
     reference = _arena(widths, BC, BH)
     reference.plan_exact(bitmap, fresh=True)
     reference.wait()
-    y_reference, _ = _step(fixture, config, reference)
+    y_reference, _ = _step(fixture, descriptor, reference)
 
     #: A pool one slot short of the thinnest demand: every batch-head is needy.
-    slack = (demand - 1) / config.N * MMA_K_QUANTUM
+    slack = (demand - 1) / decode_launch(descriptor).N * MMA_K_QUANTUM
     starved = _arena(widths, BC, BH, pool_slack=max(slack, 0.0))
     assert starved.pool_capacity < demand, "this cell needs a pool that cannot cover"
     before = starved.state.clone()
-    fired, workspace = _verdict(fixture, config, starved, pool=starved)
+    fired, workspace = _verdict(fixture, descriptor, starved, pool=starved)
     torch.cuda.synchronize()
     assert fired, "an exhausted pool must degrade to the host verdict"
     assert int((starved.page_table >= 0).sum()) == 0, (
@@ -448,7 +449,7 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
 
     starved.plan_exact(workspace.atom_bits, fresh=False)
     starved.wait()
-    y_replayed, _ = _step(fixture, config, starved, workspace=workspace, pool=starved)
+    y_replayed, _ = _step(fixture, descriptor, starved, workspace=workspace, pool=starved)
     torch.cuda.synchronize()
     assert_reordered_close(y_replayed, y_reference, "the replayed step's y")
     assert bytes_equal(_gathered(starved, BH), _gathered(reference, BH))

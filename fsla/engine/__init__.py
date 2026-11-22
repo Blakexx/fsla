@@ -5,8 +5,8 @@
     Context -> DAG -> Plan -> execute(plan)
 
 This ROOT holds the shared CORE and nothing family-specific: the DAG framework
-(:mod:`fsla.engine.runner`), the value types (:mod:`fsla.engine.types`) and the
-per-family plans (:mod:`fsla.engine.plan`). The DOMAINS are its subpackages --
+(:mod:`fsla.engine.runner`), the value types (:mod:`fsla.engine.types`) and
+prefill's plan with the launch bundles (:mod:`fsla.engine.plan`). The DOMAINS are its subpackages --
 :mod:`fsla.engine.facts` (the fact primitives and their bodies),
 :mod:`fsla.engine.rules` (the band-2 folds) and :mod:`fsla.engine.dags` (the
 per-family compositions).
@@ -20,7 +20,6 @@ the engine rather than of the fact-finder that happened to define it
 from fsla.engine.plan import (
     DecodeLaunch,
     DecodeOperands,
-    DecodePlan,
     DecodeWorkspace,
     PrefillLaunch,
     PrefillOperands,
@@ -53,7 +52,6 @@ __all__ = [
     "Carve",
     "DecodeLaunch",
     "DecodeOperands",
-    "DecodePlan",
     "DecodeWorkspace",
     "Node",
     "PrefillLaunch",

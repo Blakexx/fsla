@@ -41,9 +41,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fsla.ops.decode import _decode_step, _write_atom_bitmap
+from fsla.ops.decode import _decode_step
 from fsla.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
-from tests.integration.test_decode_paging import _ARMS, _bundles, _config, _fixture
+from tests.integration.test_decode_paging import _ARMS, _bitmap, _bundles, _descriptor, _fixture
 from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of
 
 pytestmark = [
@@ -234,11 +234,11 @@ def test_the_two_backings_agree(arm):
     """
     widths, BC = arm
     fixture = _fixture(widths, seed=41 + len(widths), support=0.5)
-    config = _config(widths)
+    descriptor = _descriptor(widths)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
     write = live_of(routes, "write")
-    bitmap = _write_atom_bitmap(write, config)
+    bitmap = _bitmap(write, descriptor)
 
     outputs = []
     for backing in ("vmm", "dense"):
@@ -254,7 +254,7 @@ def test_the_two_backings_agree(arm):
         seed = torch.arange(int(present.sum()) * MMA_K_QUANTUM * _COLS, device="cuda",
                             dtype=torch.float32).view(-1, MMA_K_QUANTUM, _COLS) * 1e-3
         arena.state.index_copy_(0, table[present].long(), encode_pages(seed))
-        y, _, _ = _decode_step(routes, values, masks_of(routes), config, arena.state,
+        y, _, _ = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
                                page_table=table)
         outputs.append((y, arena.materialize(), arena))
 

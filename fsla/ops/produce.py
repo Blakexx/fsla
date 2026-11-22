@@ -24,10 +24,11 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-from fsla.engine import DecodePlan, PrefillPlan
+from fsla.engine import PrefillPlan
 from fsla.engine.carve import check_carve, plan_carve
 from fsla.engine.facts.operands import requires_backward
-from fsla.ops._ext import not_built
+from fsla.ops._ext import device_index, not_built
+from fsla.ops.descriptor import Descriptor, descriptor
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens
@@ -37,8 +38,12 @@ from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
 from fsla.values import Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_plan", "hidden_contiguous", "prefill_plan", "produce",
+__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "prefill_plan", "produce",
            "projection_dtype", "route_logits"]
+
+
+#: the levels the decode contract's width facts name (``width_bits_1`` .. ``width_bits_4``)
+_DECODE_LEVELS = 4
 
 
 @dataclass(frozen=True)
@@ -206,10 +211,23 @@ def prefill_plan(topology, d_v: int, *, paging: bool | None = None, carve=None) 
     return PrefillPlan(carve=carve, paging=paging)
 
 
-def decode_plan(topology, *, d_v: int, decay: bool, descriptor=None) -> DecodePlan:
-    """THE PRODUCER-OWNED DECODE PLAN RULE: the step's static plan, ``write_dense`` -- deposit whole atoms -- chosen from
-    the declaration: the innermost level's write activation has no exact zeros."""
-    from fsla.ops.decode import derive_decode_plan
+def decode_descriptor(topology, *, d_v: int, decay: bool, device=None) -> Descriptor:
+    """THE PRODUCER-OWNED DECODE RULE: the step's validated descriptor on ``device`` (the current device for ``None``), the call's
+    facts stated from the declaration -- ``write_dense``, deposit whole atoms, chosen when the innermost level's write activation
+    has no exact zeros, and each level's width as its log2 (a level's width is a power of two, ``fsla._state.StateFormat``'s law).
+    A width outside the contract is refused when the descriptor is made, naming the fact. Memoized by the call and the device: a
+    dictionary lookup, no device read after the first."""
+    return _decode_descriptor(topology, int(d_v), bool(decay), device_index(device))
 
-    write_dense = not activation_walks(topology)[1][-1]
-    return derive_decode_plan(topology, d_v=d_v, decay=decay, write_dense=write_dense, descriptor=descriptor)
+
+@cache
+def _decode_descriptor(topology, d_v: int, decay: bool, device: int) -> Descriptor:
+    widths = tuple(topology.widths)
+    for level, width in enumerate(widths):
+        if width < 1 or width & (width - 1):
+            raise ValueError(f"level {level + 1}'s width is {width}: a level's width is a power of two (the contract states it as "
+                             f"width_bits_{level + 1}, its log2)")
+    bits = [width.bit_length() - 1 for width in widths[:_DECODE_LEVELS]]
+    bits += [0] * (_DECODE_LEVELS - len(bits))
+    return descriptor(device=device, d_v=d_v, levels=len(widths), decay=int(decay), write_dense=int(not activation_walks(topology)[1][-1]),
+                      **{f"width_bits_{level + 1}": value for level, value in enumerate(bits)})

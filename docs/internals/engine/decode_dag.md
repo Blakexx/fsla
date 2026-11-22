@@ -51,11 +51,12 @@ of its own either.
 has, over the residency it already has — it admits nothing itself. `build_launch` carries a
 stream because the decay arm's `dials` are derived there: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
-already holds; its `plan` is the static `DecodePlan` the call was handed.
+already holds; its `descriptor` is the validated one the call was handed (`fsla.ops.produce.decode_descriptor`), and the state plane's leaf order is derived from the state's format here
+(`fsla.ops.decode.lattice_of`).
 
-`state_plane` carries the per-step SHAPE agreements — `d_v` against the frozen config,
+`state_plane` carries the per-step SHAPE agreements — `d_v` against the descriptor's arm,
 the plane's extent against the backing, the page table's against `[BH, N/16]`. They are
-checked per step and not at plan build because that is where the plane the step actually
+checked per step and not when the descriptor is made because that is where the plane the step actually
 indexes is known.
 
 ## <a id="the-verdict"></a>3. The verdict is the step's own output, read by its caller
@@ -86,13 +87,14 @@ reads a device value, or allocates per step, fails at import rather than at some
 first `graph.replay()` — and `tests/integration/test_decode_graph_step.py` is what proves
 the declaration is TRUE of a real capture.
 
-## <a id="host-carrier"></a>5. The plan and the scratch, and why the scratch is memoized the way it is
+## <a id="host-carrier"></a>5. The descriptor and the scratch, and why the scratch is memoized the way it is
 
-`DecodePlan` (`fsla/engine/plan.py`), the frozen static plan (what to do, a seed of the DAG, the memo key of the scratch), answers "what shape is the launch?" — widths,
-per-level dial row offsets, the `(k, m)` lattice the state plane is written in
-(`lattice_k`, `lattice_m`, [`decode_lattice.md`](../decode/decode_lattice.md)), `d_v`, the
-decay arm, `eps`, `ctas`, `write_dense`. None of that is a derived axis. `BC` is deliberately NOT a
-field: owner-blocked AMORTIZATION is a property of how a tiled consumer shares a
+THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; a seed of the DAG and the
+memo key of the scratch), and what the old plan held is the descriptor's or the launch function's: the widths, `write_dense` and `d_v` are call facts the descriptor states and
+`plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
+lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;
+`eps` is data and `ctas` a private keyword of the internal `step`. None of that is a derived axis. `BC` is deliberately NOT a
+fact: owner-blocked AMORTIZATION is a property of how a tiled consumer shares a
 `[BC, cols]` block's cost across many tokens, and with one token there is nothing to
 amortize, so the decode kernels are BC-blind by construction in that sense — the
 lattice's OWN `BC` (the leaf count one owner holds) is a layout fact the `(k, m)` fields
@@ -100,8 +102,8 @@ carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
 The DAG's nodes are `decode_call` (`BH`, `device`, `paged`), `scratch`, `backing`, `state_plane`, `build_launch` and `step`
-(`write_atom_bitmap` is the reference-only one, section 6). The memo key is over the plan alone: `scratch` is declared
-`pure_of` `(plan, BH, device)`, and the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
+(`write_atom_bitmap` is the reference-only one, section 6). The memo key is over the descriptor alone: `scratch` is declared
+`pure_of` `(descriptor, BH, device)`, and the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
 are per-call and never cached.
 
 `scratch` is declared `per_state`, which makes its table a `WeakKeyDictionary` keyed on
@@ -112,7 +114,7 @@ memoized is also what hoists the allocation, and the once-only initialization of
 last CTA out reset each of them, so no `memset` ever stands between two decode steps
 ([`decode.md#capture`](../decode/decode.md#capture)).
 
-Because the launch config is FROZEN for the sequence, a state has exactly one live
+Because the descriptor is FIXED for the sequence, a state has exactly one live
 scratch; `growth_pending` and `admit_growth` read it through that table and refuse a
 state holding more than one, which is the observable form of the decay arm changing
 mid-sequence.
@@ -131,7 +133,7 @@ warning the function's docstring used to carry alone.
 ## <a id="the-pool"></a>7. The slack pool is storage mechanics, and neither node nor variant
 
 A step admits into its state's slack pool INSIDE the kernel, from the pool buffers
-`backing` hands the plan — there is no node for it, because it is not a fact the host
+`backing` hands the launch — there is no node for it, because it is not a fact the host
 finds: the claim is the kernel's own, made by the batch-head's owner and written into the
 page table ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
 `pool_headroom` and `refill_pool` (`fsla/engine/dags/decode_dag.py`) are HOST reads and

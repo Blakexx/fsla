@@ -416,7 +416,7 @@ def test_leaf_rate_dials_rejects_fp64_dial_that_rounds_to_1_0f():
     dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
     decay = LeafMassDecay(dials=dials)  # passes the fp64 __post_init__ check
     with pytest.raises(ValueError, match="1\\.0f"):
-        leaf_rate_dials(decay, topology)
+        leaf_rate_dials(decay, topology.D)
 
 
 def test_leaf_rate_dials_accepts_fp64_dial_that_survives_the_cast():
@@ -430,5 +430,5 @@ def test_leaf_rate_dials_accepts_fp64_dial_that_survives_the_cast():
         "fixture assumption broken: this fp64 value no longer survives the fp32 cast")
     dials = tuple(torch.full((2, w), dial_val, dtype=torch.float64) for w in widths)
     decay = LeafMassDecay(dials=dials)
-    flat = leaf_rate_dials(decay, topology)
+    flat = leaf_rate_dials(decay, topology.D)
     assert torch.all(flat < 1.0)

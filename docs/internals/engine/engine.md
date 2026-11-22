@@ -25,8 +25,8 @@ Context  ->  DAG  ->  launch
   nodes are RULES — pure host folds from facts to decisions, which launch nothing and
   allocate nothing ([`rules.md`](rules.md)). They are interleaved, not phased.
 * a **Plan** is band 3 where a family has one: the rules' verdicts plus references to
-  the terminal tensor facts, and no third kind of field (`plan.py`'s `DecodePlan`,
-  which the decode DAG's `step` node launches).
+  the terminal tensor facts, and no third kind of field (`plan.py`'s `PrefillPlan`; decode has none: its DAG's `step` node launches from the
+  descriptor).
 * the launch node reads its plan or its facts and decides nothing. A launch site that
   decides anything is the condition this engine exists to remove.
 
@@ -47,7 +47,7 @@ it at all:
   `validate_capturable`), the value types, the pins a caller may set over axes the op
   decides — the carry's carve — `Carve`, `SidePlan` — and the
   refusal every no-backward clause raises —
-  `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, `DecodePlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan`, `operands`, `workspace`).
+  `BackwardNotImplemented` — (`types.py`), and the per-family plans and launches (`plan.py`: `PrefillPlan`, and the internal `PrefillLaunch`/`DecodeLaunch` bundles of `plan` or `descriptor`, `operands`, `workspace`).
 * `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing, the write-atom
   bitmap and the atom fold of the masks (`planes.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the

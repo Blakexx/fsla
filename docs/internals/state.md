@@ -298,13 +298,13 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`fsla.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, plan=..., decay=...)` takes and
+`fsla.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, descriptor, decay=...)` takes and
 returns the state exactly as `fsla_op` does, and its caller owns the verdict (`growth_pending`, then
 `admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
 behind that seam:
 
-* **The static plan and the scratch** (`DecodePlan`, `DecodeScratch`) are the
-  decode DAG's own (the plan a seed, the scratch a memoized node), not the state's — launch machinery fails the
+* **The descriptor and the scratch** (`Descriptor`, `DecodeScratch`) are the
+  decode DAG's own (the descriptor a seed, the scratch a memoized node), not the state's — launch machinery fails the
   membership test. The ORDER and the two memo disciplines are that DAG's page
   ([`engine/decode_dag.md` §5](engine/decode_dag.md#host-carrier)); what the state owes
   them is only its identity, which is what the `per_state` table is keyed on.

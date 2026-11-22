@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
   if (argc % 2 == 0 || device_text.empty() || call_text.empty()) {
     refuse("usage: plan_tool --device name=v,... --call name=v,... [--model text] [--grid ...]");
   }
+
   std::vector<std::string> keep;
   keep.reserve(64);
   const auto device = fsla::plan::device_descriptor(parse(device_text, keep), model);
@@ -64,10 +65,20 @@ int main(int argc, char** argv) {
   const auto launch = fsla::plan::decode_launch(call.descriptor);
   const auto& arm = launch.arm;
   const auto& args = launch.args;
+
   std::printf("descriptor: %s\n", fsla::plan::spell(call.descriptor).c_str());
   std::printf("arm: d_v=%d levels=%d decay=%d\n", arm.d_v, arm.levels, arm.decay);
   std::printf("args: cc=%d threads=%d smem_budget=%d pad=%d sms=%d\n", args.cc, args.threads,
               args.smem_budget, args.pad, args.sms);
+
+  std::string widths, offsets;
+  for (int l = 0; l < arm.levels; ++l) {
+    widths += (l ? "," : "") + std::to_string(args.widths[l]);
+    offsets += (l ? "," : "") + std::to_string(args.row_offsets[l]);
+  }
+  std::printf("levels: widths=%s row_offsets=%s write_dense=%d\n", widths.c_str(), offsets.c_str(),
+              args.write_dense);
+
   if (!grid_text.empty()) {
     const Named grid = parse(grid_text, keep);
     if (grid.size() != 3) refuse("--grid is unit_ceiling=n,bh=n,forced=n");

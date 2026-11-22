@@ -178,6 +178,9 @@ constexpr fsla::plan::Descriptor exact() {
   d.assign("d_v", Interval{48, 48});
   d.assign("levels", Interval{2, 2});
   d.assign("decay", Interval{1, 1});
+  d.assign("write_dense", Interval{1, 1});
+  d.assign("width_bits_1", Interval{4, 4});
+  d.assign("width_bits_2", Interval{5, 5});
   return d;
 }
 
@@ -185,6 +188,10 @@ constexpr fsla::plan::DecodeLaunch kLaunch = fsla::plan::decode_launch(exact());
 static_assert(kLaunch.arm == Arm{64, 2, 1});
 static_assert(kLaunch.args.threads == 512 && kLaunch.args.smem_budget == 232448);
 static_assert(kLaunch.args.pad == 16 && kLaunch.args.sms == 132 && kLaunch.args.cc == 900);
+static_assert(kLaunch.args.widths[0] == 16 && kLaunch.args.widths[1] == 32
+              && kLaunch.args.widths[2] == 0);
+static_assert(kLaunch.args.row_offsets[0] == 0 && kLaunch.args.row_offsets[1] == 16
+              && kLaunch.args.write_dense == 1);
 
 }  // namespace
 

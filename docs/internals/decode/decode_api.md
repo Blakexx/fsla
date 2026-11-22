@@ -93,14 +93,14 @@ the write set the walk enumerates is the set the residency test reads, so the te
 over shared memory. The verdict (`growth`, `done`, and the `growth_any` reduction the host
 reads) sits beside the write-atom set it was reached from (`atom_bits`, what a host
 admission plans from), and under a slack pool a growth step admits itself.
-`write_dense` is the bundle's flag that the innermost level's write side is dense
-(`docs/api.md` §2.1), which lets the write term walk whole atoms (`decode.md#whole-atoms`). Its operands are the
+`write_dense` is the call's fact that the innermost level's write side is dense
+(`fsla.ops.produce.decode_descriptor` states it from the declaration), which the launch function hands the entry and which lets the write term walk whole atoms (`decode.md#whole-atoms`); the level widths and their row offsets come from it too, so the entry takes neither. Its operands are the
 caller's RAW
 `[B, 1, H, *]` views — `read`, `write` and their scales, `v` — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own
 `[B, 1, H, d_v]` shape carries it. `lattice_k`/`lattice_m` name the `(k, m)` box
 (`decode_lattice.md#the-refusals`) the caller's state plane and routing levels are
-already written in — the leaf order travels with the call rather than being assumed. Its
+already written in — the leaf order travels with the state plane rather than being assumed (the op derives it from the state's format and passes it as an attribute of the state operand). Its
 argument checks and workspace contracts are documented with the definition, in
 [`decode.md`](decode.md#instantiation-matrix).
 

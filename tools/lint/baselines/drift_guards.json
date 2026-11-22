@@ -8,12 +8,6 @@
    "count": 1
   },
   {
-   "path": "fsla/ops/decode.py",
-   "message": "a comment naming the work code 'K53': \"\"\"DECODE'S OP ENTRY, THE SAME DESCRIPTOR CHECK AS PREFILL (K53).",
-   "line_sha256": "942322dd781d5cf1",
-   "count": 1
-  },
-  {
    "path": "tests/integration/test_decode_graph_step.py",
    "message": "a storage identity claim made with torch.equal: assert torch.equal(landed, eager_state.materialize())",
    "line_sha256": "a2781f2d0a093cc0",

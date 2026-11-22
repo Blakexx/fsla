@@ -558,7 +558,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from fsla.engine.rules.envelope import prefill_envelope;"
             "from fsla.engine.dags.prefill_dag import PrefillContext, run_prefill;"
             "from fsla.ops.prefill import prefill;"
-            "from fsla.ops.decode import derive_decode_plan;"
+            "from fsla.ops.decode import decode_launch;"
             "from fsla.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `measure/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"

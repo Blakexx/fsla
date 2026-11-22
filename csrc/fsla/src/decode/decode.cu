@@ -894,18 +894,14 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
                            std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state,
                            Tensor yacc, Tensor queue, Tensor growth, Tensor growth_any,
-                           Tensor growth_ctr, Tensor done, Tensor atom_bits,
-                           std::vector<int64_t> level_widths,
-                           std::vector<int64_t> level_row_offsets, int64_t lattice_k,
-                           int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
+                           Tensor growth_ctr, Tensor done, Tensor atom_bits, int64_t lattice_k,
+                           int64_t lattice_m, int64_t ctas, double eps,
                            std::vector<int64_t> descriptor, std::optional<Tensor> page_table,
                            std::optional<Tensor> pool_slots, std::optional<Tensor> pool_cursor) {
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
-  STD_TORCH_CHECK(static_cast<int>(write.size()) == D && static_cast<int>(level_widths.size()) == D
-                      && static_cast<int>(level_row_offsets.size()) == D,
-                  "read, write and the two per-level integer vectors must each have D entries");
+  STD_TORCH_CHECK(static_cast<int>(write.size()) == D, "read and write must each have D entries");
 
   STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v must be [B, 1, H, d_v], got ",
                   shape(v.sizes()));
@@ -924,6 +920,10 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                   " (the call's value width padded by ", launch.args.pad, ")");
   STD_TORCH_CHECK(D == launch.arm.levels, "the call has ", D,
                   " levels; the descriptor's arm serves ", launch.arm.levels);
+  const std::vector<int64_t> level_widths(launch.args.widths, launch.args.widths + D);
+  const std::vector<int64_t> level_row_offsets(launch.args.row_offsets,
+                                               launch.args.row_offsets + D);
+  const bool write_dense = launch.args.write_dense != 0;
 
   STD_TORCH_CHECK(state.is_cuda() && state.scalar_type() == Dtype::Byte && state.is_contiguous(),
                   "state is the int8 state format's pages, a contiguous CUDA uint8 tensor; got ",
@@ -1098,7 +1098,7 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 }
 
 //: THE LAUNCH A DESCRIPTOR MEANS, for the host: the arm's `d_v`, levels and decay, the padding of the call's
-//: value width, and the workspace's bytes and alignment
+//: value width, the workspace's bytes and alignment, then the level widths (`kDecodeMaxLevels` of them, 0 beyond the call's levels)
 std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t device) {
   const plan::Descriptor d = plan::checked_descriptor(descriptor, static_cast<int>(device));
   const auto launch = plan::decode_launch(d);
@@ -1106,6 +1106,7 @@ std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t
   const auto& arm = launch.arm;
   std::vector<int64_t> out = {arm.d_v, arm.levels, arm.decay, launch.args.pad};
   out.insert(out.end(), {workspace.bytes, workspace.alignment});
+  out.insert(out.end(), launch.args.widths, launch.args.widths + plan::kDecodeMaxLevels);
   return out;
 }
 

@@ -24,14 +24,21 @@ that reviewed part. The probe reads both already and a candidate part carries th
 
 ## Parts, descriptors and contexts
 
-A PART (`parts/device/hopper_sm90a.json`, `parts/calls/decode.json`) states facts, each `{"value", <provenance>}` with exactly one of
+A PART (`parts/device/hopper_sm90a.json`, `parts/calls/decode.json`, `parts/calls/depth1.json`) states facts, each `{"value", <provenance>}` with exactly one of
 `measured_by` (a lab record), `validated_by` (the test or check that holds it), `documented_by` or `declared_by` (the family's own declaration).
 A value is a point, a range `{"lo", "hi"}`, a set `{"set": [members]}`, or a list of those: a list is ALTERNATIVES, each its own context.
 
-A DESCRIPTOR (`descriptors/hopper_decode.json`) names the parts it composes, the architecture it is built for (`arch`) and the GPUs it
+A DESCRIPTOR (`descriptors/hopper_decode_d1.json`) names the parts it composes, the architecture it is built for (`arch`) and the GPUs it
 covers (`gpus`, the README's label). `registry.contexts()` expands every descriptor into FULL CONTEXTS: the parts' facts merged (a fact stated by two
 parts, a fact the schema does not name, a schema fact no part states: refused), the alternatives crossed. A matcher and the run time see
 contexts only. Two contexts identical in every fact are refused, whatever descriptors made them.
+
+THE DECODE CALL'S FACTS are `d_v`, `levels`, `decay`, `write_dense` and the log2 of each level's width, `width_bits_1` .. `width_bits_4` (a level's width is a power of two,
+`fsla/_state.py`'s `StateFormat`, so a range of the log2 states every width exactly; 0 for a level the call does not have). The depth and the widths are correlated and a part's lists
+are crossed, so the correlation is stated by composition: `calls/decode` holds what does not depend on the depth (`d_v`, `decay`, `write_dense`), and `calls/depth1` .. `calls/depth4` each state `levels`
+as a point and the four `width_bits` (a range from the width floor, `MIN_LEVEL_WIDTH`, up to the widest level the decode path holds, `kDecodeMaxLevelWidth`, for a level it has, the point 0 beyond). The
+contract is four descriptors, `hopper_decode_d1` .. `hopper_decode_d4`, each composing the device part, `calls/decode` and its depth part. A call whose width is outside its range is refused when the
+descriptor is made, naming the fact (`width_bits_1=3 (the contract: 4..8)`), by the same check as every other fact ([`../common/plan/planner.md`](../common/plan/planner.md#the-contract-check)).
 
 The hopper device part holds the hardware table's sm_90a values for the facts the table names, and
 `tests/unit/test_hardware_registry.py` holds them equal: the table is what `hardware.cuh` is generated from, the contract is what a device is
@@ -64,7 +71,8 @@ A device enters the contract by a MEASURED part, in four steps:
 ## A narrowed contract (development builds)
 
 A development build may compile a subset by naming a DECLARED NARROWED CONTRACT: a descriptor of its own under `descriptors/dev/<name>.json`, marked
-`"narrowed": true`, composing a subset of the call parts (`parts/calls/decode_narrow_d32_l2.json`) beside the device part. The build setting
+`"narrowed": true`, composing a subset of the call parts (`parts/calls/decode_narrow_d32.json` and one depth part, `calls/depth2`) beside the device part: a descriptor holds one depth, so the narrowed contract
+`decode_d32_l2` is depth 2 alone. The build setting
 `--//:contract=<name>` (default `full`) chooses it: `//hardware:contexts` and `//hardware:contract` are then written for it
 (`hardware/contract.bzl`; `registry.contexts(contract=<name>)`), so `arms_gen` compiles exactly the arms the narrowed contract reaches and the run time,
 holding the narrowed contract, refuses a call outside it, naming it (`kContractName`, `planner.h`'s refusal). The registry refuses a name no descriptor of

@@ -46,8 +46,9 @@ def _descriptor(device: int, call: tuple[tuple[str, int], ...]) -> Descriptor:
 
 def descriptor(*, device=None, **call) -> Descriptor:
     """THE VALIDATED DESCRIPTOR of a call on ``device`` (the current device when ``None``): the device's facts, read once by the
-    planner, and the call's (``d_v``, ``levels``, ``decay`` for decode). A context outside the contract is refused here, before any launch,
-    naming the facts."""
+    planner, and the call's (decode's: ``d_v``, ``levels``, ``decay``, ``write_dense`` and ``width_bits_1`` .. ``width_bits_4``, which
+    :func:`fsla.ops.produce.decode_descriptor` states from a declaration). A context outside the contract is refused here, before any
+    launch, naming the facts."""
     return _descriptor(device_index(device), tuple(sorted((name, int(value)) for name, value in call.items())))
 
 

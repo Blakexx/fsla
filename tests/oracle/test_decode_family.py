@@ -29,18 +29,17 @@ realize it, asserted, rather than staging it.
 """
 from __future__ import annotations
 
-import dataclasses
 import math
 
 import pytest
 import torch
 
 from fsla.engine.facts.call import arm_refusal
-from fsla.ops.decode import _decode_step
+from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_plan
+from fsla.ops.produce import decode_descriptor
 from fsla.routing.factors import RouteFactors
 from fsla.routing.types import LeafMassDecay
 from tests.oracle.fixtures import (
@@ -164,17 +163,17 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
     ref = ref._replace(state=state_rounded(ref.state))
 
-    config = decode_plan(topology, d_v=_DV, decay=decay_on)
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=decay_on)
     #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
-    state = state_pages(to_lattice(ref.state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+    state = state_pages(to_lattice(ref.state.float(), _WIDTHS, *lattice_of(_WIDTHS)))
     workspace, cold_seen = None, False
     for s in range(steps):
         routes, values = _bundles(_draw(gen, device, 1, 0.5, 0.4), topology)
-        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, state, decay=decay, workspace=workspace)
         ref = oracle_run(*bundle_operands(routes, values), topology, decay, entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
         assert_slots_close(y, ref.y, output=DECODE_Y, envelope=ref.y_envelope, what=f"y at step {s}")
-        canonical = to_canonical(_logical(state), _WIDTHS, config.lattice_k, config.lattice_m)
+        canonical = to_canonical(_logical(state), _WIDTHS, *lattice_of(_WIDTHS))
         assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
                            what=f"the state at step {s}", derived_atol=2 * state_quantum(ref.state))
 
@@ -214,17 +213,17 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     m0[..., _DV] = m0[..., _DV].abs()
     m0 = state_rounded(m0)
 
-    config = decode_plan(topology, d_v=_DV, decay=True)
-    state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=True)
+    state = state_pages(to_lattice(m0.float(), _WIDTHS, *lattice_of(_WIDTHS)))
     ref = m0
     workspace = None
     for s in range(1, max(_CHECKPOINTS) + 1):
         routes, values = _bundles(_draw(gen, device, 1, 0.5, 0.4), topology)
-        y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, decay=decay, workspace=workspace)
+        y, state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, state, decay=decay, workspace=workspace)
         ref = oracle_run(*bundle_operands(routes, values), topology, decay, entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
         if s in _CHECKPOINTS:
-            canonical = to_canonical(_logical(state), _WIDTHS, config.lattice_k, config.lattice_m)
+            canonical = to_canonical(_logical(state), _WIDTHS, *lattice_of(_WIDTHS))
             assert_slots_close(y, ref.y, output=DECODE_Y, envelope=ref.y_envelope, what=f"y at checkpoint {s}")
             assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
                                what=f"the state at checkpoint {s}", derived_atol=2 * state_quantum(ref.state))
@@ -249,8 +248,8 @@ def test_the_decode_split_is_performance_only_under_drift():
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = _topology(_WIDTHS)
-    derived = decode_plan(topology, d_v=_DV, decay=False)
-    configs = {f"ctas={n}": dataclasses.replace(derived, ctas=n) for n in (1, 3, 8)}
+    descriptor = decode_descriptor(topology, d_v=_DV, decay=False)
+    grids = {f"ctas={n}": n for n in (1, 3, 8)}
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
                            generator=gen)
@@ -261,11 +260,11 @@ def test_the_decode_split_is_performance_only_under_drift():
              for p in (0.2, 0.2, 1.0, 1.0, 0.3, 1.0)]
 
     outcomes = {}
-    for name, config in configs.items():
-        state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+    for name, ctas in grids.items():
+        state = state_pages(to_lattice(m0.float(), _WIDTHS, *lattice_of(_WIDTHS)))
         workspace, ys = None, []
         for routes, values in steps:
-            y, state, workspace = _decode_step(routes, values, masks_of(routes), config, state, workspace=workspace)
+            y, state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, state, workspace=workspace, ctas=ctas)
             ys.append(y)
         outcomes[name] = (ys, state)
 
@@ -285,6 +284,6 @@ def test_the_decode_split_is_performance_only_under_drift():
 
     # The certificates half: an arm mismatch REFUSES rather than degrades.
     routes, values = steps[0]
-    with pytest.raises(ValueError, match="has_decay"):
-        _decode_step(routes, values, masks_of(routes), configs["ctas=1"], base[1].clone(),
+    with pytest.raises(ValueError, match="the descriptor says decay=0"):
+        _decode_step(routes, values, masks_of(routes), descriptor, base[1].clone(),
                        decay=LeafMassDecay(dials=_decay_dials(_WIDTHS, _H, gen, device)))

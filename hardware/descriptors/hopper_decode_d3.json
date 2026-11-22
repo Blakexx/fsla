@@ -1,0 +1,10 @@
+{
+  "name": "hopper_decode_d3",
+  "gpus": "H100",
+  "arch": "sm_90a",
+  "compose": [
+    "device/hopper_sm90a",
+    "calls/decode",
+    "calls/depth3"
+  ]
+}
