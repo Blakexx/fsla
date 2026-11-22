@@ -9,7 +9,7 @@ startup --max_idle_secs=900
 # `bazel run //:library` still copies the library in
 build --symlink_prefix=.bazel/
 
-# the hermetic toolkit is chosen for the build's platform
+# the C++ toolchain is resolved for the one target platform
 build --platforms=//bazel:linux_x86_64
 
 # THE TOOLS' CACHES NEVER LAND IN A CHECKOUT: a target that runs a tool in the source tree (a `bazel run`, a test outside the

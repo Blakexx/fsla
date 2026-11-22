@@ -90,7 +90,7 @@ change.
 
 1. **Pin the toolkit**: `tools/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
    components and the folder; the graph fetches it (`@cuda_tools`) and compiles with it, the one toolkit
-   (`tests/unit/test_cuda_toolkit_pin.py` holds the components the compile reads to the pin's), and
+   (`tests/unit/test_cuda_toolkit_pin.py` holds the manifest to the pin's version and its compiler to a declared toolchain), and
    `bazel run //:check` holds its nvcc to the pin. The archives place
    libraries in `lib/`, where `nvcc` and torch look in `lib64/`, so the pin's `links` add `lib64 -> lib`.
 2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the whole

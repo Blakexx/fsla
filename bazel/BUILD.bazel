@@ -6,7 +6,7 @@ load(":defs.bzl", "cuda_root", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
 
-#: the one target platform the graph builds for, and the hermetic toolkit's selector
+#: the one target platform the graph builds for, the platform the C++ toolchain resolves for
 platform(
     name = "linux_x86_64",
     constraint_values = [

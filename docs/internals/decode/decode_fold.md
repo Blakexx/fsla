@@ -53,7 +53,7 @@ that through the step's own output, on strided views as well as contiguous ones.
 word. A lane loads its digit and its row's fp32 scale together, one round trip, and the warp loads the supplied mask's word
 (one warp-uniform load; a digit whose bit is off stages zero, so the fold computes with the coefficient times its bit),
 which every lane stores as the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask));
-and the lane stages `raw * (scale / 255)`. Slots past a level's width are not loaded and ballot a zero.
+and the lane stages `raw * (scale / 255)`. Slots past a level's width keep no bit: the loaded word is ANDed with the width's bits, and every lane stores it.
 
 ## <a id="the-dtype-arms"></a>3. The storage types are the format's, and the step's template axes are not
 
