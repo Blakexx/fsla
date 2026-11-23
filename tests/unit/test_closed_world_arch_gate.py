@@ -61,9 +61,9 @@ _LAUNCHLESS = {
     "intra_footprint": "a host derivation over the widths; no device work",
     "fsla_decode_arms": "reads the built arm set out of compile-time constants",
     "fsla_decode_launch": "a host derivation over a descriptor, which was made against the contract (the device's read); no device work",
-    "fsla_descriptor": "reads the device's facts once and checks them against the contract (common/plan/environment.cu); no device work",
+    "fsla_descriptor": "reads the device's facts once and checks them against a kernel's contract (common/plan/environment.cu); no device work",
     "fsla_owed_kernels": "reads the device's facts once and names the kernels an owed call waits on (common/plan/environment.cu); no device work",
-    "fsla_call_facts": "names the schema's call facts; no device work",
+    "fsla_call_facts": "names a kernel's call facts; no device work",
     "carry_build_stamp": "returns a compiled-in stamp",
     "intra_build_stamp": "returns a compiled-in stamp",
     "fsla_decode_build_stamp": "returns a compiled-in stamp",
@@ -139,8 +139,12 @@ def test_the_runtime_half_refuses_a_device_the_contract_does_not_hold():
     assert "cudaGetDeviceProperties" in read and "cudaDeviceGetAttribute" in read, (
         "the check must read the DEVICE; a path or a hash cannot establish which "
         "device a compiled derivation was derived for")
-    assert "device_descriptor(" in read and "STD_TORCH_CHECK(planned.ok()" in read, (
-        "the read is checked against the contract and a device outside it is refused, by name")
+    settle = environment[environment.index("typename K::Descriptor settle_device(const DeviceFacts& facts) {"):]
+    settle = settle[:settle.index("\n}\n") + 3]
+    assert "device_descriptor<K>(" in settle and "STD_TORCH_CHECK(planned.ok()" in settle, (
+        "the read is checked against a kernel's contract and a device outside it is refused, by name")
+    assert "settle_device<decode::Kernel>(facts)" in read and "settle_device<prefill::Kernel>(facts)" in read, (
+        "the one read of a device is refused unless every kernel's contract holds it")
 
 
 @pytest.mark.parametrize(("name", "entry"), ENTRIES, ids=[n for n, _ in ENTRIES])

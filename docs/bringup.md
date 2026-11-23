@@ -10,7 +10,7 @@ to open a pull request.
 
 ## 1. Tabulate the architecture's resources
 
-A DEVICE PART of `hardware/parts/device` states each architecture whole: its `arch` and `family`, and the device facts of the schema (the INSTRUCTION
+A DEVICE PART of `hardware/parts/device` states each architecture whole: its `arch` and `family`, and the device facts of the device table (`hardware/schema.json`) (the INSTRUCTION
 capabilities its atoms read among them); the graph generates the header's `Caps`, `tabulated(cc)` and `caps_of(cc)` from it (`//csrc/fsla:hardware_header`;
 nothing checks the header in) ([`hardware.md`](internals/common/hardware.md)). The architecture's rates are `measure/rates.json`'s.
 

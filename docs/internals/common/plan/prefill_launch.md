@@ -1,6 +1,6 @@
 # The prefill launch function's carve (`csrc/fsla/src/common/plan/prefill_launch.h`)
 
-`prefill_carve(const Descriptor&)` returns a `PrefillCarve`: how a prefill call's levels fall into boxes of 256 leaves, each side's roles in a box, the CTA's pair of
+`prefill_carve(const PrefillDescriptor&)` (`prefill::Facts`, the prefill's own registry's facts) returns a `PrefillCarve`: how a prefill call's levels fall into boxes of 256 leaves, each side's roles in a box, the CTA's pair of
 boxes, the level its two folds split along, the counts of a batch-head and the window. It is the first half of the prefill launch function
 ([`../../../architecture/hopper-carry.md#the-order-of-the-build`](../../../architecture/hopper-carry.md#the-order-of-the-build), step 1), written like
 [`decode_launch.md`](decode_launch.md)'s args half: from EXACT facts only (a range aborts), reading `levels`, `width_bits_1..4`, `read_listed_1..4`,
@@ -41,7 +41,7 @@ Levels are 0-based. A level is LISTED on a side when that side's `*_listed` fact
   same function (`device_card_op`, `fsla_api.cpp`, over the card's compute capability). `windows = ceil(tokens / window)`.
 
 NOT CARVED (`prefill_carves`): a call with a level narrower than its bits in a box -- one level under 256 digits, or a box level under 16. Nothing else is refused.
-THE CONTRACT ACCEPTS SUCH CALLS: `hardware/parts/calls/depth1.json` takes one level of 16 to 256 digits and only 256 has a carve. A box of fewer leaves, or a narrower
+THE CONTRACT ACCEPTS SUCH CALLS: `hardware/kernels/prefill/parts/depth1.json` takes one level of 16 to 256 digits and only 256 has a carve. A box of fewer leaves, or a narrower
 contract, is owed ([`../../../open-work.md`](../../../open-work.md) row A-f).
 
 ## The table (widths 256 x 256, `cc` 900, `tokens` 65,536: window 1024, 64 windows)

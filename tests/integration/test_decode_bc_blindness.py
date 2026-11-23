@@ -58,7 +58,7 @@ def test_no_fact_of_the_decode_descriptor_names_bc():
     prefill too), and a fact added there would be invisible to the numeric gate below
     until something started reading it.
     """
-    names = {name.lower() for name in extension().fsla_call_facts().split(",")}
+    names = {name.lower() for name in extension().fsla_call_facts("decode").split(",")}
     assert not any(n == "bc" or n.startswith("bc_") or n.endswith("_bc") for n in names), (
         f"the contract has acquired a BC-shaped fact: {sorted(names)}")
 

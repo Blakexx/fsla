@@ -277,7 +277,7 @@ graph rule):
   cycle budget from the amended spec. Amendments that do not change the design (count formats, report
   shape, housekeeping) go in the NEXT brief instead.
 - A development build compiles a subset of the arms only by naming a declared narrowed contract (`--//:contract=<name>`, a descriptor
-  of its own under `hardware/descriptors/dev/`); the full contract is enforced in the gate and in releases.
+  of its own under `hardware/kernels/<kernel>/descriptors/dev/`); the full contract is enforced in the gate and in releases.
 <a id="s15-addendum"></a>§15 addendum (build parallelism, 2026-08-27; re-measured since): a cicc peaks at ~2.9 GB in a unit that parses torch's
 extension header and ~0.33 GB in a torch-free arm unit (docs/build.md#compile-ledger), on a 16-CPU / 24 GB machine.
 A build's jobs are the host-budget slots the front door holds, divided by `host.nvcc_threads` (2: one cicc an

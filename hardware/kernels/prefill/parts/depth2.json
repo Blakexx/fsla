@@ -1,0 +1,76 @@
+{
+  "name": "depth2",
+  "doc": "the prefill call's depth 2: `levels`, the log2 of each level's width and each side's per-level walk (listed or not), correlated (a level beyond `levels` has width_bits 0 and walks 0), which a part's crossed lists cannot state, so each depth is a part of its own that a descriptor composes beside the `call` part",
+  "facts": {
+    "levels": {
+      "value": 2,
+      "declared_by": "docs/internals/decode/decode.md#kmaxlevels-2: kMaxLevels, the hierarchy depths the step's per-level arrays hold; this part is depth 2"
+    },
+    "width_bits_1": {
+      "value": {
+        "lo": 4,
+        "hi": 8
+      },
+      "declared_by": "the log2 of level 1's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "width_bits_2": {
+      "value": {
+        "lo": 4,
+        "hi": 8
+      },
+      "declared_by": "the log2 of level 2's width, from fsla/_state.py MIN_LEVEL_WIDTH (the floor, 16 = 2^4: StateFormat's law, B_l a power of two at or above it) up to csrc/fsla/src/decode/decode.cuh kDecodeMaxLevelWidth (256 = 2^8: the widest level the decode path holds, which tests/unit/test_decode_capacity.py holds equal to the producer's MAX_BRANCH_WIDTH in fsla/routing/topology.py)"
+    },
+    "width_bits_3": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 3: its width fact is 0"
+    },
+    "width_bits_4": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 4: its width fact is 0"
+    },
+    "read_listed_1": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "read_listed_2": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the read side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "read_listed_3": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 3: its sparse flag is 0"
+    },
+    "read_listed_4": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 4: its sparse flag is 0"
+    },
+    "write_listed_1": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_2": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+    },
+    "write_listed_3": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 3: its sparse flag is 0"
+    },
+    "write_listed_4": {
+      "value": 0,
+      "declared_by": "a depth-2 call has no level 4: its sparse flag is 0"
+    }
+  }
+}

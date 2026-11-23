@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "plan/decode_launch.h"
-#include "plan/facts.h"
+#include "plan/decode/facts.h"
 #include "plan/rules.h"
 
 namespace {
@@ -26,7 +26,7 @@ namespace {
 using fsla::plan::DecodeArm;
 using Arm = DecodeArm;
 using fsla::plan::EnumSet;
-using fsla::plan::Facts;
+using Facts = fsla::plan::decode::Facts;
 using fsla::plan::Interval;
 
 std::vector<std::string> split(const std::string& s, char sep) {
@@ -50,7 +50,7 @@ struct Context {
 EnumSet parse_set(const Context& c, const std::string& name, const std::string& value) {
   EnumSet set{0};
   for (const std::string& m : split(value.substr(1, value.size() - 2), ',')) {
-    int index = fsla::plan::member_of(name, m);
+    int index = fsla::plan::decode::member_of(name, m);
     if (index < 0) refuse("context '" + c.id + "': " + name + " has no member '" + m + "'");
     set.bits |= std::uint64_t{1} << index;
   }
@@ -77,7 +77,7 @@ Context parse(const std::string& line) {
     }
     std::string name = cells[i].substr(0, eq), value = cells[i].substr(eq + 1);
     bool ok;
-    if (fsla::plan::is_set(name)) {
+    if (fsla::plan::decode::is_set(name)) {
       ok = c.facts.assign(name, parse_set(c, name, value));
     } else {
       Interval range = parse_range(c, name, value);
@@ -87,7 +87,7 @@ Context parse(const std::string& line) {
     if (!ok) refuse("context '" + c.id + "': the schema names no fact '" + name + "'");
     seen.insert(name);
   }
-  for (std::string_view name : fsla::plan::kFactNames) {
+  for (std::string_view name : fsla::plan::decode::kFactNames) {
     if (!seen.count(std::string(name))) {
       std::string missing(name);
       refuse("context '" + c.id + "' states no value for the schema's fact '" + missing + "'");
@@ -213,15 +213,25 @@ int main(int argc, char** argv) {
   std::ifstream in(contexts_path);
   if (!in) refuse("cannot read " + contexts_path);
   std::vector<Context> contexts;
-  std::string contract = "full";  // the first line: `# contract: <name>`
+  std::string contract = "full";  // the first lines: `# contract: <name>`, `# kernel: <name>`
+  bool kernel_named = false;
   for (std::string line; std::getline(in, line);) {
     constexpr std::string_view kNamed = "# contract: ";
+    constexpr std::string_view kKernel = "# kernel: ";
     if (line.rfind(kNamed, 0) == 0) {
       contract = line.substr(kNamed.size());
+    } else if (line.rfind(kKernel, 0) == 0) {
+      kernel_named = line.substr(kKernel.size()) == "decode";
+      if (!kernel_named) {
+        refuse(contexts_path + " is the contract of the kernel " + line.substr(kKernel.size())
+               + ": this tool evaluates decode's matcher over decode's contract");
+      }
     } else if (!line.empty()) {
       contexts.push_back(parse(line));
     }
   }
+  if (!kernel_named)
+    refuse(contexts_path + " does not name the kernel decode (`# kernel: decode`)");
   if (contexts.empty()) refuse(contexts_path + " holds no context: nothing is supported");
 
   std::set<Arm> built;
@@ -229,16 +239,6 @@ int main(int argc, char** argv) {
   std::mt19937_64 rng(seed);
   int failures = 0;
   for (const Context& c : contexts) {
-    if (!fsla::plan::is_decode_call(c.facts)) {
-      std::fprintf(
-          stderr,
-          "arms_gen: the contract holds context '%s', which holds a prefill call: no family's "
-          "launch function serves one yet, so the contract cannot guarantee it (a call owed to a "
-          "kernel not built is a descriptor of hardware/descriptors/owed)\n",
-          c.id.c_str());
-      ++failures;
-      continue;
-    }
     fsla::plan::DecodeReach set = fsla::plan::decode_reach(c.facts);
     if (set.gap || set.arms.none()) {
       std::string maps = "it";
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "arms_gen: the contract holds context '%s' (%s) and decode's launch function "
                    "(csrc/fsla/src/common/plan/decode_launch.h) maps %s to NONE: add the arm "
-                   "or narrow the contract (hardware/parts) in the same commit\n",
+                   "or narrow the contract (hardware/kernels/decode) in the same commit\n",
                    c.id.c_str(), fsla::plan::decode_facts_read(c.facts).c_str(), maps.c_str());
       ++failures;
     } else if (samples && !sampled_points_agree(c, set, rng, samples)) {

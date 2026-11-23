@@ -1,8 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE CONTRACT REGISTRY: the schema of every fact, the composable parts, the descriptors that compose them, and their expansion to
-full run-time contexts (docs/internals/hardware/registry.md). A context is the contract's unit: every fact, each a point, a range or a set.
-The matchers and the run time see contexts only; a part or a composition never leaves this module.
+"""THE CONTRACT REGISTRY: the shared table of the device's facts (`schema.json`, `parts/device/`) and a registry a KERNEL (`kernels/<kernel>/`: its
+call facts, its parts and its descriptors), and their expansion to full run-time contexts (docs/internals/hardware/registry.md). A context is a
+kernel's contract unit: every fact of the device and of the kernel's call, each a point, a range or a set. The matchers and the run time see contexts
+only; a part or a composition never leaves this module.
 """
 from __future__ import annotations
 
@@ -18,13 +19,18 @@ ROOT = Path(__file__).absolute().parent
 #: declaration that makes it the contract
 PROVENANCE = ("measured_by", "validated_by", "documented_by", "declared_by")
 READS = ("DEVICE", "CALL")
-#: the folder of the device parts: a device part states an architecture whole (`arch`, `family` and the device's facts)
+#: the folder of the device parts, the shared table's: a device part states an architecture whole (`arch`, `family` and the device's facts)
 DEVICE = "device/"
-#: the contract a build compiles against when it names none: every descriptor of `descriptors/`. A development build names a NARROWED contract
-#: instead (`descriptors/dev/<name>.json`, marked `"narrowed": true`)
+#: the folder of the kernels' registries (`kernels/<kernel>/`: `schema.json`, `parts/`, `descriptors/`)
+KERNELS = "kernels"
+#: the contract a build compiles against when it names none: every descriptor of a kernel's `descriptors/`. A development build names a NARROWED contract
+#: instead (`descriptors/dev/<name>.json` of one kernel, marked `"narrowed": true`)
 FULL = "full"
-#: the folder of the OWED descriptors (`descriptors/owed/<name>.json`): a call the contract does not guarantee yet because the kernels it waits on are not built.
-#: It composes parts and is validated as any descriptor is, and is never in the full contract, a narrowed one, the README's table or the arms a build compiles
+#: a kernel's folders of descriptors, relative to its registry: the built contract's, the narrowed contracts' and the OWED ones'. An OWED descriptor
+#: (`descriptors/owed/<name>.json`) is a call the contract does not guarantee yet because the kernels it waits on are not built. It composes parts and
+#: is validated as any descriptor is, and is never in the full contract, a narrowed one, the README's table or the arms a build compiles
+BUILT = "descriptors"
+DEV = "descriptors/dev"
 OWED = "descriptors/owed"
 #: the suffix of a part the device probe wrote (`hardware/parts/device/<id>.candidate.json`): a candidate is never a part
 CANDIDATE = ".candidate"
@@ -46,9 +52,10 @@ class Fact:
 
 @dataclass(frozen=True)
 class Context:
-    """One supported run-time context: `descriptor` composed it, `facts` holds every schema fact (an int as (lo, hi), a set as
-    its sorted members), `alternatives` names the facts whose choice made this context one of several, `arch` is the architecture of the descriptor's
-    one device part."""
+    """One supported run-time context of a kernel: `descriptor` composed it, `facts` holds every fact of the device and of the kernel's call (an int as
+    (lo, hi), a set as its sorted members), `alternatives` names the facts whose choice made this context one of several, `arch` is the architecture of the
+    descriptor's one device part."""
+    kernel: str
     descriptor: str
     facts: dict
     alternatives: tuple[str, ...]
@@ -77,9 +84,8 @@ def _read(path: Path) -> dict:
         raise RegistryError(f"{path}: {e}") from None
 
 
-def schema(root: Path = ROOT) -> dict[str, Fact]:
-    """The schema's facts by name, each refused when malformed."""
-    path = root / "schema.json"
+def _facts_of(path: Path, role: str) -> dict[str, Fact]:
+    """The facts of the schema file `path`, each refused when malformed or not read from `role` (the shared table's facts are DEVICE, a kernel's CALL)."""
     out: dict[str, Fact] = {}
     for f in _read(path).get("facts", []):
         name = f.get("name")
@@ -91,6 +97,8 @@ def schema(root: Path = ROOT) -> dict[str, Fact]:
             raise RegistryError(f"{path}: fact {name} has type {f.get('type')!r}, which is not one of {TYPES}")
         if f.get("read") not in READS:
             raise RegistryError(f"{path}: fact {name} is read from {f.get('read')!r}, which is not one of {READS}")
+        if f["read"] != role:
+            raise RegistryError(f"{path}: fact {name} is read from the {f['read']}, and this schema holds the {role} facts alone")
         if not isinstance(f.get("unit"), str) or not f["unit"]:
             raise RegistryError(f"{path}: fact {name} names no unit")
         members = tuple(f.get("members", ()))
@@ -100,6 +108,38 @@ def schema(root: Path = ROOT) -> dict[str, Fact]:
     if not out:
         raise RegistryError(f"{path}: the schema declares no fact")
     return out
+
+
+def schema(root: Path = ROOT) -> dict[str, Fact]:
+    """THE SHARED TABLE'S facts by name: the device's, each refused when malformed."""
+    return _facts_of(root / "schema.json", "DEVICE")
+
+
+def kernels(root: Path = ROOT) -> list[str]:
+    """The kernels the registry holds, by name: a folder of `kernels/`."""
+    base = root / KERNELS
+    found = sorted(p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
+    for name in found:
+        if not name.isidentifier():
+            raise RegistryError(f"{base / name}: a kernel's name is an identifier (it names the generated namespace plan::{name})")
+    return found
+
+
+def kernel_schema(kernel: str, root: Path = ROOT) -> dict[str, Fact]:
+    """A KERNEL'S call facts by name (`kernels/<kernel>/schema.json`), each refused when malformed."""
+    path = root / KERNELS / kernel / "schema.json"
+    if not path.is_file():
+        raise RegistryError(f"no kernel {kernel!r}: {path} does not exist (the kernels are {kernels(root)})")
+    return _facts_of(path, "CALL")
+
+
+def facts(kernel: str, root: Path = ROOT) -> dict[str, Fact]:
+    """EVERY FACT OF A KERNEL'S CONTEXT in its order: the device's, then the kernel's call facts; a name in both is refused."""
+    device, call = schema(root), kernel_schema(kernel, root)
+    twice = sorted(set(device) & set(call))
+    if twice:
+        raise RegistryError(f"kernel {kernel}: {twice} are facts of the device and of the call: a fact is one or the other")
+    return {**device, **call}
 
 
 def _normalize(fact: Fact, value, where: str):
@@ -122,10 +162,18 @@ def _normalize(fact: Fact, value, where: str):
     raise RegistryError(f"{where}: {fact.name} is a set<enum>: {{\"set\": [members]}} or a list of them (not {value!r})")
 
 
-def part(name: str, root: Path = ROOT) -> dict:
-    """A part by its name (`device/hopper_sm90a`), refused when malformed; the facts it states are checked against the schema by `expand`."""
-    path = root / "parts" / f"{name}.json"
-    if name.endswith(CANDIDATE):
+def _parts_base(kernel: str | None, root: Path) -> Path:
+    return root / "parts" if kernel is None else root / KERNELS / kernel / "parts"
+
+
+def part(name: str, root: Path = ROOT, kernel: str | None = None) -> dict:
+    """A part by its name, refused when malformed: a device part of the shared table (`device/hopper_sm90a`) or a part of `kernel` (`depth2`); the facts it
+    states are checked against the schemas by `expand`."""
+    shared = name.startswith(DEVICE)
+    if not shared and kernel is None:
+        raise RegistryError(f"part {name!r} is no device part, and no kernel is named for it")
+    path = _parts_base(None if shared else kernel, root) / f"{name}.json"
+    if shared and name.endswith(CANDIDATE):
         raise RegistryError(f"{path}: a CANDIDATE part, written by the device probe (`//measure/lab:device_probe`): a reviewer reads it and renames it "
                             f"to {name[:-len(CANDIDATE)]}.json, which admits it; until then the registry refuses it")
     if not path.is_file():
@@ -133,10 +181,10 @@ def part(name: str, root: Path = ROOT) -> dict:
     data = _read(path)
     if data.get("name") != name:
         raise RegistryError(f"{path}: the part's name is {data.get('name')!r}, its path says {name!r}")
-    facts = data.get("facts")
-    if not isinstance(facts, dict) or not facts:
+    stated = data.get("facts")
+    if not isinstance(stated, dict) or not stated:
         raise RegistryError(f"{path}: a part states facts")
-    for fname, record in facts.items():
+    for fname, record in stated.items():
         if not isinstance(record, dict) or "value" not in record:
             raise RegistryError(f"{path}: fact {fname} is {{\"value\", <provenance>}}")
         cited = [k for k in PROVENANCE if k in record]
@@ -145,14 +193,17 @@ def part(name: str, root: Path = ROOT) -> dict:
     return data
 
 
-def parts(root: Path = ROOT) -> list[str]:
-    base = root / "parts"
-    return sorted(str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json"))
+def parts(root: Path = ROOT, kernel: str | None = None) -> list[str]:
+    """The names of the parts of the shared table (`kernel` `None`: the device parts) or of one kernel."""
+    base = _parts_base(kernel, root)
+    return sorted(str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json")) if base.is_dir() else []
 
 
-def descriptors(root: Path = ROOT, folder: str = "descriptors") -> dict[str, dict]:
+def descriptors(root: Path = ROOT, kernel: str = "", folder: str = BUILT) -> dict[str, dict]:
+    """A kernel's descriptors by name, of its `folder` (`descriptors`, `descriptors/dev`, `descriptors/owed`)."""
     out = {}
-    for path in sorted((root / folder).glob("*.json")):
+    base = root / KERNELS / kernel / folder
+    for path in sorted(base.glob("*.json")) if base.is_dir() else []:
         data = _read(path)
         if data.get("name") != path.stem:
             raise RegistryError(f"{path}: the descriptor's name is {data.get('name')!r}, its file says {path.stem!r}")
@@ -164,44 +215,50 @@ def descriptors(root: Path = ROOT, folder: str = "descriptors") -> dict[str, dic
     return out
 
 
-def owed_descriptors(root: Path = ROOT) -> dict[str, dict]:
-    """The OWED descriptors by name (`descriptors/owed/<name>.json`), each naming the kernels its call waits on (`"owed": ["<kernel>", ...]`, the names
+def owed_descriptors(root: Path = ROOT, kernel: str = "") -> dict[str, dict]:
+    """The OWED descriptors of a kernel by name (`kernels/<kernel>/descriptors/owed/<name>.json`), each naming the kernels its call waits on (`"owed": ["<kernel>", ...]`, the names
     `fsla.ops._ext.not_built` and the tests' `requires_kernel` use), or a RegistryError."""
-    found = descriptors(root, OWED)
+    found = descriptors(root, kernel, OWED)
     for name, data in found.items():
-        kernels = data.get("owed")
-        if (not isinstance(kernels, list) or not kernels or len(set(kernels)) != len(kernels)
-                or not all(isinstance(k, str) and k.isidentifier() for k in kernels)):
-            raise RegistryError(f"{root / OWED / (name + '.json')}: an owed descriptor names the kernels its call waits on (`\"owed\": [\"prefill\", ...]`, "
+        waits = data.get("owed")
+        if (not isinstance(waits, list) or not waits or len(set(waits)) != len(waits)
+                or not all(isinstance(k, str) and k.isidentifier() for k in waits)):
+            raise RegistryError(f"{root / KERNELS / kernel / OWED / (name + '.json')}: an owed descriptor names the kernels its call waits on (`\"owed\": [\"prefill\", ...]`, "
                                 "distinct identifiers)")
     return found
 
 
-def expand(descriptor: dict, facts: dict[str, Fact], root: Path = ROOT) -> list[Context]:
-    """A descriptor's full contexts: its parts' facts merged (a fact stated twice, a schema fact left out, or a fact the schema does not name is
-    refused), a list of alternatives crossed into one context each, in the order the facts are listed."""
+def expand(descriptor: dict, kernel: str, root: Path = ROOT) -> list[Context]:
+    """A descriptor's full contexts as a kernel's: its parts' facts merged (a fact stated twice, a fact of the device or of the kernel's call left out, a
+    device part stating a call fact, a kernel part stating a device fact, or a fact neither schema names is refused), a list of alternatives crossed into one
+    context each, in the order the facts are listed."""
+    device, call = schema(root), kernel_schema(kernel, root)
+    held = facts(kernel, root)
     stated: dict[str, list] = {}
     for name in descriptor["compose"]:
-        for fname, record in part(name, root)["facts"].items():
+        shared = name.startswith(DEVICE)
+        for fname, record in part(name, root, kernel)["facts"].items():
             where = f"descriptor {descriptor['name']}, part {name}"
-            if fname not in facts:
+            if fname not in held:
                 raise RegistryError(f"{where}: {fname} is no fact of the schema")
+            if fname not in (device if shared else call):
+                raise RegistryError(f"{where}: {fname} is a fact of the {'call' if shared else 'device'}, which a {'device' if shared else 'kernel'} part does not state")
             if fname in stated:
                 raise RegistryError(f"{where}: {fname} is stated by another part of the descriptor too")
             value = record["value"]
-            stated[fname] = [_normalize(facts[fname], v, where) for v in (value if isinstance(value, list) else [value])]
+            stated[fname] = [_normalize(held[fname], v, where) for v in (value if isinstance(value, list) else [value])]
             if not stated[fname]:
                 raise RegistryError(f"{where}: {fname} lists no alternative")
-    missing = [n for n in facts if n not in stated]
-    if missing:
-        raise RegistryError(f"descriptor {descriptor['name']} states no value for {missing}: a context holds every fact of the schema")
     devices = [n for n in descriptor["compose"] if n.startswith(DEVICE)]
     if len(devices) != 1:
         raise RegistryError(f"descriptor {descriptor['name']} composes {len(devices)} device parts {devices}: a descriptor is built for the one architecture its device part states")
+    missing = [n for n in held if n not in stated]
+    if missing:
+        raise RegistryError(f"descriptor {descriptor['name']} states no value for {missing}: a context holds every fact of the schema")
     arch = part(devices[0], root).get("arch")
-    alternatives = tuple(n for n in facts if len(stated[n]) > 1)
-    names = list(facts)
-    return [Context(descriptor["name"], dict(zip(names, combo)), alternatives, descriptor["gpus"], arch)
+    alternatives = tuple(n for n in held if len(stated[n]) > 1)
+    names = list(held)
+    return [Context(kernel, descriptor["name"], dict(zip(names, combo)), alternatives, descriptor["gpus"], arch)
             for combo in itertools.product(*(stated[n] for n in names))]
 
 
@@ -301,30 +358,48 @@ def builds_header(archs: list[str], root: Path = ROOT) -> str:
             f"#define FSLA_BUILDS(F) {cases}\n")
 
 
-def narrowed(name: str, root: Path = ROOT) -> dict:
-    """A DECLARED NARROWED CONTRACT by name (`descriptors/dev/<name>.json`): a descriptor of its own, marked `"narrowed": true`, whose every
-    context lies inside a context of the full contract (a narrowed contract promises less, never more), or a RegistryError."""
-    found = descriptors(root, "descriptors/dev")
+def narrowing_kernel(contract: str, root: Path = ROOT) -> str:
+    """The kernel whose registry declares the narrowed contract `contract` (`kernels/<kernel>/descriptors/dev/<contract>.json`): the one kernel a
+    `--//:contract` of that name narrows, or a RegistryError when no kernel or several declare it."""
+    owners = [k for k in kernels(root) if contract in descriptors(root, k, DEV)]
+    if len(owners) == 1:
+        return owners[0]
+    if owners:
+        raise RegistryError(f"narrowed contract {contract!r} is declared by the kernels {owners}: a narrowed contract narrows one kernel")
+    declared = sorted(name for k in kernels(root) for name in descriptors(root, k, DEV))
+    raise RegistryError(f"no narrowed contract {contract!r}: the declared ones are {declared or 'none'} (`kernels/<kernel>/descriptors/dev/<name>.json`); "
+                        f"`--//:contract={FULL}` is the full contract")
+
+
+def applied(kernel: str, contract: str = FULL, root: Path = ROOT) -> str:
+    """The contract a build's `contract` setting means for `kernel`: the narrowed contract where the kernel declares it, `full` for every other kernel."""
+    if contract == FULL:
+        return FULL
+    return contract if narrowing_kernel(contract, root) == kernel else FULL
+
+
+def narrowed(name: str, kernel: str, root: Path = ROOT) -> dict:
+    """A DECLARED NARROWED CONTRACT of a kernel by name (`kernels/<kernel>/descriptors/dev/<name>.json`): a descriptor of its own, marked `"narrowed": true`,
+    whose every context lies inside a context of the kernel's full contract (a narrowed contract promises less, never more), or a RegistryError."""
+    found = descriptors(root, kernel, DEV)
     if name not in found:
-        raise RegistryError(f"no narrowed contract {name!r}: the declared ones are {sorted(found) or 'none'} (`descriptors/dev/<name>.json`); "
-                            f"`--//:contract={FULL}` is the full contract")
+        raise RegistryError(f"kernel {kernel} declares no narrowed contract {name!r}: its declared ones are {sorted(found) or 'none'}")
     descriptor = found[name]
     if descriptor.get("narrowed") is not True:
-        raise RegistryError(f"descriptors/dev/{name}.json is not marked narrowed (`\"narrowed\": true`): only a declared narrowed contract may "
+        raise RegistryError(f"kernels/{kernel}/descriptors/dev/{name}.json is not marked narrowed (`\"narrowed\": true`): only a declared narrowed contract may "
                             "narrow a build")
-    facts = schema(root)
-    held = contexts(root)
-    for context in expand(descriptor, facts, root):
-        if not any(_inside(context, whole, facts) for whole in held):
+    held = contexts(kernel, root)
+    for context in expand(descriptor, kernel, root):
+        if not any(_inside(context, whole) for whole in held):
             raise RegistryError(f"narrowed contract {name}: its context '{context.id}' lies outside the full contract: a narrowed contract may "
                                 "promise less than the full one, never more")
     return descriptor
 
 
-def _inside(context: Context, whole: Context, facts: dict[str, Fact]) -> bool:
-    for name, fact in facts.items():
-        a, b = context.facts[name], whole.facts[name]
-        if fact.type == "int":
+def _inside(context: Context, whole: Context) -> bool:
+    for name, a in context.facts.items():
+        b = whole.facts[name]
+        if isinstance(a[0], int):
             if a[0] < b[0] or a[1] > b[1]:
                 return False
         elif not set(a) <= set(b):
@@ -332,11 +407,11 @@ def _inside(context: Context, whole: Context, facts: dict[str, Fact]) -> bool:
     return True
 
 
-def _reaches(a: Context, b: Context, facts: dict[str, Fact]) -> bool:
+def _reaches(a: Context, b: Context) -> bool:
     """Whether some call lies in both contexts: every int fact's ranges meet, every set equal."""
-    for name, fact in facts.items():
-        x, y = a.facts[name], b.facts[name]
-        if fact.type == "int":
+    for name, x in a.facts.items():
+        y = b.facts[name]
+        if isinstance(x[0], int):
             if x[1] < y[0] or y[1] < x[0]:
                 return False
         elif x != y:
@@ -344,15 +419,14 @@ def _reaches(a: Context, b: Context, facts: dict[str, Fact]) -> bool:
     return True
 
 
-def owed(root: Path = ROOT) -> list[tuple[Context, tuple[str, ...]]]:
-    """Every context of every OWED descriptor with the kernels it waits on, refused when a call of it is also in the full contract (a call is held by
+def owed(kernel: str, root: Path = ROOT) -> list[tuple[Context, tuple[str, ...]]]:
+    """Every context of every OWED descriptor of a kernel with the kernels it waits on, refused when a call of it is also in the kernel's full contract (a call is held by
     the contract or owed, never both: the run time refuses an owed call naming its kernels, which a guaranteed call must not meet)."""
-    facts = schema(root)
-    held = contexts(root)
+    held = contexts(kernel, root)
     out: list[tuple[Context, tuple[str, ...]]] = []
-    for name, descriptor in owed_descriptors(root).items():
-        for context in expand(descriptor, facts, root):
-            twin = next((whole for whole in held if _reaches(context, whole, facts)), None)
+    for name, descriptor in owed_descriptors(root, kernel).items():
+        for context in expand(descriptor, kernel, root):
+            twin = next((whole for whole in held if _reaches(context, whole)), None)
             if twin is not None:
                 raise RegistryError(f"owed descriptor {name}: its context '{context.id}' is reachable from the full contract's '{twin.id}': a call is "
                                     "guaranteed or owed, never both")
@@ -360,53 +434,64 @@ def owed(root: Path = ROOT) -> list[tuple[Context, tuple[str, ...]]]:
     return out
 
 
-def contexts(root: Path = ROOT, contract: str = FULL) -> list[Context]:
-    """The contract a build compiles against: every context of every descriptor (`contract` the full one), or of the one narrowed contract it
-    names; refused when two are identical in every fact."""
-    if contract != FULL:
-        facts = schema(root)
-        return expand(narrowed(contract, root), facts, root)
-    facts = schema(root)
+def contexts(kernel: str, root: Path = ROOT, contract: str = FULL) -> list[Context]:
+    """A kernel's contract a build compiles against: every context of every descriptor of the kernel (`contract` the full one), or of the one narrowed
+    contract it names where the kernel declares it (every other kernel keeps its full contract); refused when two are identical in every fact. A kernel
+    whose descriptors are all owed holds no context."""
+    which = applied(kernel, contract, root)
+    if which != FULL:
+        return expand(narrowed(which, kernel, root), kernel, root)
     refused = [n for n in parts(root) if n.endswith(CANDIDATE)]
     if refused:
         part(refused[0], root)
     out: list[Context] = []
     seen: dict[tuple, Context] = {}
-    for descriptor in descriptors(root).values():
-        for context in expand(descriptor, facts, root):
+    for descriptor in descriptors(root, kernel).values():
+        for context in expand(descriptor, kernel, root):
             twin = seen.get(context.key())
             if twin is not None:
                 raise RegistryError(f"contexts {twin.id!r} and {context.id!r} are identical in every fact: the contract holds a context once")
             seen[context.key()] = context
             out.append(context)
-    if not out:
-        raise RegistryError("the registry holds no descriptor: nothing is supported")
     return out
 
 
 def check(root: Path = ROOT) -> None:
-    """The schema, every part (composed or not), every architecture a device part states and every descriptor (the full contract's, the narrowed ones and the
-    owed ones), the contract's duplicates and the owed contexts' overlap with the contract, or a RegistryError."""
-    facts = schema(root)
+    """The shared table, every kernel's schema, every part (composed or not), every architecture a device part states and every descriptor (each kernel's full contract,
+    narrowed and owed ones), the contracts' duplicates, the owed contexts' overlap with their kernel's contract and the narrowed contracts' names, or a
+    RegistryError."""
+    device = schema(root)
     for name in parts(root):
         for fname in part(name, root)["facts"]:
-            if fname not in facts:
-                raise RegistryError(f"part {name}: {fname} is no fact of the schema")
+            if fname not in device:
+                raise RegistryError(f"part {name}: {fname} is no fact of the device table")
     for cap, _, source, _ in CAPS:
-        if source == "instruction" and cap not in facts["instructions"].members:
+        if source == "instruction" and cap not in device["instructions"].members:
             raise RegistryError(f"the generated Caps holds {cap}, which is no member of the schema's `instructions`")
-    contexts(root)
+    if not kernels(root):
+        raise RegistryError("the registry holds no kernel: nothing is supported")
+    built = 0
+    for kernel in kernels(root):
+        call = kernel_schema(kernel, root)
+        for name in parts(root, kernel):
+            for fname in part(name, root, kernel)["facts"]:
+                if fname not in call:
+                    raise RegistryError(f"kernel {kernel}, part {name}: {fname} is no call fact of the kernel")
+        built += len(contexts(kernel, root))
+        for name in descriptors(root, kernel, DEV):
+            narrowing_kernel(name, root)
+            narrowed(name, kernel, root)
+        owed(kernel, root)
     if not architectures(root):
         raise RegistryError("the registry holds no device part: no architecture is built")
-    for name in descriptors(root, "descriptors/dev"):
-        narrowed(name, root)
-    owed(root)
+    if not built:
+        raise RegistryError("the registry holds no descriptor: nothing is supported")
 
 
-def contexts_text(contexts_: list[Context], contract: str = FULL) -> str:
-    """The contract as `arms_gen` reads it: a first line naming the contract (`# contract: full`), then a line a context, tab-separated: its id,
-    then `fact=lo:hi` or `fact={member,...}`."""
-    lines = [f"# contract: {contract}"]
+def contexts_text(kernel: str, contexts_: list[Context], contract: str = FULL) -> str:
+    """A kernel's contract as `arms_gen` reads it: a first line naming the contract (`# contract: full`), a second naming the kernel (`# kernel: decode`), then a
+    line a context, tab-separated: its id, then `fact=lo:hi` or `fact={member,...}`."""
+    lines = [f"# contract: {contract}", f"# kernel: {kernel}"]
     for c in contexts_:
         cells = [c.id]
         for name, value in c.facts.items():
@@ -415,59 +500,114 @@ def contexts_text(contexts_: list[Context], contract: str = FULL) -> str:
     return "\n".join(lines) + "\n"
 
 
-def facts_header(facts: dict[str, Fact]) -> str:
-    """`plan/facts.h`: the `Facts` struct with one member per fact (an `Interval` or an `EnumSet`), the enum of each set fact, and the name lookups the
-    contract's reader uses."""
-    out = ["// GENERATED from hardware/schema.json by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
-           "#pragma once\n\n#include <string_view>\n\n#include \"plan/rules.h\"\n\nnamespace fsla::plan {\n\n"]
-    for f in facts.values():
+def facts_header(kernel: str, facts_: dict[str, Fact]) -> str:
+    """`plan/<kernel>/facts.h`: the kernel's `Facts` class with one member per fact (an `Interval` or an `EnumSet`), the enum of each set fact, the reader and the
+    name lookups, in the namespace `fsla::plan::<kernel>`."""
+    out = [f"// GENERATED from hardware/schema.json and hardware/kernels/{kernel}/schema.json by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
+           f"#pragma once\n\n#include <string_view>\n\n#include \"plan/rules.h\"\n\nnamespace fsla::plan::{kernel} {{\n\n"]
+    for f in facts_.values():
         if f.type == "set<enum>":
             out.append(f"enum class {_camel(f.name)} : int {{ {', '.join(f.members)} }};\n")
-    out.append("\n//: the contract's facts, one member each (an Interval or an EnumSet). A context is WRITTEN through `assign`; it is READ only by the\n")
+    out.append("\n//: the kernel's facts, one member each (an Interval or an EnumSet). A context is WRITTEN through `assign`; it is READ only by the\n")
     out.append("//: functions of common/plan/, through `Reader`: no launcher or kernel reads a raw fact\n")
-    out.append("struct Reader;\n\nclass Facts {\n public:\n")
+    out.append("struct Reader;\n\nclass Facts {\n public:\n  using Read = Reader;\n\n")
     out.append("  constexpr bool assign(std::string_view fact, Interval v) {\n")
-    for f in facts.values():
+    for f in facts_.values():
         if f.type == "int":
             out.append(f"    if (fact == \"{f.name}\") {{ {f.name}_ = v; return true; }}\n")
     out.append("    return false;\n  }\n\n")
     out.append("  constexpr bool assign(std::string_view fact, EnumSet v) {\n")
-    for f in facts.values():
+    for f in facts_.values():
         if f.type == "set<enum>":
             out.append(f"    if (fact == \"{f.name}\") {{ {f.name}_ = v; return true; }}\n")
     out.append("    return false;\n  }\n\n private:\n  friend struct Reader;\n\n")
-    for f in facts.values():
+    for f in facts_.values():
         out.append(f"  {'Interval' if f.type == 'int' else 'EnumSet'} {f.name}_{{}};  // {f.unit}, read from the {f.read}\n")
     out.append("};\n\n//: the one reader of a context's facts; only the functions of common/plan/ use it\n")
     out.append("struct Reader {\n")
-    for f in facts.values():
+    for f in facts_.values():
         out.append(f"  static constexpr {'Interval' if f.type == 'int' else 'EnumSet'} {f.name}(const Facts& f) {{ return f.{f.name}_; }}\n")
     for kind in ("Interval", "EnumSet"):
         out.append(f"  static constexpr bool get(const Facts& f, std::string_view fact, {kind}& out) {{\n")
-        for f in facts.values():
+        for f in facts_.values():
             if (f.type == "int") == (kind == "Interval"):
                 out.append(f"    if (fact == \"{f.name}\") {{ out = f.{f.name}_; return true; }}\n")
         out.append("    return false;\n  }\n")
     out.append("};\n\n")
-    out.append("inline constexpr std::string_view kFactNames[] = {" + ", ".join(f'"{n}"' for n in facts) + "};\n\n")
-    out.append("inline constexpr std::string_view kCallFactNames[] = {" + ", ".join(f'"{f.name}"' for f in facts.values() if f.read == "CALL") + "};\n\n")
+    out.append("inline constexpr std::string_view kFactNames[] = {" + ", ".join(f'"{n}"' for n in facts_) + "};\n\n")
+    out.append("inline constexpr std::string_view kCallFactNames[] = {" + ", ".join(f'"{f.name}"' for f in facts_.values() if f.read == "CALL") + "};\n\n")
     out.append("//: whether the CALL supplies the fact at run time (the DEVICE's facts are read from the device)\n")
     out.append("constexpr bool is_call(std::string_view fact) {\n")
-    for f in facts.values():
+    for f in facts_.values():
         if f.read == "CALL":
             out.append(f"  if (fact == \"{f.name}\") return true;\n")
     out.append("  return false;\n}\n\n")
     out.append("constexpr bool is_set(std::string_view fact) {\n")
-    for f in facts.values():
+    for f in facts_.values():
         if f.type == "set<enum>":
             out.append(f"  if (fact == \"{f.name}\") return true;\n")
     out.append("  return false;\n}\n\n")
     out.append("//: the index of a set fact's member, -1 when the fact or the member is unknown\n")
     out.append("constexpr int member_of(std::string_view fact, std::string_view member) {\n")
-    for f in facts.values():
+    for f in facts_.values():
         for i, m in enumerate(f.members):
             out.append(f"  if (fact == \"{f.name}\" && member == \"{m}\") return {i};\n")
-    out.append("  return -1;\n}\n\n}  // namespace fsla::plan\n")
+    out.append(f"  return -1;\n}}\n\n}}  // namespace fsla::plan::{kernel}\n")
+    return "".join(out)
+
+
+def _assigned(c: Context, facts_: dict[str, Fact]) -> list[str]:
+    out = ["    {\n      Facts f;\n"]
+    for name, value in c.facts.items():
+        if facts_[name].type == "int":
+            out.append(f"      f.assign(\"{name}\", Interval{{{value[0]}, {value[1]}}});\n")
+        else:
+            bits = sum(1 << facts_[name].members.index(m) for m in value)
+            out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
+    return out
+
+
+def contract_header(kernel: str, contexts_: list[Context], owed_: list[tuple[Context, tuple[str, ...]]], facts_: dict[str, Fact], contract: str = FULL) -> str:
+    """`plan/<kernel>/contract.h`: the kernel's contract and its owed contexts as the run time holds them, `contract()` a context each (its id and its facts, each a
+    point or a range) and `owed()` a context each with the kernels it waits on, the contract's name (a narrowed contract is named wherever the run time refuses a call
+    outside it) and `Kernel`, the definition the planner's templates (`common/plan/planner.h`) are written over."""
+    ns = f"fsla::plan::{kernel}"
+    out = [f"// GENERATED from hardware/kernels/{kernel}/descriptors by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
+           f"#pragma once\n\n#include <string_view>\n#include <vector>\n\n#include \"plan/{kernel}/facts.h\"\n#include \"plan/planner.h\"\n\nnamespace {ns} {{\n\n",
+           f"//: the contract this build compiled the kernel against: `full`, or the narrowed contract a development build named\ninline constexpr const char* kContractName = \"{contract}\";\ninline constexpr bool kContractNarrowed = {'true' if contract != FULL else 'false'};\n\n",
+           "//: every context the kernel's contract holds\ninline const std::vector<ContractContext<Facts>>& contract() {\n  static const std::vector<ContractContext<Facts>> rows = [] {\n    std::vector<ContractContext<Facts>> out;\n"]
+    for c in contexts_:
+        out += _assigned(c, facts_)
+        out.append(f"      out.push_back({{\"{c.id}\", f}});\n    }}\n")
+    out.append("    return out;\n  }();\n  return rows;\n}\n\n")
+    out.append("//: every context the kernel's contract owes: the call's kernels are not built\ninline const std::vector<OwedContext<Facts>>& owed() {\n  static const std::vector<OwedContext<Facts>> rows = [] {\n    std::vector<OwedContext<Facts>> out;\n")
+    for c, waits in owed_:
+        out += _assigned(c, facts_)
+        listed = ", ".join(f'"{k}"' for k in waits)
+        out.append(f"      out.push_back({{\"{c.id}\", f, {{{listed}}}}});\n    }}\n")
+    out.append("    return out;\n  }();\n  return rows;\n}\n\n")
+    out.append(f"""//: THE KERNEL'S DEFINITION: what the planner's templates read of it
+struct Kernel {{
+  using Descriptor = ::{ns}::Facts;
+  using Reader = ::{ns}::Reader;
+
+  static constexpr std::string_view name = "{kernel}";
+  static constexpr const char* contract_name = kContractName;
+  static constexpr bool narrowed = kContractNarrowed;
+  static constexpr const auto& fact_names = ::{ns}::kFactNames;
+  static constexpr const auto& call_fact_names = ::{ns}::kCallFactNames;
+
+  static constexpr bool is_call(std::string_view fact) {{ return ::{ns}::is_call(fact); }}
+
+  static constexpr bool is_set(std::string_view fact) {{ return ::{ns}::is_set(fact); }}
+
+  static const std::vector<ContractContext<Descriptor>>& contract() {{ return ::{ns}::contract(); }}
+
+  static const std::vector<OwedContext<Descriptor>>& owed() {{ return ::{ns}::owed(); }}
+}};
+
+}}  // namespace {ns}
+""")
     return "".join(out)
 
 
@@ -535,48 +675,6 @@ def arch_header(archs: list[Architecture]) -> str:
             "  static constexpr Traits traits = traits_of(B);", "};", "",
             "}  // namespace arch", "}  // namespace denseref", "", "// clang-format on", ""]
     return "\n".join(out)
-
-
-def contract_header(contexts_: list[Context], facts: dict[str, Fact], contract: str = FULL) -> str:
-    """`plan/contract.h`: the contract as the run time holds it, `contract()` a context each (its id and its facts, each a point or a range), and
-    its name: a narrowed contract is named wherever the run time refuses a call outside it."""
-    out = ["// GENERATED from hardware/descriptors by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
-           "#pragma once\n\n#include <vector>\n\n#include \"plan/facts.h\"\n\nnamespace fsla::plan {\n\n",
-           f"//: the contract this build compiled against: `full`, or the narrowed contract a development build named\ninline constexpr const char* kContractName = \"{contract}\";\ninline constexpr bool kContractNarrowed = {'true' if contract != FULL else 'false'};\n\n",
-           "struct ContractContext {\n  const char* id;\n  Facts facts;\n};\n\n",
-           "//: every context FSLA accepts\ninline const std::vector<ContractContext>& contract() {\n  static const std::vector<ContractContext> rows = [] {\n    std::vector<ContractContext> out;\n"]
-    for c in contexts_:
-        out.append("    {\n      Facts f;\n")
-        for name, value in c.facts.items():
-            if facts[name].type == "int":
-                out.append(f"      f.assign(\"{name}\", Interval{{{value[0]}, {value[1]}}});\n")
-            else:
-                bits = sum(1 << facts[name].members.index(m) for m in value)
-                out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
-        out.append(f"      out.push_back({{\"{c.id}\", f}});\n    }}\n")
-    out.append("    return out;\n  }();\n  return rows;\n}\n\n}  // namespace fsla::plan\n")
-    return "".join(out)
-
-
-def owed_header(owed_: list[tuple[Context, tuple[str, ...]]], facts: dict[str, Fact]) -> str:
-    """`plan/owed.h`: the OWED contexts as the run time holds them, `owed()` a context each (its id, its facts and the kernels it waits on). The planner
-    refuses a call inside one, naming the kernels; no launch function reads it."""
-    out = ["// GENERATED from hardware/descriptors/owed by hardware/emit.py -- do not edit. NEVER CHECKED IN.\n",
-           "#pragma once\n\n#include <vector>\n\n#include \"plan/facts.h\"\n\nnamespace fsla::plan {\n\n",
-           "struct OwedContext {\n  const char* id;\n  Facts facts;\n  std::vector<const char*> kernels;\n};\n\n",
-           "//: every context the contract owes: the call's kernels are not built\ninline const std::vector<OwedContext>& owed() {\n  static const std::vector<OwedContext> rows = [] {\n    std::vector<OwedContext> out;\n"]
-    for c, kernels in owed_:
-        out.append("    {\n      Facts f;\n")
-        for name, value in c.facts.items():
-            if facts[name].type == "int":
-                out.append(f"      f.assign(\"{name}\", Interval{{{value[0]}, {value[1]}}});\n")
-            else:
-                bits = sum(1 << facts[name].members.index(m) for m in value)
-                out.append(f"      f.assign(\"{name}\", EnumSet{{{bits}}});\n")
-        listed = ", ".join(f'"{k}"' for k in kernels)
-        out.append(f"      out.push_back({{\"{c.id}\", f, {{{listed}}}}});\n    }}\n")
-    out.append("    return out;\n  }();\n  return rows;\n}\n\n}  // namespace fsla::plan\n")
-    return "".join(out)
 
 
 def _camel(name: str) -> str:

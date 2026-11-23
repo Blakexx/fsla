@@ -1,31 +1,70 @@
 {
   "facts": [
-    {"name": "cc", "type": "int", "unit": "compute capability x10", "read": "DEVICE", "doc": "major * 100 + minor * 10, e.g. 900"},
-    {"name": "regs_per_sm", "type": "int", "unit": "32-bit registers", "read": "DEVICE", "doc": "registers one SM holds"},
-    {"name": "smem_per_sm", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerMultiprocessor"},
-    {"name": "smem_per_cta_optin", "type": "int", "unit": "bytes", "read": "DEVICE", "doc": "cudaDevAttrMaxSharedMemoryPerBlockOptin: the opt-in dynamic maximum of one CTA"},
-    {"name": "max_threads_per_sm", "type": "int", "unit": "threads", "read": "DEVICE", "doc": "resident threads one SM holds"},
-    {"name": "sm_count", "type": "int", "unit": "multiprocessors", "read": "DEVICE", "doc": "prop.multiProcessorCount: the streaming multiprocessors of the device (a slice reports its own)"},
-    {"name": "tensor", "type": "set<enum>", "unit": "MMA instruction kinds", "read": "DEVICE", "members": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"], "doc": "the tensor-core instruction kinds the device issues"},
-    {"name": "instructions", "type": "set<enum>", "unit": "instruction capabilities", "read": "DEVICE", "members": ["bf16_cvt_packed", "reg_transpose_b16", "bf16_simd_arith", "bf16_simd_fma"], "doc": "the instruction capabilities kernels select code on"},
-    {"name": "d_v", "type": "int", "unit": "value channels", "read": "CALL", "doc": "the value width of the call's state"},
-    {"name": "levels", "type": "int", "unit": "hierarchy levels", "read": "CALL", "doc": "the depth of the call's hierarchy (decode's D)"},
-    {"name": "decay", "type": "int", "unit": "0 or 1", "read": "CALL", "doc": "whether the call's recurrence decays"},
-    {"name": "prefill", "type": "int", "unit": "0 or 1", "read": "CALL", "doc": "0 for a decode step, 1 for a prefill: the call's kind, and with it the family that serves it"},
-    {"name": "tokens", "type": "int", "unit": "tokens", "read": "CALL", "doc": "the call's sequence length T (a decode step: 1)"},
-    {"name": "batch_heads", "type": "int", "unit": "batch times heads", "read": "CALL", "doc": "B times H, the call's independent streams: the extent the kernels' queues and grids are sized by"},
-    {"name": "stateful", "type": "int", "unit": "0 or 1", "read": "CALL", "doc": "1 when a state is handed in or out of the call"},
-    {"name": "width_bits_1", "type": "int", "unit": "log2 of a level's width (0: the call has no such level)", "read": "CALL", "doc": "the log2 of level 1's width: a level's width is a power of two (fsla/_state.py StateFormat), so a range states every width exactly; 0 for a level beyond the call's `levels`"},
-    {"name": "width_bits_2", "type": "int", "unit": "log2 of a level's width (0: the call has no such level)", "read": "CALL", "doc": "the log2 of level 2's width: a level's width is a power of two (fsla/_state.py StateFormat), so a range states every width exactly; 0 for a level beyond the call's `levels`"},
-    {"name": "width_bits_3", "type": "int", "unit": "log2 of a level's width (0: the call has no such level)", "read": "CALL", "doc": "the log2 of level 3's width: a level's width is a power of two (fsla/_state.py StateFormat), so a range states every width exactly; 0 for a level beyond the call's `levels`"},
-    {"name": "width_bits_4", "type": "int", "unit": "log2 of a level's width (0: the call has no such level)", "read": "CALL", "doc": "the log2 of level 4's width: a level's width is a power of two (fsla/_state.py StateFormat), so a range states every width exactly; 0 for a level beyond the call's `levels`"},
-    {"name": "read_listed_1", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the read side of level 1 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "read_listed_2", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the read side of level 2 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "read_listed_3", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the read side of level 3 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "read_listed_4", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the read side of level 4 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "write_listed_1", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the write side of level 1 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "write_listed_2", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the write side of level 2 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "write_listed_3", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the write side of level 3 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"},
-    {"name": "write_listed_4", "type": "int", "unit": "0 or 1 (0: every digit is walked, or the call has no such level)", "read": "CALL", "doc": "1 when the write side of level 4 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"}
+    {
+      "name": "cc",
+      "type": "int",
+      "unit": "compute capability x10",
+      "read": "DEVICE",
+      "doc": "major * 100 + minor * 10, e.g. 900"
+    },
+    {
+      "name": "regs_per_sm",
+      "type": "int",
+      "unit": "32-bit registers",
+      "read": "DEVICE",
+      "doc": "registers one SM holds"
+    },
+    {
+      "name": "smem_per_sm",
+      "type": "int",
+      "unit": "bytes",
+      "read": "DEVICE",
+      "doc": "cudaDevAttrMaxSharedMemoryPerMultiprocessor"
+    },
+    {
+      "name": "smem_per_cta_optin",
+      "type": "int",
+      "unit": "bytes",
+      "read": "DEVICE",
+      "doc": "cudaDevAttrMaxSharedMemoryPerBlockOptin: the opt-in dynamic maximum of one CTA"
+    },
+    {
+      "name": "max_threads_per_sm",
+      "type": "int",
+      "unit": "threads",
+      "read": "DEVICE",
+      "doc": "resident threads one SM holds"
+    },
+    {
+      "name": "sm_count",
+      "type": "int",
+      "unit": "multiprocessors",
+      "read": "DEVICE",
+      "doc": "prop.multiProcessorCount: the streaming multiprocessors of the device (a slice reports its own)"
+    },
+    {
+      "name": "tensor",
+      "type": "set<enum>",
+      "unit": "MMA instruction kinds",
+      "read": "DEVICE",
+      "members": [
+        "hmma_f16_f32",
+        "hmma_bf16_f32",
+        "imma_u8_s8_k32"
+      ],
+      "doc": "the tensor-core instruction kinds the device issues"
+    },
+    {
+      "name": "instructions",
+      "type": "set<enum>",
+      "unit": "instruction capabilities",
+      "read": "DEVICE",
+      "members": [
+        "bf16_cvt_packed",
+        "bf16_simd_arith",
+        "bf16_simd_fma"
+      ],
+      "doc": "the instruction capabilities kernels select code on"
+    }
   ]
 }

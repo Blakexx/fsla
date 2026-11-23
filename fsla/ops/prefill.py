@@ -19,7 +19,7 @@ import torch
 from fsla.ops._ext import not_built
 from fsla.ops.descriptor import Descriptor
 
-__all__ = ["prefill", "prefill_workspace", "reader_factor", "readout"]
+__all__ = ["prefill", "reader_factor", "readout"]
 
 
 def prefill(launch, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
@@ -28,15 +28,9 @@ def prefill(launch, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
     not_built("prefill")
 
 
-def prefill_workspace(descriptor: Descriptor) -> tuple[int, int]:
-    """The workspace ``(bytes, alignment)`` of a prefill call: the prefill launch function's layout, whose first region is the device plan. Not built on this
-    line (:func:`fsla.ops._ext.not_built`): the launch function, which derives the carve, owns the layout."""
-    not_built("prefill")
-
-
 def _build_workspace(descriptor: Descriptor) -> torch.Tensor:
     """THE WORKSPACE of a prefill call, laid out by the prefill launch function (``common/plan/``): one CUDA uint8 buffer of
-    :func:`prefill_workspace`'s size, whose first region is the DEVICE PLAN -- the decisions of the call, each box's counts and the step-shape
+    the size the layout states, whose first region is the DEVICE PLAN -- the decisions of the call, each box's counts and the step-shape
     word -- written from the masks. It is internal to the call. It REFUSES BY NAME (:class:`~fsla.ops._ext.KernelNotBuilt`, kernel ``prefill``):
     the device plan needs the carve, which the prefill launch function derives and which is not written yet (docs/open-work.md rows A-f and A-g)."""
     not_built("prefill")

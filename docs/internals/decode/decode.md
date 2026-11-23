@@ -77,7 +77,7 @@ big one.
 ## <a id="bc-absent"></a>3. `BC` is the lattice's owner, never a launch shape or an address term
 
 With one token there is nothing to amortize across a block of leaves, so the decode descriptor
-states no launch-shape `BC` (the contract's schema names none, `hardware/schema.json`; `tests/integration/test_decode_bc_blindness.py`). The `(k, m)`
+states no launch-shape `BC` (decode's schema names none, `hardware/kernels/decode/schema.json`; `tests/integration/test_decode_bc_blindness.py`). The `(k, m)`
 lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
 walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
 construction). No address in either backing is computed from it: both are keyed to the
@@ -375,7 +375,7 @@ the lattice's fields as scalars under the lattice's own names (§9).
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
 The CEILING below is the producer's; the FLOOR is the contract's: a level's width is a call fact of the descriptor (`width_bits_k`, its log2), whose range runs from
-`fsla._state.MIN_LEVEL_WIDTH` (the one admission law's floor, the same one prefill's seam runs) to this capacity (the depth parts of `hardware/parts/calls`), so a width
+`fsla._state.MIN_LEVEL_WIDTH` (the one admission law's floor, the same one prefill's seam runs) to this capacity (the depth parts of `hardware/kernels/decode/parts`), so a width
 outside it is refused when the descriptor is made, naming the fact: the entry takes its widths from the launch function and keeps no capacity check of its own.
 
 `fsla/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the

@@ -1,7 +1,6 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE RUN-TIME ENVIRONMENT (docs/internals/common/plan/environment.md): a device's facts, read once,
-// and the descriptors made from them.
+// THE RUN-TIME ENVIRONMENT (docs/internals/common/plan/environment.md)
 #pragma once
 
 #include <cstdint>
@@ -13,7 +12,7 @@
 namespace fsla::plan {
 
 struct DeviceFacts {
-  Descriptor descriptor;
+  Named read;
   std::string model;
   int cc;
   int sms;
@@ -21,8 +20,10 @@ struct DeviceFacts {
 
 const DeviceFacts& device_facts(int device);
 
-Descriptor descriptor_of(int device, const Named& call);
+template <typename K>
+typename K::Descriptor descriptor_of(int device, const Named& call);
 
-Descriptor checked_descriptor(const std::vector<std::int64_t>& words, int device);
+template <typename K>
+typename K::Descriptor checked_descriptor(const std::vector<std::int64_t>& words, int device);
 
 }  // namespace fsla::plan

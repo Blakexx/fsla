@@ -25,8 +25,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fsla.engine.facts.operands import requires_backward
-from fsla.ops._ext import device_index, extension, not_built
-from fsla.ops.descriptor import Descriptor, descriptor
+from fsla.ops._ext import device_index, not_built
+from fsla.ops.descriptor import Descriptor, call_facts, descriptor
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens
@@ -193,28 +193,30 @@ def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
                  for side in ("read", "write"))
 
 
-def level_facts(topology, widths: tuple[int, ...]) -> dict[str, int]:
-    """The facts the call states per level: each width as its log2 (a level's width is a power of two,
-    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`), and ``levels``; a level beyond the call's
-    depth is 0. The planner's own call facts name how many levels the contract holds."""
+def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int]:
+    """The facts a call of ``kernel`` states per level: each width as its log2 (a level's width is a power of two,
+    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`) as far as the kernel's call facts name it, and ``levels``;
+    a level beyond the call's depth is 0. The kernel's own call facts name how many levels its contract holds."""
     for level, width in enumerate(widths):
         if width < 1 or width & (width - 1):
             raise ValueError(f"level {level + 1}'s width is {width}: a level's width is a power of two (the contract states it as "
                              f"width_bits_{level + 1}, its log2)")
-    depth = sum(name.startswith("width_bits_") for name in extension().fsla_call_facts().split(","))  #: the planner's own call facts name the levels
-    read, write = activation_walks(topology)
+    names = call_facts(kernel)
+    depth = sum(name.startswith("width_bits_") for name in names)
+    walks = dict(zip(("read", "write"), activation_walks(topology)))
     facts = {"levels": len(widths)}
     for level in range(depth):
         have = level < len(widths)
         facts[f"width_bits_{level + 1}"] = widths[level].bit_length() - 1 if have else 0
-        facts[f"read_listed_{level + 1}"] = int(read[level]) if have else 0
-        facts[f"write_listed_{level + 1}"] = int(write[level]) if have else 0
+        for side, walked in walks.items():
+            if f"{side}_listed_{level + 1}" in names:
+                facts[f"{side}_listed_{level + 1}"] = int(walked[level]) if have else 0
     return facts
 
 
 def decode_descriptor(topology, *, d_v: int, decay: bool, batch_heads: int, device=None) -> Descriptor:
     """THE PRODUCER-OWNED DECODE RULE: the step's validated descriptor on ``device`` (the current device for ``None``), the call's
-    facts stated from the declaration -- each side's walk of each level (``read_listed_k``, ``write_listed_k``: the planner's launch function
+    facts stated from the declaration -- each level's write-side walk (``write_listed_k``: the planner's launch function
     derives the whole-atom deposit from the innermost level's) and each level's width as its log2 -- and from the caller: ``batch_heads``,
     B times H. A width or an extent outside the contract is refused when the descriptor is made, naming the fact. Memoized by the call
     and the device: a dictionary lookup, no device read after the first."""
@@ -223,8 +225,8 @@ def decode_descriptor(topology, *, d_v: int, decay: bool, batch_heads: int, devi
 
 @cache
 def _decode_descriptor(topology, d_v: int, decay: bool, batch_heads: int, device: int) -> Descriptor:
-    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=0, tokens=1, batch_heads=batch_heads, stateful=1,
-                      **level_facts(topology, tuple(topology.widths)))
+    return descriptor(kernel="decode", device=device, d_v=d_v, decay=int(decay), batch_heads=batch_heads,
+                      **level_facts("decode", topology, tuple(topology.widths)))
 
 
 def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, device=None) -> Descriptor:
@@ -241,5 +243,5 @@ def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_he
 
 @cache
 def _prefill_descriptor(topology, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, device: int) -> Descriptor:
-    return descriptor(device=device, d_v=d_v, decay=int(decay), prefill=1, tokens=tokens, batch_heads=batch_heads, stateful=int(stateful),
-                      **level_facts(topology, tuple(topology.padded_widths)))
+    return descriptor(kernel="prefill", device=device, d_v=d_v, decay=int(decay), tokens=tokens, batch_heads=batch_heads, stateful=int(stateful),
+                      **level_facts("prefill", topology, tuple(topology.padded_widths)))

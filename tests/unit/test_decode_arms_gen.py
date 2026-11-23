@@ -11,6 +11,7 @@ import itertools
 import json
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -39,32 +40,26 @@ def _run(contexts: str, tmp_path: Path):
 
 
 def _contract_with(tmp_path: Path, parts: dict | None = None, levels=None, **call_facts) -> str:
-    """The contract's text with the decode call part's facts replaced (`d_v=[32, 64, 128]`), and any other part's (`{"device/hopper_sm90a": {...}}`).
+    """The decode contract's text with the decode `call` part's facts replaced (`d_v=[32, 64, 128]`), and any other part's (`{"device/hopper_sm90a": {...}}`).
     `levels` replaces the depth: the contract is then the depth-1 descriptor alone, its part's `levels` the given value."""
     root = tmp_path / "registry"
-    root.mkdir()
-    for name in ("schema.json",):
-        (root / name).write_text((registry.ROOT / name).read_text())
-    for part in registry.parts():
-        target = root / "parts" / f"{part}.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text((registry.ROOT / "parts" / f"{part}.json").read_text())
-    (root / "descriptors").mkdir()
-    for path in (registry.ROOT / "descriptors").glob("*.json"):
-        if levels is None or path.stem == "hopper_decode_d1":
-            (root / "descriptors" / path.name).write_text(path.read_text())
-    depth = {"calls/depth1": {"levels": levels}} if levels is not None else {}
-    for part, facts in {"calls/decode": call_facts, **depth, **(parts or {})}.items():
-        file = root / "parts" / f"{part}.json"
+    shutil.copytree(registry.ROOT, root, ignore=shutil.ignore_patterns("__pycache__", "*.py", "BUILD.bazel"))
+    if levels is not None:
+        for path in (root / "kernels" / "decode" / "descriptors").glob("*.json"):
+            if path.stem != "hopper_decode_d1":
+                path.unlink()
+    depth = {"depth1": {"levels": levels}} if levels is not None else {}
+    for part, facts in {"call": call_facts, **depth, **(parts or {})}.items():
+        file = (root / "parts" if part.startswith("device/") else root / "kernels" / "decode" / "parts") / f"{part}.json"
         data = json.loads(file.read_text())
         for fact, value in facts.items():
             data["facts"][fact]["value"] = value
         file.write_text(json.dumps(data))
-    return registry.contexts_text(registry.contexts(root))
+    return registry.contexts_text("decode", registry.contexts("decode", root))
 
 
 def test_the_launch_function_over_the_contract_reaches_the_sixteen_arms_in_canonical_order(tmp_path):
-    run, out = _run(registry.contexts_text(registry.contexts()), tmp_path)
+    run, out = _run(registry.contexts_text("decode", registry.contexts("decode")), tmp_path)
     assert run.returncode == 0, run.stderr
     assert json.loads((out / "decode_arm_rows.json").read_text())["arms"] == REACHED
     assert sorted(path.name for path in out.iterdir()) == ["decode_arm_rows.json", "decode_selection_record.txt"]
@@ -198,7 +193,7 @@ def test_the_walk_is_exact_against_every_point_of_seeded_ranges(tmp_path):
 def test_sampled_points_of_every_context_reach_an_arm_among_the_contexts(tmp_path):
     """The sanity check of the argument, not its guarantee: seeded random points inside each context of the contract and of a wide one."""
     wide = _contract_with(tmp_path, d_v={"lo": 1, "hi": 64}, levels={"lo": 1, "hi": 4}, decay={"lo": 0, "hi": 1})
-    for n, contexts in enumerate((registry.contexts_text(registry.contexts()), wide)):
+    for n, contexts in enumerate((registry.contexts_text("decode", registry.contexts("decode")), wide)):
         sub = tmp_path / f"s{n}"
         sub.mkdir()
         (sub / "contexts.txt").write_text(contexts)

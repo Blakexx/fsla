@@ -90,7 +90,7 @@ def test_a_second_scratch_for_one_sequence_is_refused(builds):
 def _device_free_launch(monkeypatch):
     """The planner's launch function of a descriptor is the extension's, which reads a device: this battery is device-free by charter, so the
     one launch it sizes a scratch by is given as the planner would answer it (depth 2, 16-wide levels, a 64-wide arm)."""
-    launch = bodies.DecodeLaunchFacts(d_v=64, levels=2, decay=0, pad=0, workspace_bytes=0, workspace_alignment=256, widths=(16, 16))
+    launch = bodies.DecodeLaunchFacts(d_v=64, levels=2, decay=0, pad=0, widths=(16, 16))
     monkeypatch.setattr(bodies, "decode_launch", lambda descriptor: launch)
 
 
@@ -106,7 +106,7 @@ def test_the_scratch_reads_the_state_as_a_KEY_and_never_as_an_INPUT(monkeypatch)
     from fsla.ops.descriptor import Descriptor
 
     _device_free_launch(monkeypatch)
-    descriptor = Descriptor(device=0, call=(), words=())
+    descriptor = Descriptor(kernel="decode", device=0, call=(), words=())
     one = decode_step.scratch(_Poison(), descriptor, 2, "cpu")
     two = decode_step.scratch(_Poison(), descriptor, 2, "cpu")
 

@@ -52,14 +52,13 @@ environment.python(
     post_env = ["FSLA_NVCC_THREADS"],
     uv = "@uv//:uv",
     uv_pin = "@fsla_devtools//pins:uv_pin.json",
-    #: the flags' sources, and the registry whose device parts state the built architectures that are the build's defaults
+    #: the flags' sources, the registry module and the device parts (the directory, watched as a tree: any part added or changed is a new set of built architectures), which state the architectures that are the build's defaults
     watch = [
-        "//:measure/__init__.py",
         "//hardware:__init__.py",
         "//hardware:registry.py",
         "//tools:build_flags.py",
     ],
-    watch_trees = ["//hardware:parts/device/hopper_sm90a.json"],
+    watch_trees = ["//hardware:parts/device"],
 )
 environment.pinned(
     name = "mold",

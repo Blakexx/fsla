@@ -22,7 +22,6 @@ exports_files([
     "requirements.lock",
     "sgconfig.yml",
     "fsla/__init__.py",
-    "measure/__init__.py",
     "docs/rules.json",
 ])
 
@@ -35,7 +34,7 @@ string_list_flag(
 )
 
 #: THE CONTRACT the build compiles against: `full` (the default, what the gate and releases require) or a declared NARROWED contract of
-#: `hardware/descriptors/dev/` (a development build's subset: `arms_gen` compiles the arms it reaches, the run time refuses a call outside it)
+#: `hardware/kernels/<kernel>/descriptors/dev/` (a development build's subset: `arms_gen` compiles the arms it reaches, the run time refuses a call outside it)
 string_flag(
     name = "contract",
     build_setting_default = "full",
@@ -116,7 +115,6 @@ genrule(
     name = "readme_generated",
     srcs = [
         "README.md",
-        "measure/__init__.py",
         "//hardware:registry",
         "//tools:toolchain_records",
         "//tools:toolchains.py",

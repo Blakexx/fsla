@@ -24,13 +24,13 @@ HOPPER = registry.device_point()
 def _carve(widths: list[int], write: list[int], read: list[int], tokens: int = 65536, **override):
     """The tool's run on a prefill call of the given levels: width bits, write flags and read flags a level, every other fact lawful."""
     levels = len(widths)
-    facts = {"prefill": 1, "d_v": 64, "decay": 0, "tokens": tokens, "batch_heads": 1, "stateful": 0, "levels": levels}
+    facts = {"d_v": 64, "decay": 0, "tokens": tokens, "batch_heads": 1, "stateful": 0, "levels": levels}
     for k in range(1, 5):
         facts[f"width_bits_{k}"] = widths[k - 1] if k <= levels else 0
         facts[f"write_listed_{k}"] = write[k - 1] if k <= levels else 0
         facts[f"read_listed_{k}"] = read[k - 1] if k <= levels else 0
     facts.update(override)
-    return subprocess.run([str(TOOL), "--device", ",".join(f"{k}={v}" for k, v in HOPPER.items()),
+    return subprocess.run([str(TOOL), "--kernel", "prefill", "--device", ",".join(f"{k}={v}" for k, v in HOPPER.items()),
                            "--call", ",".join(f"{k}={v}" for k, v in facts.items()), "--carve", "json"],
                           capture_output=True, text=True, timeout=60)
 

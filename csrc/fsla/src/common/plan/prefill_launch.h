@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <cstdlib>
 
-#include "plan/facts.h"
+#include "plan/prefill/facts.h"
 #include "plan/levels.h"
 #include "plan/rules.h"
 
 namespace fsla::plan {
 
-using Descriptor = Facts;
+using PrefillDescriptor = prefill::Facts;
 
 inline constexpr int kPrefillMaxLevels = 4;
 
@@ -26,8 +26,8 @@ inline constexpr int kHopperWindow = 1024;
 
 //: THE WINDOW the device of a descriptor runs, in tokens: the one statement of it, a function of the device's facts as the arm is (docs/internals/common/plan/prefill_launch.md#window);
 //: compute capability 900 gives 1024, any other aborts
-constexpr int prefill_window(const Descriptor& d) {
-  if (!Reader::cc(d).point() || Reader::cc(d).lo != kHopperCc) std::abort();
+constexpr int prefill_window(const PrefillDescriptor& d) {
+  if (!prefill::Reader::cc(d).point() || prefill::Reader::cc(d).lo != kHopperCc) std::abort();
   return kHopperWindow;
 }
 
@@ -59,10 +59,12 @@ struct PrefillCarve {
 };
 
 //: the exact facts the carve reads, each a point and in its range; a range aborts
-constexpr void prefill_exact(const Descriptor& d) {
-  bool exact = Reader::cc(d).point() && Reader::tokens(d).point() && Reader::levels(d).point();
-  exact = exact && Reader::levels(d).lo >= 1 && Reader::levels(d).lo <= kPrefillMaxLevels;
-  exact = exact && Reader::tokens(d).lo >= 1 && Reader::cc(d).lo == kHopperCc;
+constexpr void prefill_exact(const PrefillDescriptor& d) {
+  bool exact = prefill::Reader::cc(d).point() && prefill::Reader::tokens(d).point()
+               && prefill::Reader::levels(d).point();
+  exact = exact && prefill::Reader::levels(d).lo >= 1
+          && prefill::Reader::levels(d).lo <= kPrefillMaxLevels;
+  exact = exact && prefill::Reader::tokens(d).lo >= 1 && prefill::Reader::cc(d).lo == kHopperCc;
   for (int l = 0; l < kPrefillMaxLevels; ++l) {
     exact = exact && level_width_bits(d, l).point() && level_read_listed(d, l).point()
             && level_write_listed(d, l).point();
@@ -79,8 +81,8 @@ struct PrefillBoxLevels {
   int hi;
 };
 
-constexpr PrefillBoxLevels prefill_box_levels(const Descriptor& d) {
-  const int levels = static_cast<int>(Reader::levels(d).lo);
+constexpr PrefillBoxLevels prefill_box_levels(const PrefillDescriptor& d) {
+  const int levels = static_cast<int>(prefill::Reader::levels(d).lo);
   const int last = levels - 1;
   int listed = -1, whole = -1;
   for (int l = levels - 1; l >= 0; --l) {
@@ -100,7 +102,7 @@ constexpr int prefill_box_bits(const PrefillBoxLevels& box, int l) {
 }
 
 //: whether every level is wide enough to fill its bits in a box
-constexpr bool prefill_carves(const Descriptor& d) {
+constexpr bool prefill_carves(const PrefillDescriptor& d) {
   prefill_exact(d);
   const PrefillBoxLevels box = prefill_box_levels(d);
   bool wide = true;
@@ -111,18 +113,18 @@ constexpr bool prefill_carves(const Descriptor& d) {
 }
 
 //: a side's list level among the box levels `lo < hi` (the one listed where exactly one is, else `lo`)
-constexpr int prefill_list_level(Interval (*listed)(const Descriptor&, int), const Descriptor& d,
-                                 const PrefillBoxLevels& box) {
+constexpr int prefill_list_level(Interval (*listed)(const PrefillDescriptor&, int),
+                                 const PrefillDescriptor& d, const PrefillBoxLevels& box) {
   const bool lo_listed = listed(d, box.lo).lo == 1;
   const bool hi_listed = listed(d, box.hi).lo == 1;
   return hi_listed && !lo_listed ? box.hi : box.lo;
 }
 
 //: the carve of a call from its exact facts; a range, or a call that is not carved, aborts
-constexpr PrefillCarve prefill_carve(const Descriptor& d) {
+constexpr PrefillCarve prefill_carve(const PrefillDescriptor& d) {
   if (!prefill_carves(d)) std::abort();
   PrefillCarve c{};
-  c.levels = static_cast<int>(Reader::levels(d).lo);
+  c.levels = static_cast<int>(prefill::Reader::levels(d).lo);
   const PrefillBoxLevels box = prefill_box_levels(d);
   for (int l = 0; l < c.levels; ++l) {
     c.width_bits[l] = static_cast<int>(level_width_bits(d, l).lo);
@@ -132,8 +134,8 @@ constexpr PrefillCarve prefill_carve(const Descriptor& d) {
     return std::int64_t{1} << (c.width_bits[l] - c.box_bits[l]);
   };
 
-  c.read_list_level = prefill_list_level(level_read_listed, d, box);
-  c.write_list_level = prefill_list_level(level_write_listed, d, box);
+  c.read_list_level = prefill_list_level(level_read_listed<PrefillDescriptor>, d, box);
+  c.write_list_level = prefill_list_level(level_write_listed<PrefillDescriptor>, d, box);
   c.read_list_bits[c.read_list_level] = kBoxHalfBits;
   c.write_list_bits[c.write_list_level] = kBoxHalfBits;
   const int read_column = c.read_list_level == box.lo ? box.hi : box.lo;
@@ -189,7 +191,7 @@ constexpr PrefillCarve prefill_carve(const Descriptor& d) {
   c.unit_ctas = c.ctas_per_head / c.units_per_head;
 
   c.window = prefill_window(d);
-  c.windows = (Reader::tokens(d).lo + c.window - 1) / c.window;
+  c.windows = (prefill::Reader::tokens(d).lo + c.window - 1) / c.window;
   return c;
 }
 

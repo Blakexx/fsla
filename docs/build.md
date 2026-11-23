@@ -81,7 +81,7 @@ architecture:
 bazel run //:library --//:archs=90a --//:contract=decode_d32_l2
 ```
 
-A narrowed contract is a descriptor of its own (`hardware/descriptors/dev/<name>.json`, marked narrowed, composing a subset of the call parts;
+A narrowed contract is a descriptor of its own in one kernel's registry (`hardware/kernels/<kernel>/descriptors/dev/<name>.json`, marked narrowed, composing a subset of that kernel's call parts; it narrows that kernel alone;
 [`internals/hardware/registry.md#narrowed`](internals/hardware/registry.md#narrowed)); `--//:contract` names it, and `arms_gen` compiles exactly the arms it
 reaches (`decode_d32_l2`: 2 of the full contract's 16). There is no index into an arm list. Any parameter but a default makes an ITERATION build
 (`bazel/arms.py`'s `is_iteration`, which the record states), and three properties make it safe to have:

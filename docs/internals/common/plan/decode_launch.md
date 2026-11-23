@@ -1,15 +1,15 @@
 # Decode's launch function (`csrc/fsla/src/common/plan/decode_launch.h`)
 
-`decode_launch(const Descriptor&)` returns `{DecodeArm arm; DecodeArgs args;}`: the arm to launch and the arguments to launch it with. The two
+`decode_launch(const DecodeDescriptor&)` returns `{DecodeArm arm; DecodeArgs args;}`: the arm to launch and the arguments to launch it with. The two
 parts are composed from two functions and stay structurally separate:
 
-- `decode_reach(const Descriptor&)` is the ARM half, a decision tree in the rule language ([`rules.md`](rules.md)): `cc` 900, then ladders on the value width, `levels`
+- `decode_reach(const DecodeDescriptor&)` is the ARM half, a decision tree in the rule language ([`rules.md`](rules.md)): `cc` 900, then ladders on the value width, `levels`
   and `decay`, so it is evaluable and exact over the contract's RANGES ([`rules.md#exact`](rules.md#exact)): the arms the descriptor can reach, and `gap` when some point
-  of it reaches no arm. `decode_arm(const Descriptor&)` is the arm of a point, the same walk: over a point exactly one leaf (compile-time facts in `rules.h`). The Hopper
+  of it reaches no arm. `decode_arm(const DecodeDescriptor&)` is the arm of a point, the same walk: over a point exactly one leaf (compile-time facts in `rules.h`). The Hopper
   build (`cc` 900) serves a call's `d_v` with the narrowest arm that holds it (`kDecodeArmWidths`, 32 and 64: `d_v` 1 to 32 reach the 32 arm,
   33 to 64 the 64 arm), one to four `levels`, `decay` 0 or 1: sixteen arms. `arms_gen` ([`../../decode/arms_gen.md`](../../decode/arms_gen.md))
   walks it over every context of the contract to collect the arms and to fail the build on a gap.
-- `decode_args(const Descriptor&, const DecodeArm&)` is the ARGS half, computed from EXACT values only and never evaluated over a range (a range
+- `decode_args(const DecodeDescriptor&, const DecodeArm&)` is the ARGS half, computed from EXACT values only and never evaluated over a range (a range
   aborts): the compute capability of the build to launch, the CTA's threads (the register file over `kDecodeRegsPerThread`, the one definition
   of the walk's registers a thread: `decode.cuh`'s `DecodePlan` derives its compiled width from it, and the launch refuses a descriptor whose
   threads differ from the compiled plan's), the shared memory a CTA may opt in to (`smem_per_cta_optin`: the launch opts the kernel in above the
@@ -20,19 +20,19 @@ parts are composed from two functions and stay structurally separate:
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)).
-- `decode_workspace(const Descriptor&)` is the scratch a call needs beside its operands: none (decode's buffers belong to the sequence and its
+- `decode_workspace(const DecodeDescriptor&)` is the scratch a call needs beside its operands: none (decode's buffers belong to the sequence and its
   state, never to the call), at the alignment every workspace carries.
 
-THERE IS NO DECODE PLAN. The op takes its data (`op(data...)`) and builds the descriptor itself: the descriptor is every device fact and every call fact,
+EVERY CONTEXT OF DECODE'S CONTRACT IS A DECODE STEP, so the matcher tests no call kind. THERE IS NO DECODE PLAN. The op takes its data (`op(data...)`) and builds the descriptor itself: the descriptor is every device fact and every call fact,
 immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the grid) is computed by this one launch
-function right before the launch and never stored. The level widths and each side's walk of each level are CALL FACTS because the caller's declaration decides them
+function right before the launch and never stored. The level widths and the write side's walk of each level are CALL FACTS because the caller's declaration decides them
 (`fsla.ops.produce.decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and
-the `read_listed_k` and `write_listed_k` of the producer's rule over the declaration; `write_dense` is derived from the innermost level's); a width the contract does not hold is refused when the descriptor is made, naming the fact
+the `write_listed_k` of the producer's rule over the declaration; `write_dense` is derived from the innermost level's); a width the contract does not hold is refused when the descriptor is made, naming the fact
 ([`../../hardware/registry.md`](../../hardware/registry.md#parts)). The state plane's leaf order (`lattice_k`, `lattice_m`) is no fact of the call: it travels with the
 state plane, which `fsla.ops.decode` derives from the state's format (`fsla.ops.lattice.derive_lattice`, the one authority) and passes with the state operand; the
 readout's `eps` is data, and the grid is the launch function's own (a gate's forced count is a private keyword of the internal step).
 
-THE DESCRIPTOR IS READ HERE ONLY. `Facts` (`Descriptor`) is generated from the schema with private members; `Reader`, its only friend, is the
+THE DESCRIPTOR IS READ HERE ONLY. `decode::Facts` (`DecodeDescriptor`) is generated from the device table and decode's schema with private members; `Reader`, its only friend, is the
 accessor of the functions of `common/plan/` ([`planner.md#the-reader`](planner.md#the-reader)). A launcher or a kernel holds a `DecodeLaunch`,
 never a raw fact.
 

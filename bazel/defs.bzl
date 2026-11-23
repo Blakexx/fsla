@@ -952,7 +952,7 @@ with_contract = rule(
     implementation = _with_contract_impl,
     attrs = {
         "target": attr.label(mandatory = True, cfg = _contract_transition),
-        "contract": attr.string(mandatory = True, doc = "the narrowed contract (`hardware/descriptors/dev/<name>.json`) the target is built under"),
+        "contract": attr.string(mandatory = True, doc = "the narrowed contract (`hardware/kernels/<kernel>/descriptors/dev/<name>.json`) the target is built under"),
     },
     doc = "A target's files as a build under a narrowed contract (`--//:contract=<contract>`) makes them, beside the default build's: the tests' way to read a narrowed build's tools and arm list on CPU.",
 )

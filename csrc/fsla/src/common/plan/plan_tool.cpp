@@ -6,13 +6,17 @@
 #include <string>
 #include <vector>
 
+#include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/planner.h"
+#include "plan/prefill/contract.h"
 #include "plan/prefill_launch.h"
 
 namespace {
 
 using fsla::plan::Named;
+using Decode = fsla::plan::decode::Kernel;
+using Prefill = fsla::plan::prefill::Kernel;
 
 [[noreturn]] void refuse(const std::string& why) {
   std::fprintf(stderr, "plan_tool: %s\n", why.c_str());
@@ -37,19 +41,20 @@ Named parse(const std::string& text, std::vector<std::string>& keep) {
 
 //: the carve of a prefill call as JSON, from the facts given: the planner's verdict on the call (held,
 //: owed with its kernels, or outside) is printed beside it, never a gate on it
-void print_carve(const fsla::plan::Descriptor& device, const Named& call,
+void print_carve(const fsla::plan::PrefillDescriptor& device, const Named& call,
                  const std::string& model) {
   using namespace fsla::plan;
-  Descriptor d = device;
+  PrefillDescriptor d = device;
   for (const auto& [name, value] : call) {
-    if (!is_call(name) || is_set(name) || !d.assign(name, Interval{value, value})) {
+    if (!Prefill::is_call(name) || Prefill::is_set(name)
+        || !d.assign(name, Interval{value, value})) {
       refuse("the call names '" + std::string(name) + "', which is no fact a call supplies");
     }
   }
-  for (std::string_view name : kFactNames) {
+  for (std::string_view name : Prefill::fact_names) {
     bool supplied = false;
     for (const auto& cell : call) supplied |= cell.first == name;
-    if (is_call(name) && !supplied) {
+    if (Prefill::is_call(name) && !supplied) {
       refuse("the call states no value for '" + std::string(name) + "'");
     }
   }
@@ -57,7 +62,7 @@ void print_carve(const fsla::plan::Descriptor& device, const Named& call,
     std::printf("{\"carved\": false}\n");
     return;
   }
-  const Planned verdict = describe(device, call, model);
+  const Planned<Prefill> verdict = describe<Prefill>(device, call, model);
   std::string kernels;
   for (const std::string& k : verdict.owed) {
     kernels += (kernels.empty() ? "\"" : ", \"") + k + "\"";
@@ -98,50 +103,18 @@ void print_carve(const fsla::plan::Descriptor& device, const Named& call,
   line("windows", n(c.windows), true);
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  std::string device_text, call_text, model, grid_text, carve_text;
-  for (int i = 1; i + 1 < argc; i += 2) {
-    std::string flag = argv[i];
-    if (flag == "--device") {
-      device_text = argv[i + 1];
-    } else if (flag == "--call") {
-      call_text = argv[i + 1];
-    } else if (flag == "--model") {
-      model = argv[i + 1];
-    } else if (flag == "--carve") {
-      carve_text = argv[i + 1];
-    } else if (flag == "--grid") {
-      grid_text = argv[i + 1];
-    } else {
-      refuse("unknown argument " + flag);
-    }
-  }
-  if (argc % 2 == 0 || device_text.empty() || call_text.empty()) {
-    refuse(
-        "usage: plan_tool --device name=v,... --call name=v,... [--model text] [--grid ...] "
-        "[--carve json]");
-  }
-
-  std::vector<std::string> keep;
-  keep.reserve(64);
-  const auto device = fsla::plan::device_descriptor(parse(device_text, keep), model);
+//: THE DECODE KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch's arguments, and the grid when `--grid` names its inputs
+void print_decode(const Named& device_facts, const Named& call_facts, const std::string& model,
+                  const std::string& grid_text, std::vector<std::string>& keep) {
+  const auto device = fsla::plan::device_descriptor<Decode>(device_facts, model);
   if (!device.ok()) refuse(device.refusal);
-  const bool carve = carve_text == "json";
-  if (!carve_text.empty() && !carve) refuse("--carve takes json");
-  const Named call_facts = parse(call_text, keep);
-  if (carve) {
-    print_carve(device.descriptor, call_facts, model);
-    return 0;
-  }
-  const auto call = fsla::plan::describe(device.descriptor, call_facts, model);
+  const auto call = fsla::plan::describe<Decode>(device.descriptor, call_facts, model);
   if (!call.ok()) refuse(call.refusal);
   const auto launch = fsla::plan::decode_launch(call.descriptor);
   const auto& arm = launch.arm;
   const auto& args = launch.args;
 
-  std::printf("descriptor: %s\n", fsla::plan::spell(call.descriptor).c_str());
+  std::printf("descriptor: %s\n", fsla::plan::spell<Decode>(call.descriptor).c_str());
   std::printf("arm: d_v=%d levels=%d decay=%d\n", arm.d_v, arm.levels, arm.decay);
   std::printf("args: cc=%d threads=%d smem_budget=%d pad=%d sms=%d\n", args.cc, args.threads,
               args.smem_budget, args.pad, args.sms);
@@ -159,6 +132,58 @@ int main(int argc, char** argv) {
     if (grid.size() != 3) refuse("--grid is unit_ceiling=n,bh=n,forced=n");
     const int ctas = fsla::plan::decode_grid(args, grid[0].second, grid[1].second, grid[2].second);
     std::printf("grid: %d\n", ctas);
+  }
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::string kernel, device_text, call_text, model, grid_text, carve_text;
+  for (int i = 1; i + 1 < argc; i += 2) {
+    std::string flag = argv[i];
+    if (flag == "--kernel") {
+      kernel = argv[i + 1];
+    } else if (flag == "--device") {
+      device_text = argv[i + 1];
+    } else if (flag == "--call") {
+      call_text = argv[i + 1];
+    } else if (flag == "--model") {
+      model = argv[i + 1];
+    } else if (flag == "--carve") {
+      carve_text = argv[i + 1];
+    } else if (flag == "--grid") {
+      grid_text = argv[i + 1];
+    } else {
+      refuse("unknown argument " + flag);
+    }
+  }
+  if (argc % 2 == 0 || kernel.empty() || device_text.empty() || call_text.empty()) {
+    refuse(
+        "usage: plan_tool --kernel decode|prefill --device name=v,... --call name=v,... [--model text] "
+        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve)");
+  }
+
+  std::vector<std::string> keep;
+  keep.reserve(64);
+  const Named device_facts = parse(device_text, keep);
+  const Named call_facts = parse(call_text, keep);
+  if (kernel == "decode") {
+    if (!carve_text.empty()) refuse("--carve is the prefill's");
+    print_decode(device_facts, call_facts, model, grid_text, keep);
+  } else if (kernel == "prefill") {
+    const auto device = fsla::plan::device_descriptor<Prefill>(device_facts, model);
+    if (!device.ok()) refuse(device.refusal);
+    if (!grid_text.empty()) refuse("--grid is decode's");
+    if (!carve_text.empty()) {
+      if (carve_text != "json") refuse("--carve takes json");
+      print_carve(device.descriptor, call_facts, model);
+      return 0;
+    }
+    const auto call = fsla::plan::describe<Prefill>(device.descriptor, call_facts, model);
+    if (!call.ok()) refuse(call.refusal);
+    std::printf("descriptor: %s\n", fsla::plan::spell<Prefill>(call.descriptor).c_str());
+  } else {
+    refuse("no kernel '" + kernel + "': the kernels are decode and prefill");
   }
   return 0;
 }

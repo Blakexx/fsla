@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""A DEVELOPMENT BUILD'S NARROWED CONTRACT (`hardware/descriptors/dev/`, `--//:contract`, docs/build.md#narrowed): a narrowed contract is a descriptor of its
+"""A DEVELOPMENT BUILD'S NARROWED CONTRACT (`hardware/kernels/<kernel>/descriptors/dev/`, `--//:contract`, docs/build.md#narrowed): a narrowed contract is a descriptor of its
 own, marked narrowed and inside the full contract; the arm generator built under it compiles exactly the arms it reaches (fewer than the full
 contract's sixteen); the run time built under it refuses a call outside it, naming it; the full contract is the default. No GPU."""
 from __future__ import annotations
@@ -19,17 +19,18 @@ sys.path.insert(0, str(ROOT))
 from hardware import registry  # noqa: E402
 
 NARROWED = "decode_d32_l2"
+KERNEL = "decode"
 PLAN = ROOT / "csrc" / "fsla" / "decode_plan_narrowed"
 FULL_PLAN = ROOT / "csrc" / "fsla" / "decode_plan"
 TOOL = ROOT / "csrc" / "fsla" / "plan_tool_narrowed" / "plan_tool"
 HOPPER = ",".join(f"{k}={v}" for k, v in registry.device_point().items())
-#: the call's facts beside `d_v`, `levels` and `decay`: a decode step of one token over one batch-head, and the widths and walks of a depth-2 call
-REST = ("prefill=0,tokens=1,batch_heads=1,stateful=1,width_bits_1=4,width_bits_2=5,width_bits_3=0,width_bits_4=0,"
-        "read_listed_1=1,read_listed_2=1,read_listed_3=0,read_listed_4=0,write_listed_1=0,write_listed_2=0,write_listed_3=0,write_listed_4=0")
+#: the call's facts beside `d_v`, `levels` and `decay`: a decode step over one batch-head, and the widths and write walks of a depth-2 call
+REST = ("batch_heads=1,width_bits_1=4,width_bits_2=5,width_bits_3=0,width_bits_4=0,"
+        "write_listed_1=0,write_listed_2=0,write_listed_3=0,write_listed_4=0")
 
 
 def _plan(call: str):
-    return subprocess.run([str(TOOL), "--device", HOPPER, "--call", f"{call},{REST}"], capture_output=True, text=True, timeout=60)
+    return subprocess.run([str(TOOL), "--kernel", KERNEL, "--device", HOPPER, "--call", f"{call},{REST}"], capture_output=True, text=True, timeout=60)
 
 
 @pytest.fixture()
@@ -40,8 +41,8 @@ def tree(tmp_path):
 
 def test_the_narrowed_contract_is_a_declared_descriptor_inside_the_full_one():
     registry.check()
-    assert registry.narrowed(NARROWED)["narrowed"] is True
-    full, narrowed = registry.contexts(), registry.contexts(contract=NARROWED)
+    assert registry.narrowed(NARROWED, KERNEL)["narrowed"] is True
+    full, narrowed = registry.contexts(KERNEL), registry.contexts(KERNEL, contract=NARROWED)
     assert len(narrowed) == 2 < len(full) == 8
     assert {c.descriptor for c in narrowed} == {NARROWED}
     assert {c.descriptor for c in full} == {f"hopper_decode_d{depth}" for depth in (1, 2, 3, 4)}, "a narrowed contract is never part of the full one"
@@ -49,12 +50,12 @@ def test_the_narrowed_contract_is_a_declared_descriptor_inside_the_full_one():
 
 def test_a_name_no_narrowed_contract_declares_is_refused_and_the_full_contract_is_the_default():
     with pytest.raises(registry.RegistryError, match="no narrowed contract 'nope'.*decode_d32_l2"):
-        registry.contexts(contract="nope")
-    assert registry.contexts(contract=registry.FULL) == registry.contexts()
+        registry.contexts(KERNEL, contract="nope")
+    assert registry.contexts(KERNEL, contract=registry.FULL) == registry.contexts(KERNEL)
 
 
 def test_a_descriptor_not_marked_narrowed_may_not_narrow_a_build(tree):
-    path = tree / "descriptors" / "dev" / f"{NARROWED}.json"
+    path = tree / "kernels" / KERNEL / "descriptors" / "dev" / f"{NARROWED}.json"
     data = json.loads(path.read_text())
     del data["narrowed"]
     path.write_text(json.dumps(data))
@@ -63,7 +64,7 @@ def test_a_descriptor_not_marked_narrowed_may_not_narrow_a_build(tree):
 
 
 def test_a_narrowed_context_outside_the_full_contract_is_refused(tree):
-    path = tree / "parts" / "calls" / "decode_narrow_d32.json"
+    path = tree / "kernels" / KERNEL / "parts" / "call_narrow_d32.json"
     data = json.loads(path.read_text())
     data["facts"]["d_v"]["value"] = {"lo": 2, "hi": 128}
     path.write_text(json.dumps(data))
@@ -71,13 +72,19 @@ def test_a_narrowed_context_outside_the_full_contract_is_refused(tree):
         registry.check(tree)
 
 
-def test_the_contexts_file_and_the_header_name_the_contract():
-    text = registry.contexts_text(registry.contexts(contract=NARROWED), NARROWED)
-    assert text.splitlines()[0] == f"# contract: {NARROWED}"
-    facts = registry.schema()
-    header = registry.contract_header(registry.contexts(contract=NARROWED), facts, NARROWED)
+def test_the_contexts_file_and_the_header_name_the_contract_and_the_kernel():
+    text = registry.contexts_text(KERNEL, registry.contexts(KERNEL, contract=NARROWED), NARROWED)
+    assert text.splitlines()[:2] == [f"# contract: {NARROWED}", f"# kernel: {KERNEL}"]
+    facts = registry.facts(KERNEL)
+    header = registry.contract_header(KERNEL, registry.contexts(KERNEL, contract=NARROWED), registry.owed(KERNEL), facts, NARROWED)
     assert f'kContractName = "{NARROWED}"' in header and "kContractNarrowed = true" in header
-    assert "kContractNarrowed = false" in registry.contract_header(registry.contexts(), facts)
+    assert "kContractNarrowed = false" in registry.contract_header(KERNEL, registry.contexts(KERNEL), registry.owed(KERNEL), facts)
+
+
+def test_a_narrowed_contract_narrows_the_kernel_that_declares_it_and_no_other():
+    assert registry.narrowing_kernel(NARROWED) == KERNEL
+    assert registry.applied(KERNEL, NARROWED) == NARROWED and registry.applied("prefill", NARROWED) == registry.FULL
+    assert registry.contexts("prefill", contract=NARROWED) == registry.contexts("prefill")
 
 
 def test_the_arm_generator_under_the_narrowed_contract_compiles_exactly_the_arms_it_reaches():

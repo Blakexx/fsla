@@ -1,6 +1,6 @@
 {
-  "name": "calls/prefill",
-  "doc": "the prefill call's contract, the facts that do not depend on the depth: `prefill` 1, the value width and the decay the carry will serve, the call's length and streams and whether a state rides it. It is composed only by the OWED descriptors (hardware/descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths and the per-level walks are a depth part's (calls/depth1 .. calls/depth4).",
+  "name": "call",
+  "doc": "the prefill call's contract, the facts that do not depend on the depth: the value width and the decay the carry will serve, the call's length and streams and whether a state rides it. It is composed only by the OWED descriptors (descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths and the per-level walks are a depth part's (depth1 .. depth4).",
   "facts": {
     "d_v": {
       "value": {
@@ -12,10 +12,6 @@
     "decay": {
       "value": 0,
       "declared_by": "docs/api.md section 1.1: a prefill's decay is refused -- decay is decode's (section 3), outside the first paper's scope"
-    },
-    "prefill": {
-      "value": 1,
-      "declared_by": "this part is the prefill call: the prefill fact is 1"
     },
     "tokens": {
       "value": {

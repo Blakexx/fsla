@@ -88,7 +88,7 @@ two layers are separated at all.
 
 The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
 side's lists and the readout over the read side's. The prefill's launch function in `common/plan/` derives the carve for the two-box Hopper CTA
-(`docs/open-work.md` row A-f), from the call's descriptor facts -- each side's walk of each level (`read_listed_k`, `write_listed_k`) and the level
+(`docs/open-work.md` row A-f), from the call's descriptor facts -- each side's walk of each level (the prefill's `read_listed_k`, `write_listed_k`) and the level
 widths -- and never an operand. That is the standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared
 flags, the binary's arms) and never of a routing statistic, because the routing distribution moves step to step and a layout chosen from it
 would make the state's shape depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).

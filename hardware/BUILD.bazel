@@ -1,5 +1,5 @@
-"""THE CONTRACT REGISTRY'S GRAPH TARGETS (docs/internals/hardware/registry.md): the registry's files, the `Facts` header generated from the schema and the
-contract as the matchers' tools read it."""
+"""THE CONTRACT REGISTRY'S GRAPH TARGETS (docs/internals/hardware/registry.md): the registry's files, and for each kernel the `Facts` header generated from the
+shared device table and the kernel's schema, its contract and the contract as the matchers' tools read it."""
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:defs.bzl", "tree_part")
@@ -10,83 +10,71 @@ package(default_visibility = ["//visibility:public"])
 #: this package's part of the tree the checks read
 tree_part()
 
-#: every file of the registry: the schema, the parts, the descriptors and the modules that expand them
+#: every file of the registry: the shared table's schema and parts, each kernel's schema, parts and descriptors, and the modules that expand them
 filegroup(
     name = "registry",
     srcs = glob([
         "*.py",
         "*.json",
         "parts/**/*.json",
-        "descriptors/*.json",
-        "descriptors/dev/*.json",
-        "descriptors/owed/*.json",
+        "kernels/*/schema.json",
+        "kernels/*/parts/**/*.json",
+        "kernels/*/descriptors/*.json",
+        "kernels/*/descriptors/dev/*.json",
+        "kernels/*/descriptors/owed/*.json",
     ]),
 )
 
-#: the files the environment repository watches: the registry's module and the device parts, whose change is a new set of built architectures (`MODULE.bazel`)
+#: the files the environment repository watches: the registry's modules and the device parts as a tree, whose change is a new set of built architectures (`MODULE.bazel`)
 exports_files([
     "__init__.py",
     "emit.py",
-    "parts/device/hopper_sm90a.json",
+    "parts/device",
     "registry.py",
 ])
 
-genrule(
-    name = "facts_header",
+#: THE KERNELS the registry holds: a folder of `kernels/`
+KERNELS = [path.split("/")[1] for path in glob(["kernels/*/schema.json"])]
+
+[genrule(
+    name = "%s_facts_header" % kernel,
     srcs = [":registry"],
-    outs = ["plan/facts.h"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --facts-header $@",
+    outs = ["plan/%s/facts.h" % kernel],
+    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --kernel %s --facts-header $@" % kernel,
     tools = [
         "emit.py",
         "@fsla_env//:python",
     ],
-)
+) for kernel in KERNELS]
 
-#: `plan/facts.h`, the struct of every fact, generated from `schema.json`
-cc_library(
-    name = "facts",
-    hdrs = [":facts_header"],
+#: `plan/<kernel>/facts.h`, the kernel's facts as a class and its reader, generated from the device table and the kernel's `schema.json`
+[cc_library(
+    name = "%s_facts" % kernel,
+    hdrs = [":%s_facts_header" % kernel],
     includes = ["."],
-)
+) for kernel in KERNELS]
 
-genrule(
-    name = "owed_header",
-    srcs = [":registry"],
-    outs = ["plan/owed.h"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath emit.py) --owed-header $@",
-    tools = [
-        "emit.py",
-        "@fsla_env//:python",
-    ],
-)
-
-#: `plan/owed.h`, the contexts the contract OWES (`descriptors/owed`) as a table the run time holds: `owed()`, a context each with the kernels it waits on
-cc_library(
-    name = "owed",
-    hdrs = [":owed_header"],
-    includes = ["."],
-    deps = [":facts"],
-)
-
-#: THE CONTRACT: every context the build's contract holds, a line each (`registry.contexts_text`); `--//:contract` names a narrowed one
-contract_output(
-    name = "contexts",
-    out = "contexts.txt",
+#: THE CONTRACT of each kernel: every context the build's contract holds, a line each (`registry.contexts_text`); `--//:contract` names a narrowed one
+[contract_output(
+    name = "%s_contexts" % kernel,
+    out = "%s_contexts.txt" % kernel,
+    kernel = kernel,
     registry = ":registry",
     what = "contexts",
-)
+) for kernel in KERNELS]
 
-contract_output(
-    name = "contract_header",
-    out = "plan/contract.h",
+[contract_output(
+    name = "%s_contract_header" % kernel,
+    out = "plan/%s/contract.h" % kernel,
+    kernel = kernel,
     registry = ":registry",
     what = "contract-header",
-)
+) for kernel in KERNELS]
 
-#: `plan/contract.h`, the contract as a table the run time holds: `contract()`, a context each
-cc_library(
-    name = "contract",
-    hdrs = [":contract_header"],
+#: `plan/<kernel>/contract.h`, the kernel's contract and owed contexts as tables the run time holds (`contract()`, `owed()`) and its `Kernel` definition
+[cc_library(
+    name = "%s_contract" % kernel,
+    hdrs = [":%s_contract_header" % kernel],
     includes = ["."],
-    deps = [":facts"],
-)
+    deps = [":%s_facts" % kernel],
+) for kernel in KERNELS]

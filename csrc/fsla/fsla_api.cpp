@@ -95,7 +95,7 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
 //: the one list the `Family` enum is) and W, the window the planner's matcher derives from the device's facts (`plan::prefill_window`)
 std::tuple<int64_t, std::string, int64_t> device_card_op(int64_t device) {
   const fsla::Card& c = fsla::card_of(static_cast<int>(device));
-  fsla::plan::Descriptor facts;
+  fsla::plan::PrefillDescriptor facts;
   facts.assign("cc", fsla::plan::Interval{c.cc, c.cc});
   return {c.cc, denseref::arch::kFamilyNames[static_cast<int>(c.traits.family)],
           fsla::plan::prefill_window(facts)};
@@ -148,9 +148,9 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, "
       "int lattice_k, int lattice_m, int ctas, float eps, int[] descriptor, Tensor(i!)? page_table=None, "
       "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
-  m.def("fsla_call_facts() -> str");
-  m.def("fsla_descriptor(int device, int[] call) -> int[]");
-  m.def("fsla_owed_kernels(int device, int[] call) -> str");
+  m.def("fsla_call_facts(str kernel) -> str");
+  m.def("fsla_descriptor(str kernel, int device, int[] call) -> int[]");
+  m.def("fsla_owed_kernels(str kernel, int device, int[] call) -> str");
   m.def("fsla_decode_build_stamp() -> int");
   m.def("fsla_decode_launch(int[] descriptor, int device) -> int[]");
   m.def("fsla_decode_arms() -> int[][]");

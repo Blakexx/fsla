@@ -1,0 +1,27 @@
+{
+  "name": "call",
+  "doc": "the decode step's contract, the facts that do not depend on the depth: every (d_v, decay) FSLA accepts and the extent the step is sized by (`batch_heads`). A list is alternatives, each its own context; a range is one context. d_v is a range because the seam pads any value width up to the arm that serves it (decode's launch function maps d_v into the arm's, common/plan/decode_launch.h). The depth and the level widths are a depth part's (depth1 .. depth4), composed beside this one.",
+  "facts": {
+    "d_v": {
+      "value": {
+        "lo": 2,
+        "hi": 64
+      },
+      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"
+    },
+    "decay": {
+      "value": [
+        0,
+        1
+      ],
+      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
+    },
+    "batch_heads": {
+      "value": {
+        "lo": 1,
+        "hi": 536870911
+      },
+      "declared_by": "docs/api.md#batch-heads: a decode step serves B times H from 1 to 536870911, the largest the step's work queue indexes (csrc/fsla/src/decode/decode.cu: `int BH` and the queue of 4 B H + 2 int32 counters)"
+    }
+  }
+}

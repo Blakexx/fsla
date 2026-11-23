@@ -52,8 +52,8 @@ records each lab's stated line against its measured count.
 ## Prices
 
 SASS instructions per use, sm_86 (ampere branch, unreproducible here) (ptxas of the pinned toolkit), with where each was read. A price is the instructions
-the warp issues; a rate (cycles) belongs to `measure/rates.json` and its labs -- each pipe's, the shared-memory
-pipe's by kind of traffic ([hardware.md#shared](../common/hardware.md#shared)) -- and a lab prints each pipe's measured
+the warp issues; a rate (cycles) belongs to `measure/rates.json` and its labs (the rates it holds:
+[hardware.md](../common/hardware.md#shared)), and a lab prints each pipe's measured
 busy share ([pipe_counters.md](pipe_counters.md)).
 
 | primitive | price | read in |

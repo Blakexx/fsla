@@ -104,7 +104,7 @@ def test_write_puts_the_candidate_beside_the_parts_and_the_registry_refuses_it_u
     candidate = root / "hardware/parts/device/cc860_nvidia_geforce_rtx_3090.candidate.json"
     assert candidate in written and json.loads(candidate.read_text())["facts"]["sm_count"]["value"] == 82
     assert "MEASURED (" in (root / "docs/lab/device_probe.md").read_text() and "cc860_nvidia_geforce_rtx_3090" in (root / "docs/lab/device_probe.md").read_text()
-    for call in (registry.check, registry.contexts):
+    for call in (registry.check, lambda hardware: registry.contexts("decode", hardware)):
         with pytest.raises(registry.RegistryError, match="CANDIDATE part"):
             call(root / "hardware")
     candidate.rename(candidate.with_name("cc860_nvidia_geforce_rtx_3090.json"))

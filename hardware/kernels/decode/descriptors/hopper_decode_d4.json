@@ -3,7 +3,7 @@
   "gpus": "H100",
   "compose": [
     "device/hopper_sm90a",
-    "calls/decode",
-    "calls/depth4"
+    "call",
+    "depth4"
   ]
 }

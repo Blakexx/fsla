@@ -11,6 +11,6 @@
     "max_threads_per_sm": {"value": 2048, "validated_by": "the planner's contract check (plan::device_facts, docs/internals/common/plan/environment.md): the driver's prop.maxThreadsPerMultiProcessor must be in a context of the contract at the first read of a device"},
     "sm_count": {"value": {"lo": 114, "hi": 132}, "documented_by": "the H100 datasheet: 132 streaming multiprocessors on the SXM5 part and 114 on the PCIe part; the contract admits both and every count between"},
     "tensor": {"value": {"set": ["hmma_f16_f32", "hmma_bf16_f32", "imma_u8_s8_k32"]}, "documented_by": "the H100 whitepaper: the tensor-core instruction kinds of compute capability 9.0 (the MMA rates measure/rates.json prices)"},
-    "instructions": {"value": {"set": ["bf16_cvt_packed", "reg_transpose_b16", "bf16_simd_arith", "bf16_simd_fma"]}, "documented_by": "the instruction capabilities of compute capability 9.0, each cap's page in docs/internals/common/arch_caps.md"}
+    "instructions": {"value": {"set": ["bf16_cvt_packed", "bf16_simd_arith", "bf16_simd_fma"]}, "documented_by": "the instruction capabilities of compute capability 9.0, each cap's page in docs/internals/common/arch_caps.md"}
   }
 }

@@ -6,8 +6,8 @@ docs/internals/hardware/registry.md), and the toolchain that builds each context
 reaches no arm (``arms_gen``), so the published support and the guaranteed support are one file. The commit gate fails on drift
 (`//:readme`, which holds the committed README to what the graph writes, docs/build-graph.md#committed-files):
 
-* ``hardware/descriptors``' contexts (``hardware.registry.contexts``): each descriptor's architecture, the GPUs it covers and, for every fact the
-  CALL supplies, the values the contract admits.
+* each kernel's contexts (``hardware/kernels/<kernel>/descriptors``, ``hardware.registry.contexts``), one table a kernel that has a built contract: each descriptor's architecture, the GPUs it covers and, for every fact the kernel's
+  call supplies, the values the contract admits.
 * the BUILT architectures (``hardware.registry.built``: the architectures a device part states) and the toolchain that builds them
   (``tools/toolchains.py``). A contract architecture the build does not build is refused here: the contract is what is built.
 
@@ -68,30 +68,35 @@ def _spell(values: set) -> str:
     return ", ".join([str(p) for p in points] + ranges)
 
 
-def contract() -> dict[tuple[str, str], dict[str, set]]:
-    """`(arch, gpus) -> {call fact: the values the contract admits}`, over every context of the registry."""
-    facts = registry.schema()
-    calls = [n for n, f in facts.items() if f.read == "CALL"]
+def contract(kernel: str) -> dict[tuple[str, str], dict[str, set]]:
+    """`(arch, gpus) -> {call fact: the values the contract admits}`, over every context of the kernel's registry."""
+    calls = list(registry.kernel_schema(kernel))
     out: dict[tuple[str, str], dict[str, set]] = {}
-    for c in registry.contexts():
+    for c in registry.contexts(kernel):
         seen = out.setdefault((c.arch, c.gpus), {n: set() for n in calls})
         for n in calls:
             seen[n].add(c.facts[n])
     return out
 
 
-def table() -> str:
+def kernel_table(kernel: str) -> str:
+    """ONE KERNEL'S TABLE: a row an architecture and GPU label its contract holds, the columns the kernel's own call facts."""
     built_rows = built()
-    calls = [n for n, f in registry.schema().items() if f.read == "CALL"]
+    calls = list(registry.kernel_schema(kernel))
     rows = [f"| Compute capability | GPUs | {' | '.join(calls)} | Toolchain | Assembler | Status |",
             "|---" * (len(calls) + 5) + "|"]
-    for (arch, gpus), admitted in sorted(contract().items()):
+    for (arch, gpus), admitted in sorted(contract(kernel).items()):
         if arch not in built_rows:
-            raise SystemExit(f"the contract holds {arch}, which the build does not build: the contract is what is built")
+            raise SystemExit(f"the {kernel} contract holds {arch}, which the build does not build: the contract is what is built")
         spelled = " | ".join(_spell(admitted[n]) for n in calls)
         for r in built_rows[arch]:
             rows.append(f"| `{arch}` | {gpus} | {spelled} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | built |")
     return "\n".join(rows)
+
+
+def table() -> str:
+    """The support table: a table for each kernel that has a built contract (a kernel whose descriptors are all owed has none), under its name."""
+    return "\n\n".join(f"**`{kernel}`**\n\n{kernel_table(kernel)}" for kernel in registry.kernels() if registry.contexts(kernel))
 
 
 def render(readme: str) -> str:

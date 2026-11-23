@@ -25,4 +25,4 @@ along a path, so `eq(x, 1)` then `eq(x, 2)` ... `hole()` over `x` in 1:2 reaches
 checks it against every point of seeded ranges. THE POINT GUARANTEE is a `static_assert` in `rules.h`: every primitive on a point Interval or EnumSet is Yes or No, so `all`/`any` of
 them are, a fork takes one branch, and a ladder over a point reaches one leaf.
 
-`struct Facts` (one member per fact) is not here: it is generated from the schema ([`../../hardware/registry.md`](../../hardware/registry.md#schema)).
+A kernel's `Facts` class (one member per fact) is not here: it is generated from the device table and the kernel's schema ([`../../hardware/registry.md`](../../hardware/registry.md#schema)).

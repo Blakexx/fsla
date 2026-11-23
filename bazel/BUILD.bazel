@@ -60,7 +60,6 @@ filegroup(
 filegroup(
     name = "generator_sources",
     srcs = [
-        "//:measure/__init__.py",
         "//bazel:arms.py",
         "//hardware:registry",
     ],

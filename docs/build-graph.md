@@ -81,7 +81,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@fsla_env//:flags.bzl`'s
   `BUILT_ARCHS`, the registry's built architectures: those a device part of `hardware/parts/device` states,
   [`architecture/families.md`](architecture/families.md)), and `--//:contract` (default `full`: the contract the build compiles against, or a declared narrowed contract of
-  `hardware/descriptors/dev/`, [`build.md#narrowed`](build.md#narrowed)). Any value but a default makes an iteration build, which its record says; `//:gate`
+  `hardware/kernels/<kernel>/descriptors/dev/`, [`build.md#narrowed`](build.md#narrowed)). Any value but a default makes an iteration build, which its record says; `//:gate`
   refuses a non-default `--//:contract`.
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@fsla_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states

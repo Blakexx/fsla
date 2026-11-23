@@ -83,15 +83,13 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
 @dataclass(frozen=True, slots=True)
 class DecodeLaunchFacts:
     """What the planner's launch function makes of a descriptor that Python reads (``common/plan/decode_launch.h``): the arm (``d_v``,
-    ``levels``, ``decay``), the zero columns the call's value width is padded by, the workspace the call needs (bytes, alignment) and
+    ``levels``, ``decay``), the zero columns the call's value width is padded by and
     each level's width (``widths``, one a level)."""
 
     d_v: int
     levels: int
     decay: int
     pad: int
-    workspace_bytes: int
-    workspace_alignment: int
     widths: tuple[int, ...]
 
     @property
@@ -105,9 +103,10 @@ class DecodeLaunchFacts:
 
 @cache
 def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
-    """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``."""
+    """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``. The launch's words are the arm, the
+    padding, the workspace the planner sizes (words 4 and 5, which no caller reads) and the level widths."""
     words = [int(x) for x in extension().fsla_decode_launch(list(descriptor.words), descriptor.device)]
-    return DecodeLaunchFacts(*words[:6], widths=tuple(words[6:6 + words[1]]))
+    return DecodeLaunchFacts(*words[:4], widths=tuple(words[6:6 + words[1]]))
 
 
 @cache
@@ -203,11 +202,11 @@ def fold_levels(levels) -> list[torch.Tensor]:
 
 
 def check_descriptor(descriptor: Descriptor, routes, device: torch.device) -> None:
-    """The descriptor against the call it is handed: a decode step's (its ``prefill`` fact 0), the level widths it states are the bundle's, its
+    """The descriptor against the call it is handed: a decode step's (its kernel ``decode``), the level widths it states are the bundle's, its
     ``batch_heads`` is the bundle's B times H, and its device is the values'."""
     widths = tuple(routes.topology.widths)
-    if descriptor["prefill"]:
-        raise ValueError("the descriptor is a prefill's (its `prefill` fact is 1); fsla.ops.produce.decode_descriptor builds a decode step's")
+    if descriptor.kernel != "decode":
+        raise ValueError(f"the descriptor is a {descriptor.kernel} call's; fsla.ops.produce.decode_descriptor builds a decode step's")
     if widths != decode_launch(descriptor).widths:
         raise ValueError(f"the descriptor is for widths {decode_launch(descriptor).widths}, the bundle's are {widths}")
     if descriptor["batch_heads"] != routes.batch * routes.heads:

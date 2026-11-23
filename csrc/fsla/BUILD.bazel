@@ -134,15 +134,16 @@ cuda_unit(
     unit = unit.rsplit("/", 1)[-1].removesuffix(".cu"),
 ) for unit in glob(["src/**/*.cu"])]
 
-#: THE PLANNER'S HEADERS: the rule language, the launch functions and the host half of the planner (`common/plan/`), with the `Facts` struct, the contract and the owed contexts generated from the registry (`//hardware:facts`, `//hardware:contract`, `//hardware:owed`)
+#: THE PLANNER'S HEADERS: the rule language, the launch functions and the host half of the planner (`common/plan/`), with each kernel's `Facts` class, contract and owed contexts generated from the registry (`//hardware:<kernel>_facts`, `//hardware:<kernel>_contract`)
 cc_library(
     name = "plan_headers",
     hdrs = glob(["src/common/plan/*.h"]),
     includes = ["src/common"],
     deps = [
-        "//hardware:contract",
-        "//hardware:facts",
-        "//hardware:owed",
+        "//hardware:decode_contract",
+        "//hardware:decode_facts",
+        "//hardware:prefill_contract",
+        "//hardware:prefill_facts",
     ],
 )
 
@@ -167,12 +168,12 @@ cc_binary(
 
 genrule(
     name = "decode_plan",
-    srcs = ["//hardware:contexts"],
+    srcs = ["//hardware:decode_contexts"],
     outs = [
         "decode_plan/decode_arm_rows.json",
         "decode_plan/decode_selection_record.txt",
     ],
-    cmd = "$(execpath :decode_arms_gen) --contexts $(execpath //hardware:contexts) --out-dir $(RULEDIR)/decode_plan",
+    cmd = "$(execpath :decode_arms_gen) --contexts $(execpath //hardware:decode_contexts) --out-dir $(RULEDIR)/decode_plan",
     tools = [":decode_arms_gen"],
 )
 

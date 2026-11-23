@@ -1,12 +1,12 @@
 {
-  "name": "hopper_prefill_d1",
+  "name": "hopper_prefill_d4",
   "owed": [
     "prefill"
   ],
   "gpus": "H100",
   "compose": [
     "device/hopper_sm90a",
-    "calls/prefill",
-    "calls/depth1"
+    "call",
+    "depth4"
   ]
 }

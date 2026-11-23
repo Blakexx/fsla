@@ -203,11 +203,11 @@ def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_
     (call,) = captured
     assert (call["width_bits_1"], call["width_bits_2"], call["width_bits_3"], call["width_bits_4"]) == bits
     assert (call["device"], call["d_v"], call["levels"], call["decay"], call["batch_heads"]) == (0, 48, len(widths), 1, 4)
-    assert (call["prefill"], call["tokens"], call["stateful"]) == (0, 1, 1)
+    assert call["kernel"] == "decode" and not {"prefill", "tokens", "stateful"} & set(call) and not any(name.startswith("read_listed_") for name in call)
 
 
 def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_producers_rule_over_the_declaration(captured):
-    """THE PRODUCER'S RULE: a level a side walks by lists (`read_listed_k`, `write_listed_k` 1) is one whose activation has exact zeros -- an opaque level
+    """THE PRODUCER'S RULE: a level a side walks by lists (`read_listed_k` of the prefill, `write_listed_k` of both kernels, 1) is one whose activation has exact zeros -- an opaque level
     may have them; a softmax has none. A level beyond the depth is 0. The planner's launch function derives the whole-atom deposit from the innermost
     level's write flag."""
     from fsla.ops.produce import decode_descriptor
@@ -216,8 +216,8 @@ def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_produce
     decode_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, batch_heads=1, device=0)
     decode_descriptor(_widths_topology((16, 16), write=SoftmaxActivation()), d_v=64, decay=False, batch_heads=1, device=0)
     opaque, softmax = captured
-    assert [opaque[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [opaque[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
-    assert [softmax[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [0, 0, 0, 0] and [softmax[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [0, 0, 0, 0]
+    assert [opaque[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
+    assert [softmax[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [0, 0, 0, 0]
 
 
 @pytest.mark.parametrize("widths, level, width", [((24, 16), 1, 24), ((16, 31), 2, 31)])
@@ -231,14 +231,14 @@ def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_le
 
 
 def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declarations_walks_and_padded_widths(captured):
-    """THE PREFILL'S DESCRIPTOR, `fsla.ops.produce.prefill_descriptor`: the kind (`prefill` 1), the caller's extents and declarations, and from the declaration
+    """THE PREFILL'S DESCRIPTOR, `fsla.ops.produce.prefill_descriptor`: the kernel (`prefill`), the caller's extents and declarations, and from the declaration
     each level's PADDED width as its log2 and each side's walk; a declared budget of `None` is the fact 0."""
     from fsla.ops.produce import prefill_descriptor
 
     prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, device=0)
     prefill_descriptor(_widths_topology((64, 64)), d_v=48, decay=True, tokens=1, batch_heads=1, stateful=False, device=0)
     first, second = captured
-    assert (first["prefill"], first["tokens"], first["batch_heads"], first["stateful"]) == (1, 4096, 16, 1)
+    assert (first["kernel"], first["tokens"], first["batch_heads"], first["stateful"]) == ("prefill", 4096, 16, 1)
     assert (first["levels"], first["width_bits_1"], first["width_bits_2"], first["width_bits_3"]) == (2, 5, 4, 0), "24 pads to 32"
     assert [first[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [first[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
     assert (second["decay"], second["stateful"], second["d_v"]) == (1, 0, 48)

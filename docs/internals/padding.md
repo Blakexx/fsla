@@ -66,7 +66,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 ## Where the shipped sets come from
 
 Decode's value widths are the launch function's: it maps a call's `d_v` into the arm that holds it (`fsla.ops.decode.decode_launch`), and the
-contract bounds it (`hardware/parts/calls/decode.json`), so no literal tuple here can drift from what the binary carries. The intra reads one
+contract bounds it (`hardware/kernels/decode/parts/call.json`), so no literal tuple here can drift from what the binary carries. The intra reads one
 value width, `fsla.ops.intra.VALUE_WIDTH`.
 
 The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as

@@ -534,20 +534,20 @@ descriptor = prefill_descriptor(routes.topology, d_v=d_v, decay=False, tokens=T,
 | name | what it is |
 |---|---|
 | `prefill_descriptor(topology, *, d_v, decay, tokens, batch_heads, stateful, device=None)` | the producer-owned prefill rule: the validated descriptor of a prefill call, which `prefill` builds for itself through the same memoized builder, its facts stated from the declaration (each level's padded width as its log2 and each side's walk of each level) and from the caller (`tokens`, `batch_heads`, `stateful`, and nothing else: the state's backing is the state's and the memory budget the layer's). A prefill is OWED, so it is refused as `KernelNotBuilt` naming `prefill` |
-| `decode_descriptor(topology, *, d_v, decay, batch_heads, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.ops.descriptor.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and each side's walk of each level (`read_listed_k`, `write_listed_k`; the launch function derives whole-atom deposit from the innermost level's) and `batch_heads`, B times H -- which the decode step builds for itself from the bundles, through the same memoized builder, with no device read after its first call. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
+| `decode_descriptor(topology, *, d_v, decay, batch_heads, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.ops.descriptor.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and the write side's walk of each level (`write_listed_k`; the launch function derives whole-atom deposit from the innermost level's) and `batch_heads`, B times H -- which the decode step builds for itself from the bundles, through the same memoized builder, with no device read after its first call. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
 | `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
 | `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
 
 The contract for everything there is **stable construction, advisory contents**:
 build these objects and pass them; do not assert on their fields.
 
-**A walk is an action.** `read_listed_k` and `write_listed_k` state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a caller may state any valid walk, and a wrong one costs time and never the result.
+**A walk is an action.** `read_listed_k` (the prefill's call) and `write_listed_k` (both kernels') state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a caller may state any valid walk, and a wrong one costs time and never the result.
 
 **There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
 is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
 `descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
-and the workspace's sizing and builder (`fsla.ops.descriptor.workspace_bytes`, `fsla.ops.prefill`'s private builder) are importable from their modules for
+and the workspace's builder (`fsla.ops.prefill`'s private builder) are importable from their modules for
 the library's own code and tests, and are not on the top level. The
 state's BACKING is the state's own, chosen when it is made -- `fsla.state(backing="paged")`, the default, or `"dense"`, one dense plane, the bit-identity gate's -- never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and the descriptor of a call answers the same question before it.

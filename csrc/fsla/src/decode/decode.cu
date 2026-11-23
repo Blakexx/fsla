@@ -34,6 +34,7 @@
 #include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_selection.inc"
+#include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/environment.h"
 #include "common/arm_switch.cuh"
@@ -910,8 +911,8 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 
   //: THE DESCRIPTOR'S LAUNCH: the arm and its arguments from the call's facts, the one function; the call's operands must be the shape it says
   const Card& card = card_of(v.get_device_index());
-  const plan::DecodeLaunch launch =
-      plan::decode_launch(plan::checked_descriptor(descriptor, v.get_device_index()));
+  const plan::DecodeLaunch launch = plan::decode_launch(
+      plan::checked_descriptor<plan::decode::Kernel>(descriptor, v.get_device_index()));
   STD_TORCH_CHECK(d_v == launch.arm.d_v, "v is ", d_v,
                   " channels wide; the descriptor's arm serves ", launch.arm.d_v,
                   " (the call's value width padded by ", launch.args.pad, ")");
@@ -1090,7 +1091,8 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 //: THE LAUNCH A DESCRIPTOR MEANS, for the host: the arm's `d_v`, levels and decay, the padding of the call's
 //: value width, the workspace's bytes and alignment, then the level widths (`kDecodeMaxLevels` of them, 0 beyond the call's levels)
 std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t device) {
-  const plan::Descriptor d = plan::checked_descriptor(descriptor, static_cast<int>(device));
+  const plan::DecodeDescriptor d =
+      plan::checked_descriptor<plan::decode::Kernel>(descriptor, static_cast<int>(device));
   const auto launch = plan::decode_launch(d);
   const auto workspace = plan::decode_workspace(d);
   const auto& arm = launch.arm;
