@@ -83,7 +83,7 @@ A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` with exactly one so
 
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
-wavefronts an SM), `mma.<kind>` (an MMA a scheduler), and `shared.<kind>`, `global.<kind>` and `pipe.<name>` (below; the schema's lists). NVIDIA documents
+wavefronts an SM), and `mma.<kind>` (an MMA a scheduler); the schema lists the MMA kinds. NVIDIA documents
 issue, the shared-memory bank rate, peak tensor rates and the arithmetic pipes' throughputs; a shared atomic's cost,
 the shared pipe's and the global path's other prices are measured
 ([`smem_rates`](../../lab/smem_rates.md), [`drain`](../../lab/drain.md)); the instruction taxes and latencies the
@@ -91,7 +91,7 @@ ampere line's MMA-chain labs measured are the branch `ampere`'s, and a hopper sc
 
 <a id="shared"></a>
 
-### The shared-memory pipe's prices (`shared.*`)
+### The shared-memory pipe's other prices
 
 What the pipe takes, an SM, beyond a load's wavefront (`wavefront`) and a shared atomic's (`atomic`,
 `atomic_wavefront`, measured in [`smem_rates`](../../lab/smem_rates.md) on the H100). The kinds below are not tabulated
@@ -99,25 +99,27 @@ for the hopper yet (the ampere branch measured them): `store` and `store_wavefro
 cycles an instruction and ~1.14 a wavefront: 4 bytes a lane costs twice what 8 or 16 do a byte); `copy_bypass` and
 `copy_access` (a `cp.async.cg` copy's write into shared memory, 0.5 cycles a 128 bytes; a `.ca` copy's, 5.4);
 `global_read` and `global_fill` (a global load's data read out of the banks, 1.19 a 128 bytes, and what a line from L2
-adds by being written into them first, 0.38). [`tools/pipes.py`](../tools/pipes.md) prices a launch's traffic by these.
+adds by being written into them first, 0.38).
+No rate row states them: a floor comes from the model that reproduces measured timelines, never from a unit's rate alone
+(`docs/KERNEL_STANDARDS.md#stepped`).
 
 <a id="global"></a>
 
-### The SM's global path (`global.*`)
+### The SM's global path
 
 Measured with every SM busy (not tabulated for the hopper yet):
 `l2_line`, the cycles an SM's share of L2 takes to deliver a 128-byte line (`smem_rates`' `cp.async.cg` stream alone:
 ~18 bytes a cycle an SM), and `red_request`, a global atomic's line request (the [`drain`](../../lab/drain.md) lab's
-skipping form: ~5 cycles). [`tools/pipes.py`](../tools/pipes.md) prices a launch's L2 lines and atomic requests by
-them.
+skipping form: ~5 cycles).
+No rate row states them.
 
 <a id="pipes"></a>
 
-### The arithmetic pipes (`pipe.*`)
+### The arithmetic pipes
 
 Cycles a warp instruction holds its pipe a scheduler, from the CUDA C++ Programming Guide's throughput table (results
 a clock an SM, over four schedulers and 32 lanes): `alu`, `fma`, `fmaheavy` (integer multiply and multiply-add) and
-`xu` (special functions, conversions). Not tabulated for the hopper yet.
+`xu` (special functions, conversions). Not tabulated for the hopper yet, and no rate row states them.
 
 <a id="check"></a>
 

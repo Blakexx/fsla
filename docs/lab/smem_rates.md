@@ -57,8 +57,8 @@ same bytes stored 8 or 16 to a lane take about half the pipe's cycles of 4 to a 
 WHAT GLOBAL TRAFFIC TAKES FROM THE PIPE: 16 warps, 8 issuing `ldmatrix.x4` (alone 1.011 cycles a wavefront) while 8
 stream global data, 512 bytes a warp-instruction, in one form -- from a 16 KB table (L1 hits) or a 4 MB one (L2 hits)
 -- the stream's own rate beside them, and the pipe cycles it took: `1 - 1.011 / (ldmatrix's cycles a wavefront)` over
-the stream's 128-byte units a cycle, a sample a repetition (recorded as `pipe cycles a 128 B: <stream>`, the rows
-`measure/rates.json`'s `shared` prices cite), and what a line from L2 adds to a load over an L1 hit (the `.cg` row
+the stream's 128-byte units a cycle, a sample a repetition (recorded as `pipe cycles a 128 B: <stream>`; the prices
+[hardware.md#shared](../internals/common/hardware.md#shared) cites), and what a line from L2 adds to a load over an L1 hit (the `.cg` row
 less the L1 hits'). Bank reads and writes a 128 bytes streamed are ncu's (`l1tex__data_bank_reads`, `_writes`, the
 stream alone; 32 a full wavefront).
 
@@ -72,12 +72,7 @@ stream alone; 32 a full wavefront).
 
 A line from L2 adds 0.39 pipe cycles a 128 bytes to a load over an L1 hit (its write into the banks). The
 `cp.async.cg` stream alone, every SM streaming, takes 7.12 cycles a 128-byte line (~18 bytes a cycle an SM): the SM's
-global path's price of a line in `measure/rates.json`.
-
-THE PRICES CHECKED: [`tools/pipes.py`](../internals/tools/pipes.md) prices each kernel's shared-memory traffic by kind
-at these rates; on this lab's pipe-bound kernels (every form above at 8 and 16 warps, and each stream beside
-`ldmatrix`) the priced pipe reads 96-105% of the elapsed cycles, except `cp.async.ca` beside `ldmatrix` (34%: its
-cost there is not additive) ([pipes.md#checked](../internals/tools/pipes.md#checked)).
+global path's price of a line ([hardware.md#global](../internals/common/hardware.md#global)).
 
 What it settles:
 

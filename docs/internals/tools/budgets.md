@@ -53,8 +53,8 @@ records each lab's stated line against its measured count.
 
 SASS instructions per use, sm_86 (ampere branch, unreproducible here) (ptxas of the pinned toolkit), with where each was read. A price is the instructions
 the warp issues; a rate (cycles) belongs to `measure/rates.json` and its labs -- each pipe's, the shared-memory
-pipe's by kind of traffic ([hardware.md#shared](../common/hardware.md#shared)) -- and a lab prints every pipe's cycles
-from both ([pipes.md](pipes.md)).
+pipe's by kind of traffic ([hardware.md#shared](../common/hardware.md#shared)) -- and a lab prints each pipe's measured
+busy share ([pipe_counters.md](pipe_counters.md)).
 
 | primitive | price | read in |
 |---|---|---|
@@ -77,7 +77,7 @@ from both ([pipes.md](pipes.md)).
 
 The cheapest known form for each recurring job, what it costs and where that was measured. A budget line names the
 form it uses, or why it departs (KERNEL_STANDARDS §29.15); a form found cheaper replaces its row in the commit that
-measures it. Pipe cycles are an SM's, from `measure/rates.json` ([pipes.md](pipes.md) prices them).
+measures it. Pipe cycles are an SM's, from `measure/rates.json` and the labs ([hardware.md](../common/hardware.md#sources)).
 
 | job | the form | its cost | measured in |
 |---|---|---|---|

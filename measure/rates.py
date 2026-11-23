@@ -79,7 +79,7 @@ def _rate(entry: dict, on: str) -> Rate:
 
 def resolve(arch: str | None = None, product: str | None = None, cfg: dict | None = None) -> dict[str, Rate]:
     """A product's rates (its architecture's defaults under its own overrides), or an architecture's defaults alone:
-    `{field: Rate}` with fields `issue`, `mma.hmma_f16_f32`, `shared.store`, ..."""
+    `{field: Rate}` with fields `issue`, `mma.hmma_f16_f32`, ..."""
     cfg = cfg or load()
     if product is not None:
         arch = cfg["product"][product]["arch"]
@@ -121,9 +121,7 @@ def check(cfg: dict | None = None) -> list[str]:
     cfg = cfg or load()
     findings = []
     kinds = cfg["schema"]["mma"]
-    known = {*PIPE_RATES, *(f"mma.{k}" for k in kinds),
-             *(f"shared.{k}" for k in cfg["schema"]["shared"]), *(f"pipe.{k}" for k in cfg["schema"]["pipe"]),
-             *(f"global.{k}" for k in cfg["schema"]["global"])}
+    known = {*PIPE_RATES, *(f"mma.{k}" for k in kinds)}
     built = registry.built()
     for arch in cfg["arch"]:
         if arch not in built:

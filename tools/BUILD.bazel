@@ -101,7 +101,7 @@ filegroup(
     srcs = [
         "checked.py",
         "lab.py",
-        "pipes.py",
+        "pipe_counters.py",
         "region_ledger.py",
         "sass.py",
     ],

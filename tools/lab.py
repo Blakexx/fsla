@@ -33,7 +33,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import pipes
 import re
 import shutil
 import statistics
@@ -44,6 +43,7 @@ from collections import Counter
 from pathlib import Path
 
 import checked
+import pipe_counters
 import region_ledger
 import sass
 
@@ -685,13 +685,9 @@ def check(built: Built, table: dict[str, dict]) -> list[str]:
 
 def budgets(binary: Path, kind: str = "budget") -> list[dict]:
     """The instruction budgets the experiment states (`Bench::budget`: kernel regex, opcode class, max per MMA), or
-    with `kind="mma"` the MMA each budgeted kernel issues (`Bench::mma`: kernel regex, hardware kind, K)."""
+    with `kind="units"` each kernel's units (`Bench::units`)."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == kind]
-
-
-#: THE CARDS a lab's counts are priced on (`measure/rates.json`): the H100's product rates
-CARDS = (("sm_90a (H100)", "sm_90a", "h10080gbhbm3"),)
 
 
 def _plain(name: str) -> str:
@@ -702,10 +698,10 @@ def _plain(name: str) -> str:
 
 
 def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
-    """Per kernel (`_plain` name), its first launch's standard counters (docs/internals/tools/pipes.md): `pipes.short`'s
-    names and `opcodes` (executed instructions by opcode)."""
+    """Per kernel (`_plain` name), its first launch's standard counters (docs/internals/tools/pipe_counters.md):
+    `pipe_counters.short`'s names and `opcodes` (executed instructions by opcode)."""
     out = subprocess.run([_dev_config().ncu(), "--metrics",
-                          ",".join(["sass__inst_executed_per_opcode", *pipes.metric_names()]),
+                          ",".join(["sass__inst_executed_per_opcode", *pipe_counters.metric_names()]),
                           "--print-metric-instances", "details", "--csv", str(binary), "--reps", "1", *extra],
                          capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
@@ -715,11 +711,11 @@ def counters_of(binary: Path, extra: list[str]) -> dict[str, dict]:
         seen.setdefault(_plain(row["Kernel Name"]), {}).setdefault(row["Metric Name"], row["Metric Value"])
     found = {}
     for k, m in seen.items():
-        #: a metric this card or this profiler does not collect reads "n/a": `pipes.short` holds it 0, and the
-        #: launch's `uncollected` names it, so a record and a report tell that zero from a measured one
+        #: a metric this card or this profiler does not collect reads "n/a": `pipe_counters.short` holds it 0, and
+        #: the launch's `uncollected` names it, so a record and a report tell that zero from a measured one
         values = {metric: float(v.replace(",", "") or 0) for metric, v in m.items()
                   if metric != "sass__inst_executed_per_opcode" and v != "n/a"}
-        c = pipes.short(values)
+        c = pipe_counters.short(values)
         c["uncollected"] = sorted(metric for metric, v in m.items() if v == "n/a")
         c["opcodes"] = {op: float(n) for op, n in
                         re.findall(r"([A-Z][A-Z0-9_]*)\s*[:=]\s*([0-9.]+)", m["sass__inst_executed_per_opcode"])}
@@ -746,56 +742,25 @@ def executed_classes(raw: dict[str, dict], units: dict[str, float] | None = None
 def per_unit(c: dict, kernel: str, units: dict[str, float] | None) -> float:
     """What a kernel's counts (summed over its SMs) are divided by: its tensor-pipe instructions, else its declared
     units, else its SMs (a launch an SM)."""
-    return c["hmma"] + c["imma"] or (units or {}).get(kernel, 0.0) or pipes.sms(c)
+    return c["hmma"] + c["imma"] or (units or {}).get(kernel, 0.0) or pipe_counters.sms(c)
 
 
 def _num(v: float) -> str:
     return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:.2f}"
 
 
-def pipes_report(raw: dict[str, dict], units: dict[str, float], mmas: dict[str, tuple[str, int]]) -> None:
-    """Every kernel's standard counters, printed (KERNEL_STANDARDS §29.14): per card the pipes' cycles a unit, the
-    binding one named; on this card each pipe's busy share of the elapsed cycles, L2 sectors a unit and the three
-    largest stall reasons."""
-    sys.path.insert(0, str(ROOT))
-    from measure import rates as rate_table
-
-    local = rate_table.product_of(smi("name")[0])
-    arch = sass.device_arch()
-    here = rate_table.resolve(product=local) if local else rate_table.resolve(arch=arch)
+def counters_report(raw: dict[str, dict], units: dict[str, float]) -> None:
+    """Every kernel's standard counters, printed (KERNEL_STANDARDS §29.14): the profiler's own busy share of each pipe
+    over the elapsed cycles, L2 sectors a unit and the three largest stall reasons."""
     for k, c in raw.items():
         n = per_unit(c, k, units)
         unit = "MMA" if c["hmma"] + c["imma"] else "unit" if k in units else "launch"
-        print(f"  pipes, cycles a {unit} an SM: {k[:110]}")
+        print(f"  counters, a {unit} an SM: {k[:110]}")
         if c.get("uncollected"):
             print(f"    NOT COLLECTED on this card, read as 0 below: {', '.join(c['uncollected'])}")
-        for label, card, product in CARDS:
-            rates = rate_table.resolve(arch=card, product=product)
-            #: A REFUSAL BY NAME, not a KeyError mid-report: pricing reads these rates, and the card's row lacks them
-            lack = pipes.lacking(rates, mmas.get(k))
-            if lack:
-                print(f"    {label:<20} REFUSED: not priced, {card}'s row of `measure/rates.json` declares no rate "
-                      f"for {', '.join(lack)} (a lab record measures each: docs/internals/common/hardware.md)")
-                continue
-            p = pipes.pipe_cycles(c, n, rates, mmas.get(k))
-            bound = max(p, key=p.get)
-            print(f"    {label:<20} " + "  ".join(f"{name} {_num(v)}" for name, v in p.items())
-                  + f"  -> {bound} binds")
         stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
-        lack = pipes.lacking(here, mmas.get(k))
-        if lack:
-            #: a card whose row lacks rates (`measure/rates.json`): its measured counters alone, none priced
-            print(f"    busy here, % of elapsed ({arch} declares no rate for {', '.join(lack)}: tensor, shared and global "
-                  f"are not priced): "
-                  f"issue {c['busy_issue']:.0f}  alu {c['busy_alu']:.0f}  fma {c['busy_fma']:.0f} "
-                  f"(heavy {c['busy_fmaheavy']:.0f})"
-                  f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
-                  f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
-            continue
-        b = pipes.busy_here(c, here, mmas.get(k))
-        print(f"    busy here, % of elapsed: issue {b['issue']:.0f}  tensor {b['tensor']:.0f} (priced)  "
-              f"alu {b['alu']:.0f}  fma {b['fma']:.0f} (heavy {b['fmaheavy']:.0f})  shared {b['shared']:.0f} (priced)"
-              f"  global {b['global']:.0f} (priced)"
+        print(f"    busy, % of elapsed: issue {c['busy_issue']:.0f}  alu {c['busy_alu']:.0f}  fma {c['busy_fma']:.0f} "
+              f"(heavy {c['busy_fmaheavy']:.0f})"
               f"  | L2 sectors read {_num(c['l2_read'] / n)} write {_num(c['l2_write'] / n)}"
               f"  | stalled: " + ", ".join(f"{r} {v:.0f}%" for r, v in stalls))
 
@@ -828,13 +793,9 @@ def over_budget(binary: Path, table: dict[str, dict], raw: dict[str, dict], unit
     return over
 
 
-def declared(binary: Path, table: dict[str, dict]) -> tuple[dict[str, float], dict[str, tuple[str, int]]]:
-    """The experiment's declarations by `_plain` kernel name: each kernel's units (`Bench::units`) and the MMA it
-    issues (`Bench::mma`: hardware kind, K)."""
-    units = {_plain(k): float(u["n"]) for k in table for u in budgets(binary, "units") if re.search(u["kernel"], k)}
-    mmas = {_plain(k): (m["kind"], int(m["k"])) for k in table for m in budgets(binary, "mma")
-            if re.search(m["kernel"], k)}
-    return units, mmas
+def declared(binary: Path, table: dict[str, dict]) -> dict[str, float]:
+    """Each kernel's units (`Bench::units`) by `_plain` kernel name."""
+    return {_plain(k): float(u["n"]) for k in table for u in budgets(binary, "units") if re.search(u["kernel"], k)}
 
 
 def quiet() -> int:
@@ -1050,11 +1011,11 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
                   "that grants no counters (KERNEL_STANDARDS section 16 addendum 4)")
             return 1
         refused = {"host": opts.no_counters, "instead": "the kernels' own clocks and the SASS's static counts"}
-        print(f"lab: no counters on {opts.no_counters}: recorded with the exception, no pipes report")
+        print(f"lab: no counters on {opts.no_counters}: recorded with the exception, no counters report")
     else:
         raw = counters_of(binary, extra)
-        units, mmas = declared(binary, table)
-        pipes_report(raw, units, mmas)
+        units = declared(binary, table)
+        counters_report(raw, units)
         over = over_budget(binary, table, raw, units)
         if over and not opts.force:
             print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,

@@ -486,7 +486,7 @@ A change to a shared body is TIMED AT BOTH ENDS AT SCALE before it is called a w
 in the measurement suite's at-scale sessions (2026-11-02: four commits each faster at sparse cost the dense carry
 +3% at 64K x 4 heads, one of them +3.7% on an identical address; the local dense ledger swings ~2% between runs of
 one binary and could not see it, the sessions repeat within ~0.3%). A design comparison quotes every family this line
-builds, from the same counts priced at each card's rates (`tools/pipes.py`); a form that wins on one card and loses on
+builds; a form that wins on one card and loses on
 another is flagged and taken only with the trade written down (the constitution's LEAN ON EVERY AXIS, ON EVERY CARD).
 
 ## <a id="s22"></a>§22 — THE MEASUREMENT SUITE, AND HOW A MEASUREMENT IS READ (law, 2026-09-12, after a week in which a register cap, a "spin", a pipe metric and a schedule default were each misattributed)
@@ -860,16 +860,14 @@ method is a procedure with a gate, not a memory.
    docs/internals/tools/budgets.md#ledger. Convergence regions inside a budgeted kernel's loops (`BSSY`/`BSYNC`,
    `BRA.DIV`) are removed by item 9's source patterns or declared (`LOOP_CONVERGENCE`); `tools/lab.py run` refuses an
    undeclared one.
-14. EVERY RUN PRICES EVERY PIPE (amended 2026-10-18, from Blake's approval of the process changes after the lean
-   hand-off): a form's floor is its binding pipe, not its instruction count. `tools/lab.py run` prints, for every
-   kernel and per card, each pipe's cycles a unit -- tensor, the shared-memory pipe priced by kind of traffic (load
-   wavefronts; stores and atomics at the larger of their instructions and wavefronts; copies and global loads by
-   their bytes), issue, the integer, FMA and transcendental pipes at their cycles an instruction, the SM's global path
-   (L2's lines and atomic requests, every SM busy) -- and on the local
-   card each pipe's busy share, L2 sectors and the stall reasons ([`tools/pipes.py`](internals/tools/pipes.md); its
-   prices checked against `smem_rates` to the percent). A hand-off measured only inside the composed window
-   hid a binding integer pipe that no gate printed. A budget states its binding
-   pipe's cycles beside its instructions; a kernel over 1.3x its binding pipe names the stall that holds it.
+14. EVERY RUN PRINTS THE STANDARD COUNTERS (amended 2026-11-23, Blake's approval of this wording; the priced report it
+   replaces could price no built architecture): for every kernel, instructions by pipe, shared-memory traffic by
+   kind, L2 sectors, each pipe's measured busy share and the stall reasons
+   ([`tools/pipe_counters.py`](internals/tools/pipe_counters.md), printed by `tools/lab.py run`). A form's floor
+   comes from its timeline ([the stepped-kernel rule](#stepped)), never from a count times a rate. A hand-off
+   measured only inside the composed window hid a binding integer pipe that no gate printed: the measured busy
+   share shows one. A budget states its instructions by class; a kernel over 1.3x its floor names the stall that
+   holds it.
 15. A BUDGET LINE NAMES ITS FORM (amended 2026-10-18): each line item cites the cheapest known form for its job from
    docs/internals/tools/budgets.md#forms (integer keys for scaled compares, an atomic a lane for a cross-warp
    reduction, held bases, the widest store, `.cg` copies, scalars in the record) or says why it departs; a form found

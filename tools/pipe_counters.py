@@ -9,9 +9,11 @@ family on a cell as launch totals, raw.
 One oneshot launch through the probe worker under `ncu --metrics` (the toolchain's `ncu`): HMMAs, wgmmas and instructions
 executed, scheduler cycles elapsed and active, issue activity, warps active and eligible, shared loads and stores, ldsm
 and global reductions and loads, shared-memory wavefronts and bank conflicts, LSU writeback, global reduction requests
-and sectors, DRAM bytes, and the standard set `tools/pipes.py` prices per card (docs/internals/tools/pipes.md). The
-JSON carries every counter's launch value and the launch's units (`tools/kernel_targets.py`), so a reader divides
-a sum into a unit and derives utilization; nothing derived is stored. Docs: docs/internals/tools/pipe_counters.md.
+and sectors, DRAM bytes, and the standard set `METRICS` and `STALLS` below, which the lab reads for every experiment
+kernel. The JSON carries every counter's launch value and the launch's units (`tools/kernel_targets.py`), so a reader
+divides a sum into a unit and derives utilization; nothing derived is stored. Stdlib only at import: the lab imports the
+counter list from here, and the capture's own imports are made where it runs.
+Docs: docs/internals/tools/pipe_counters.md.
 """
 from __future__ import annotations
 
@@ -21,17 +23,66 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pipes  # noqa: E402
-
-import dev_config  # noqa: E402 -- path insert must precede this import
-import kernel_targets  # noqa: E402
-from fsla_devtools import process  # noqa: E402
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "measure"))
-from measure.provider import arm_name, oneshot_argv  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+
+#: THE STANDARD COUNTERS the lab reads for every experiment kernel, by short name (ncu's metric names): instructions by
+#: pipe, the shared-memory pipe's traffic by kind, L2 sectors, elapsed cycles and the measured busy shares
+METRICS = {
+    "hmma": "sm__inst_executed_pipe_tensor_op_hmma.sum",
+    "imma": "sm__inst_executed_pipe_tensor_op_imma.sum",
+    "inst": "smsp__inst_executed.sum",
+    "alu": "sm__inst_executed_pipe_alu.sum",
+    "fma": "sm__inst_executed_pipe_fma.sum",
+    "fmaheavy": "sm__inst_executed_pipe_fmaheavy.sum",
+    "xu": "sm__inst_executed_pipe_xu.sum",
+    "wavefronts": "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum",
+    "conflicts": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum",
+    "load_wavefronts": "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum",
+    "stores": "sm__sass_inst_executed_op_shared_st.sum",
+    "store_wavefronts": "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum",
+    "atomics": "sm__sass_inst_executed_op_shared_atom.sum",
+    "atomic_wavefronts": "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_atom.sum",
+    "copy_bypass_bytes": "sm__sass_data_bytes_mem_shared_op_ldgsts_cache_bypass.sum",
+    "copy_access_bytes": "sm__sass_data_bytes_mem_shared_op_ldgsts_cache_access.sum",
+    "global_reads": "l1tex__data_pipe_lsu_wavefronts_mem_lg_cmd_read.sum",
+    "global_fill_bytes": "l1tex__m_xbar2l1tex_read_bytes_mem_lg_op_ld.sum",
+    "l2_read": "lts__t_sectors_srcunit_tex_op_read.sum",
+    "red_requests": "lts__t_requests_srcunit_tex_op_red.sum",
+    "l2_write": "lts__t_sectors_srcunit_tex_op_write.sum",
+    "elapsed": "sm__cycles_elapsed.avg",
+    "elapsed_sum": "sm__cycles_elapsed.sum",
+    "busy_issue": "smsp__issue_active.avg.pct_of_peak_sustained_elapsed",
+    "busy_alu": "sm__pipe_alu_cycles_active.avg.pct_of_peak_sustained_elapsed",
+    "busy_fma": "sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_elapsed",
+    "busy_fmaheavy": "sm__pipe_fmaheavy_cycles_active.avg.pct_of_peak_sustained_elapsed",
+}
+STALLS = ("long_scoreboard", "short_scoreboard", "mio_throttle", "math_pipe_throttle", "barrier", "wait",
+          "not_selected", "lg_throttle", "dispatch_stall", "branch_resolving", "no_instruction", "membar", "drain",
+          "sleeping", "tex_throttle", "imc_miss", "misc")
+
+
+def stall_metric(reason: str) -> str:
+    return f"smsp__warp_issue_stalled_{reason}_per_warp_active.pct"
+
+
+def metric_names() -> list[str]:
+    """Every ncu metric the set reads."""
+    return [*METRICS.values(), *map(stall_metric, STALLS)]
+
+
+def short(values: dict[str, float]) -> dict:
+    """A launch's counters by short name (`METRICS`), absent ones 0, with `stalls` by reason, from ncu's values by
+    metric name."""
+    c: dict = {name: values.get(metric, 0.0) for name, metric in METRICS.items()}
+    c["stalls"] = {r: values.get(stall_metric(r), 0.0) for r in STALLS}
+    return c
+
+
+def sms(c: dict) -> float:
+    return c["elapsed_sum"] / c["elapsed"] if c["elapsed"] else 1.0
+
+
+#: what a production launch reads beside the standard set
 _OWN = (
     "gpu__time_duration.sum",
     "sm__inst_executed_pipe_tensor_op_hmma.sum", "sm__inst_executed_pipe_tensor_op_gmma.sum", "smsp__inst_executed.sum",
@@ -48,11 +99,18 @@ _OWN = (
     "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum", "lts__t_sectors_op_red.sum",
     "dram__bytes_read.sum", "dram__bytes_write.sum",
 )
-COUNTERS = (*_OWN, *(m for m in pipes.metric_names() if m not in _OWN))
+COUNTERS = (*_OWN, *(m for m in metric_names() if m not in _OWN))
 
 
 def measure(cell: str, family: str) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.path.insert(0, str(ROOT / "measure"))
+    import dev_config
+    import kernel_targets
+    from fsla_devtools import process
+
     from measure.cells import by_name
+    from measure.provider import arm_name, oneshot_argv
 
     t = kernel_targets.target(family)
     spec = by_name(cell)
@@ -73,6 +131,9 @@ def measure(cell: str, family: str) -> dict:
 
 
 def main() -> int:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import kernel_targets
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
     ap.add_argument("--json", type=Path, required=True)

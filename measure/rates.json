@@ -4,24 +4,6 @@
       "hmma_f16_f32",
       "hmma_bf16_f32",
       "imma_u8_s8_k32"
-    ],
-    "shared": [
-      "store",
-      "store_wavefront",
-      "copy_bypass",
-      "copy_access",
-      "global_read",
-      "global_fill"
-    ],
-    "pipe": [
-      "alu",
-      "fma",
-      "fmaheavy",
-      "xu"
-    ],
-    "global": [
-      "l2_line",
-      "red_request"
     ]
   },
   "arch": {

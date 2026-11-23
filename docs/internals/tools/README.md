@@ -55,8 +55,7 @@ target ([`measurement.md`](../../measurement.md)).
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`op_timeline.py`](op_timeline.md) | a subject's calls under torch's profiler: kernel busy time against the GPU's idle, the gaps and the host work in them | a person | — |
-| [`pipe_counters.py`](pipe_counters.md) | the profiler's pipe and resource counters for one launch | the `counters` target | `--json` |
-| [`pipes.py`](pipes.md) | one counter set for any launch and its pricing per card: each pipe's cycles, the binding one | `lab.py`, `pipe_counters.py` | -- (a module) |
+| [`pipe_counters.py`](pipe_counters.md) | the profiler's pipe and resource counters for one launch, and the standard counter set the lab reads | the `counters` target, `lab.py` | `--json` |
 | [`overlap_gate.py`](overlap_gate.md) | each kernel's perf rows against the largest of their floors (§28) | -- | exit 1 when red |
 | [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |
 | [`life_ranges.py`](life_ranges.md) | peak LIVE registers per source region, beside ptxas's allocation | the `registers` target | `--json` |
