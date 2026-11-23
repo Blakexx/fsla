@@ -100,7 +100,8 @@ cycles an instruction and ~1.14 a wavefront: 4 bytes a lane costs twice what 8 o
 `copy_access` (a `cp.async.cg` copy's write into shared memory, 0.5 cycles a 128 bytes; a `.ca` copy's, 5.4);
 `global_read` and `global_fill` (a global load's data read out of the banks, 1.19 a 128 bytes, and what a line from L2
 adds by being written into them first, 0.38).
-No rate row states them: a floor comes from the model that reproduces measured timelines, never from a unit's rate alone
+No rate row states them. Where a row does state a rate, a count times it bounds perfect overlap and full use
+(`docs/KERNEL_STANDARDS.md` §28, §29 item 14); what a composed kernel reaches is read from its timeline
 (`docs/KERNEL_STANDARDS.md#stepped`).
 
 <a id="global"></a>

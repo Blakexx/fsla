@@ -256,8 +256,8 @@ writes the files and returns their names. `run` and `ncu` call it first (in the 
 `run` reads the standard counter set of [`pipe_counters.py`](pipe_counters.md) for every kernel of the experiment (its
 first launch) and prints, a unit (its MMAs, else its declared `Bench::units`, else a launch an SM), the profiler's own
 busy share of the issue, integer and FMA pipes, L2 sectors and the three largest stall reasons; the record keeps the
-counters under `counters`. It prices nothing: a floor comes from the model that reproduces measured timelines, never
-from a unit's rate alone (KERNEL_STANDARDS `#stepped`).
+counters under `counters`. It prices nothing: a count times a rate bounds perfect overlap and full use
+(KERNEL_STANDARDS §28, §29 item 14), and what a composed kernel reaches is read from its timeline (KERNEL_STANDARDS `#stepped`).
 
 <a id="warpline"></a>THE STAMP HEADER AND THE RECORD. `measure/lab/lab.cuh` includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
 `MODULE.bazel`) and `warpline/host.hpp` (its host writer of the native record, plain C++17). the experiments' compile takes them as the dependencies `@warpline//:stamp` and `@warpline//:host` (`bazel/lab.bzl`). The includes are compile-time
