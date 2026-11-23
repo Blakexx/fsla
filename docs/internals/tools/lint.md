@@ -243,7 +243,7 @@ nothing to it -- it was ~80% of a template-heavy unit's time (`entmax/factor.cu`
 findings), and the self-test's fixture plants a dead store the check must still find. THE LINT READS ITS ONE
 ARCHITECTURE'S BUILD SET: the host pass has every carried build in the image (`common/select.cuh`'s `in_image`), so a
 `build_switch` would instantiate every kernel once a carried build; each architecture is the lint's own
-configuration, whose generated `builds_header` (`measure/hardware.py`'s) carries that architecture's builds alone.
+configuration, whose generated `builds_header` (`hardware/registry.py`'s) carries that architecture's builds alone.
 
 ## Fixtures
 

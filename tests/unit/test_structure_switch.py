@@ -41,9 +41,9 @@ def probe_binary():
         pytest.skip("the switch's trap is a DEVICE fault; this test needs the device")
     import toolchains
 
-    from measure import hardware
+    from hardware import registry
 
-    arch = hardware.device_arch(*torch.cuda.get_device_capability())
+    arch = registry.device_arch(*torch.cuda.get_device_capability())
     built = sorted({f"sm_{a}" for record in toolchains.records().values() for a in record.archs()})
     if arch not in built:
         pytest.skip(f"the probe is built for {built}, the build's architectures; this device is {arch}")

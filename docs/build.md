@@ -10,7 +10,7 @@ refuses, naming the targets below (`pyproject.toml`'s backend, `tools/no_source_
 The kernels are compiled **ahead of time** into a fatbin containing
 `code=sm_XX` images only. There is no JIT, no PTX for the driver to compile, and no
 runtime autotuning. Everything the binary can execute has been assembled by a
-`ptxas` the pinned toolchain names, for an architecture the hardware table builds
+`ptxas` the pinned toolchain names, for an architecture the registry builds
 ([`ratification.md`](ratification.md)).
 
 That is a deliberate trade. A JIT-and-autotune build (Triton's model) adapts to
@@ -43,8 +43,8 @@ closed-world rule ([`ratification.md`](ratification.md#the-closed-world-rules)):
    spec `compute_XX:sm_XX`, `//bazel:cuda_archs`), and the SASS gate refuses a library carrying a PTX image. A `code=compute_XX` entry would
    embed PTX and let the driver just-in-time compile for an architecture whose register and spill behaviour was never
    measured.
-2. **R3 — built archs.** Every arch being built must be a built one: its row in `common/hardware.json` chooses a window
-   (`tools/build_record.py`'s `rule3`). A lookup in a table the kernel reads, the cheapest check, which must never be
+2. **R3 — built archs.** Every arch being built must be a built one: a device part of `hardware/parts/device` states it
+   (`tools/build_record.py`'s `rule3`). A lookup in the registry the kernel's header is generated from, the cheapest check, which must never be
    tempting to skip.
 3. **R1 — toolchain.** The graph's `ptxas --version` selects the toolchain: the record in `tools/toolchains/` that
    names it, whitespace-normalized ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no

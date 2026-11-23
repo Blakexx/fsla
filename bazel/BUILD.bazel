@@ -56,14 +56,13 @@ filegroup(
     ],
 )
 
-#: what the header action, the arm gate and the record read: the arm helpers and the hardware table
+#: what the header action, the arm gate and the record read: the arm helpers and the registry
 filegroup(
     name = "generator_sources",
     srcs = [
         "//:measure/__init__.py",
-        "//:measure/hardware.py",
         "//bazel:arms.py",
-        "//csrc/fsla:src/common/hardware.json",
+        "//hardware:registry",
     ],
 )
 

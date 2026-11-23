@@ -136,8 +136,7 @@ def test_a_range_inside_one_arms_width_reaches_that_arm_alone(tmp_path):
     assert json.loads((out / "decode_arm_rows.json").read_text())["arms"] == [[64, 1, 0]]
 
 
-NINE = [("cc", 900), ("regs_per_sm", 65536), ("smem_per_sm", 233472), ("smem_per_cta_optin", 232448), ("max_threads_per_sm", 2048),
-        ("sm_count", 114)]
+NINE = list(registry.device_point().items())
 
 
 def test_a_context_with_nine_ranged_facts_is_checked_exactly_and_fast(tmp_path):

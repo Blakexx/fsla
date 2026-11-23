@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE BUILD'S CARRIED BUILDS HEADER for one build's architectures (`measure/hardware.py`'s `builds_header`). Run by the
+"""THE BUILD'S CARRIED BUILDS HEADER for one build's architectures (`hardware/registry.py`'s `builds_header`). Run by the
 graph's header action (`bazel/defs.bzl`'s `fsla_headers`); the arm families' headers are `bazel/arms.bzl`'s.
 Docs: docs/build-graph.md#compile.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).absolute().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from measure import hardware  # noqa: E402
+from hardware import registry  # noqa: E402
 
 
 def main() -> int:
@@ -23,7 +23,7 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--archs", required=True, help="the build's architectures, comma-separated (`90a`)")
     a = ap.parse_args()
-    (a.out_dir / "builds.inc").write_text(hardware.builds_header([x for x in a.archs.split(",") if x]))
+    (a.out_dir / "builds.inc").write_text(registry.builds_header([x for x in a.archs.split(",") if x]))
     return 0
 
 

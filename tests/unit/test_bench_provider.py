@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 for path in (ROOT, ROOT / "measure", ROOT / "tools"):
     sys.path.insert(0, str(path))
 
-from measure import hardware, provider, subjects  # noqa: E402
+from measure import provider, subjects  # noqa: E402
 from measure.cells import by_name  # noqa: E402
 from measure.cells.layer import CONSTRUCTIONS  # noqa: E402
 from measure.subjects import SUBJECTS  # noqa: E402
@@ -34,8 +34,8 @@ def binary(monkeypatch):
     monkeypatch.setattr(provider, "_declared", lambda family: declared_decode)
     #: a full-contract build's record, planted as the tables are
     monkeypatch.setattr(provider, "_build_config", lambda: {"iteration": False, "ptxas": "x"})
-    #: the window an sm_90a card's build runs (hardware.json), planted as the tables are: no device answers it here
-    monkeypatch.setattr(subjects, "_shared_window", lambda: hardware.load()["arch"]["sm_90a"]["build"]["window"])
+    #: the window an sm_90a card runs, planted as the tables are: no device answers it here
+    monkeypatch.setattr(subjects, "_shared_window", lambda: 1024)
     return tables
 
 

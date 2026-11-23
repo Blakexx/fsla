@@ -23,7 +23,13 @@ filegroup(
     ]),
 )
 
-exports_files(["emit.py"])
+#: the files the environment repository watches: the registry's module and the device parts, whose change is a new set of built architectures (`MODULE.bazel`)
+exports_files([
+    "__init__.py",
+    "emit.py",
+    "parts/device/hopper_sm90a.json",
+    "registry.py",
+])
 
 genrule(
     name = "facts_header",

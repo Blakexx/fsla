@@ -962,14 +962,14 @@ def _repo_build_config() -> dict | None:
 
 
 def check_hardware() -> list[str]:
-    """`measure/hardware.py --check`: every built
+    """`measure/rates.py --check`: every built
     architecture has a row carrying its pipes' and MMAs' rates, and every rate a source that holds -- a measured one matches the lab
     record it names, on the product it names. Files only (the module imports no `fsla`)."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from measure import hardware
+    from measure import rates
 
-    return hardware.check()
+    return rates.check()
 
 
 def check_vendored_pin() -> list[str]:

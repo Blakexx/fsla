@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/smem_rates.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 What an SM's shared-memory pipe sustains and which global traffic takes its cycles, for the hardware configuration
-(`common/hardware.json`): one CTA an SM, 8 or 16 warps, each issuing independent operations at addresses that change
+(`measure/rates.json`): one CTA an SM, 8 or 16 warps, each issuing independent operations at addresses that change
 every iteration (volatile asm; an address that repeats each iteration lets ptxas hoist a plain `ld.shared` out of the
 loop -- the first build did, and timed a loop without its loads). The block's span over the wavefronts the SM issued,
 the wavefronts confirmed by ncu (`l1tex__data_pipe_lsu_wavefronts_mem_shared`). sm_86, cycles a wavefront (8 warps;
@@ -58,7 +58,7 @@ WHAT GLOBAL TRAFFIC TAKES FROM THE PIPE: 16 warps, 8 issuing `ldmatrix.x4` (alon
 stream global data, 512 bytes a warp-instruction, in one form -- from a 16 KB table (L1 hits) or a 4 MB one (L2 hits)
 -- the stream's own rate beside them, and the pipe cycles it took: `1 - 1.011 / (ldmatrix's cycles a wavefront)` over
 the stream's 128-byte units a cycle, a sample a repetition (recorded as `pipe cycles a 128 B: <stream>`, the rows
-`common/hardware.json`'s `shared` prices cite), and what a line from L2 adds to a load over an L1 hit (the `.cg` row
+`measure/rates.json`'s `shared` prices cite), and what a line from L2 adds to a load over an L1 hit (the `.cg` row
 less the L1 hits'). Bank reads and writes a 128 bytes streamed are ncu's (`l1tex__data_bank_reads`, `_writes`, the
 stream alone; 32 a full wavefront).
 
@@ -72,7 +72,7 @@ stream alone; 32 a full wavefront).
 
 A line from L2 adds 0.39 pipe cycles a 128 bytes to a load over an L1 hit (its write into the banks). The
 `cp.async.cg` stream alone, every SM streaming, takes 7.12 cycles a 128-byte line (~18 bytes a cycle an SM): the SM's
-global path's price of a line in `common/hardware.json`.
+global path's price of a line in `measure/rates.json`.
 
 THE PRICES CHECKED: [`tools/pipes.py`](../internals/tools/pipes.md) prices each kernel's shared-memory traffic by kind
 at these rates; on this lab's pipe-bound kernels (every form above at 8 and 16 warps, and each stream beside

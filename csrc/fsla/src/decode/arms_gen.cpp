@@ -168,32 +168,23 @@ void write_rows(const std::string& path, const std::vector<Arm>& list) {
   rows << "]}\n";
 }
 
-//: the launch function of an exact descriptor, proved at compile time: one arm and its arguments
-constexpr fsla::plan::Descriptor exact() {
-  fsla::plan::Descriptor d;
-  d.assign("cc", Interval{900, 900});
-  d.assign("regs_per_sm", Interval{65536, 65536});
-  d.assign("smem_per_cta_optin", Interval{232448, 232448});
-  d.assign("sm_count", Interval{132, 132});
-  d.assign("d_v", Interval{48, 48});
-  d.assign("levels", Interval{2, 2});
-  d.assign("decay", Interval{1, 1});
-  d.assign("prefill", Interval{0, 0});
-  d.assign("width_bits_1", Interval{4, 4});
-  d.assign("width_bits_2", Interval{5, 5});
-  d.assign("write_listed_1", Interval{1, 1});
-  d.assign("write_listed_2", Interval{0, 0});
-  return d;
+//: THE SAMPLE DEVICE AND CALL of a context: each of its facts a point, the context's own where it holds a point and the upper end where it holds a range
+Facts sample_of(const Context& c) {
+  Facts f = c.facts;
+  for (const auto& [name, range] : c.ranges) f.assign(name, Interval{range.hi, range.hi});
+  return f;
 }
 
-constexpr fsla::plan::DecodeLaunch kLaunch = fsla::plan::decode_launch(exact());
-static_assert(kLaunch.arm == Arm{64, 2, 1});
-static_assert(kLaunch.args.threads == 512 && kLaunch.args.smem_budget == 232448);
-static_assert(kLaunch.args.pad == 16 && kLaunch.args.sms == 132 && kLaunch.args.cc == 900);
-static_assert(kLaunch.args.widths[0] == 16 && kLaunch.args.widths[1] == 32
-              && kLaunch.args.widths[2] == 0);
-static_assert(kLaunch.args.row_offsets[0] == 0 && kLaunch.args.row_offsets[1] == 16
-              && kLaunch.args.write_dense == 1);
+//: THE LAUNCH FUNCTION ON THE SAMPLE: it takes the sample and its arguments are the sample's own device facts, the arm's padding and the level widths
+bool launch_reflects_the_sample(const Context& c) {
+  const Facts f = sample_of(c);
+  if (fsla::plan::decode_args_reflect(f, fsla::plan::decode_launch(f))) return true;
+  std::fprintf(stderr,
+               "arms_gen: context '%s': the launch function's arguments for the point %s are not "
+               "that point's device facts\n",
+               c.id.c_str(), fsla::plan::decode_facts_read(f).c_str());
+  return false;
+}
 
 }  // namespace
 
@@ -261,6 +252,8 @@ int main(int argc, char** argv) {
                    c.id.c_str(), fsla::plan::decode_facts_read(c.facts).c_str(), maps.c_str());
       ++failures;
     } else if (samples && !sampled_points_agree(c, set, rng, samples)) {
+      ++failures;
+    } else if (!launch_reflects_the_sample(c)) {
       ++failures;
     } else {
       std::vector<Arm> arms(set.arms.arms, set.arms.arms + set.arms.size());

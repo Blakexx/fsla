@@ -48,8 +48,8 @@ def _inputs(seed=0, T=_T, B=2):
 def test_a_raw_tensor_is_not_a_state():
     """The engine's fast-fail refuses a raw tensor where a FSLAState belongs.
 
-    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `prefill` itself is
-    the deletion refusal and speaks before it reads its arguments.
+    Gated at `validate_context`, the check `prefill` runs on its arguments before it builds its
+    descriptor, where the unbuilt kernels are refused by name.
     """
     from fsla.engine.prefill_call import PrefillContext, validate_context
     from fsla.routing.masks import PREFILL

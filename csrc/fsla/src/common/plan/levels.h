@@ -8,6 +8,9 @@
 
 namespace fsla::plan {
 
+//: the compute capability of the hopper device (`sm_90a`), the one both launch functions' matchers name
+inline constexpr int kHopperCc = 900;
+
 //: the call's width fact of level `l` (0-based): the log2 of that level's width
 constexpr Interval level_width_bits(const Facts& d, int l) {
   switch (l) {

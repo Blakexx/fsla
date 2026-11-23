@@ -8,7 +8,7 @@ load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "warpline_root")
 
-#: the lab's architecture: the one of this tree (`tools/lab.py`'s `ARCH`), and `lab.cuh`'s `kLabBuild` compute capability (`measure/hardware.py`'s
+#: the lab's architecture: the one of this tree (`tools/lab.py`'s `ARCH`), and `lab.cuh`'s `kLabBuild` compute capability (`hardware/registry.py`'s
 #: `cc_of`: x 10, as `__CUDA_ARCH__` reads it)
 _ARCH = "sm_90a"
 _CC = "900"

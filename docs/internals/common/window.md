@@ -1,6 +1,4 @@
-# `common/window.cuh` -- the window W, a build's
-
-Mirrors `csrc/fsla/src/common/window.cuh`.
+# The window W
 
 A call's token axis is cut into windows of W tokens, global to every box and every kernel: the carry reads each
 window's state out to the window's readers and folds its writes, the intra takes the pairs inside one window, the facts
@@ -13,17 +11,13 @@ constants are per-card configuration).
 <a id="window-for"></a>
 ## Where W comes from
 
-W is a build's trait, chosen in `hardware.json`'s `build` block ([`hardware.md#traits`](hardware.md#traits)): each
-kernel's plan reads its build's, and each entry sizes its outputs and grid from its card's (`card_of(device).traits.window`,
-[`select.md`](select.md)) -- one value both ways, so a host shape and the kernel it launches cannot disagree. Python
+W is the matcher's: the prefill launch function derives it from the device's facts, as it derives the arm
+(`prefill_window` in `csrc/fsla/src/common/plan/prefill_launch.h`, [`plan/prefill_launch.md`](plan/prefill_launch.md#window)). The owner's
+ruling (2026-11-23): "why? shouldnt the matchers be mapping the hardware facts etc to the arm with the correct window. where else would we derive window".
+It is no fact of the registry and no trait of a build. The device card reports it to Python (`device_card_op` in `fsla_api.cpp`,
+`fsla.ops.window.window_of`) from the same function over the card's compute capability, so a host shape and the launch it describes cannot disagree. Python
 reads no window to shape a call: the layer's segment length is an output of the prefill launch function, which is not written yet
 (`docs/open-work.md` row A-f).
 
-The hopper (sm_90a) is 1,024, provisional until the sm_90 carry's design picks it. A call is a whole number of the device's
+The hopper (sm_90a, compute capability 900) is 1,024, provisional until the sm_90 carry's design picks it. A call is a whole number of the device's
 windows (the intra's check), so a call is a multiple of 1,024 tokens until the intra takes a partial last window.
-
-<a id="token-field"></a>
-## `window_bits(w)`, `window_heads(w)`
-
-A union slot is 16 bits: its token within the window in the low `window_bits(w)` bits (log2 W), its query head above
-them, bit 15 a gap slot. A write head's query heads are at most `window_heads(w)`: 64 at W = 512, 32 at W = 1,024.

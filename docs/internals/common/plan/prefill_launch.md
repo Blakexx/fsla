@@ -36,8 +36,9 @@ Levels are 0-based. A level is LISTED on a side when that side's `*_listed` fact
   `units_per_head` is the product, over every level the write side walks by its lists, of the CTA positions along it (the boxes along it, halved where it is the pair level),
   1 where it lists none. A UNIT is the CTAs that share a write-listed position: all the readers of its value streams
   ([`../../../architecture/hopper-carry.md#the-packets`](../../../architecture/hopper-carry.md#the-packets)). `unit_ctas = ctas_per_head / units_per_head`.
-- R6, THE WINDOW. `window` is `kHopperWindow` (1024) at `cc` 900, any other `cc` aborts; it equals `build.window` of `common/hardware.json`'s sm_90a, which only the JSON holds, so
-  `tests/unit/test_prefill_carve.py` asserts the equality. `windows = ceil(tokens / window)`.
+- <a id="window"></a>R6, THE WINDOW. `window` is what `prefill_window(descriptor)` derives from the device's facts, as the arm is: `kHopperWindow` (1024) at `cc` `kHopperCc` (900, defined
+  once in `levels.h`, which both launch functions include), any other `cc` aborts. It is not a fact of the registry: the owner (2026-11-23): "why? shouldnt the matchers be mapping the hardware facts etc to the arm with the correct window. where else would we derive window". The device card (`fsla.ops.window.window_of`) takes it from the
+  same function (`device_card_op`, `fsla_api.cpp`, over the card's compute capability). `windows = ceil(tokens / window)`.
 
 NOT CARVED (`prefill_carves`): a call with a level narrower than its bits in a box -- one level under 256 digits, or a box level under 16. Nothing else is refused.
 THE CONTRACT ACCEPTS SUCH CALLS: `hardware/parts/calls/depth1.json` takes one level of 16 to 256 digits and only 256 has a carve. A box of fewer leaves, or a narrower

@@ -2,7 +2,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE REGISTRY'S OUTPUTS, written for the graph's actions: `plan/facts.h` (the `Facts` struct, from the schema), the contract as the matchers'
-tool reads it (`--contexts`) and as the run time holds it (`--contract-header`), the owed contexts as the run time holds them (`--owed-header`), and the README's supported-configurations rows (`--supported`, `tools/supported.py`).
+tool reads it (`--contexts`) and as the run time holds it (`--contract-header`), the owed contexts as the run time holds them (`--owed-header`) and `common/hardware.cuh`, the architectures the device parts state as the kernels read them (`--arch-header`).
 Docs: docs/internals/hardware/registry.md.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ def main() -> int:
     ap.add_argument("--contexts", type=Path)
     ap.add_argument("--contract-header", type=Path)
     ap.add_argument("--owed-header", type=Path)
+    ap.add_argument("--arch-header", type=Path)
     ap.add_argument("--contract", default=registry.FULL, help="the contract: `full`, or a narrowed contract of descriptors/dev (the build's `--//:contract`)")
     a = ap.parse_args()
     registry.check(a.root)
@@ -34,6 +35,8 @@ def main() -> int:
         a.contract_header.write_text(registry.contract_header(registry.contexts(a.root, a.contract), registry.schema(a.root), a.contract))
     if a.owed_header:
         a.owed_header.write_text(registry.owed_header(registry.owed(a.root), registry.schema(a.root)))
+    if a.arch_header:
+        a.arch_header.write_text(registry.arch_header(registry.architectures(a.root)))
     return 0
 
 

@@ -21,7 +21,7 @@ import arms  # noqa: E402
 import build_record  # noqa: E402
 import toolchains  # noqa: E402
 
-from measure import hardware  # noqa: E402
+from hardware import registry  # noqa: E402
 
 
 def main() -> int:
@@ -41,7 +41,7 @@ def main() -> int:
 
     toolchain = toolchains.named(a.toolchain)
     archs = [x for x in a.archs.split(",") if x]
-    built = hardware.built()
+    built = registry.built()
     build_record.rule3(archs, built)
 
     #: the binary gates' disassemblers are the record's too: MODULE.bazel names the toolkit's manifest twice

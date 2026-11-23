@@ -21,8 +21,8 @@ future layer-level recurrences become fields on this container, never on the op'
 the membership rule (docs/internals/state.md §7) needs a place to land them.
 
 **Execution backends: two arms, and the choice is STRUCTURAL.** ``'prefill'`` is the
-prefill arm through :func:`fsla.prefill` — DELETED pending the rebuild (the op raises,
-naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
+prefill arm through :func:`fsla.prefill`, whose kernels are not built: the op validates
+its inputs and refuses by name (:class:`~fsla.ops._ext.KernelNotBuilt`); ``'decode'`` is the
 ``T = 1`` sibling kernel, which bypasses selection architecturally (at one token
 there is no tile to choose, no split, a statistics population of one) and carries
 its own envelope -- BC-blind and general in the topology, so it is never gated on

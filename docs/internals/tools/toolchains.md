@@ -19,7 +19,7 @@ is one function here, `rule1`, the graph's record action's (docs/build-graph.md#
 
 Two records naming one assembler are refused: one assembler is one toolchain
 ([`../../ratification.md`](../../ratification.md)). The built architectures are not the record's: they are the hardware
-table's (`measure.hardware.built`).
+registry's (`hardware.registry.built`).
 
 ## Selection
 

@@ -22,7 +22,7 @@ NARROWED = "decode_d32_l2"
 PLAN = ROOT / "csrc" / "fsla" / "decode_plan_narrowed"
 FULL_PLAN = ROOT / "csrc" / "fsla" / "decode_plan"
 TOOL = ROOT / "csrc" / "fsla" / "plan_tool_narrowed" / "plan_tool"
-HOPPER = "cc=900,regs_per_sm=65536,smem_per_sm=233472,smem_per_cta_optin=232448,max_threads_per_sm=2048,sm_count=132"
+HOPPER = ",".join(f"{k}={v}" for k, v in registry.device_point().items())
 #: the call's facts beside `d_v`, `levels` and `decay`: a decode step of one token over one batch-head, and the widths and walks of a depth-2 call
 REST = ("prefill=0,tokens=1,batch_heads=1,stateful=1,width_bits_1=4,width_bits_2=5,width_bits_3=0,width_bits_4=0,"
         "read_listed_1=1,read_listed_2=1,read_listed_3=0,read_listed_4=0,write_listed_1=0,write_listed_2=0,write_listed_3=0,write_listed_4=0")

@@ -9,7 +9,7 @@
 A ROW is a kernel on a perf cell. One `ncu` launch of it (after warm-up launches of the same call) reads the
 elapsed time and clock, the instructions, the shared wavefronts, the tensor instructions and DRAM's share of its
 sustained peak. Its FLOORS, each a time:
-- issue: instructions over the SMs' schedulers at one a clock (`common/hardware.json`'s `schedulers`, `issue`);
+- issue: instructions over the SMs' schedulers at one a clock (`measure/rates.json`'s `schedulers`, `issue`);
 - tensor: the row's `mma.sync` kind's instructions at the product's calibrated cycles each, over the SMs' schedulers
   (never the profiler's pipe ratio: §22); a `wgmma` is counted apart (`sm__inst_executed_pipe_tensor_op_gmma`) and no
   rate of it is declared yet, so a row that issues one is refused by name (OWED: an H100 lab measures the rate);
@@ -81,9 +81,9 @@ def counters(row: Row) -> dict[str, float]:
 
 def floors(row: Row, c: dict[str, float], sms: int, product: str | None, arch: str) -> dict[str, float]:
     """The row's floors in seconds from its counters, the device's SM count and its product's rates."""
-    from measure import hardware
+    from measure import rates as rate_table
 
-    rates = hardware.resolve(arch=arch, product=product)
+    rates = rate_table.resolve(arch=arch, product=product)
     clock = c["sm__cycles_elapsed.avg.per_second"]
     slots = sms * rates["schedulers"].cycles / rates["issue"].cycles
     out = {"issue": c["smsp__inst_executed.sum"] / slots / clock,
@@ -92,7 +92,7 @@ def floors(row: Row, c: dict[str, float], sms: int, product: str | None, arch: s
     tensor = c["sm__inst_executed_pipe_tensor_op_hmma.sum"] + c["sm__inst_executed_pipe_tensor_op_imma.sum"]
     if c["sm__inst_executed_pipe_tensor_op_gmma.sum"]:
         raise SystemExit(f"overlap_gate: {row.kernel} issued {c['sm__inst_executed_pipe_tensor_op_gmma.sum']:.0f} wgmma "
-                         f"but `common/hardware.json` declares no rate for a wgmma on {arch}: its tensor floor is not "
+                         f"but `measure/rates.json` declares no rate for a wgmma on {arch}: its tensor floor is not "
                          "priced (owed: a lab measures it)")
     if row.mma is not None:
         out["tensor"] = tensor * rates[f"mma.{row.mma}"].cycles / (sms * rates["schedulers"].cycles) / clock
@@ -104,13 +104,14 @@ def floors(row: Row, c: dict[str, float], sms: int, product: str | None, arch: s
 def judge(name: str) -> bool:
     import torch
 
-    from measure import hardware
+    from hardware import registry
+    from measure import rates as rate_table
 
     row = ROWS[name]
     props = torch.cuda.get_device_properties(0)
-    arch = hardware.device_arch(props.major, props.minor)
+    arch = registry.device_arch(props.major, props.minor)
     c = counters(row)
-    f = floors(row, c, props.multi_processor_count, hardware.product_of(props.name), arch)
+    f = floors(row, c, props.multi_processor_count, rate_table.product_of(props.name), arch)
     elapsed = c["gpu__time_duration.sum"] * 1e-9
     binding = max(f, key=f.get)
     ratio = elapsed / f[binding]

@@ -2,7 +2,7 @@
 
 KERNEL_STANDARDS §29.14. One set of ncu counters for any kernel's launch (`METRICS`, `STALLS`), read by the lab
 (`tools/lab.py run`, every experiment kernel) and by the production capture ([`pipe_counters.py`](pipe_counters.md),
-one launch of a kernel family), and priced the same way for both: each pipe's cycles a unit at `common/hardware.json`'s rates,
+one launch of a kernel family), and priced the same way for both: each pipe's cycles a unit at `measure/rates.json`'s rates,
 the largest binding.
 
 <a id="price"></a>
@@ -13,7 +13,7 @@ Per card (the local product's rates, else its architecture's), each pipe's cycle
 - TENSOR: a declared `mma.sync` MMA's kind and K at the card's rate; none declared, none priced. A `wgmma` is counted by
   a counter of its own (`sm__inst_executed_pipe_tensor_op_gmma`, read from `ncu --query-metrics --chip gh100`; the
   `hmma` counters this tool reads do not count it, and no tensor-active-cycles counter of it is listed), and
-  `hardware.json` holds no rate for it: a `wgmma` kernel's tensor pipe is not priced here until a lab measures one and
+  `measure/rates.json` holds no rate for it: a `wgmma` kernel's tensor pipe is not priced here until a lab measures one and
   the tool reads the counter (OWED). The profiler's tensor-pipe ratio is never read as utilization (§22).
 - SHARED: the shared-memory pipe priced by kind at [hardware.md#shared](../common/hardware.md#shared)'s rates -- load
   wavefronts; stores and atomics each at the larger of their instructions' least and their wavefronts; `cp.async`

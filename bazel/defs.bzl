@@ -36,7 +36,7 @@ def _parameters(ctx, args):
     args.add("--archs", ",".join(_value(ctx, "_archs")))
     args.add("--contract", _value(ctx, "_contract"))
 
-#: the header `bazel/headers.py` writes: the builds the binary carries (`measure/hardware.py`'s)
+#: the header `bazel/headers.py` writes: the builds the binary carries (`hardware/registry.py`'s)
 _BUILDS = "builds.inc"
 
 def _headers_impl(ctx):

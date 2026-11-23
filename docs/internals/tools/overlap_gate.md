@@ -4,10 +4,10 @@ KERNEL_STANDARDS §28. A ROW is a kernel on a perf cell (`ROWS`: the kernel, the
 heads, its MMA kind if it issues any). One `ncu` launch of the row, after `warmup` launches of the same call, reads:
 the elapsed time and SM clock, instructions executed, shared wavefronts, HMMA, IMMA and wgmma instructions, and DRAM's share
 of its sustained peak. The FLOORS, each a time:
-- issue: instructions over the SMs' schedulers at one a clock (`common/hardware.json`: `schedulers`, `issue`);
+- issue: instructions over the SMs' schedulers at one a clock (`measure/rates.json`: `schedulers`, `issue`);
 - tensor: the row's `mma.sync` kind's instructions at the product's calibrated cycles each, over the SMs' schedulers --
   never the profiler's pipe ratio (§22); a `wgmma` is counted apart (`sm__inst_executed_pipe_tensor_op_gmma`) and
-  `hardware.json` declares no rate for it, so a row that issues one is REFUSED BY NAME (OWED: an H100 lab measures the rate);
+  `measure/rates.json` declares no rate for it, so a row that issues one is REFUSED BY NAME (OWED: an H100 lab measures the rate);
 - shared: wavefronts at the product's `wavefront` cycles each, over the SMs;
 - DRAM: the bytes at the profiler's sustained DRAM peak, `dram__throughput` x elapsed.
 

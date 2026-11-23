@@ -39,7 +39,7 @@ import re
 import pytest
 import torch
 
-from measure import hardware
+from hardware import registry
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "fsla" / "src"
@@ -106,7 +106,7 @@ def test_the_entry_surfaces_are_declared_where_this_gate_looks():
 def test_the_compile_time_half_is_a_table_and_a_static_assert():
     """``tabulated()`` gates the compiling target, and nothing softens it."""
     text = ARCH_CAPS.read_text()
-    assert "constexpr bool tabulated(int cc)" in hardware.header()
+    assert "constexpr bool tabulated(int cc)" in registry.arch_header(registry.architectures())
     assert '#include "common/hardware.cuh"' in text
     assert re.search(r"static_assert\(\s*tabulated\(kArch\)", text), (
         "arch_caps.cuh no longer fails the BUILD on an untabulated compile target; "
@@ -178,10 +178,8 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     nothing else.
     """
     from fsla.ops._ext import extension
-    from measure import hardware
-
-    #: refuses by name where the capability table carries no row for this device: the row is then the one to add
-    hardware.device_arch(*torch.cuda.get_device_capability())
+    #: refuses by name where no device part of the registry states this device's architecture: the part is then the one to add
+    registry.device_arch(*torch.cuda.get_device_capability())
     L, width = 32, 16
     values = torch.zeros(1, L, width, device="cuda")
     extension().routing_softmax_forward(torch.randn(1, L, width, device="cuda"), values, None, [0], [0], [width], 1)

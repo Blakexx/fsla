@@ -690,7 +690,7 @@ def budgets(binary: Path, kind: str = "budget") -> list[dict]:
     return [e for e in map(json.loads, lines.splitlines()) if e["lab"] == kind]
 
 
-#: THE CARDS a lab's counts are priced on (`common/hardware.json`): the H100's product rates
+#: THE CARDS a lab's counts are priced on (`measure/rates.json`): the H100's product rates
 CARDS = (("sm_90a (H100)", "sm_90a", "h10080gbhbm3"),)
 
 
@@ -758,11 +758,11 @@ def pipes_report(raw: dict[str, dict], units: dict[str, float], mmas: dict[str, 
     binding one named; on this card each pipe's busy share of the elapsed cycles, L2 sectors a unit and the three
     largest stall reasons."""
     sys.path.insert(0, str(ROOT))
-    from measure import hardware
+    from measure import rates as rate_table
 
-    local = hardware.product_of(smi("name")[0])
+    local = rate_table.product_of(smi("name")[0])
     arch = sass.device_arch()
-    here = hardware.resolve(product=local) if local else hardware.resolve(arch=arch)
+    here = rate_table.resolve(product=local) if local else rate_table.resolve(arch=arch)
     for k, c in raw.items():
         n = per_unit(c, k, units)
         unit = "MMA" if c["hmma"] + c["imma"] else "unit" if k in units else "launch"
@@ -770,11 +770,11 @@ def pipes_report(raw: dict[str, dict], units: dict[str, float], mmas: dict[str, 
         if c.get("uncollected"):
             print(f"    NOT COLLECTED on this card, read as 0 below: {', '.join(c['uncollected'])}")
         for label, card, product in CARDS:
-            rates = hardware.resolve(arch=card, product=product)
+            rates = rate_table.resolve(arch=card, product=product)
             #: A REFUSAL BY NAME, not a KeyError mid-report: pricing reads these rates, and the card's row lacks them
             lack = pipes.lacking(rates, mmas.get(k))
             if lack:
-                print(f"    {label:<20} REFUSED: not priced, {card}'s row of `common/hardware.json` declares no rate "
+                print(f"    {label:<20} REFUSED: not priced, {card}'s row of `measure/rates.json` declares no rate "
                       f"for {', '.join(lack)} (a lab record measures each: docs/internals/common/hardware.md)")
                 continue
             p = pipes.pipe_cycles(c, n, rates, mmas.get(k))
@@ -784,7 +784,7 @@ def pipes_report(raw: dict[str, dict], units: dict[str, float], mmas: dict[str, 
         stalls = sorted(c["stalls"].items(), key=lambda kv: -kv[1])[:3]
         lack = pipes.lacking(here, mmas.get(k))
         if lack:
-            #: a card whose row lacks rates (`hardware.json`): its measured counters alone, none priced
+            #: a card whose row lacks rates (`measure/rates.json`): its measured counters alone, none priced
             print(f"    busy here, % of elapsed ({arch} declares no rate for {', '.join(lack)}: tensor, shared and global "
                   f"are not priced): "
                   f"issue {c['busy_issue']:.0f}  alu {c['busy_alu']:.0f}  fma {c['busy_fma']:.0f} "

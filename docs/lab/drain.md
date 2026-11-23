@@ -2,7 +2,7 @@
 
 The record of `drain`, an experiment of the lab ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)) run on
 sm_86. Its source is the branch `ampere`'s -- it drained that family's readout panel beside its stream's copies -- and
-its record stays here because the hardware table's `red_request` cites it
+its record stays here because the rates table's `red_request` cites it
 ([`docs/KERNEL_STANDARDS.md#s26`](../KERNEL_STANDARDS.md#s26), item 1).
 
 What does the readout's drain -- a pass's panel words added into the head's `num` by `red.global.add` at each slot's
@@ -46,7 +46,7 @@ What it settles:
 
 - THE DRAIN'S FLOOR IS THE SM'S GLOBAL REQUEST PATH: ~5 SM cycles a line request with every SM draining (the
   skipping form's row: 4.85 / 5.54 / 5.34 at the three cells (5.10 / 5.56 / 5.40 first recorded); alt-k4's is the global path's atomic price in
-  `common/hardware.json`) -- the per-SM rate on record (2026-09-27), L2's atomic unit about half busy. The requests are
+  `measure/rates.json`) -- the per-SM rate on record (2026-09-27), L2's atomic unit about half busy. The requests are
   the union's slots: one half line a slot at d_v 64. The drain is no shared-pipe or issue question on sm_86: the s16 panel's
   slot pairing and the conflict-free one run alike.
 - SKIP WHAT THE UNION DOES NOT HOLD: a pass's slots past the union issued as zero adds cost 16% more requests and 31%

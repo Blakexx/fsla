@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "measure/lab/pages"))
 
 from hardware import registry  # noqa: E402
 
-TABLE = "csrc/fsla/src/common/hardware.json"
+RATES = "measure/rates.json"
 H100_SXM = dict(device="NVIDIA H100 80GB HBM3", cc=900, regs=65536, smem_sm=233472, optin=232448, threads=2048, sms=132, l2=52428800)
 H100_PCIE = dict(H100_SXM, device="NVIDIA H100 PCIe", sms=114)
 UNKNOWN = dict(device="NVIDIA GeForce RTX 3090", cc=860, regs=65536, smem_sm=102400, optin=101376, threads=1536, sms=82, l2=6291456)
@@ -41,9 +41,9 @@ def record(card, checks=(True,)):
 
 
 def tree(tmp_path, card):
-    """A root holding what `write` reads (the table, the record, the page) and the registry to refuse into."""
-    (tmp_path / "csrc/fsla/src/common").mkdir(parents=True)
-    shutil.copy(ROOT / TABLE, tmp_path / TABLE)
+    """A root holding what `write` reads (the rates, the record, the page) and the registry to refuse into."""
+    (tmp_path / "measure").mkdir(parents=True)
+    shutil.copy(ROOT / RATES, tmp_path / RATES)
     d = tmp_path / "measure/lab/results/device_probe"
     d.mkdir(parents=True)
     (d / "sm_90a.json").write_text(json.dumps(record(card)))
@@ -73,7 +73,7 @@ def test_each_model_gets_its_own_candidate_id_and_every_device_fact_with_its_row
         assert sum(k in record_ for k in registry.PROVENANCE) == 1
 
 
-def test_a_known_model_takes_its_sets_from_the_table_and_an_unknown_one_names_them_unestablished():
+def test_a_known_model_takes_its_sets_from_the_rates_and_the_registry_and_an_unknown_one_names_them_unestablished():
     _, known = generator().candidate(ROOT, record(H100_SXM))
     hopper = registry.part("device/hopper_sm90a")["facts"]
     assert known["unestablished"] == []

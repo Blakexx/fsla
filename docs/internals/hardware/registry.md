@@ -28,8 +28,8 @@ A PART (`parts/device/hopper_sm90a.json`, `parts/calls/decode.json`, `parts/call
 `measured_by` (a lab record), `validated_by` (the test or check that holds it), `documented_by` or `declared_by` (the family's own declaration).
 A value is a point, a range `{"lo", "hi"}`, a set `{"set": [members]}`, or a list of those: a list is ALTERNATIVES, each its own context.
 
-A DESCRIPTOR (`descriptors/hopper_decode_d1.json`) names the parts it composes, the architecture it is built for (`arch`) and the GPUs it
-covers (`gpus`, the README's label). `registry.contexts()` expands every descriptor into FULL CONTEXTS: the parts' facts merged (a fact stated by two
+A DESCRIPTOR (`descriptors/hopper_decode_d1.json`) names the parts it composes and the GPUs it
+covers (`gpus`, the README's label); the architecture it is built for is its one device part's (`registry.contexts()` derives it, and refuses a descriptor whose parts hold no device part or two). `registry.contexts()` expands every descriptor into FULL CONTEXTS: the parts' facts merged (a fact stated by two
 parts, a fact the schema does not name, a schema fact no part states: refused), the alternatives crossed. A matcher and the run time see
 contexts only. Two contexts identical in every fact are refused, whatever descriptors made them.
 
@@ -45,9 +45,15 @@ contract is four descriptors, `hopper_decode_d1` .. `hopper_decode_d4`, each com
 descriptor is made, naming the fact (`width_bits_1=3 (the contract: 4..8)`), by the same check as every other fact ([`../common/plan/planner.md`](../common/plan/planner.md#the-contract-check)).
 A decode step serves `batch_heads` from 1 to 536870911 (`docs/api.md#batch-heads`); the planner test holds both ends.
 
-The hopper device part holds the hardware table's sm_90a values for the facts the table names, and
-`tests/unit/test_hardware_registry.py` holds them equal: the table is what `hardware.cuh` is generated from, the contract is what a device is
-admitted against (`common/plan/environment.cu`).
+<a id="architectures"></a>A DEVICE PART STATES AN ARCHITECTURE WHOLE: beside its facts it names its architecture (`arch`, `sm_90a`, the name it is compiled as, whose compute
+capability its `cc` is) and its family (`family`, `hopper`) -- fields of the part, not facts. THE ONE SOURCE: the registry is the only place a device fact, an architecture
+or its family is stated, ruled by the owner (2026-11-22): "isnt the descritpr a thing we will want to reuse for other kernels, not just carry? each kernel just
+matahces on the fields it cares about on these immutable glboal hardware facts". The contract is what a device is admitted against
+(`common/plan/environment.cu`); the same parts generate the kernels' header `common/hardware.cuh` (`registry.arch_header`, `emit.py --arch-header`: one row an
+architecture, the `Caps` fields a kernel source reads, the family and the build's traits, [`../common/hardware.md`](../common/hardware.md)). An architecture is BUILT when a device part states it
+(`registry.built`, with `cc_of`, `arch_of`, `device_arch` and `builds_header`, which the build's flags, the SASS tools and the record read); an architecture no part
+states is neither built nor tabulated, and adding one is adding a device part ([`../../bringup.md`](../../bringup.md)). The window is the prefill matcher's, not a fact of a part
+([`../common/window.md`](../common/window.md)). The measured rates and the products are measurement inputs, `measure/rates.json`.
 
 MIG and MPS register no context: neither is documented to report a slice's own SM count, L2 share or shared memory, so a context for them waits
 for a measurement on a real slice and until then the run time refuses them.
@@ -56,15 +62,15 @@ for a measurement on a real slice and until then the run time refuses them.
 
 ## Onboarding a device: the probe
 
-A device enters the contract by a MEASURED part, in four steps:
+A device enters the contract by a MEASURED part, in four steps (the reviewer also names its `arch` and `family`):
 
 1. RUN THE PROBE on the device: `bazel run //tools:lab -- pack device_probe --arch sm_90a --into DIR`, then `bazel run //tools:lab -- run device_probe --record`, then
    `bazel run //tools:lab -- page device_probe --instance LABEL` ([`device_probe`](../../lab/device_probe.md)). The probe reads every DEVICE fact of the schema
    (the schema's DEVICE facts, and `sm_count` and `l2_bytes` for the schema's coming entries) through the properties and the attributes, checks the two routes
    and the device's own registers agree, and the page step writes `hardware/parts/device/<id>.candidate.json` from the record. The `<id>` is the compute capability and the
    driver's name (`cc900_nvidia_h100_80gb_hbm3`); the PCI slot the driver reports (`pciDeviceID` is the slot, not the product id) is the machine's, so it is not in the key.
-2. REVIEW THE CANDIDATE. Each value cites its row of the record (`measured_by`); `tensor` and `instructions` are the architecture table's row of the same compute capability
-   (`documented_by`), and are left out, named in `unestablished`, when the table has none: the reviewer supplies them from a lab experiment or a document. MIG and MPS
+2. REVIEW THE CANDIDATE. Each value cites its row of the record (`measured_by`); `tensor` is the MMA kinds of `measure/rates.json`'s architecture of the same compute capability and `instructions` the registry's device part of it
+   (`documented_by`), and each is left out, named in `unestablished`, when there is none: the reviewer supplies them from a lab experiment or a document. MIG and MPS
    slices are not probed (see above).
 3. COMMIT THE PART: rename `<id>.candidate.json` to `<id>.json` (`hardware/parts/device/`), add a descriptor composing it with a calls part, and commit. THE REGISTRY REFUSES
    A CANDIDATE FILE (`registry.CANDIDATE`): `registry.check()` and `registry.contexts()` fail naming it, so a candidate never reaches the contract unreviewed.

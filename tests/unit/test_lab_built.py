@@ -62,14 +62,14 @@ def test_the_lab_runs_no_compiler_and_no_disassembler():
 
 
 def test_the_graphs_lab_architecture_is_the_labs_and_the_built_one():
-    """`bazel/lab.bzl` hand-writes the lab's architecture and its compute capability: they are `lab.ARCH`, `measure.hardware`'s
-    built row and that row's `cc_of`, one fact in three places."""
+    """`bazel/lab.bzl` hand-writes the lab's architecture and its compute capability: they are `lab.ARCH`, `hardware.registry`'s
+    built architecture and its `cc_of`, one fact in three places."""
     import re
 
     sys.path.insert(0, str(TOOLS.parent))
-    from measure import hardware
+    from hardware import registry
 
     rule = (TOOLS.parent / "bazel" / "lab.bzl").read_text()
     arch = re.search(r'^_ARCH = "(\w+)"$', rule, re.M).group(1)
     cc = re.search(r'^_CC = "(\d+)"$', rule, re.M).group(1)
-    assert arch == lab.ARCH and hardware.built() == [arch] and int(cc) == hardware.cc_of(arch)
+    assert arch == lab.ARCH and registry.built() == [arch] and int(cc) == registry.cc_of(arch)

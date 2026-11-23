@@ -298,16 +298,15 @@ take and derives nothing from how the data was made. A plan is never wrong for t
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
 nothing else. THE PLAN IS A ROLE, NOT AN OBJECT (Blake, 2026-11-22: "data chagnes the mathematics, plan changes the execution of those
 mathematics. thats the exact spec we want"). No operator takes a plan object: it takes its data and nothing else -- `op(data...)` -- and the state is its own argument, in and out
-(Blake, 2026-11-23: the public contract carries all inputs; each call builds its own descriptor and its own workspace inside, and the workspace is
-something built just to pass around). The plan's host half is the descriptor, which each call builds from its inputs: the validated context of the call, every device fact and
+(Blake, 2026-11-23: "have each internal call handle its descriptor stuff and not be exposed to the user, and have the public contract carry all
+inputs, workpsace is something we build inside just to pass around"). The plan's host half is the descriptor, which each call builds from its inputs: the validated context of the call, every device fact and
 every call fact, reusable and hashable; a call fact that states a choice names an action as above (a side of a level
 walked by its lists), and everything derived from the facts -- the carve, the window, the grid, the segment -- is computed
 by the family's one launch function right before the launch and stored nowhere. The plan's device half is the DEVICE
 PLAN, the first region of the workspace: decisions made during the call from its own data (a box's counts, its
-step-shape word), which never change the result -- forcing any of them on the same data matches the oracle. The op runs
-no derivation pass of its own: a caller builds the workspace with the public builder ("id rather they call a public
-method to build the workspace and hand it to us") and is trusted with it as with the masks; the layer takes only model
-inputs and builds both.
+step-shape word), which never change the result -- forcing any of them on the same data matches the oracle. Each call builds
+its workspace itself, beside its descriptor, and its caller is trusted with the inputs it hands, the masks among them;
+the layer takes only model inputs.
 NOT YET SO: decode is on this surface, and so is the prefill's op; what a prefill launches is owed -- its launch function
 (row A-f), the workspace's layout and builder (A-g) and the contract ranges they fix (A-h) of
 [`open-work.md`](open-work.md#the-surface).

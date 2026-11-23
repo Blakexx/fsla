@@ -163,7 +163,7 @@ TWO LEVELS, ONE HOME EACH (2026-11-07, the family foundation; constitution R8). 
 one name, its body selected per family where it is defined, in `common/atoms/`. A STRUCTURE difference is a schedule in
 `<kernel>/<family>/`, which holds only what differs in structure -- anything differing by an instruction alone moves to
 an atom. A kernel's semantics live in `<kernel>/`, shared by its schedules. THE SELECTION is one layer every kernel
-plugs into: the cards are data (hardware.json's arch rows, generated; the contract of `hardware/` admits a device), a kernel's sizes come from its plan
+plugs into: the cards are data (the device parts of `hardware/`, generated into `hardware.cuh`; the contract of `hardware/` admits a device), a kernel's sizes come from its plan
 alone (`Plan<build, arm>`: the card's build traits and the declaration's arm), and one host call selects the card and
 the arm, refusing by name a device outside the contract, a build the binary does not carry and an unbuilt arm; a device
 runs its architecture's build. THE

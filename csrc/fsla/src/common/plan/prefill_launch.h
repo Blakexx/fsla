@@ -21,9 +21,15 @@ inline constexpr int kPrefillMaxLevels = 4;
 inline constexpr int kBoxBits = 8;
 inline constexpr int kBoxHalfBits = 4;
 
-//: the window of the hopper build (cc 900); equal to `build.window` of `common/hardware.json`'s sm_90a (tests/unit/test_prefill_carve.py)
+//: the window of the hopper build (cc 900), provisional until the Hopper carry's design picks it
 inline constexpr int kHopperWindow = 1024;
-inline constexpr int kHopperCc = 900;
+
+//: THE WINDOW the device of a descriptor runs, in tokens: the one statement of it, a function of the device's facts as the arm is (docs/internals/common/plan/prefill_launch.md#window);
+//: compute capability 900 gives 1024, any other aborts
+constexpr int prefill_window(const Descriptor& d) {
+  if (!Reader::cc(d).point() || Reader::cc(d).lo != kHopperCc) std::abort();
+  return kHopperWindow;
+}
 
 //: every level index is 0-based; -1 is none. `box_bits`, `read_list_bits` and `write_list_bits` are a level's bits in a box and each side's
 //: list bits of them (the column bits are `box_bits - list_bits`); `read_list_level` and `write_list_level` are each side's list level
@@ -182,7 +188,7 @@ constexpr PrefillCarve prefill_carve(const Descriptor& d) {
   c.ctas_per_head = c.boxes_per_head / c.boxes_per_cta;
   c.unit_ctas = c.ctas_per_head / c.units_per_head;
 
-  c.window = kHopperWindow;
+  c.window = prefill_window(d);
   c.windows = (Reader::tokens(d).lo + c.window - 1) / c.window;
   return c;
 }

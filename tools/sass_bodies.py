@@ -74,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 import ratify  # noqa: E402
 
-from measure import hardware  # noqa: E402 -- the architecture rows' own names
+from hardware import registry  # noqa: E402 -- the architectures' own names
 
 #: THE HASHER'S OWN VERSION, and it lives with the hasher: `ratify.sass_scan` is what
 #: decides which lines reach the digest, so the version that describes that decision
@@ -150,7 +150,7 @@ def by_signature(bodies_by_key: dict[str, str], drop_builds: bool) -> dict[str, 
         arch = key.split(":", 1)[0]
         if drop_builds:
             for m in _BUILD_ARG.finditer(sig):
-                if hardware.arch_of(int(m.group(1))) != arch:
+                if registry.arch_of(int(m.group(1))) != arch:
                     raise SystemExit(f"{key}: a Build{{{m.group(1)}}} kernel in the {arch} image")
             sig = _BUILD_ARG.sub("", sig)
             #: a kernel whose one template argument was its build is the untemplated kernel: its emptied list goes,

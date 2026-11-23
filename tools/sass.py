@@ -167,9 +167,9 @@ def device_arch() -> str:
     import torch
 
     sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
-    from measure import hardware
+    from hardware import registry
 
-    return hardware.device_arch(*torch.cuda.get_device_capability())
+    return registry.device_arch(*torch.cuda.get_device_capability())
 
 
 def cubin(path: Path, member: str, arch: str) -> Path:

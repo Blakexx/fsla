@@ -2,7 +2,6 @@
   "name": "decode_d32_l2",
   "narrowed": true,
   "gpus": "H100",
-  "arch": "sm_90a",
   "compose": [
     "device/hopper_sm90a",
     "calls/decode_narrow_d32",

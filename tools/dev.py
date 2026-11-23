@@ -709,7 +709,7 @@ print("acquired: the container does not see the host's lock")
 sys.exit(1)
 PY""",
     "the library builds and imports": f"""set -e
-arch=$({CONTAINER_PYTHON} -c 'import torch; from measure import hardware; print(hardware.device_arch(*torch.cuda.get_device_capability()).removeprefix("sm_"))')
+arch=$({CONTAINER_PYTHON} -c 'import torch; from hardware import registry; print(registry.device_arch(*torch.cuda.get_device_capability()).removeprefix("sm_"))')
 bazel run //:library --//:archs=$arch --//:contract=decode_d32_l2
 {CONTAINER_PYTHON} -c 'import fsla; from fsla_cu13._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
 }

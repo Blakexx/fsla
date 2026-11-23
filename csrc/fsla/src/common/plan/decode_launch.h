@@ -99,7 +99,7 @@ constexpr DecodeReach decode_reach(const Descriptor& d) {
   const auto widths = [&] {
     ladder(Reader::d_v(d), 1, kDecodeArmWidths, std::size(kDecodeArmWidths), hole, leaf);
   };
-  fork(all(eq(Reader::cc(d), 900), eq(Reader::prefill(d), 0)), widths, hole);
+  fork(all(eq(Reader::cc(d), kHopperCc), eq(Reader::prefill(d), 0)), widths, hole);
   return r;
 }
 
@@ -161,6 +161,20 @@ constexpr int decode_grid(const DecodeArgs& args, std::int64_t unit_ceiling, std
 constexpr DecodeLaunch decode_launch(const Descriptor& d) {
   const DecodeArm arm = decode_arm(d);
   return {arm, decode_args(d, arm)};
+}
+
+//: whether a launch's arguments are the descriptor's own: its device facts, the arm's padding and each level's width
+constexpr bool decode_args_reflect(const Descriptor& d, const DecodeLaunch& launch) {
+  const DecodeArgs& a = launch.args;
+  bool ok = a.cc == Reader::cc(d).lo && a.sms == Reader::sm_count(d).lo
+            && a.smem_budget == Reader::smem_per_cta_optin(d).lo
+            && a.threads == Reader::regs_per_sm(d).lo / kDecodeRegsPerThread
+            && a.pad == launch.arm.d_v - Reader::d_v(d).lo && a.pad >= 0;
+  for (int l = 0; l < launch.arm.levels; ++l) {
+    const std::int64_t bits = level_width_bits(d, l).lo;
+    ok = ok && a.widths[l] == (bits > 0 ? std::int64_t{1} << bits : 0);
+  }
+  return ok;
 }
 
 inline std::string decode_facts_read(const Descriptor& d) {

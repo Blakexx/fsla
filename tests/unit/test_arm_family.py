@@ -19,7 +19,7 @@ import arms  # noqa: E402
 import ratify  # noqa: E402
 import sass  # noqa: E402
 
-from measure import hardware  # noqa: E402
+from hardware import registry  # noqa: E402
 
 GENERATED = ROOT / "tests" / "generated"
 #: the rows of tests/unit/fixtures/fixture_arms.bzl, as the table must carry them
@@ -44,14 +44,14 @@ def test_the_selection_header_carries_every_row_of_the_list(table):
 
 
 def test_a_narrowed_contract_or_an_unbuilt_architecture_makes_an_iteration_build():
-    built = hardware.built()
+    built = registry.built()
     archs = [x.removeprefix("sm_") for x in built]
     assert not arms.is_iteration("full", archs, built)
     assert arms.is_iteration("decode_d32_l2", archs, built)
     assert arms.is_iteration("full", archs[:-1], built)
 
 
-@pytest.mark.parametrize("arch", [a.removeprefix("sm_") for a in hardware.built()])
+@pytest.mark.parametrize("arch", [a.removeprefix("sm_") for a in registry.built()])
 @pytest.mark.parametrize("arm", range(len(EXPECTED_ROWS)))
 def test_each_arm_has_a_unit_for_each_built_architecture_defining_its_own_kernel(arch, arm):
     obj = GENERATED.parent / "_objs" / f"fixture_arm_{arm}_sm_{arch}" / f"fixture_arm_{arm}.pic.o"

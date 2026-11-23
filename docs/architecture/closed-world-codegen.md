@@ -4,7 +4,7 @@
 
 The engine ships a fixed, enumerated set of kernel instantiations, compiled ahead
 of time by a pinned assembler: the arms each kernel declares, the architectures
-the hardware table builds. A device whose architecture the binary does not carry
+the registry builds. A device whose architecture the binary does not carry
 is refused at launch. There is no path by which unmeasured code executes.
 
 The mechanics — the declared targets, the gates every build runs, the census, the
@@ -97,7 +97,7 @@ central claims are numeric buys the second with the first.
 ## 4. Consequences a contributor should expect
 
 - **A new architecture is a bring-up**, not a `-gencode` line. Naming `sm_XX` that
-  the hardware table does not build fails the build (rule 3).
+  the registry does not build fails the build (rule 3).
 - **A toolchain bump is a re-measurement of every architecture**, in both
   directions. The numbers are a property of the assembler as much as of the
   source, so they say nothing about a different assembler even if they got

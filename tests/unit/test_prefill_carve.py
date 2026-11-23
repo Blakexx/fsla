@@ -6,14 +6,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from hardware import registry  # noqa: E402
+
 TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
 
-HOPPER = dict(cc=900, regs_per_sm=65536, smem_per_sm=233472, smem_per_cta_optin=232448, max_threads_per_sm=2048, sm_count=132)
+HOPPER = registry.device_point()
 
 
 def _carve(widths: list[int], write: list[int], read: list[int], tokens: int = 65536, **override):
@@ -143,11 +148,10 @@ def test_the_pair_is_a_level_outside_the_box_when_every_level_is_read_listed_and
     assert tuple(out[k] for k in KEYS) == (2, 0, 8, 16, 64, 32, 1, 32) and out["fold_outer"] == 2
 
 
-def test_a_window_is_the_hopper_builds_and_a_call_is_cut_into_its_windows():
-    build = json.loads((ROOT / "csrc" / "fsla" / "src" / "common" / "hardware.json").read_text())["arch"]["sm_90a"]["build"]
-    for tokens, windows in ((1, 1), (1024, 1), (1025, 2), (65536, 64), (65537, 65)):
+def test_a_call_is_cut_into_the_matchers_windows():
+    for tokens in (1, 1024, 1025, 65536, 65537):
         out = _out(_carve([8, 8], [1, 0], [0, 1], tokens))
-        assert out["window"] == build["window"] and out["windows"] == windows
+        assert out["windows"] == -(-tokens // out["window"])
 
 
 @pytest.mark.parametrize("override", [dict(tokens=0), dict(levels=5), dict(write_listed_1=2)])

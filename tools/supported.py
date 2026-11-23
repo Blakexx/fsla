@@ -8,7 +8,7 @@ reaches no arm (``arms_gen``), so the published support and the guaranteed suppo
 
 * ``hardware/descriptors``' contexts (``hardware.registry.contexts``): each descriptor's architecture, the GPUs it covers and, for every fact the
   CALL supplies, the values the contract admits.
-* the BUILT architectures (``measure.hardware.built``: the rows whose build chooses a window) and the toolchain that builds them
+* the BUILT architectures (``hardware.registry.built``: the architectures a device part states) and the toolchain that builds them
   (``tools/toolchains.py``). A contract architecture the build does not build is refused here: the contract is what is built.
 
     bazel run //tools:supported              # print the tables
@@ -29,7 +29,6 @@ sys.path.insert(1, str(ROOT))
 import toolchains  # noqa: E402
 
 from hardware import registry  # noqa: E402 -- the contract
-from measure import hardware  # noqa: E402 -- which architectures the build builds
 
 #: The README's generated regions: `marker -> producer`. One today: the support table, which no hand edit may touch.
 BLOCKS = {
@@ -54,7 +53,7 @@ def block(text: str, marker: str) -> str | None:
 def built() -> dict[str, list[dict]]:
     """`sm_XX -> [{toolchain, ptxas}]`: each built architecture, with the toolchain that builds it."""
     return {arch: [{"toolchain": t.name, "ptxas": t.ptxas} for t in toolchains.records().values()]
-            for arch in hardware.built()}
+            for arch in registry.built()}
 
 
 def _ptxas_short(version: str) -> str:

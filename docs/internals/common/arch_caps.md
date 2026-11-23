@@ -1,8 +1,8 @@
 # `csrc/fsla/src/common/arch_caps.cuh` — the card's facts at the compiling target
 
-Its rows are data in [`hardware.json`](hardware.md), generated into `common/hardware.cuh` by the build graph, which checks no copy in (`Caps`, `tabulated`,
+Its rows are generated from the registry's device parts ([`hardware.md`](hardware.md)) into `common/hardware.cuh` by the build graph, which checks no copy in (`Caps`, `tabulated`,
 `caps_of`): per architecture the INSTRUCTIONS an atom reads and the NUMBERS a plan reads. This file names the compiling
-target (`kArch`, `kCaps`) and the row's digest. STRUCTURE is not here: which warps do what, the pipeline, the tiling
+target (`kArch`, `kCaps`). STRUCTURE is not here: which warps do what, the pipeline, the tiling
 are a family's schedule, selected by the build's family (`Family`, [`hardware.md#families`](hardware.md#families);
 KERNEL_STANDARDS section 8), never derived from capability flags.
 
@@ -15,10 +15,10 @@ empty row (`tabulated` refuses it first).
 | field | kind | what it states |
 |---|---|---|
 | `bf16_cvt_packed` | INSTRUCTION | the packed two-float to bf16 pair conversion (`cvt.rn.bf16x2.f32`), asserted by the atoms that pack |
-| <a id="reg-transpose-b16"></a>`reg_transpose_b16` | INSTRUCTION | an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. A contraction over the accumulator's own m axis puts the accumulator on the k side, and the accumulator map and the k-side map differ by exactly this transpose. |
 | <a id="bf16-simd-arith"></a>`bf16_simd_arith` | INSTRUCTION | `mul.rn.bf16x2`. ptxas rejects it below sm_90 (measured 2026-08-09): Ampere has bf16 conversion and bf16 MMA but no bf16 SIMD multiply, so the product costs 1 FMUL + 1/2 pack an element there against ~1/2 instruction on sm_90 -- the archetypal flag |
 | <a id="bf16-simd-fma"></a>`bf16_simd_fma` | INSTRUCTION | `fma.rn.bf16x2`, available at sm_80 (measured 2026-08-28): a product is one instruction through a `-0.0` addend, bit-identical to `mul.rn.bf16x2` (one rounding of the exact product; the addend's sign keeps a signed zero) |
-| `smem_per_sm`, `smem_per_cta_max`, `regs_per_sm`, `max_threads_per_sm` | FACT | the SM's budgets the admission checks against the driver and the plans read (an area's shared memory, the state's registers) |
+| `cc` | FACT | the compute capability x 10 |
+| `regs_per_sm` | FACT | the SM's registers, which the plans read (the state's registers) |
 
 AN INSTRUCTION FLAG is read by an atom, where only the instruction differs between architectures of one family
 (`docs/internals/common/atoms/math.md`'s bf16 pair arithmetic picks its form by `bf16_simd_arith` and `bf16_simd_fma`).
@@ -33,15 +33,10 @@ family's schedules; a binary built without sm_90a refuses an sm_90 card by name
 ([`select.md#card-of`](select.md#card-of)).
 
 <a id="tabulated"></a>**`tabulated` is the SET OF ROWS, which is not the set the graph builds.** `tabulated(cc)` is true for each
-compute capability with a row in `hardware.json` (today sm_90a and sm_100a): the architectures the kernel knows how to size itself
+compute capability a device part states (today sm_90a): the architectures the kernel knows how to size itself
 for. A compute capability that is not a row fails the build, whose compiling target `arch_caps.cuh` asserts tabulated, and is refused at run time; it
-is never approximated by a neighbouring row. THE BUILT SET is `measure.hardware.built`, the rows whose build chooses a window (today sm_90a alone:
-`BUILT_ARCHS`, the default of `--//:archs`): a tabulated architecture that is not built (sm_100a) has a row and no binary, and the README's support
-table lists it as not built, refusing to load ([`hardware.md#traits`](hardware.md#traits)).
-
-<a id="capsdigest"></a>**`caps_digest`** is a digest of the active row's instruction flags (`kCapsDigest` at the
-compiling target), written by the carry's stamp kernel and read on the host. A binary compiled against a different
-table cannot masquerade as this one -- no path or file hash can establish that, only a device-side fact.
+is never approximated by a neighbouring row. THE BUILT SET is `registry.built`, the architectures a device part states (today sm_90a alone:
+`BUILT_ARCHS`, the default of `--//:archs`), the same set ([`hardware.md#builds`](hardware.md#builds)).
 
 <a id="hopper-only"></a>**THE ONE FAMILY BUILT** is the hopper's: this header refuses every other family by name, in one `static_assert`
 after the `tabulated` check, and no header that includes it states a family of its own. A host pass compiles for the

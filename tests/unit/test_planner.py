@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from hardware import registry  # noqa: E402
+
 TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
 
-#: the Hopper device the registry's part describes: an H100 SXM's numbers, every integer fact a point
-HOPPER = dict(cc=900, regs_per_sm=65536, smem_per_sm=233472, smem_per_cta_optin=232448, max_threads_per_sm=2048, sm_count=132)
+#: the Hopper device the registry's part describes, every integer fact a point (a range at its upper end)
+HOPPER = registry.device_point()
 
 
 def _full(call: str) -> str:
@@ -83,13 +88,12 @@ def test_a_device_out_of_a_range_is_refused_naming_the_fact_and_its_range():
         assert f"sm_count={sms} (the contract: 114..132)" in run.stderr and "the device lies outside FSLA's contract" in run.stderr
 
 
-@pytest.mark.parametrize("fact, value, held", [
-    ("cc", 800, "900"), ("regs_per_sm", 32768, "65536"), ("smem_per_sm", 166912, "233472"),
-    ("smem_per_cta_optin", 166912, "232448"), ("max_threads_per_sm", 1536, "2048"),
+@pytest.mark.parametrize("fact, value", [
+    ("cc", 800), ("regs_per_sm", 32768), ("smem_per_sm", 166912), ("smem_per_cta_optin", 166912), ("max_threads_per_sm", 1536),
 ])
-def test_a_device_whose_point_fact_differs_is_refused_naming_it(fact, value, held):
+def test_a_device_whose_point_fact_differs_is_refused_naming_it(fact, value):
     run = _plan({fact: value})
-    assert run.returncode == 1 and f"{fact}={value} (the contract: {held})" in run.stderr
+    assert run.returncode == 1 and f"{fact}={value} (the contract: {HOPPER[fact]})" in run.stderr
 
 
 def test_the_model_key_names_the_device_in_a_refusal_and_is_never_the_match():

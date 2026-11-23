@@ -23,7 +23,6 @@ exports_files([
     "sgconfig.yml",
     "fsla/__init__.py",
     "measure/__init__.py",
-    "measure/hardware.py",
     "docs/rules.json",
 ])
 
@@ -118,8 +117,6 @@ genrule(
     srcs = [
         "README.md",
         "measure/__init__.py",
-        "measure/hardware.py",
-        "//csrc/fsla:src/common/hardware.json",
         "//hardware:registry",
         "//tools:toolchain_records",
         "//tools:toolchains.py",

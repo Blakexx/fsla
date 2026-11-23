@@ -74,12 +74,12 @@ fsla-devtools checkout `tools/bootstrap.py` finds.
 `//:library` is `fsla_cu13/_C.abi3.so` and its build record `fsla_cu13/_build_config.py`; `bazel run //:library` leaves
 both where the build wrote them (`.bazel/bin/fsla_cu13/`: a build output is never written into the source tree, and the
 checkout's venv imports it from there, `docs/build.md#wheels`), and copies the build's generated headers into `build/generated`. `common/hardware.cuh` is one of the graph's generated headers and is checked in nowhere:
-the genrule `//csrc/fsla:hardware_header` writes it from `common/hardware.json` (`python -m measure.hardware --header`) into
+the genrule `//csrc/fsla:hardware_header` writes it from the registry's device parts (`hardware/emit.py --arch-header`) into
 the include path every unit reads (`//csrc/fsla:headers`), whatever the build's parameters
 ([`internals/common/hardware.md`](internals/common/hardware.md)).
 
 - THE BUILD'S PARAMETERS are the root package's settings: `--//:archs` (default `@fsla_env//:flags.bzl`'s
-  `BUILT_ARCHS`, the hardware table's built architectures: the rows of `common/hardware.json` whose build chooses a window,
+  `BUILT_ARCHS`, the registry's built architectures: those a device part of `hardware/parts/device` states,
   [`architecture/families.md`](architecture/families.md)), and `--//:contract` (default `full`: the contract the build compiles against, or a declared narrowed contract of
   `hardware/descriptors/dev/`, [`build.md#narrowed`](build.md#narrowed)). Any value but a default makes an iteration build, which its record says; `//:gate`
   refuses a non-default `--//:contract`.
@@ -243,7 +243,7 @@ date or host, so the same tree writes the same bytes.
 | committed file | the graph writes it | the test | the update |
 |---|---|---|---|
 | `tools/manifests/derivation.json` | `//tools:derivation_record`: the derivation harness the graph built, run over the sources the declared cases name | `//:derivation` | `//:derivation_update` |
-| `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract (`hardware/`), the hardware table, the toolchain record | `//:readme` | `//:readme_update` |
+| `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract and the device parts (`hardware/`), the toolchain record | `//:readme` | `//:readme_update` |
 | `tools/devbox_image.json` | `//:devbox_image_record`: `//:image`'s content digest (`tools/oci_layout.py --record`) | `//:devbox_image` | `//:devbox_image_update` |
 
 `common/hardware.cuh` is not a committed file: it is a graph output the units include, and nothing checks a copy in. A change to the

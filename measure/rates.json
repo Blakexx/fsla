@@ -1,0 +1,78 @@
+{
+  "schema": {
+    "mma": [
+      "hmma_f16_f32",
+      "hmma_bf16_f32",
+      "imma_u8_s8_k32"
+    ],
+    "shared": [
+      "store",
+      "store_wavefront",
+      "copy_bypass",
+      "copy_access",
+      "global_read",
+      "global_fill"
+    ],
+    "pipe": [
+      "alu",
+      "fma",
+      "fmaheavy",
+      "xu"
+    ],
+    "global": [
+      "l2_line",
+      "red_request"
+    ]
+  },
+  "arch": {
+    "sm_90a": {
+      "rates": {
+        "schedulers": {
+          "cycles": 4,
+          "documented": "CUDA C++ Programming Guide, compute capability 9.0: four warp schedulers an SM"
+        },
+        "issue": {
+          "cycles": 1,
+          "documented": "CUDA C++ Programming Guide, compute capability 9.0: a scheduler issues one instruction a clock"
+        },
+        "wavefront": {
+          "cycles": 1,
+          "documented": "CUDA C++ Programming Guide, shared memory: 32 banks of 32 bits a clock"
+        },
+        "atomic": {
+          "cycles": 1.449,
+          "measured": "smem_rates",
+          "row": "red.shared.add, a lane a bank, 1 wavefront a warp / 8 warps",
+          "on": "h10080gbhbm3"
+        },
+        "atomic_wavefront": {
+          "cycles": 1.0,
+          "measured": "smem_rates",
+          "row": "red.shared.add, four lanes a bank, 4 wavefronts a warp / 8 warps",
+          "on": "h10080gbhbm3"
+        },
+        "mma": {
+          "hmma_f16_f32": {
+            "cycles": 4,
+            "documented": "H100 whitepaper: 989 dense FP16/BF16 tensor TFLOPS at fp32 accumulate, 1979 dense INT8 TOPS, 132 SMs at 1830 MHz -- 1024 flops a clock a scheduler at 16 bits, 2048 at 8"
+          },
+          "hmma_bf16_f32": {
+            "cycles": 4,
+            "documented": "H100 whitepaper: 989 dense FP16/BF16 tensor TFLOPS at fp32 accumulate, 1979 dense INT8 TOPS, 132 SMs at 1830 MHz -- 1024 flops a clock a scheduler at 16 bits, 2048 at 8"
+          },
+          "imma_u8_s8_k32": {
+            "cycles": 4,
+            "documented": "H100 whitepaper: 989 dense FP16/BF16 tensor TFLOPS at fp32 accumulate, 1979 dense INT8 TOPS, 132 SMs at 1830 MHz -- 1024 flops a clock a scheduler at 16 bits, 2048 at 8"
+          }
+        }
+      }
+    }
+  },
+  "product": {
+    "h10080gbhbm3": {
+      "arch": "sm_90a",
+      "device": "NVIDIA H100 80GB HBM3",
+      "note": "the rented H100 SXM; the slug is the device's name past its vendor word (no first - to cut at)"
+    }
+  }
+}

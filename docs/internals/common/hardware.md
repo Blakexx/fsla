@@ -1,9 +1,11 @@
 # The hardware configuration (the generated `hardware.cuh`)
 
-The hardware a kernel runs on, mapped to the constants its code and its choices read, in one file:
-`csrc/fsla/src/common/hardware.json`. `hardware.cuh` is generated from it by the build graph (`//csrc/fsla:hardware_header`, `python -m measure.hardware --header`)
-into the units' include path and is checked in nowhere; `measure/hardware.py` reads it, resolves it and checks it, and
-`tools/lint/lint_standards.py` gates the check on every commit.
+THE ONE TABLE OF HARDWARE FACTS is the registry's device parts (`hardware/parts/device/`, [`../hardware/registry.md`](../hardware/registry.md#architectures)):
+a device part states an architecture whole -- its name, its family and its device facts. The owner's ruling (2026-11-22): "isnt the descritpr a thing we
+will want to reuse for other kernels, not just carry? each kernel just matahces on the fields it cares about on these immutable glboal hardware facts". The
+kernels' header `common/hardware.cuh` is generated from the device parts by the build graph (`//csrc/fsla:hardware_header`, `hardware/emit.py --arch-header`)
+into the units' include path and is checked in nowhere. The measured and documented RATES and the PRODUCT table are measurement inputs, not hardware facts: they
+live in `measure/rates.json`, which `measure/rates.py` reads, resolves and checks, and `tools/lint/lint_standards.py` gates the check on every commit.
 
 <a id="layers"></a>
 
@@ -11,32 +13,32 @@ into the units' include path and is checked in nowhere; `measure/hardware.py` re
 
 A compute capability fixes the SM's design -- its capabilities, its shared memory and registers, its schedulers,
 its MMA instructions, its shared atomic unit -- but not every rate: products of one architecture may differ. So
-the file holds:
+`measure/rates.json` holds:
 
-- `arch.<sm_XX>`: the architecture's defaults -- its `caps` row and its `rates`, each rate at what the SM design
-  does (sm_90a's schedulers, issue and shared wavefront from the programming guide, its shared atomics measured, its
-  MMA rates the whitepaper's peak).
+- `arch.<sm_XX>`: the architecture's default `rates`, each at what the SM design does (sm_90a's schedulers, issue and shared
+  wavefront from the programming guide, its shared atomics measured, its MMA rates the whitepaper's peak). An architecture named there is one the
+  registry builds.
 - `product.<slug>`: a product's overrides over its architecture's defaults (the H100's has none yet). The slug is
-  `measure/hardware.py`'s `slugify_gpu`: the device name with the vendor words dropped and cut at the first `-`
+  `measure/rates.py`'s `slugify_gpu`: the device name with the vendor words dropped and cut at the first `-`
   (`NVIDIA H100 80GB HBM3` -> `h10080gbhbm3`); the measurement side finds a device's product by it, the binary does not.
 
-A product's rates are its architecture's under its overrides (`hardware.resolve(product=...)`); an
-architecture's alone are `hardware.resolve(arch)`. A device with no product row runs on its architecture's
+A product's rates are its architecture's under its overrides (`rates.resolve(product=...)`); an
+architecture's alone are `rates.resolve(arch)`. A device with no product row runs on its architecture's
 defaults, which are what the SM design does; the binary runs a device on its architecture's build whatever its name.
 
 <a id="families"></a>
 
 ## Families, builds and products
 
-Every architecture row names its FAMILY in its `build` block -- `hopper` (sm_90a: the row is
-named as it is compiled, with the architecture's own features; its compute capability 900),
-`blackwell` (reserved) -- the name a kernel's schedule is selected by (`Family`; the constitution's R8). Instruction
-differences stay at the atom, read at the compiling architecture.
+Every device part names its FAMILY -- `hopper` (sm_90a: the part is named as it is compiled, with the architecture's own features; its compute capability
+900), `blackwell` (reserved, no part) -- the name a kernel's schedule is selected by (`Family`, numbered in the order of `registry.FAMILIES`; the
+constitution's R8). Instruction differences stay at the atom, read at the compiling architecture.
 
 <a id="builds"></a>
-A BUILD is the key a kernel compiles at: `Build{cc}`, the architecture's own `build` block (`hardware.builds()`); a device runs its
+A BUILD is the key a kernel compiles at: `Build{cc}`, one for each architecture a device part states (`registry.architectures()`); a device runs its
 architecture's build, so a kernel is compiled once an architecture, never once a product. Every kernel that reads a build trait
-compiles at each carried build. A product row holds no build of its own: the check refuses one.
+compiles at each carried build. An architecture is BUILT when a device part states it (`registry.built`: the graph's default `--//:archs`,
+`BUILT_ARCHS` in `@fsla_env//:flags.bzl`); an architecture no part states is not tabulated either (`tabulated(cc)` is false for it).
 
 <a id="builds-renamed"></a>
 A kernel templated on its build is the same code under a new name, so a refactor compares by signature:
@@ -52,34 +54,26 @@ cannot name a kernel's class-type template argument whose type sits in a namespa
 while a class template carrying it compiles -- so host templates and plans take `Build` itself, kernels its tag.
 
 <a id="traits"></a>
-`traits_of(Build)` is what a kernel's plan reads: the family, the window W ([`window.md`](window.md): a card's,
-chosen per architecture) and the architecture's `Caps`. An architecture is BUILT when its build chooses a window
-(`measure.hardware.built`: the graph's default `--//:archs`, `BUILT_ARCHS` in `@fsla_env//:flags.bzl`); a tabulated
-architecture that is not built leaves it unchosen. sm_90a's is 1,024, provisional until the sm_90 carry's design
-picks it (Blake, 2026-11-09). The check
-(`measure/hardware.py --check`) refuses an architecture whose build names no family of `FAMILIES` or a trait outside
-the family and `BUILD_TRAITS`, and a product holding a `build`.
+`traits_of(Build)` is what a kernel's plan reads: the family and the architecture's `Caps`. The window W is no trait: it is derived from the device's
+facts by the prefill launch function's matcher ([`window.md`](window.md)).
 
 <a id="consumers"></a>
 
 ## Two consumers
 
-- COMPILE TIME reads a BUILD's traits (below): its architecture's capabilities and the build choices. `hardware.cuh`
-  carries every tabulated architecture's `Caps` row, `tabulated(cc)` and `caps_of(cc)`, and every build's
-  `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and names the compiling target's row, and
+- COMPILE TIME reads a BUILD's traits (above): its architecture's capabilities. `hardware.cuh` carries every device part's `Caps` row (`cc`, `regs_per_sm`
+  and the three instruction flags the atoms select code on, the only fields a kernel source reads), `tabulated(cc)` and `caps_of(cc)`, the families
+  and every build's `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and names the compiling target's row, and
   [`arch_runtime.cu`](arch_runtime.md) admits the device by the planner's contract check (the driver's numbers lie in a registered
   context), not by a second table of them.
-- RUN TIME may read rates: the binary carries every architecture's and product's MMA rates (`kMmaRows`), a
-  product's found by the device's name. No entry reads them on this line: no form is chosen by a card's rates
-  (`docs/CONSTITUTION.md#r17`).
-
-`hardware.cuh` also carries the MMA kinds (`Mma`), the order a product's quanta carry their MMA rates in.
+- RUN TIME may read rates: `measure/rates.py` resolves a product's rates by the device's name, for the measurement tools. No form is chosen by a card's
+  rates (`docs/CONSTITUTION.md#r17`).
 
 <a id="sources"></a>
 
 ## Every rate has a source
 
-A rate is `{"cycles": ..., <source>}` with exactly one source:
+A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` with exactly one source:
 
 - `measured` -- a lab (`measure/lab/results/<lab>/sm_XX.json`), its result `row`, and the product it was measured
   `on` (a product's own overrides are measured on it). The check refuses a value off its record's median by more
@@ -129,18 +123,18 @@ a clock an SM, over four schedulers and 32 lanes): `alu`, `fma`, `fmaheavy` (int
 
 ## The check
 
-`python -m measure.hardware --check`: the header is what the file generates; every architecture's capabilities
-are the schema's; every built architecture (one whose build chooses a window) has a row whose
-defaults carry its pipes' and MMAs' rates (`schedulers`, `issue`, `wavefront`, `atomic`, `atomic_wavefront`, every MMA kind);
-every product names a tabulated architecture and its device is that product; every rate is a field the schema
-names, with exactly one source that holds.
+`python -m measure.rates --check` (the lint's `check_hardware`): every architecture named in `measure/rates.json` is one the registry builds; every built
+architecture has a row whose defaults carry its pipes' and MMAs' rates (`schedulers`, `issue`, `wavefront`, `atomic`, `atomic_wavefront`, every MMA kind);
+every product names an architecture priced there and its device is that product; every rate is a field the schema
+names, with exactly one source that holds. The registry's own check (`registry.check`) refuses a device part without its `arch`, its `family` or its
+facts, and an architecture stated by two parts.
 
 <a id="extend"></a>
 
 ## Extending it
 
-- A product: its block under `product`, with the overrides that differ from its architecture (and a
+- A product: its block under `product` in `measure/rates.json`, with the overrides that differ from its architecture (and a
   confirmation lab on the card).
-- An architecture: its `caps` row and its default rates (documented where a document gives them, the rest
-  measured), then the build; [`bringup.md`](../../bringup.md) walks it.
+- An architecture: its device part, then its default rates (documented where a document gives them, the rest
+  measured); [`bringup.md`](../../bringup.md) walks it.
 - A rate: a field in the schema's vocabulary, a value with its source in each row that has it.

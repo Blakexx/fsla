@@ -10,18 +10,16 @@ to open a pull request.
 
 ## 1. Tabulate the architecture's resources
 
-`csrc/fsla/src/common/hardware.json` carries, per architecture, one `caps` row -- the
-INSTRUCTION flags its atoms read plus the FACT fields its plans and the admission read (`smem_per_sm`,
-`smem_per_cta_max`, `regs_per_sm`, `max_threads_per_sm`) -- and its rates; the graph generates
-the header's `Caps`, `tabulated(cc)` and `caps_of(cc)` from it (`//csrc/fsla:hardware_header`; nothing checks the header in)
-([`hardware.md`](internals/common/hardware.md)).
+A DEVICE PART of `hardware/parts/device` states each architecture whole: its `arch` and `family`, and the device facts of the schema (the INSTRUCTION
+capabilities its atoms read among them); the graph generates the header's `Caps`, `tabulated(cc)` and `caps_of(cc)` from it (`//csrc/fsla:hardware_header`;
+nothing checks the header in) ([`hardware.md`](internals/common/hardware.md)). The architecture's rates are `measure/rates.json`'s.
 
 Take the FACT fields (`smem_per_sm` from `cudaDevAttrMaxSharedMemoryPerMultiprocessor`,
 `max_threads_per_sm` from `cudaDeviceProp::maxThreadsPerMultiProcessor`, `regs_per_sm` from
 `cudaDeviceProp::regsPerMultiprocessor`, and the rest) from the CUDA C Programming Guide's
-*Compute Capabilities* table, add an `arch` block to `hardware.json` (its rates too: the documented
+*Compute Capabilities* table, state them in the device part (the rates too, in `measure/rates.json`: the documented
 ones with their document, the undocumented ones measured by `smem_rates` and the other labs on the
-card), and regenerate the header. **Do not guess**: an overstated resource makes `ptxas`
+card). **Do not guess**: an overstated resource makes `ptxas`
 silently discard the launch bound, which is a silent occupancy loss on the architecture
 nobody checked. `check_arch_table()` (`csrc/fsla/src/common/arch_runtime.cu`, called from
 every family's launching entry, carry included) admits the device's card by the planner's contract check: the driver's own
@@ -33,10 +31,10 @@ Then PROBE THE DEVICE, which admits it to the contract: run `//measure/lab:devic
 it names in `unestablished`, and commit it renamed to `<id>.json` with a descriptor composing it. The registry refuses a candidate file, so only a reviewed part
 counts; the build's contract check then covers it ([`internals/hardware/registry.md#probe`](internals/hardware/registry.md#probe)).
 
-## 2. Choose the window, and read the census
+## 2. Add the architecture as a device part, and read the census
 
-An architecture is BUILT when its row's build chooses a window (`measure.hardware.built`,
-[`hardware.md`](internals/common/hardware.md#traits)); choosing it is what makes `--//:archs`'s default name the
+An architecture is added as a device part: it is BUILT when a device part states it (`hardware.registry.built`,
+[`hardware.md`](internals/common/hardware.md#builds)); stating it is what makes `--//:archs`'s default name the
 architecture, the build gate's rule 3 admit it and the graph compile for it. Then:
 
 ```bash
@@ -83,7 +81,7 @@ that depends on how the compiler laid the kernel out.
 ## 5. Open a pull request
 
 **An architecture is always a reviewed PR, never a CI auto-commit.** The diff
-should be: the arch-table row with its window, the regenerated README block, and a description carrying the measured
+should be: the architecture's device part, the regenerated README block, and a description carrying the measured
 spill and register profile with any anomaly explained.
 
 ## Changing the toolchain

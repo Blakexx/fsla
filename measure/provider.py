@@ -148,7 +148,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
     import fsla
     from fsla.ops import carry as carry_ops
     from fsla.ops._ext import extension
-    from measure import hardware
+    from hardware import registry
     from measure.subjects import SUBJECTS
 
     subject = SUBJECTS[name]
@@ -181,7 +181,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
             "widths": list(widths),
             "ptxas": BUILD_CONFIG.get("ptxas"),
             "family_stamp": int(stamp()), "device": torch.cuda.get_device_name(0),
-            "sm": hardware.device_arch(props.major, props.minor),
+            "sm": registry.device_arch(props.major, props.minor),
             "torch": torch.__version__, "fsla_file": fsla_file.relative_to(CHECKOUT).as_posix(),
             "sm_ghz_at_build": carry_ops.sm_clock_ghz()}
     return Timed(call=call, built=cell, instrument="cuda_events", reset=launch.reset,

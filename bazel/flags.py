@@ -6,7 +6,7 @@ with the environment's own interpreter from `tools/build_flags.py` -- the one so
 states no flag of its own.
 
 `NVCC_FLAGS` are the codegen flags without the `-gencode` targets, which the compile rule writes from the build's
-architectures; `BUILT_ARCHS` are the hardware table's built architectures (`measure.hardware.built`), the build's
+architectures; `BUILT_ARCHS` are the registry's built architectures (`hardware.registry.built`), the build's
 default; `TORCH` and `CXX11_ABI` are the environment's torch, for the build record. Docs: docs/build-graph.md#compile.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT)]
 import build_flags  # noqa: E402
 
-from measure import hardware  # noqa: E402
+from hardware import registry  # noqa: E402
 
 
 def _once(flags: list[str]) -> list[str]:
@@ -36,7 +36,7 @@ def main() -> int:
     nvcc_threads = int(os.environ["FSLA_NVCC_THREADS"])
     import torch
 
-    archs = [arch.removeprefix("sm_") for arch in hardware.built()]
+    archs = [arch.removeprefix("sm_") for arch in registry.built()]
     #: the machine's cicc a job, the count the front door's job budget divides by
     nvcc = _once(build_flags.nvcc_flags([], nvcc_threads=nvcc_threads) + list(build_flags.COMMON_NVCC_FLAGS)
                  + build_flags.extension_defines())

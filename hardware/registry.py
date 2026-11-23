@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,10 @@ ROOT = Path(__file__).absolute().parent
 #: declaration that makes it the contract
 PROVENANCE = ("measured_by", "validated_by", "documented_by", "declared_by")
 READS = ("DEVICE", "CALL")
+#: the architecture families, in the order `Family` numbers them (docs/internals/common/hardware.md#families)
+FAMILIES = ("hopper", "blackwell")
+#: the folder of the device parts: a device part states an architecture whole (`arch`, `family` and the device's facts)
+DEVICE = "device/"
 #: the contract a build compiles against when it names none: every descriptor of `descriptors/`. A development build names a NARROWED contract
 #: instead (`descriptors/dev/<name>.json`, marked `"narrowed": true`)
 FULL = "full"
@@ -44,7 +49,8 @@ class Fact:
 @dataclass(frozen=True)
 class Context:
     """One supported run-time context: `descriptor` composed it, `facts` holds every schema fact (an int as (lo, hi), a set as
-    its sorted members), `alternatives` names the facts whose choice made this context one of several."""
+    its sorted members), `alternatives` names the facts whose choice made this context one of several, `arch` is the architecture of the descriptor's
+    one device part."""
     descriptor: str
     facts: dict
     alternatives: tuple[str, ...]
@@ -156,8 +162,6 @@ def descriptors(root: Path = ROOT, folder: str = "descriptors") -> dict[str, dic
             raise RegistryError(f"{path}: a descriptor composes at least one part")
         if not isinstance(data.get("gpus"), str) or not data["gpus"]:
             raise RegistryError(f"{path}: a descriptor names the GPUs it covers (`gpus`), the label the README's table prints")
-        if not isinstance(data.get("arch"), str) or not data["arch"].startswith("sm_"):
-            raise RegistryError(f"{path}: a descriptor names the build architecture it is built for (`arch`: `sm_90a`)")
         out[path.stem] = data
     return out
 
@@ -193,10 +197,109 @@ def expand(descriptor: dict, facts: dict[str, Fact], root: Path = ROOT) -> list[
     missing = [n for n in facts if n not in stated]
     if missing:
         raise RegistryError(f"descriptor {descriptor['name']} states no value for {missing}: a context holds every fact of the schema")
+    devices = [n for n in descriptor["compose"] if n.startswith(DEVICE)]
+    if len(devices) != 1:
+        raise RegistryError(f"descriptor {descriptor['name']} composes {len(devices)} device parts {devices}: a descriptor is built for the one architecture its device part states")
+    arch = part(devices[0], root).get("arch")
     alternatives = tuple(n for n in facts if len(stated[n]) > 1)
     names = list(facts)
-    return [Context(descriptor["name"], dict(zip(names, combo)), alternatives, descriptor["gpus"], descriptor["arch"])
+    return [Context(descriptor["name"], dict(zip(names, combo)), alternatives, descriptor["gpus"], arch)
             for combo in itertools.product(*(stated[n] for n in names))]
+
+
+@dataclass(frozen=True)
+class Architecture:
+    """One architecture as its device part states it: the build's name (`sm_90a`), the device's compute capability, regs and instruction capabilities and
+    the family."""
+    name: str
+    part: str
+    cc: int
+    family: str
+    regs_per_sm: int
+    instructions: tuple[str, ...]
+
+
+def cc_of(arch: str) -> int:
+    """An architecture's compute capability x 10: `sm_90a` (built with its architecture-specific features) 900, as `__CUDA_ARCH__` reads there."""
+    return int(arch.removeprefix("sm_").rstrip("a")) * 10
+
+
+def _point(data: dict, fname: str, path: Path) -> int:
+    value = data["facts"].get(fname, {}).get("value")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RegistryError(f"{path}: a device part states {fname} as one point, not {value!r}")
+    return value
+
+
+def architecture(name: str, root: Path = ROOT) -> Architecture:
+    """The architecture the device part `name` states, or a RegistryError: a part names its `arch` and `family`, states `cc` (the compute capability its `arch` names),
+    `regs_per_sm` and `instructions`, each as one point or set."""
+    data = part(name, root)
+    path = root / "parts" / f"{name}.json"
+    arch = data.get("arch")
+    if not isinstance(arch, str) or not re.fullmatch(r"sm_\d+a?", arch):
+        raise RegistryError(f"{path}: a device part names the architecture it is built as (`arch`: `sm_90a`)")
+    if data.get("family") not in FAMILIES:
+        raise RegistryError(f"{path}: a device part names its family (`family`), one of {', '.join(FAMILIES)}")
+    cc, regs = (_point(data, f, path) for f in ("cc", "regs_per_sm"))
+    if cc != cc_of(arch):
+        raise RegistryError(f"{path}: cc is {cc}, which is not the compute capability {arch} names ({cc_of(arch)})")
+    held = data["facts"].get("instructions", {}).get("value")
+    if not isinstance(held, dict) or set(held) != {"set"}:
+        raise RegistryError(f"{path}: a device part states instructions as one {{\"set\": [members]}}")
+    return Architecture(arch, name, cc, data["family"], regs, tuple(held["set"]))
+
+
+def architectures(root: Path = ROOT) -> list[Architecture]:
+    """The architectures the device parts state, by compute capability, each once."""
+    found = [architecture(n, root) for n in parts(root) if n.startswith(DEVICE)]
+    for a in found:
+        twin = next((b for b in found if b is not a and b.name == a.name), None)
+        if twin is not None:
+            raise RegistryError(f"parts {a.part} and {twin.part} both state the architecture {a.name}: an architecture is stated once")
+    return sorted(found, key=lambda a: a.cc)
+
+
+def device_point(name: str = "device/hopper_sm90a", root: Path = ROOT) -> dict[str, int]:
+    """The integer facts of a device part as one device states them, in the schema's order: a point as it is, a range at its upper end (the largest device the part
+    admits). The synthetic devices of the tests are made from it."""
+    facts = schema(root)
+    data = part(name, root)["facts"]
+    return {n: _normalize(f, data[n]["value"], name)[1] for n, f in facts.items() if f.read == "DEVICE" and f.type == "int" and n in data}
+
+
+def built(root: Path = ROOT) -> list[str]:
+    """The BUILT architectures, by compute capability: those a device part states (docs/internals/hardware/registry.md#architectures). The one
+    statement of which architectures the graph builds by default (`bazel/flags.py`'s `BUILT_ARCHS`, `--//:archs`)."""
+    return [a.name for a in architectures(root)]
+
+
+def arch_of(cc: int, root: Path = ROOT) -> str:
+    """The architecture a compute capability x 10 names (900 `sm_90a`): the one map back from `cc_of`."""
+    for a in architectures(root):
+        if a.cc == cc:
+            return a.name
+    raise SystemExit(f"compute capability {cc // 100}.{cc // 10 % 10} has no device part in the registry: an unbuilt architecture")
+
+
+def device_arch(major: int, minor: int, root: Path = ROOT) -> str:
+    """A device's architecture by its compute capability (9, 0 `sm_90a`)."""
+    return arch_of((10 * major + minor) * 10, root)
+
+
+def builds_header(archs: list[str], root: Path = ROOT) -> str:
+    """`build/generated/builds.inc`: the builds a binary of these architectures (`["90a"]`) carries, one
+    each -- the set `common/select.cuh`'s `build_switch` branches over (docs/internals/common/select.md#carried)."""
+    found = architectures(root)
+    want = {f"sm_{a}" for a in archs}
+    unknown = sorted(want - {a.name for a in found})
+    if unknown:
+        raise SystemExit(f"builds: {', '.join(unknown)} has no device part in the registry")
+    cases = " ".join(f"F({a.cc})" for a in found if a.name in want)
+    return ("// GENERATED by hardware/registry.py (builds_header) -- do not edit, regenerate.\n"
+            "// THE BUILDS THIS BINARY CARRIES. see docs/internals/common/select.md#carried\n"
+            "#pragma once\n"
+            f"#define FSLA_BUILDS(F) {cases}\n")
 
 
 def narrowed(name: str, root: Path = ROOT) -> dict:
@@ -283,14 +386,19 @@ def contexts(root: Path = ROOT, contract: str = FULL) -> list[Context]:
 
 
 def check(root: Path = ROOT) -> None:
-    """The schema, every part (composed or not) and every descriptor (the full contract's, the narrowed ones and the owed ones), the contract's duplicates and
-    the owed contexts' overlap with the contract, or a RegistryError."""
+    """The schema, every part (composed or not), every architecture a device part states and every descriptor (the full contract's, the narrowed ones and the
+    owed ones), the contract's duplicates and the owed contexts' overlap with the contract, or a RegistryError."""
     facts = schema(root)
     for name in parts(root):
         for fname in part(name, root)["facts"]:
             if fname not in facts:
                 raise RegistryError(f"part {name}: {fname} is no fact of the schema")
+    for cap, _, source, _ in CAPS:
+        if source == "instruction" and cap not in facts["instructions"].members:
+            raise RegistryError(f"the generated Caps holds {cap}, which is no member of the schema's `instructions`")
     contexts(root)
+    if not architectures(root):
+        raise RegistryError("the registry holds no device part: no architecture is built")
     for name in descriptors(root, "descriptors/dev"):
         narrowed(name, root)
     owed(root)
@@ -362,6 +470,70 @@ def facts_header(facts: dict[str, Fact]) -> str:
             out.append(f"  if (fact == \"{f.name}\" && member == \"{m}\") return {i};\n")
     out.append("  return -1;\n}\n\n}  // namespace fsla::plan\n")
     return "".join(out)
+
+
+#: the fields of the generated `Caps`, in order: (name, C++ type, where a row's value comes from, doc). A `fact` is the device part's fact of that name, an
+#: `instruction` whether the part's `instructions` set holds a member of that name; only what a kernel source reads is a field
+CAPS = (
+    ("cc", "int", "fact", "compute capability x10, e.g. 900"),
+    ("bf16_cvt_packed", "bool", "instruction", "two fp32 -> one b32 of two bf16, one instruction"),
+    ("bf16_simd_arith", "bool", "instruction", "elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith"),
+    ("bf16_simd_fma", "bool", "instruction", "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"),
+    ("regs_per_sm", "int", "fact", ""),
+)
+
+
+def _camel_k(name: str) -> str:
+    return "k" + "".join(p[:1].upper() + p[1:] for p in name.split("_"))
+
+
+def arch_header(archs: list[Architecture]) -> str:
+    """`common/hardware.cuh`'s text: the Caps row of every architecture a device part states, the families, the builds and each build's traits."""
+    def cap(a: Architecture, name: str, kind: str) -> str:
+        value = {"cc": a.cc, "regs_per_sm": a.regs_per_sm}[name] if kind == "fact" else ("true" if name in a.instructions else "false")
+        return f".{name} = {value}"
+
+    out = ["// common/hardware.cuh -- GENERATED by the build graph (hardware/emit.py --arch-header) from the registry's device parts (hardware/parts/device)",
+           "// (edit those, not this). see docs/internals/common/hardware.md",
+           "#pragma once", "", "// clang-format off", "namespace denseref {", "namespace arch {", "", "struct Caps {"]
+    for name, ctype, _, doc in CAPS:
+        out.append(f"  {ctype} {name};" + (f"  // {doc}" if doc else ""))
+    out += ["};", "", "//: THE TABULATED SET -- see docs/internals/common/arch_caps.md#tabulated",
+            "constexpr bool tabulated(int cc) {",
+            "  return " + (" || ".join(f"cc == {a.cc}" for a in archs) or "false") + ";", "}", "",
+            "constexpr Caps caps_of(int cc) {"]
+    for a in archs:
+        lines, line = [], ""
+        for init in (cap(a, name, kind) for name, _, kind, _ in CAPS):
+            if line and len(line) + len(init) + 2 > 108:
+                lines.append(line + ",")
+                line = ""
+            line = f"{line}, {init}" if line else init
+        lines.append(line)
+        out.append(f"  // {a.name}: {a.part}")
+        out.append(f"  if (cc == {a.cc})")
+        out.append("    return Caps{" + lines[0])
+        out += [f"                {text}" for text in lines[1:]]
+        out[-1] += "};"
+    out += ["  return Caps{};", "}", "",
+            "//: THE ARCHITECTURE FAMILIES -- see docs/internals/common/hardware.md#families",
+            "enum class Family : int { " + ", ".join(_camel_k(f) for f in FAMILIES) + " };",
+            "//: the families' names, in `Family`'s order: the one source the host's readers (`device_card`) take a name from",
+            "constexpr const char* kFamilyNames[] = {" + ", ".join(f'"{f}"' for f in FAMILIES) + "};", "",
+            "//: A BUILD: the key a kernel compiles at, its compute capability. see docs/internals/common/hardware.md#builds",
+            "struct Build {", "  int cc;", "};", "",
+            "//: A BUILD'S TRAITS: what a kernel's plan reads. see docs/internals/common/hardware.md#traits",
+            "struct Traits {", "  Family family;", "  Caps caps;", "};", "",
+            "constexpr Traits traits_of(Build b) {"]
+    for a in archs:
+        out.append(f"  if (b.cc == {a.cc})")
+        out.append(f"    return Traits{{Family::{_camel_k(a.family)}, caps_of({a.cc})}};")
+    out += ["  return Traits{};", "}", "",
+            "//: A BUILD AS A TYPE, the form a kernel takes it in: docs/internals/common/hardware.md#build-tag",
+            "template <Build B>", "struct BuildTag {", "  static constexpr Build build = B;",
+            "  static constexpr Traits traits = traits_of(B);", "};", "",
+            "}  // namespace arch", "}  // namespace denseref", "", "// clang-format on", ""]
+    return "\n".join(out)
 
 
 def contract_header(contexts_: list[Context], facts: dict[str, Fact], contract: str = FULL) -> str:

@@ -12,28 +12,21 @@ load(":units.bzl", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files([
-    "src/common/hardware.json",
-])
-
 #: every source the kernel list reads
 filegroup(
     name = "sources",
     srcs = glob(["src/**"]),
 )
 
-#: THE HARDWARE TABLE'S HEADER, `common/hardware.cuh`, generated from `common/hardware.json` and checked in nowhere
+#: THE ARCHITECTURES' HEADER, `common/hardware.cuh`, generated from the registry's device parts (`hardware/parts/device`) and checked in nowhere
 #: (docs/internals/common/hardware.md); it does not depend on the build's parameters
 genrule(
     name = "hardware_header",
-    srcs = [
-        "//:measure/__init__.py",
-        "src/common/hardware.json",
-    ],
+    srcs = ["//hardware:registry"],
     outs = ["hardware/common/hardware.cuh"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath //:measure/hardware.py) --header $@",
+    cmd = "$(execpath @fsla_env//:python) $(execpath //hardware:emit.py) --arch-header $@",
     tools = [
-        "//:measure/hardware.py",
+        "//hardware:emit.py",
         "@fsla_env//:python",
     ],
 )

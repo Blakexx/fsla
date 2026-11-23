@@ -14,14 +14,16 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
 
 from _record import Record, card
 
 RECORD = "measure/lab/results/device_probe/sm_90a.json"
 #: the schema's device facts the probe reads, each the record's row of the same name
 READ = ("cc", "regs_per_sm", "smem_per_sm", "smem_per_cta_optin", "max_threads_per_sm", "sm_count", "l2_bytes")
-#: the facts only an experiment or a document establishes, which the probe cannot read: taken from the architecture table's row of the same compute capability
-TABLE = "csrc/fsla/src/common/hardware.json"
+#: the facts only an experiment or a document establishes, which the probe cannot read: `tensor` from the rates' MMA kinds of the architecture of the same compute
+#: capability (`RATES`), `instructions` from the registry's device part of the same compute capability
+RATES = "measure/rates.json"
 ESTABLISHED = ("tensor", "instructions")
 
 
@@ -32,19 +34,31 @@ def model_id(cc: int, name: str) -> str:
     return f"cc{cc}_{words}"
 
 
-def arch_row(root: pathlib.Path, cc: int) -> tuple[str, dict] | None:
-    """The architecture table's row whose compute capability is `cc` (`sm_90a` is 900), or None where the table has none."""
-    table = json.loads((root / TABLE).read_text())
+def mma_kinds(root: pathlib.Path, cc: int) -> list[str] | None:
+    """The MMA kinds `measure/rates.json` prices for the architecture whose compute capability is `cc` (`sm_90a` is 900), or None where it names none."""
+    table = json.loads((root / RATES).read_text())
     for arch, row in table["arch"].items():
         if 10 * int(re.match(r"sm_(\d+)", arch).group(1)) == cc:
-            return arch, row
+            return sorted(row["rates"]["mma"])
+    return None
+
+
+def instructions_of(root: pathlib.Path, cc: int) -> tuple[str, list[str]] | None:
+    """`(part, instructions)` of the registry's device part of compute capability `cc`, or None where the registry has none."""
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from hardware import registry
+
+    for a in registry.architectures(root / "hardware"):
+        if a.cc == cc:
+            return a.part, sorted(a.instructions)
     return None
 
 
 def candidate(root: pathlib.Path, record: dict) -> tuple[str, dict]:
     """The record's candidate part: `(id, part)`. Each device fact the probe read is `{"value", "measured_by"}` naming its row of the record; `tensor` and
-    `instructions` come from the table's row of the device's compute capability (`documented_by`, never re-measured here) and are left out,
-    named in `unestablished`, where the table has no such row. A record with a failed check is refused."""
+    `instructions` come from the rates and the registry's device part of the device's compute capability (`documented_by`, never re-measured here) and are left out,
+    named in `unestablished`, where either has none. A record with a failed check is refused."""
     assert all(c["ok"] for c in record["checks"]), "lab page: the record holds a check that failed"
     rows = Record({r["name"]: r["median"] for r in record["results"]})
     cc = int(rows["cc"])
@@ -52,15 +66,14 @@ def candidate(root: pathlib.Path, record: dict) -> tuple[str, dict]:
     by = f"{RECORD}: the row {{row}} (experiment device_probe on {record['device']}, driver {record['driver']}, {record['date'][:10]}, the experiment at {record['git']['sha'][:8]})"
     facts: dict = {n: {"value": int(rows[n]), "measured_by": by.format(row=n)} for n in READ}
     unestablished: list[str] = []
-    found = arch_row(root, cc)
-    if found is None:
+    kinds, held = mma_kinds(root, cc), instructions_of(root, cc)
+    if kinds is None or held is None:
         unestablished = list(ESTABLISHED)
     else:
-        arch, row = found
-        facts["tensor"] = {"value": {"set": sorted(row["rates"]["mma"])},
-                           "documented_by": f"{TABLE} arch.{arch}.rates.mma: the tensor-core instruction kinds of the table's row for compute capability {cc}"}
-        facts["instructions"] = {"value": {"set": sorted(c for c, v in row["caps"].items() if v is True)},
-                                 "documented_by": f"{TABLE} arch.{arch}.caps: the instruction capabilities of the table's row for compute capability {cc}, each cap's page in docs/internals/common/arch_caps.md"}
+        facts["tensor"] = {"value": {"set": kinds},
+                           "documented_by": f"{RATES}: the tensor-core instruction kinds the rates price for compute capability {cc}"}
+        facts["instructions"] = {"value": {"set": held[1]},
+                                 "documented_by": f"the registry's {held[0]}: the instruction capabilities of compute capability {cc}, each cap's page in docs/internals/common/arch_caps.md"}
     part = {
         "name": f"device/{ident}",
         "doc": f"CANDIDATE written by `//measure/lab:device_probe` for {record['device']}: a reviewer reads it, completes what it names in `unestablished`, and renames the file to "
@@ -91,7 +104,7 @@ the register's identifiers): WHAT THE DEVICE REPORTS, each a row of the record:
 
 WHAT IT DECIDES.
 - THE CANDIDATE PART `hardware/parts/device/{ident}.candidate.json` states each fact the schema reads from the device with the row that measured it; `tensor` and `instructions`
-  come from the architecture table's row of compute capability {int(R["cc"])}{"" if part["unestablished"] == [] else " -- which has none, so they are named in `unestablished` for the reviewer"}.
+  come from the rates and the registry's device part of compute capability {int(R["cc"])}{"" if part["unestablished"] == [] else " -- which has none, so they are named in `unestablished` for the reviewer"}.
 - THE MODEL KEY is the compute capability and the driver's name; the PCI slot the driver reports (`pci_device_id_slot`) is the machine's, not the model's.
 
 Record: `{RECORD}`.

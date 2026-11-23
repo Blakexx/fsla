@@ -21,6 +21,7 @@
 #include "common/build_stamp.cuh"
 #include "common/select.cuh"
 #include "common/torch_seam.cuh"
+#include "plan/prefill_launch.h"
 #include "src/common/geom_api.cuh"
 #include "src/common/plan/plan_api.cuh"
 #include "src/decode/decode_api.cuh"
@@ -91,10 +92,13 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
 }
 
 //: A DEVICE'S CARD (`common/select.cuh`): its compute capability, its family's name (`kFamilyNames`, generated from
-//: the one list the `Family` enum is) and W
+//: the one list the `Family` enum is) and W, the window the planner's matcher derives from the device's facts (`plan::prefill_window`)
 std::tuple<int64_t, std::string, int64_t> device_card_op(int64_t device) {
   const fsla::Card& c = fsla::card_of(static_cast<int>(device));
-  return {c.cc, denseref::arch::kFamilyNames[static_cast<int>(c.traits.family)], c.traits.window};
+  fsla::plan::Descriptor facts;
+  facts.assign("cc", fsla::plan::Interval{c.cc, c.cc});
+  return {c.cc, denseref::arch::kFamilyNames[static_cast<int>(c.traits.family)],
+          fsla::plan::prefill_window(facts)};
 }
 
 }  // namespace
