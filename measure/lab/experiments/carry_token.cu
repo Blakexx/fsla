@@ -1472,7 +1472,8 @@ int main(int argc, char** argv) {
                            {0, 0, kWide | kFull | kTabled | kAhead}, {2, 0, kWide | kFull | kTabled | kAhead | kAlone},
                            {0, 0, kWide | kFull | kTabled | kSpread | kAhead}, {2, 0, kWide | kFull | kTabled | kSpread | kAhead | kAlone},
                            {0, 0, kTabled | kAhead}, {0, 0, kTabled | kSpread | kAhead},
-                           {0, 0, kWide | kFull | kListed}};
+                           {0, 0, kWide | kFull | kListed}, {2, 0, kWide | kFull}, {3, 0, kWide | kFull}, {2, 0, kWide | kFull | kListed},
+                           {3, 0, kWide | kFull | kListed}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1582,5 +1583,10 @@ int main(int argc, char** argv) {
   //: readers and on a half in two padded passes
   run<0, 0, 3, kWide | kFull | kListed>(b, held);
   run<0, 0, 3, kWide | kFull | kListed, 1>(b, held);
+  //: THE TWO READOUTS' TIMELINES on the same packets: the fixed readout's and the listed one's, coarse and every stamp
+  run<2, 0, 3, kWide | kFull>(b, held);
+  run<3, 0, 3, kWide | kFull>(b, held);
+  run<2, 0, 3, kWide | kFull | kListed>(b, held);
+  run<3, 0, 3, kWide | kFull | kListed>(b, held);
   return 0;
 }
