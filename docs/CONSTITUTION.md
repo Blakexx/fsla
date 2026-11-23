@@ -113,6 +113,16 @@ Dense, sparse, mixed, clustered, small and large L, small and large N. Never ove
 verdict to one cell: every design states its cost in each regime, every stage is probed at both ends of the
 distribution, and a mechanism that wins one regime by losing another is a finding to rule on, not a win. Dense is the
 worst case and a test of the kernel, never a regime to concede.
+EVERY PATTERN IS PROVIDED; ONE REGIME IS PROMISED (Blake, 2026-11-23: "it can just be something we provide, and we dont
+promise it will work amazingly always, because its not the ideal regime"). Each side walks each level by its lists or
+whole, independently, at every depth the contract holds. A side with several listed levels, or with none walked whole,
+is the same mechanisms: a list is a combination of its listed levels' digits, a token is on it where every one of those
+levels' masks has it, and a listed level can serve as a step's columns, its lines carrying zeros. No side needs a level
+walked whole: the floor the fp16 family kept under a dense level's zero went with that family (R17;
+[`architecture/precision.md`](architecture/precision.md)). The performance targets are stated for the regime the design
+is built for; outside it a pattern is correct and its cost is its own.
+NOT YET SO: what is built and measured is one listed and one whole level a side at depth two
+([`lab/carry_token.md`](lab/carry_token.md)); which patterns have arms is the contract's to state.
 
 <a id="r11"></a>
 ## R11. The axis law
@@ -205,7 +215,14 @@ card; the milestone carries the drift guards (lints, docs).
 A box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set is the
 plans. A CTA OWNS ITS BOXES -- on hopper TWO (Blake, 2026-11-12): two fold warpgroups, split by the sparse level
 between them and by values across their warps, each holding one box's state; and one readout warpgroup that
-accumulates from the state both publish, whether the two sides' carves differ or are equal (R17). A CTA loads and stores its boxes at entry and exit, so
+accumulates from the state both publish, whether the two sides' carves differ or are equal (R17). WHICH LEVEL THE TWO FOLDS SPLIT ALONG is decided apart from the
+CTA's region (Blake, 2026-11-23: "the cta box decision is decoupled from how we execute it. we know that we want a larger
+read dense allocation than fold, but once thats set, we can partition fold how we please"): the region gives the read
+side its larger extent along a level it walks whole, and inside it the folds split along a level the write side walks by
+its lists first, otherwise along one it walks whole ("take any write sparse level first, otherwise write dense"). Split
+along a listed level, each fold has its own lists, tokens and steps as wide as the box; what the other split would
+share, and what uneven halves cost this one, are not measured, and the launch function that derives the split is owed
+([`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its boxes at entry and exit, so
 its read-side warps' union and its write-side warps' union are the same leaves; the CTA's boxes are the SM's at one
 CTA per SM, the goal (R15). Where the accumulator lives (registers, tensor memory) changes how a warp touches its
 share, never who owns what.
@@ -315,10 +332,12 @@ MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns
 box, executed as four 64-column steps on one run of value lines, is the four-digit window, exact; and a kernel holding a
 per-list fold and a grouped fold, choosing by a word read before the loop, costs nothing a window
 ([`lab/carry_token.md`](lab/carry_token.md)).
-The voted loop is 4,985 cycles a window against a fixed block's 4,709 on the same packets, and exact on a packet whose
+The voted loop is 4,985 cycles a window against the cleared fixed block's 4,709 on the same packets, and exact on a packet whose
 groups take four, two, one and one steps ([`lab/carry_token.md`](lab/carry_token.md)).
 NOT YET SO: the loop is measured within one pass of the tiles' room, eight steps a box; a window that needs more is a
 second pass, which is not built ([`open-work.md`](open-work.md)).
 ON BLACKWELL (R8; Blake, 2026-11-22) the layout half holds unchanged. The step-shape half as written is hopper's: a wgmma
 step's shape pins its accumulator's registers, and the 64-column price is an H100 record. Blackwell's widest step and
-where its shape is chosen are owed with its bring-up ([`open-work.md`](open-work.md)).
+where its shape is chosen are owed with its bring-up ([`open-work.md`](open-work.md)). A group's count of steps is the
+layout's and holds there; the form of the loop's test (a warp vote, what ptxas leaves unserialized on sm_90a) is hopper's,
+owed with the same bring-up.

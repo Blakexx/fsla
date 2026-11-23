@@ -296,9 +296,9 @@ def main(argv: list[str]) -> int:
     a = ap.parse_args(argv)
 
     depth = len(a.widths)
-    for name in ("read_listed", "write_listed", "box", "cluster"):
+    for name, flag in (("read_listed", "--read-sparse"), ("write_listed", "--write-sparse"), ("box", "--box"), ("cluster", "--cluster")):
         if len(getattr(a, name)) != depth:
-            raise SystemExit(f"carry_floor: --{name.replace('_', '-')} takes one value a level ({depth})")
+            raise SystemExit(f"carry_floor: {flag} takes one value a level ({depth})")
     for width, b, c in zip(a.widths, a.box, a.cluster):
         if width % b or (width // b) % c:
             raise SystemExit(f"carry_floor: a level of {width} digits is not whole boxes of {b} in whole clusters of {c}")
