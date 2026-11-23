@@ -67,7 +67,8 @@
 // warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
 // stored, the arrival. THE LISTED READOUT's pass is that trip in a loop a half on the packet's count, its test a warp
-// vote: the lane's entry and its reader's row loaded two passes ahead through the packet (two chained global loads), a
+// vote: the lane's entry loaded three passes ahead and its reader's row two, by an entry that has landed (the readout binds
+// the read side, and a row's load that waited on its entry's stalled it a pass), a
 // step's A the tile of its slot's digit, the half's arrival at its groups read after its last pass's steps; its drain
 // warp holds a group's 16 lines of the packet (two loads, issued a group ahead) and adds where they say; a window's
 // counts are loaded a window ahead in both roles: neither waits on a load of the packet.
@@ -161,7 +162,7 @@ constexpr uint32_t listed_token(uint32_t source, uint32_t entry) {
 //: (zero: a PAD, a place no reader holds) -- then the tokens' output lines as the drain warps take them (group, warp,
 //: the warp's 16), two bytes each; then the slots' read digits, a byte each. A half's passes name digits of that half
 constexpr int kPassLines = 128, kPassDigits = 192, kPassWords = 196, kReadPasses = 4;
-constexpr int kReadHead = kCallWindows, kReadBlock = kReadHead + (kCallWindows * kReadPasses + 2) * kPassWords;
+constexpr int kReadHead = kCallWindows, kReadBlock = kReadHead + (kCallWindows * kReadPasses + 3) * kPassWords;
 static_assert(kPassWords % 4 == 0 && kReadHead % 4 == 0 && kPassLines % 4 == 0);
 //: a list's entries in a window, 8 to 24 and a window's 256: lists `2 p` and `2 p + 1` are 16 more and less the same
 //: (layouts 3 and 4: every list 16 entries, a token on ALL FOUR digits of its group -- a group's 16 tokens)
@@ -817,23 +818,31 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
   //: the lane's (token, box) of a slot: token `lane % 16` of the warp's slot of a group on box `lane / 16`
   const int n = lane & 15, box = lane >> 4;
   const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
-  //: A PASS'S SET: a group's entry of the lane and its reader's row, and the group's slots' digits; loaded two passes ahead
-  struct Set {
-    uint4 row[kG];
+  //: A PASS'S LIST: a group's entry of the lane and the group's slots' digits, loaded three passes ahead. ITS SET: the list
+  //: and the entries' readers' rows, loaded two passes ahead by entries that have landed -- no load waits on another
+  struct List {
     uint32_t entry[kG], digits[kG];
   };
-  const auto load = [&](uint32_t pass) {
-    Set set;
+  struct Set {
+    List list;
+    uint4 row[kG];
+  };
+  const auto list_of = [&](uint32_t pass) {
+    List list;
     const uint32_t* const record = block + kReadHead + pass * kPassWords;
 #pragma unroll
-    for (int g = 0; g < kG; ++g) {
-      set.entry[g] = record[16 * (4 * g + warp) + n];
-      set.digits[g] = record[kPassDigits + g];
-      set.row[g] = reinterpret_cast<const uint4*>(dense)[reader_row(set.entry[g] & 0xffffu, box)];
-    }
+    for (int g = 0; g < kG; ++g) list.entry[g] = record[16 * (4 * g + warp) + n], list.digits[g] = record[kPassDigits + g];
+    return list;
+  };
+  const auto set_of = [&](const List& list) {
+    Set set;
+    set.list = list;
+#pragma unroll
+    for (int g = 0; g < kG; ++g) set.row[g] = reinterpret_cast<const uint4*>(dense)[reader_row(list.entry[g] & 0xffffu, box)];
     return set;
   };
-  Set now = load(0), next = load(1);
+  Set now = set_of(list_of(0)), next = set_of(list_of(1));
+  List far = list_of(2);
   float d[kG * kChunkDigits][8];
   uint8_t* const lines = smem + kCoefAt + (2 * warp + box) * kCoefTile + ((n >> 3) * 17 + (n & 7)) * 16;
   const uint32_t mine = lab::held(base + static_cast<uint32_t>(kPanelAt + (8 * (lane >> 4) + (lane & 7)) * kRowBytes
@@ -856,7 +865,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
         //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
         for (int g = 0; g < kG; ++g) {
-          const float weight = static_cast<float>(now.entry[g] >> 16 & 255u);
+          const float weight = static_cast<float>(now.list.entry[g] >> 16 & 255u);
           const uint32_t word[4] = {now.row[g].x, now.row[g].y, now.row[g].z, now.row[g].w};
 #pragma unroll
           for (int h = 0; h < 2; ++h) {
@@ -879,16 +888,17 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
 #pragma unroll
           for (int j = 0; j < kChunkDigits; ++j) {
             //: the slot's digit's tile of each box's image
-            const uint32_t image = base + kImageAt + (now.digits[g] >> (8 * j) & 255u) * kImageTile;
+            const uint32_t image = base + kImageAt + (now.list.digits[g] >> (8 * j) & 255u) * kImageTile;
 #pragma unroll
             for (int bx = 0; bx < 2; ++bx)
               lab::wg_bf16_n16_ss(d[g * kChunkDigits + j], lab::wg_desc(image + bx * kBoxBytes, 8, kBrickLines),
                                   lab::wg_desc(tiles + (g * 8 + 2 * j + bx) * kCoefTile, 8, 17), bx != 0);
           }
         lab::wg_commit();
-        //: the set of the pass after next, issued under the steps
+        //: the set of the pass after next and the list of the pass after that, issued under the steps
         now = next;
-        next = load(pass + 2);
+        next = set_of(far);
+        far = list_of(pass + 3);
         steps_done(tr, kStepsRead);
         //: the half's tile groups are read once its last pass's steps are
         if (__all_sync(0xffffffffu, p + 1 == count) != 0) {
