@@ -146,6 +146,8 @@ constexpr int kTilesReady = 0, kTilesRead = 32, kPanelReady = 64, kPanelFreed = 
 constexpr int kListsReady = 112;
 //: the named barriers: a box's fold warpgroup together behind its stores, and the readout's
 constexpr int kPoolId = 1, kReadId = 11;
+//: (`kOwn`) the four drain warps together, before a half of the lists is rewritten
+constexpr int kDrainId = 12;
 constexpr int kOutWindows = 4;
 //: a window's steps are this many rounds of its 16 lists
 constexpr int kBlockRounds = 2;
@@ -727,7 +729,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int k = (c + g) % kChunks, digit = 8 * (k >> 1) + (k & 1) + 2 * warp;
       uint32_t place = static_cast<uint32_t>(n);
       if constexpr (OWN != 0)
-        place = static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(smem + kScanAt + 512 * ((c / kChunks) & 1))[16 * digit + n]) >> 6;
+        place = static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(smem + kScanAt + 512 * ((c / kChunks) & 1))[16 * digit + n]);
       reader_at[s][g] = reader_of(blockIdx.x, ((c + g) / kChunks) * kWindow + 16 * digit + place);
       row[s][g] = reinterpret_cast<const uint4*>(dense)[reader_row(reader_at[s][g], box)];
     }
@@ -1206,16 +1208,23 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
 }
 
 //: A DRAIN WARP'S LISTING of its four read digits of a window: a lane's words of the read mask and each digit's live tokens
-//: before them; a digit's live tokens' places, in order, two bytes each, to `lists` (16 places a digit)
+//: before them; a digit's live tokens' LINES, in order, two bytes each, to `lists` (16 a digit) -- the lab's line of a
+//: token is its place over 64, where a kernel's is the place itself
 __device__ __forceinline__ void list_places(uint16_t* lists, uint4 mask, uint32_t counts, int lane) {
   uint32_t word[4] = {mask.x, mask.y, mask.z, mask.w};
 #pragma unroll
   for (int digit = 0; digit < 4; ++digit) {
     uint32_t before = counts >> (8 * digit) & 255u;
+    //: a lane's first live token, with no vote; then a round a further one, until no lane holds any
+    if (word[digit] != 0u) {
+      lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
+      ++before;
+      word[digit] &= word[digit] - 1u;
+    }
 #pragma unroll 1
     while (__any_sync(0xffffffffu, word[digit] != 0u) != 0) {
       if (word[digit] != 0u) {
-        lists[16 * digit + (before & 15u)] = static_cast<uint16_t>(32 * lane + __ffs(static_cast<int>(word[digit])) - 1);
+        lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
         ++before;
         word[digit] &= word[digit] - 1u;
       }
@@ -1265,6 +1274,9 @@ __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long lon
     const uint32_t counts = early_before;
     early = mask_of(w + 2);
     early_before = before_of(w + 2);
+    //: the half the next window's lists go to holds the window before's, which the other drain warps may still be adding
+    //: from: the four meet first (the readout took its places from that half a window ago)
+    lab::bar_sync(kDrainId, kGroup);
     list_places(lists_of(w + 1) + 64 * mine, mask, counts, lane);
     lab::bulk_fence();
     __syncwarp();
@@ -1280,15 +1292,18 @@ __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long lon
       //: the chunk's first digit, and the lane's word of that digit's first line
       const int digit0 = 8 * (k >> 1) + (k & 1);
       const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow) + (w % kOutWindows) * kWindow + 16 * digit0;
-      uint32_t* const at = out + first * (kChannels / 2) + lane;
+      uint8_t* const at = reinterpret_cast<uint8_t*>(out + first * (kChannels / 2) + lane);
+      //: the warp's first reader's place of the chunk's first digit: every other is a constant on from it
+      const uint16_t* const places = lists + 16 * digit0 + mine;
 #pragma unroll
       for (int batch = 0; batch < kBatches; ++batch) {
 #pragma unroll
         for (int i = 0; i < kBatch; ++i) {
           const int m = batch * kBatch + i;
           //: the warp's token `m`: digit `digit0 + 2 (m / 4)`'s reader `mine + 4 (m % 4)`, its line its place in its list
-          const uint32_t place = static_cast<uint32_t>(lists[16 * (digit0 + 2 * (m / 4)) + mine + 4 * (m % 4)]) >> 6;
-          lab::red_add_f16x2(at + (32 * (m / 4) + place) * (kChannels / 2), held[batch & 1][i]);
+          //: (a line is 128 bytes)
+          const uint32_t bytes = static_cast<uint32_t>(places[32 * (m / 4) + 4 * (m % 4)]) << 7;
+          lab::red_add_f16x2(reinterpret_cast<uint32_t*>(at + 32 * (m / 4) * (2 * kChannels) + bytes), held[batch & 1][i]);
         }
       }
       __syncwarp();
