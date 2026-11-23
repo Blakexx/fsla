@@ -213,8 +213,8 @@ card; the milestone carries the drift guards (lints, docs).
 ## R20. The ownership unit is the CTA's boxes
 
 A box is the carve's box (per-level extents and a channel extent), carved per side by its plan; the shape set is the
-plans. A CTA OWNS ITS BOXES -- on hopper TWO (Blake, 2026-11-12): two fold warpgroups, split by the sparse level
-between them and by values across their warps, each holding one box's state; and one readout warpgroup that
+plans. A CTA OWNS ITS BOXES -- on hopper TWO (Blake, 2026-11-12): two fold warpgroups, split along one level
+between them (which level, below) and by values across their warps, each holding one box's state; and one readout warpgroup that
 accumulates from the state both publish, whether the two sides' carves differ or are equal (R17). WHICH LEVEL THE TWO FOLDS SPLIT ALONG is decided apart from the
 CTA's region (Blake, 2026-11-23: "the cta box decision is decoupled from how we execute it. we know that we want a larger
 read dense allocation than fold, but once thats set, we can partition fold how we please"): the region gives the read
