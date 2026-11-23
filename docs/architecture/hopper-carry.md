@@ -165,9 +165,10 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
   wait-after-issue debt).
 - UNEVEN HALVES: what a fold waits where its box's lists are quiet and its neighbour's busy; the split along a level
   walked whole is its alternative (R20).
-- THE LISTING AT THE FULL GRID, its lists consumed and the drain's offsets its own; and at a denser mask, where its
-  emission runs more rounds.
-- WHERE THE LISTED READOUT'S INSTRUCTIONS ARE: its pass is some 90 over the fixed readout's.
+- THE LISTING'S COSTS the lab left unbuilt: the fold's mask words loaded a window ahead, and the drain's adds at a
+  load, a shift and an address an add; a count of passes from the lists; a denser mask. If the form cannot be brought
+  under the packet-driven one, reader lists the gather builds once a head and keeps are the fallback (Blake,
+  2026-11-23: "I recommend the first, tuned in the real kernel, with the second as the fallback." "ok go").
 - THE READ SIDE'S COEFFICIENT FORM (RULED 2026-11-14, chosen by measurement): a reader's byte on its digit multiplied
   into its coefficients, as built, or applied to its sums after the step.
 

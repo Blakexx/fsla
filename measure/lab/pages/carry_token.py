@@ -553,7 +553,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"({against(fm['ready'][132], fm['listed'][132])[1].removesuffix(' as')} the listed); the forms that load their packet from global memory in the read side's roles slow with the card's CTAs "
         f"(the gaps above) and the fixed readout does not ({pct(gap['fixed'])}, called the same within {pct(SAME)}). OPEN: WHY. The candidate: at one CTA a block's packets "
         f"stay cached between launches and at {sms} the card's buffers do not fit the cache; (j)'s one-block rows test it, and (j) states what they show. "
-        "BUILT LATER, in (l): the readout and the drain taking lists the CTA made itself ([`open-work.md`](../open-work.md) C-o)."
+        "(l) measures the readout and the drain taking lists the CTA made itself."
     )
 
     # ---- the two readouts' timelines: CTA 0 of each every-stamp row, each role's cycles a window a warp by state
