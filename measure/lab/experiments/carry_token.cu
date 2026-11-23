@@ -81,6 +81,8 @@
 // warp holds a group's 16 lines of the packet (two loads, issued a group ahead, under `kFar` a pass ahead) and adds where
 // they say; a window's
 // counts are loaded a window ahead in both roles: neither waits on a load of the packet.
+// Under `kScan` a drain warp's window opens with its listing: its words of the read mask (one load, used at once), a scan
+// of the lanes' counts a digit, a voted round of shared stores a digit until no lane holds a live token, and the fence.
 // A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
 // words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the

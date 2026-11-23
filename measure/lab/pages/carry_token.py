@@ -56,6 +56,7 @@ PADDED = ", a half in two padded passes"
 ONE_BLOCK = ", every CTA on one block's reader packets"
 FAR = ", the drain's lines loaded a pass ahead"
 SPLIT_READ = ", the readout's pass by phases stamped"
+SCAN = ", its drain warps also listing the window's readers from the mask"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -141,6 +142,7 @@ def short(name: str) -> str:
                           (AHEAD, "loaded a window ahead"),
                           (LISTED, "the readout's passes its packet's"), (READY, "its tiles and lines offsets ready to add"),
                           (PADDED, "a half in two padded passes"), (FAR, "the drain's lines loaded a pass ahead"),
+                          (SCAN, "its drain warps also listing the window's readers from the mask"),
                           (ONE_BLOCK, "every CTA on one block's reader packets (not checked)"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
@@ -653,7 +655,30 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"to about its one-CTA figure, moves the window by {more(fr['listed'][132], fm['listed'][132])}); where the listed readout's instructions are (the static counts, above, are "
         "the compiled loops' sizes and no row prices them)."
     )
-    far_all = f"{ob_text} {far_text} {ready_far_text}"
+    scan_names = {k: far_names[k] + SCAN for k in ("ready", "ready padded")}
+    for nm in scan_names.values():
+        assert nm in rows[132] and nm in rows[1], f"lab page: the record holds no row {nm!r}"
+        assert exact(nm), "lab page: a listing row is not exact"
+        dets = [c["detail"] for c in full["checks"] + one["checks"] if c["variant"] == nm and "ok" in c]
+        assert len(dets) == 2 and all(d.split("; ")[-1].startswith("0 of ") and d.endswith(" listed places differ") for d in dets), (
+            f"lab page: a listing row's lists are not exact: {dets}")
+    sc = {k: {n: w(n, nm) for n in (1, 132)} for k, nm in scan_names.items()}
+    list_detail = {n: [c["detail"] for c in (full if n == 132 else one)["checks"] if c["variant"] == scan_names["ready"]][0].split("; ")[-1] for n in (1, 132)}
+    assert all(sc[k][132] > sc[k][1] for k in sc), "lab page: a listing row does not cost more at the full grid than at one CTA"
+    scan_text = (
+        f"(k) THE CTA LISTING ITS OWN READERS (the ready offsets a pass ahead, whose drain warps also list the window's readers from the read mask: each drain warp its four read digits, "
+        f"a lane its word of 32 tokens a digit, a scan of the lanes' counts, the live tokens' places compacted in order to shared memory and fenced). Each listing row against the same row "
+        f"without the listing, cycles a window a CTA: at {sms} CTAs {g(sc['ready'][132])} against {g(fr['ready'][132])} ({more(sc['ready'][132], fr['ready'][132])}), at one CTA "
+        f"{g(sc['ready'][1])} against {g(fr['ready'][1])} ({more(sc['ready'][1], fr['ready'][1])}); on the padded packets at {sms} CTAs {g(sc['ready padded'][132])} against "
+        f"{g(fr['ready padded'][132])} ({more(sc['ready padded'][132], fr['ready padded'][132])}), at one CTA {g(sc['ready padded'][1])} against {g(fr['ready padded'][1])} "
+        f"({more(sc['ready padded'][1], fr['ready padded'][1])}). Every row is exact, and the lists are exact: the lists are checked against the host's (the last window's, copied out at the launch's end) "
+        f"and the checks' detail says \"{list_detail[132]}\" at {sms} CTAs and \"{list_detail[1]}\" at one CTA, on both listing rows. WHAT THIS IS AND IS NOT: it is the listing's cost on the drain warps of that kernel, at a mask of one reader a digit in every 64 tokens "
+        "(the sparsest end: a denser mask runs more rounds of the emission, NOT MEASURED); the lists are not consumed, the readout still takes its packet's, so the readout reading them from shared memory is not in the row; "
+        "a reader's byte on its digit is not loaded (the lab computes it). NOT PARTED: the mask's words are loaded and used at once at the window's start, so the row's cost is not parted between the mask's load "
+        f"and the scan and the emission; and the row costs more at {sms} CTAs than at one CTA ({more(sc['ready'][132], sc['ready'][1])} on the packets, {more(sc['ready padded'][132], sc['ready padded'][1])} on the padded packets), "
+        "a difference no row here explains."
+    )
+    far_all = f"{ob_text} {far_text} {ready_far_text}\n- {scan_text}"
 
     # ---- the readout's pass by phases: the two kSplitRead rows at the full grid, CTA 0
     split_fixed = fixed_n + COARSE_SUF + DETAILS[1][0] + DETAILS[3][0] + SPLIT_READ
