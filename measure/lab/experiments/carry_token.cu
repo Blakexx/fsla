@@ -42,7 +42,8 @@
 // a window's rows loaded a window ahead, behind the entries of the window before),
 // a readout whose passes are its packet's (`kListed`: a pass's 8 slots each name their read digit, their 16 readers and
 // those readers' output lines, and a half's passes are the packet's count -- on the fixed readout's own readers, and on a
-// half in two passes, each four slots and four pads),
+// half in two passes, each four slots and four pads; and under `kReady` the packet's own offsets where it held numbers: a
+// slot's tile of the image in lines and a token's output line in bytes, each one add from use),
 // and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
@@ -67,8 +68,8 @@
 // warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
 // released; then a group at a time the wait on the panel two groups back, its 32 sums rounded to f16 pairs and
 // stored, the arrival. THE LISTED READOUT's pass is that trip in a loop a half on the packet's count, its test a warp
-// vote: the lane's entry loaded three passes ahead and its reader's row two, by an entry that has landed (the readout binds
-// the read side, and a row's load that waited on its entry's stalled it a pass), a
+// vote: the lane's entry loaded three passes ahead and its reader's row two, by an entry that has landed (no load waits on
+// another), a
 // step's A the tile of its slot's digit, the half's arrival at its groups read after its last pass's steps; its drain
 // warp holds a group's 16 lines of the packet (two loads, issued a group ahead) and adds where they say; a window's
 // counts are loaded a window ahead in both roles: neither waits on a load of the packet.
@@ -161,7 +162,9 @@ constexpr uint32_t listed_token(uint32_t source, uint32_t entry) {
 //: a slot the 16 readers of one read digit, 8 slots a pass; the reader's index and, 16 bits up, its byte on its digit
 //: (zero: a PAD, a place no reader holds) -- then the tokens' output lines as the drain warps take them (group, warp,
 //: the warp's 16), two bytes each; then the slots' read digits, a byte each. A half's passes name digits of that half
-constexpr int kPassLines = 128, kPassDigits = 192, kPassWords = 196, kReadPasses = 4;
+//: (`kReady`: the lines are byte offsets from the block's first line, four bytes each, and after them the slots' tiles'
+//: offsets in the image, in 16-byte lines, four bytes each)
+constexpr int kPassLines = 128, kPassDigits = 192, kReadyTiles = 256, kPassWords = 264, kReadPasses = 4;
 constexpr int kReadHead = kCallWindows, kReadBlock = kReadHead + (kCallWindows * kReadPasses + 3) * kPassWords;
 static_assert(kPassWords % 4 == 0 && kReadHead % 4 == 0 && kPassLines % 4 == 0);
 //: a list's entries in a window, 8 to 24 and a window's 256: lists `2 p` and `2 p + 1` are 16 more and less the same
@@ -235,7 +238,10 @@ enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 12
                    kAhead = 8192,
                    //: `kListed`: THE READOUT'S PASSES ARE ITS PACKET'S -- a slot's read digit, its readers, their bytes and
                    //: their output lines, and a half's count of passes (a voted loop), where the fixed readout computes each
-                   kListed = 16384 };
+                   kListed = 16384,
+                   //: `kReady` (with `kListed`): the packet holds OFFSETS READY TO ADD -- a slot's tile of the image in lines, a
+                   //: token's output line in bytes -- where `kListed` alone holds a digit and a line number
+                   kReady = 32768 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -806,7 +812,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
 
 //: THE LISTED READOUT's warpgroup (`kListed`): a pass is the mirrored readout's -- 8 slots, a panel's group of 4 twice --
 //: with its slots' digits, its readers and their bytes the packet's, and a half's passes a voted loop on its count
-template <int TRACE, int DETAIL>
+template <int TRACE, int DETAIL, int READY>
 __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long long* times, const uint32_t* dense,
                                             const uint32_t* readers, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
@@ -821,7 +827,9 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
   //: A PASS'S LIST: a group's entry of the lane and the group's slots' digits, loaded three passes ahead. ITS SET: the list
   //: and the entries' readers' rows, loaded two passes ahead by entries that have landed -- no load waits on another
   struct List {
-    uint32_t entry[kG], digits[kG];
+    uint32_t entry[kG];
+    //: a group's four slots' digits, a byte each of its first word; or (`READY`) their tiles' offsets, a word each
+    uint4 place[kG];
   };
   struct Set {
     List list;
@@ -831,7 +839,11 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
     List list;
     const uint32_t* const record = block + kReadHead + pass * kPassWords;
 #pragma unroll
-    for (int g = 0; g < kG; ++g) list.entry[g] = record[16 * (4 * g + warp) + n], list.digits[g] = record[kPassDigits + g];
+    for (int g = 0; g < kG; ++g) {
+      list.entry[g] = record[16 * (4 * g + warp) + n];
+      if constexpr (READY != 0) list.place[g] = reinterpret_cast<const uint4*>(record + kReadyTiles)[g];
+      else list.place[g] = make_uint4(record[kPassDigits + g], 0u, 0u, 0u);
+    }
     return list;
   };
   const auto set_of = [&](const List& list) {
@@ -843,6 +855,8 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
   };
   Set now = set_of(list_of(0)), next = set_of(list_of(1));
   List far = list_of(2);
+  //: the shared memory's first line (`READY`: a tile's offset is added to it)
+  [[maybe_unused]] const uint32_t first_line = lab::held(base >> 4);
   float d[kG * kChunkDigits][8];
   uint8_t* const lines = smem + kCoefAt + (2 * warp + box) * kCoefTile + ((n >> 3) * 17 + (n & 7)) * 16;
   const uint32_t mine = lab::held(base + static_cast<uint32_t>(kPanelAt + (8 * (lane >> 4) + (lane & 7)) * kRowBytes
@@ -887,12 +901,21 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
         for (int g = 0; g < kG; ++g)
 #pragma unroll
           for (int j = 0; j < kChunkDigits; ++j) {
-            //: the slot's digit's tile of each box's image
-            const uint32_t image = base + kImageAt + (now.list.digits[g] >> (8 * j) & 255u) * kImageTile;
+            //: the slot's tile of each box's image: the packet's offset and the image's first line, or its digit's
+            uint64_t images[2];
+            if constexpr (READY != 0) {
+              const uint32_t place[4] = {now.list.place[g].x, now.list.place[g].y, now.list.place[g].z, now.list.place[g].w};
+#pragma unroll
+              for (int bx = 0; bx < 2; ++bx)
+                images[bx] = uint64_t((first_line + place[j] + bx * (kBoxBytes >> 4)) & 0x3fffu) | uint64_t(8) << 16 | uint64_t(kBrickLines) << 32;
+            } else {
+              const uint32_t image = base + kImageAt + (now.list.place[g].x >> (8 * j) & 255u) * kImageTile;
+#pragma unroll
+              for (int bx = 0; bx < 2; ++bx) images[bx] = lab::wg_desc(image + bx * kBoxBytes, 8, kBrickLines);
+            }
 #pragma unroll
             for (int bx = 0; bx < 2; ++bx)
-              lab::wg_bf16_n16_ss(d[g * kChunkDigits + j], lab::wg_desc(image + bx * kBoxBytes, 8, kBrickLines),
-                                  lab::wg_desc(tiles + (g * 8 + 2 * j + bx) * kCoefTile, 8, 17), bx != 0);
+              lab::wg_bf16_n16_ss(d[g * kChunkDigits + j], images[bx], lab::wg_desc(tiles + (g * 8 + 2 * j + bx) * kCoefTile, 8, 17), bx != 0);
           }
         lab::wg_commit();
         //: the set of the pass after next and the list of the pass after that, issued under the steps
@@ -996,6 +1019,68 @@ __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long 
   lab::WarpMark::stop(times);
 }
 
+//: THE LISTED READOUT's drain warp where the packet's lines are OFFSETS READY TO ADD (`kReady`): a token's line is the
+//: block's first and the packet's four bytes; a batch's 8 offsets are loaded a group ahead, into the registers the same
+//: batch of this group freed
+template <int TRACE, int DETAIL>
+__device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long long* times, uint32_t* out,
+                                            const uint32_t* readers, unsigned long long* trace, int windows) {
+  Tracer<TRACE, DETAIL> tr;
+  tr.bind(trace);
+  tr.edge(kMarkEntry);
+  const int lane = threadIdx.x & 31, mine = (threadIdx.x - kDrainAt) >> 5;
+  const uint32_t bars = base + kBarsAt;
+  constexpr int kBatches = kTokens / kDrains / kBatch;
+  static_assert(kDrains == 4 && kBatches == 2 && kBatch == 8);
+  const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
+  //: the lane's word of the block's first line, addressed in bytes
+  uint8_t* const at = reinterpret_cast<uint8_t*>(out + static_cast<size_t>(blockIdx.x) * (kOutWindows * kWindow) * (kChannels / 2) + lane);
+  //: batch `batch` of group `g` of pass `p`: the warp's 8 tokens' offsets, two loads
+  const auto offsets_of = [&](uint32_t p, int g, int batch, uint4& low, uint4& high) {
+    const uint4* const listed = reinterpret_cast<const uint4*>(block + kReadHead + p * kPassWords + kPassLines) + 4 * (4 * g + mine) + 2 * batch;
+    low = listed[0], high = listed[1];
+  };
+  uint4 low[kBatches], high[kBatches];
+#pragma unroll
+  for (int batch = 0; batch < kBatches; ++batch) offsets_of(0, 0, batch, low[batch], high[batch]);
+  uint32_t ahead = block[0];
+  lab::WarpMark::start(times);
+  uint32_t pass = 0;
+#pragma unroll 1
+  for (int w = 0; w < windows; ++w) {
+    const uint32_t total = (ahead & 255u) + (ahead >> 8 & 255u);
+    ahead = block[(w + 1) % kCallWindows];
+#pragma unroll 1
+    for (uint32_t p = 0; __all_sync(0xffffffffu, p < total) != 0; ++p, ++pass) {
+#pragma unroll
+      for (int g = 0; g < 2; ++g) {
+        await(bars + kPanelReady + 8 * g, pass & 1, tr, kWaitPanelReady);
+        tr.stamp(warpline::kPhaseBegin, kMarkAdds);
+#pragma unroll
+        for (int batch = 0; batch < kBatches; ++batch) {
+          uint32_t held[kBatch];
+#pragma unroll
+          for (int i = 0; i < kBatch; ++i) {
+            const uint8_t* const row = smem + kPanelAt + g * kPanelBytes + (mine + kDrains * (batch * kBatch + i)) * kRowBytes;
+            held[i] = reinterpret_cast<const uint32_t*>(row)[lane];
+          }
+          const uint32_t offset[kBatch] = {low[batch].x,  low[batch].y,  low[batch].z,  low[batch].w,
+                                           high[batch].x, high[batch].y, high[batch].z, high[batch].w};
+#pragma unroll
+          for (int i = 0; i < kBatch; ++i) lab::red_add_f16x2(reinterpret_cast<uint32_t*>(at + offset[i]), held[i]);
+          //: the same batch of the next group
+          offsets_of(pass + g, 1 - g, batch, low[batch], high[batch]);
+        }
+        __syncwarp();
+        arrive(bars + kPanelFreed + 8 * g, tr, kWaitPanelFreed);
+      }
+    }
+  }
+  tr.edge(kMarkExit);
+  tr.close(base);
+  lab::WarpMark::stop(times);
+}
+
 //: THE KERNEL of a row: `TRACE` and `DETAIL` select its stamps and nothing else -- a detail row is its coarse row but
 //: for those stamps; `PROBE` an isolation row's change
 template <int TRACE, int DETAIL, int PROBE>
@@ -1043,11 +1128,12 @@ __global__ void __launch_bounds__(kThreads, 1)
   } else if (tid < kDrainAt) {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL>(smem, base, times, dense, readers, trace, windows);
+    else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL, PROBE & kReady>(smem, base, times, dense, readers, trace, windows);
     else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
+    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL>(smem, base, times, out, readers, trace, windows);
     else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL>(smem, base, times, out, readers, trace, windows);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
@@ -1076,7 +1162,7 @@ inline long long image_host(long long v) {
 //: A CALL'S BUFFERS: the window views, the readers' dense table, the state and the output, each sized to the grid
 struct Buffers {
   //: the packets: every entry its own value lines, and lists overlapping on shared tokens
-  uint32_t *values[9], *readers[2], *dense, *spread, *out;
+  uint32_t *values[9], *readers[4], *dense, *spread, *out;
   float* state;
 };
 inline Buffers buffers(const lab::Bench& b) {
@@ -1274,7 +1360,7 @@ inline Buffers buffers(const lab::Bench& b) {
   //: THE READERS' PACKETS, the gather's part again: `listed` 0 is the fixed readout's own passes (a half one pass, a slot
   //: its group's digit, a token's line its place); `listed` 1 the first half in two passes, each four of its digits (in
   //: falling order, every other slot) and four pads, the second half as before
-  const auto build_readers = [&](int listed) {
+  const auto build_readers = [&](int listed, bool ready) {
     std::vector<uint32_t> packets(static_cast<size_t>(b.sms) * kReadBlock, 0);
     for (int blk = 0; blk < b.sms; ++blk) {
       uint32_t* const block = packets.data() + static_cast<size_t>(blk) * kReadBlock;
@@ -1288,13 +1374,17 @@ inline Buffers buffers(const lab::Bench& b) {
               const int g = q / 4, j = q % 4;
               const bool split = listed == 1 && half == 0, pad = split && (q + p) % 2 != 0;
               const int digit = pad ? 0 : split ? 7 - (4 * p + q / 2) : 8 * half + g + 2 * j;
-              reinterpret_cast<uint8_t*>(record + kPassDigits)[q] = static_cast<uint8_t>(digit);
+              //: the slot's digit, or (`ready`) its tile's offset in the image, in lines
+              if (ready) record[kReadyTiles + q] = static_cast<uint32_t>(kImageAt + digit * kImageTile) >> 4;
+              else reinterpret_cast<uint8_t*>(record + kPassDigits)[q] = static_cast<uint8_t>(digit);
               for (int n = 0; n < 16; ++n) {
                 const uint32_t reader = reader_of(static_cast<uint32_t>(blk), static_cast<uint32_t>(w * kWindow + 16 * digit + n));
                 record[16 * q + n] = pad ? 0u : reader | static_cast<uint32_t>(sparse_of(static_cast<int>(reader))) << 16;
                 //: the drain warp `n % 4`'s token `4 j + n / 4` of the group
-                reinterpret_cast<uint16_t*>(record + kPassLines)[(4 * g + n % 4) * 16 + 4 * j + n / 4] =
-                    static_cast<uint16_t>(pad ? 0 : (w % kOutWindows) * kWindow + 16 * digit + n);
+                const int place = (4 * g + n % 4) * 16 + 4 * j + n / 4, line = pad ? 0 : (w % kOutWindows) * kWindow + 16 * digit + n;
+                //: the token's line, or (`ready`) its offset in bytes, a line 128
+                if (ready) record[kPassLines + place] = static_cast<uint32_t>(line) * (kChannels * 2);
+                else reinterpret_cast<uint16_t*>(record + kPassLines)[place] = static_cast<uint16_t>(line);
               }
             }
           }
@@ -1305,8 +1395,10 @@ inline Buffers buffers(const lab::Bench& b) {
     LAB_CHECK(cudaMemcpy(dev, packets.data(), packets.size() * 4, cudaMemcpyHostToDevice));
     return dev;
   };
-  held.readers[0] = build_readers(0);
-  held.readers[1] = build_readers(1);
+  held.readers[0] = build_readers(0, false);
+  held.readers[1] = build_readers(1, false);
+  held.readers[2] = build_readers(0, true);
+  held.readers[3] = build_readers(1, true);
   LAB_CHECK(cudaMalloc(&held.dense, host_dense.size() * 4));
   LAB_CHECK(cudaMemcpy(held.dense, host_dense.data(), host_dense.size() * 4, cudaMemcpyHostToDevice));
   //: THE SPREAD TABLE: the dense table's rows 32 KB apart -- 2 GB, a scattered row a cold line
@@ -1330,7 +1422,8 @@ void run(lab::Bench& b, const Buffers& held) {
                            + (PROBE & kColumn ? ", the box's width word choosing its fold" : "") + (PROBE & kCleared ? ", its tiles cleared" : "")
                            + (PROBE & kCounted ? ", a group's steps counted at run time" : "") + (PROBE & kLooped ? ", a group's steps a voted loop on its count" : "")
                            + (PROBE & kSpread ? ", an entry's dense line from a 2 GB table of the tokens" : PROBE & kTabled ? ", an entry's dense line from the tokens' table" : "") + (PROBE & kAhead ? ", loaded a window ahead" : "")
-                           + (PROBE & kListed ? (READ == 1 ? ", the readout's passes its packet's, a half in two padded passes" : ", the readout's passes its packet's") : "")
+                           + (PROBE & kListed ? ", the readout's passes its packet's" : "") + (PROBE & kReady ? ", its tiles and lines offsets ready to add" : "")
+                           + (PROBE & kListed && READ == 1 ? ", a half in two padded passes" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
                                         : TRACE & 1 ? ", the launch's two edges stamped" : "")
@@ -1346,7 +1439,7 @@ void run(lab::Bench& b, const Buffers& held) {
   uint32_t* const values = held.values[LAYOUT];
   uint32_t* const dense = held.dense;
   const uint32_t* const table = (PROBE & kSpread) != 0 ? held.spread : held.dense;
-  const uint32_t* const readers = held.readers[READ];
+  const uint32_t* const readers = held.readers[READ + ((PROBE & kReady) != 0 ? 2 : 0)];
   uint32_t* const out = held.out;
   float* const state = held.state;
   //: THE TRACED rows' timelines: a warp's row of stamps (lab::Trace), the timed launches' last left in them; cleared,
@@ -1407,7 +1500,7 @@ void run(lab::Bench& b, const Buffers& held) {
         }
     }
   }
-  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread | kAhead | kListed)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
+  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread | kAhead | kListed | kReady)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
   else b.check(name, wrong_state == 0 && wrong_out == 0,
           std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
               + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ");
@@ -1483,7 +1576,7 @@ int main(int argc, char** argv) {
                            {0, 0, kWide | kFull | kTabled | kSpread | kAhead}, {2, 0, kWide | kFull | kTabled | kSpread | kAhead | kAlone},
                            {0, 0, kTabled | kAhead}, {0, 0, kTabled | kSpread | kAhead},
                            {0, 0, kWide | kFull | kListed}, {2, 0, kWide | kFull}, {3, 0, kWide | kFull}, {2, 0, kWide | kFull | kListed},
-                           {3, 0, kWide | kFull | kListed}};
+                           {3, 0, kWide | kFull | kListed}, {0, 0, kWide | kFull | kListed | kReady}, {3, 0, kWide | kFull | kListed | kReady}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1598,5 +1691,10 @@ int main(int argc, char** argv) {
   run<3, 0, 3, kWide | kFull>(b, held);
   run<2, 0, 3, kWide | kFull | kListed>(b, held);
   run<3, 0, 3, kWide | kFull | kListed>(b, held);
+  //: THE PACKET'S OFFSETS READY TO ADD: the listed readout's rows, and its timeline, on packets that hold a slot's tile and a
+  //: token's line as offsets
+  run<0, 0, 3, kWide | kFull | kListed | kReady>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kReady, 1>(b, held);
+  run<3, 0, 3, kWide | kFull | kListed | kReady>(b, held);
   return 0;
 }
