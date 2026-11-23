@@ -11,7 +11,7 @@ second derivation behind the extension boundary could not promise.
 THE TABLE IS BACKING-INVISIBLE at the store clause: the exit sweep stores
 the atoms this call WRITES in either backing, so a block with no write has nothing to
 store in either, and the fresh-dense "written whole" exception is gone with the zeroed
-fresh plane (`fsla/engine/facts/nodes.py`'s backing node).
+fresh plane (`fsla/engine/prefill_call.py`'s backing).
 
 The three inputs are PRESENCE facts -- the entry-state plane, the exit-state plane and
 the page table, each a tensor or None -- and never the call class's engagement bits.
@@ -23,10 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fsla.engine import rule
 
-
-@rule(gives=("run_table",), needs=("state_in", "state_out", "page_table"))
 def run_table(state_in: Any, state_out: Any, page_table: Any) -> int:
     """The `uint32` whose bit `v` says a block with liveness byte `v` must run."""
     carries_in, stores_out, paged = (state_in is not None, state_out is not None,

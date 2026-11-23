@@ -217,8 +217,8 @@ exists to avoid, and the rejoin is a second reason not to.
 
 ## <a id="backing-policy"></a>4. What the state contributes to a kernel call
 
-The ORDER of a stateful call is the prefill DAG's and is stated there
-([`engine/prefill_dag.md`](engine/prefill_dag.md)). What is the STATE's own
+The ORDER of a stateful call is the prefill call's and is stated there
+([`engine/prefill_call.md`](engine/prefill_call.md)). What is the STATE's own
 is this: `_kernel_entry` plans the call's atoms into slots and hands back
 `(s_in, arena)`, and `_kernel_commit` takes the final plane for a state that just BOUND
 a dense backing — a paged state owns the arena's plane, and a dense continuation was
@@ -297,16 +297,16 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`fsla.engine.dags.decode_dag.decode_step_gated(routes, v, masks, state, descriptor, decay=...)` takes and
+`fsla.engine.decode_step.decode_step_gated(routes, v, masks, state, descriptor, decay=...)` takes and
 returns the state exactly as `fsla_op` does, and its caller owns the verdict (`growth_pending`, then
 `admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
 behind that seam:
 
 * **The descriptor and the scratch** (`Descriptor`, `DecodeScratch`) are the
-  decode DAG's own (the descriptor a seed, the scratch a memoized node), not the state's — launch machinery fails the
-  membership test. The ORDER and the two memo disciplines are that DAG's page
-  ([`engine/decode_dag.md` §5](engine/decode_dag.md#host-carrier)); what the state owes
-  them is only its identity, which is what the `per_state` table is keyed on.
+  decode step's own (the descriptor the scratch's key, the scratch held per sequence), not the state's — launch machinery fails the
+  membership test. The ORDER and the holding discipline are that step's page
+  ([`engine/decode_step.md` §5](engine/decode_step.md#the-scratch)); what the state owes
+  them is only its identity, which is what the scratch table is keyed on.
 * **The backing is invisible.** `_decode_entry` returns `(plane, page_table, arena)`: the
   arena's plane and table (and its slack pool, ridden along for the pool buffers alone —
   a dense state has none), or a dense state's VIEW of its own plane with the other two
@@ -427,7 +427,7 @@ built is settled, and the settlement is what must not be re-litigated:
   pages. It is decided when COW is scheduled; eager `clone()` ships first and COW is its
   drop-in optimization behind the same contract.
 * **Audited against the machinery that exists**, on the two paths a fork or a rollback
-  touches that are not the state's own storage. THE PER-STATE CACHES: the decode DAG's
+  touches that are not the state's own storage. THE PER-STATE CACHES: the decode step's
   scratch is keyed weakly on the state OBJECT and holds rebuildable transients only
   ([`engine/engine.md` §7](engine/engine.md#memoization)), so a COW step's new handle
   keys a new entry and builds its own buffers from the same geometry, and a rollback

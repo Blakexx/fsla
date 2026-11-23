@@ -1,45 +1,46 @@
-# The decode family's DAG — DECODE_DENSE and DECODE_PAGED
+# The decode step — one plain function
 
-`fsla/engine/dags/decode_dag.py`. The kernel-side page is
+`fsla/engine/decode_step.py`. The kernel-side page is
 [`internals/decode/decode.md`](../decode/decode.md); this one is the HOST side — what
-the step's facts are, in what order they are found, and which of the framework's
-declarations carry the two properties a decode step lives or dies by: it must be
-capturable, and its growth must self-correct.
+the step's values are, in what order they are found, and how the two properties a decode
+step lives or dies by are held: it must be capturable, and its growth must self-correct.
 
 Symbols used below: `B` batch, `H` heads, `BH = B*H`, `D` level count, `N` leaf count,
 `d_v` value width, **atom** = 16 consecutive leaves = the page granule.
 
-## <a id="the-two-variants"></a>1. DECODE_DENSE and DECODE_PAGED are the two BACKINGS, and a growth step is neither
+## <a id="the-two-variants"></a>1. Dense and paged are the two BACKINGS, and a growth step is neither
 
-`Variant.DECODE_DENSE` is decode-dense and `Variant.DECODE_PAGED` is decode-paged. After the step absorbed its own
-residency question, the node SET is one tuple for both — a dense call simply never finds
+The step is ONE function for both backings — a dense call simply never finds
 an atom the table does not map, because it has no table. The host-visible verdict READ is
-not a node: `growth_pending` makes it at the caller's synchronization, and answers `False`
+not a step: `growth_pending` makes it at the caller's synchronization, and answers `False`
 for a dense state without reading, since a dense step has no residency fact to read back.
 
-**A GROWTH STEP IS NOT A THIRD VARIANT.** It is `DECODE_STEP` walked twice around an
-admission the host performs between the two walks. A variant selects a subgraph; growth
-selects the same one, which is exactly why a CUDA graph captured over the step stays
+**A GROWTH STEP IS NOT A THIRD KIND OF STEP.** It is `decode_step_gated` run twice around an
+admission the host performs between the two runs. The backing selects nothing in the call;
+growth selects the same call, which is exactly why a CUDA graph captured over the step stays
 valid across an admission and why a replay is self-correcting: the verdict is INSIDE the
-captured region, so on the second walk a batch-head that could not advance the first time
+captured region, so on the second run a batch-head that could not advance the first time
 carries no done flag yet and the step it had skipped performs.
 
 ## <a id="the-order"></a>2. The step, read top to bottom
 
-| node | gives | stream | variant |
-|---|---|---|---|
-| `decode_call` | `BH`, `device`, `paged` | host | both |
-| `decode_variant` (rule) | `variant` | host | both |
-| `scratch` | `scratch` | host, `per_state` | both |
-| `backing` | `carried_plane`, `page_table`, `pool` | main | both |
-| `state_plane` | `state_plane` | main | both |
-| `build_launch` | `launch` | main | both |
-| `step` | `y` | main | both |
+`decode_step_gated` validates (`validate_context`, the fast-fail) and then calls, in this order:
 
-**THERE IS NO OPERAND NODE AND NO ADMISSION NODE.** The step's per-token operands are
+| step | returns |
+|---|---|
+| `decode_call` | `BH`, `device` (refuses a grouped bundle) |
+| `scratch` | the per-sequence buffers |
+| `backing` | `carried_plane`, `page_table`, `pool` |
+| `state_plane` | the plane the kernel indexes |
+| `build_launch` | the launch |
+| `step` | `y` |
+
+Each step runs inside a profiler range under its own name ([`engine.md`](engine.md#the-profiler-range)).
+
+**THERE IS NO OPERAND STEP AND NO ADMISSION STEP.** The step's per-token operands are
 folded inside the step kernel, from the producer's own views
 ([`decode/decode_fold.md`](../decode/decode_fold.md)), and the residency question the
-walk needs answered is asked off the write map that same kernel builds for itself, in the
+call needs answered is asked off the write map that same kernel builds for itself, in the
 same launch ([`decode.md#absorbed-verdict`](../decode/decode.md#absorbed-verdict)). So a
 decode step is ALWAYS one launch, dense or paged, growing or steady, and neither backing
 has a stage whose only output is a widened copy of an input or a residency answer for a
@@ -48,8 +49,7 @@ launch still to come. The detached clock is the write rows' own shares
 of its own either.
 
 `backing` is `FSLAState._decode_entry`: the plane, table and slack pool the state already
-has, over the residency it already has — it admits nothing itself. `build_launch` carries a
-stream because the decay arm's `dials` are derived there: a per-HEAD constant, and the one
+has, over the residency it already has — it admits nothing itself. `build_launch` derives the decay arm's `dials`: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
 already holds; its `descriptor` is the validated one the call was handed (`fsla.ops.produce.decode_descriptor`), and the state plane's leaf order is derived from the state's format here
 (`fsla.ops.decode.lattice_of`).
@@ -61,7 +61,7 @@ indexes is known.
 
 ## <a id="the-verdict"></a>3. The verdict is the step's own output, read by its caller
 
-`decode_step_gated` runs `DECODE_STEP` — the whole tuple, the step its last node — and the
+`decode_step_gated` returns after `step`, and the
 caller owns the verdict, at whatever synchronization it already has, through
 `growth_pending` and `admit_growth` ([`decode.md#capture`](../decode/decode.md#capture)).
 `growth_pending` is a single copy of the step's own `growth_any` output into a pinned
@@ -69,27 +69,24 @@ mirror, and it cannot be enqueued ahead of the step: the verdict the step publis
 own last finisher's write, so the read is behind it by data dependence. The layer's
 one-token `forward` is that caller (`FSLA._step`, then the verdict, the admission and the
 step again), and a serving loop that captures `_step` reads it at the sync that samples
-its token. The verdict was a DAG node appended to the step (`DECODE_VERDICT`) until the
-layer composed it itself (2026-09-30); `DECODE_STEP` ending at the step with no host read
-is asserted directly (`tests/unit/test_facts_memo.py`).
+its token.
 
-## <a id="capturable"></a>4. `capturable` is a declaration, not a hope
+## <a id="capturable"></a>4. The step is capturable: no host read of a device value, no allocation a step
 
-Every node of `DECODE_STEP` declares `capturable=True`, and
-`fsla.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
-captured node reads no device value on the host, which is precisely what a capture forbids —
-which is exactly why the verdict read lives in `growth_pending`, outside the
-captured tuple, and never inside `DECODE_STEP` itself.
+Nothing the step calls reads a device value on the host or allocates per step, which is
+precisely what a capture requires — which is exactly why the verdict read lives in
+`growth_pending`, outside the step, and never inside it. The scratch is allocated once per
+sequence ([section 5](#the-scratch)), so the first step builds it and every later step finds it.
 
-The declaration is what makes the property survive editing. A node added to the step that
-reads a device value, or allocates per step, fails at import rather than at some caller's
-first `graph.replay()` — and `tests/integration/test_decode_graph_step.py` is what proves
-the declaration is TRUE of a real capture.
+The property is stated here and proven by `tests/integration/test_decode_graph_step.py`,
+which captures the layer's one-token step and replays it across an admission against the
+eager run. A step added to the call that reads a device value, or allocates per step, fails
+there at someone's first `graph.replay()`.
 
-## <a id="host-carrier"></a>5. The descriptor and the scratch, and why the scratch is memoized the way it is
+## <a id="the-scratch"></a>5. The descriptor and the scratch, and why the scratch is held the way it is
 
-THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; a seed of the DAG and the
-memo key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
+THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; the
+key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
 `plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
 lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;
 `eps` is data and `ctas` a private keyword of the internal `step`. None of that is a derived axis. `BC` is deliberately NOT a
@@ -100,42 +97,40 @@ lattice's OWN `BC` (the leaf count one owner holds) is a layout fact the `(k, m)
 carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
-The DAG's nodes are `decode_call` (`BH`, `device`, `paged`), `scratch`, `backing`, `state_plane`, `build_launch` and `step`
-(`write_atom_bitmap` is the reference-only one, section 6). The memo key is over the descriptor alone: `scratch` is declared
-`pure_of` `(descriptor, BH, device)`, and the terminal facts beside it — the folded amplitudes, the plane, the verdict buffers —
-are per-call and never cached.
+`scratch` holds its buffers in one module-level `WeakKeyDictionary` keyed on the sequence's state object, each
+value a dict keyed `(descriptor, BH, device)`; the terminal values beside it — the folded amplitudes, the plane, the verdict buffers —
+are per-call and never held.
 
-`scratch` is declared `per_state`, which makes its table a `WeakKeyDictionary` keyed on
-the sequence's state object. The weakness is REQUIRED and not incidental: a dropped
-sequence must drop its buffers, and two live sequences must never share one. Being
-memoized is also what hoists the allocation, and the once-only initialization of `yacc`,
+The weakness is REQUIRED and not incidental: a dropped
+sequence must drop its buffers, and two live sequences must never share one. Holding the scratch
+is also what hoists the allocation, and the once-only initialization of `yacc`,
 `queue`, `growth_ctr` and `done`, above any captured region — the step's own finishers and
 last CTA out reset each of them, so no `memset` ever stands between two decode steps
-([`decode.md#capture`](../decode/decode.md#capture)).
+([`decode.md#capture`](../decode/decode.md#capture)). The state is the table's key and never an input of the
+build, so two scratches built for one geometry are interchangeable by construction
+(`tests/unit/test_decode_scratch.py`).
 
 Because the descriptor is FIXED for the sequence, a state has exactly one live
 scratch; `growth_pending` and `admit_growth` read it through that table and refuse a
 state holding more than one, which is the observable form of the decay arm changing
 mid-sequence.
 
-## <a id="reference-only"></a>6. `reference_only` — the enumerated gate reference, refused mechanically
+## <a id="reference-only"></a>6. `write_atom_bitmap` — the enumerated gate reference, called by no step
 
-`write_atom_bitmap` is declared as a node and belongs to no DAG. It is the gate's
+`write_atom_bitmap` is a plain function and no step calls it. It is the gate's
 INDEPENDENT second derivation of the write-atom set, written from the definition rather
 than from the kernel's structure
 ([`decode.md#second-derivation`](../decode/decode.md#second-derivation)); the shipped path
-derives that set on the device, inside the step, as `atom_bits`. Splicing it into a
-shipped DAG would make the gate compare the step against itself, and `validate_dag`
-refuses any DAG containing a `reference_only` node — which is the mechanical form of the
-warning the function's docstring used to carry alone.
+derives that set on the device, inside the step, as `atom_bits`. Calling it from the step
+would make the gate compare the step against itself.
 
-## <a id="the-pool"></a>7. The slack pool is storage mechanics, and neither node nor variant
+## <a id="the-pool"></a>7. The slack pool is storage mechanics, and no step of its own
 
 A step admits into its state's slack pool INSIDE the kernel, from the pool buffers
-`backing` hands the launch — there is no node for it, because it is not a fact the host
+`backing` hands the launch — there is no step for it, because it is not a fact the host
 finds: the claim is the kernel's own, made by the batch-head's owner and written into the
 page table ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
-`pool_headroom` and `refill_pool` (`fsla/engine/dags/decode_dag.py`) are HOST reads and
+`pool_headroom` and `refill_pool` (`fsla/engine/decode_step.py`) are HOST reads and
 writes off the step's path entirely — a serving loop polls the first at leisure and calls
 the second on its own schedule, never as a precondition of a step. Pool-covered growth
 raises no verdict, because nothing is urgent for the host: `growth_pending` stays `False`

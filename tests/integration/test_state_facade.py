@@ -53,7 +53,7 @@ def test_a_raw_tensor_is_not_a_state():
     """
     from conftest import hand_descriptor
 
-    from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
+    from fsla.engine.prefill_call import PrefillContext, validate_context
     from fsla.routing.masks import PREFILL
     from fsla.values import Values
     from tests.oracle.fixtures import masks_of

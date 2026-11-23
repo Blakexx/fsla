@@ -10,10 +10,7 @@ this rule then places (docs/internals/engine/rules.md).
 """
 from __future__ import annotations
 
-from fsla.engine import rule
 
-
-@rule(gives=("first_slot",), needs=("allocated", "capacity", "extent_atoms", "count"))
 def admission(allocated: int, capacity: int, extent_atoms: int, count: int) -> int:
     """The first slot a run of `count` atoms takes, ALIGNED when it opens an extent.
 

@@ -205,9 +205,9 @@ def decode_step(fx) -> Launch:
     step, at the same context position, over the same residency.
     """
     import fsla
-    from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+    from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
     from fsla.engine.facts import planes
-    from fsla.ops.produce import decode_descriptor
+    from fsla.ops.produce import decode_descriptor, produce_decode
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -239,7 +239,7 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            routes, _values, masks = layer._produce(token, layer.step_plan)
+            routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token))
             values = fsla.Values.from_projection(v_token)
             y, state = decode_step_gated(routes, values, masks, seeded["state"], descriptor)
             if growth_pending(state):

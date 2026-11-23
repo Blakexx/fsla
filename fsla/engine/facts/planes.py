@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import torch
 
-from fsla.engine import MMA_K_QUANTUM
+from fsla.engine.types import MMA_K_QUANTUM
 from fsla.routing.masks import PREFILL
 
 

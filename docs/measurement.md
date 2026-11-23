@@ -87,7 +87,7 @@ A comparison between this library and another is therefore a LAYER comparison: F
 own layer against attention's, because FSLA's number includes the state its capacity buys.
 
 What this line declares today (`measure/subjects.py`): the KERNEL level (`entmax_solve`), the OP level (`prefill`,
-`layer_op`, and `decode_step` through the engine's decode DAG) and the LAYER level (`layer_prefill`). No prefill kernel is
+`layer_op`, and `decode_step` through the engine's decode step) and the LAYER level (`layer_prefill`). No prefill kernel is
 built (the carry, intra and producer are designed and measured in the lab, [`open-work.md`](open-work.md)), so every
 subject that reaches the prefill refuses by name and is recorded as that entry's failure; the ones that run are
 `entmax_solve` and `decode_step`. The flash reference is a layer entry, and until a

@@ -25,7 +25,6 @@ target ([`measurement.md`](../../measurement.md)).
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
 | `supported.py` | the README's supported-configuration table, generated from the contract (`hardware/`) — a REPORT, not a claim | a person, after an arm change | the table |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `ratify.py`, every kernel gate | — |
-| `build/dag_to_dot.py` | a DAG tuple (`fsla.engine.dags.*`) as Graphviz DOT and SVG | a person, after a DAG change: `fsla/engine/runner.py` pushes one NVTX range per DAG node, so one `nsys` run settles what a host-side span is, and `--dot` checks a page's diagram against the DAG | the `.svg` beside its page |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
 | `git-hooks/pre-push` | THE PUSH'S TRIPWIRE: `bazel run //:tripwire -- --range` over every commit the push sends ([`build-graph.md`](../../build-graph.md#checks)) | git, every push | — |
 | `git-hooks/post-commit` | THE REVIEW: `review_gate.py` on HEAD in the background (`review_gate.md`) | git, every commit | — |

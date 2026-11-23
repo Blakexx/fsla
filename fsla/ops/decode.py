@@ -3,8 +3,7 @@
 
 """The T=1 decode family's BODIES: the geometry, the scratch, the launches.
 
-The decode DAG (:mod:`fsla.engine.dags.decode_dag`) declares these as nodes and composes the
-step; the facade lives there with it. What is here is one function per thing that is
+The decode step (:mod:`fsla.engine.decode_step`) calls these in order; the facade lives there with it. What is here is one function per thing that is
 done, and the raw-tensor entry :func:`_decode_step` is those same functions in the
 step's order, for a caller holding tensors rather than a bundle.
 

@@ -4,8 +4,8 @@
 token, true where the digit is live. The op computes with ``r * m`` (the rows times their bits); a bit is data and is
 never tested against the rows (docs/api.md section 2.6).
 
-Two layouts, each the CONSUMER's native one, chosen by the producer's static ``consumer`` field
-(:class:`fsla.ops.produce.ProducerPlan`), with no conversion between the producer and the op:
+Two layouts, each the CONSUMER's native one, chosen by the producer called
+(:func:`fsla.ops.produce.produce_prefill`, :func:`fsla.ops.produce.produce_decode`), with no conversion between the producer and the op:
 
 * ``PREFILL``: token-packed, the entmax kernels' ``support_words`` as they are. A level's mask is int32
   ``[B, H, ceil(T / 32), width_l]`` (``H`` the side's heads: ``H_w`` on the write side): bit ``t % 32`` of word

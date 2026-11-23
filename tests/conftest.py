@@ -57,14 +57,15 @@ device_torch_lib = torch.cuda
 # -----------------------------------------------------------------------------
 
 
-def reference_produce(layer, x, plan=None):
+def reference_produce(layer, x, consumer=None):
     """THE REFERENCE PRODUCER: ``(routes, values, masks)`` of a layer's producer by the torch composition
     (`fsla.ops.produce._composition`, the fp64, host and gradient path), never the CUDA produce kernel. The masks come
-    in the layout of the consumer the plan names, so ``layer.step_plan`` is decode's. A test that makes operands for
-    a kernel it tests takes them from here; a test of the producer calls `layer._produce`."""
+    in the layout of ``consumer`` (the prefill's by default; ``fsla.routing.masks.DECODE`` is the decode step's). A test that makes
+    operands for a kernel it tests takes them from here; a test of the producer calls `layer._produce`."""
     from fsla.ops.produce import _composition
+    from fsla.routing.masks import PREFILL
 
-    return _composition(x, layer.plan if plan is None else plan, layer._weights(x))
+    return _composition(x, layer.routing, layer._weights(x), PREFILL if consumer is None else consumer)
 
 
 def _kernels_of(item) -> list[str]:
@@ -365,7 +366,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # tests/integration/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
 # is what lets them isolate a backward-through-every-tensor gate. The producer is a
-# primitive over bare tensors (`fsla.ops.produce.produce`), so `produce_routing`
+# primitive over bare tensors (`fsla.ops.produce.produce_prefill`), so `produce_routing`
 # calls it with the caller's tensors: the graph reaches the caller's leaves and the
 # numerics are the REAL producer's, not a second derivation of them.
 
@@ -420,12 +421,11 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     from types import SimpleNamespace
 
     from fsla import Routing
-    from fsla.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
+    from fsla.ops.produce import ProducerWeights, hidden_contiguous, produce_prefill, projection_dtype
 
     H, hidden_size, _ = route_W.shape
     d_v = v.shape[-1]
-    plan = ProducerPlan(routing=Routing(topology.levels, bias=route_bias is not None, gain=bool(gain_W.shape[1])),
-                        num_heads=H, hidden_size=hidden_size, d_v=d_v)
+    routing = Routing(topology.levels, bias=route_bias is not None, gain=bool(gain_W.shape[1]))
     bias = None if route_bias is None else torch.cat([route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
     #: THE WEIGHTS IN THE PRODUCER'S CONTRACT FORM: the projection's dtype, and on the kernel's path (CUDA, no fp64)
     #: the hidden axis contiguous
@@ -433,7 +433,7 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     weights = ProducerWeights(route_W=hidden_contiguous(fused) if fused.dtype is torch.bfloat16 else fused,
                               route_bias=bias, gain_bias=gain_bias,
                               v_W=torch.zeros(H * d_v, hidden_size, dtype=torch.bfloat16, device=x.device))
-    routes, _values, _masks = produce(x, plan, weights)
+    routes, _values, _masks = produce_prefill(x, routing, weights)
     read_levels, write_levels = routes.dequantized()
     return SimpleNamespace(read_levels=read_levels, write_levels=write_levels)
 

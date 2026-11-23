@@ -44,9 +44,9 @@ def _factors(layer, **kwargs) -> RouteFactors:
 
 
 def _validate(routes, v) -> None:
-    """One walk of the engine's fast-fail over `(routes, v)`: the prefill DAG's `validate_context`, which is where
+    """One walk of the engine's fast-fail over `(routes, v)`: the prefill call's `validate_context`, which is where
     the bundle contract is gated, before any fact is found."""
-    from fsla.engine.dags.prefill_dag import validate_context
+    from fsla.engine.prefill_call import validate_context
 
     values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
     validate_context(_context(routes, values))
@@ -57,7 +57,7 @@ def _context(routes, values):
     masks' shapes and the descriptor's facts) (a non-bundle is the type refusal's, which speaks before either is read)."""
     from conftest import hand_descriptor
 
-    from fsla.engine.dags.prefill_dag import PrefillContext
+    from fsla.engine.prefill_call import PrefillContext
     from tests.oracle.fixtures import masks_of
 
     if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
@@ -247,7 +247,7 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
 def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
     """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
     `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
-    from fsla.engine.dags.prefill_dag import validate_context
+    from fsla.engine.prefill_call import validate_context
 
     producer = _routes()
     factors = _factors(producer)
@@ -481,7 +481,7 @@ def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
     """The layer's prefill dispatch lands on `fsla_op`, whose fast-fail speaks before any kernel could run: in
     training mode the gradient clause (the prefill has no reverse pass yet), out of it the envelope's device
     clause for these CPU fp64 fixtures."""
-    from fsla.engine import BackwardNotImplemented
+    from fsla.engine.types import BackwardNotImplemented
 
     layer = _routes().double().train()
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
@@ -541,7 +541,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     re-introducing a `measure/` reach fails here with the import error itself,
     and one that merely IMPORTS a measure module fails on the second assertion.
 
-    The module list is the prefill path itself -- the facade, the prefill DAG, the
+    The module list is the prefill path itself -- the facade, the prefill call, the
     state, decode, paging -- and nothing else: a module the prefill path does not
     resolve does not belong in a probe about what the prefill path resolves. The
     general `measure/` clause is the release blocker.
@@ -569,7 +569,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from fsla.ops.decode import step_plane;"
             "from fsla.engine.facts.call import refuse_backward;"
             "from fsla.engine.rules.envelope import envelope;"
-            "from fsla.engine.dags.prefill_dag import PrefillContext, run_prefill;"
+            "from fsla.engine.prefill_call import PrefillContext, run_prefill;"
             "from fsla.ops.prefill import prefill;"
             "from fsla.ops.decode import decode_launch;"
             "from fsla.ops.paging import PageArena, MMA_K_QUANTUM;"

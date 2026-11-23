@@ -233,19 +233,17 @@ A document nothing checks is a document that drifts. These run in the commit gat
 
 ## The host-structure gates
 
-The engine's DAG framework is host-only, so its battery is too.
+The engine's host steps are host-only, so their battery is too.
 
-**`tests/unit/test_facts_memo.py`** runs with no CUDA and no extension. It holds the caches the engine may declare —
-`pure_of`'s plain dict and `per_state`'s `WeakKeyDictionary`, including the weakness itself (a dropped sequence drops
-its buffers) and the TRANSIENTS-ONLY discipline (a `per_state` node's body runs against a state that raises on any
-attribute read) — and the structural refusals that fire at DAG declaration: a need that arrives later than its reader,
-a memo key that is not one of the node's inputs. It holds the decode
-family's structural declarations too: every node of `DECODE_STEP` declares `capturable`,
-and no shipped DAG contains a `reference_only` node, which keeps the growth gate's independent second derivation from
-being wired in. The CAPTURE ITSELF is `tests/integration/test_decode_graph_step.py`'s.
+**`tests/unit/test_decode_scratch.py`** runs with no CUDA and no extension. It holds the one cache a call keeps, the decode step's
+per-sequence scratch: one build a key `(descriptor, BH, device)`, no sharing between two live sequences, the weakness itself (a dropped
+sequence drops its buffers), the refusal of a second scratch for one state, and the TRANSIENTS-ONLY discipline (the build runs against a
+state that raises on any attribute read). The step's capture property (no host read of a device value, no allocation a step) is stated in
+[`internals/engine/decode_step.md#capturable`](internals/engine/decode_step.md#capturable); the CAPTURE ITSELF is
+`tests/integration/test_decode_graph_step.py`'s.
 
-**`tests/unit/test_facts_rules.py`** holds the RULE layer: every band-2 fold fed plain values and asserted on its
-decision, plus the marker sweep that makes `fsla/engine/rules/` an inventory (an unmarked function there fails). The
+**`tests/unit/test_facts_rules.py`** holds the RULE layer: every rule fed plain values and asserted on its
+decision. The
 run table is derived over all eight liveness bytes against every row of
 [`internals/engine/rules.md#run-table`](internals/engine/rules.md#run-table), whose row lines are matched against the
 rule. It must pass under `CUDA_VISIBLE_DEVICES=""`, and it asserts that the battery never resolved the compiled

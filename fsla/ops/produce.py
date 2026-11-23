@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PRODUCER: one call from a stretch of tokens to the bundle -- the routes and the values, in the internal format.
 
-    routes, values, masks = produce(x, plan, weights)
+    routes, values, masks = produce_prefill(x, routing, weights)     # or produce_decode: the decode step's layout
 
-The layer declares WHAT it routes (:class:`fsla.routing.producer.Routing`), owns the weights, and compiles a
-:class:`ProducerPlan` once; this is the one primitive that computes the bundle from them, and the masks beside it in
-the layout of the consumer the plan names (:mod:`fsla.routing.masks`). It is the whole job --
+The layer declares WHAT it routes (:class:`fsla.routing.producer.Routing`) and owns the weights; these two are the one primitive per
+consumer that computes the bundle from them, and the masks beside it in the layout of that consumer (:mod:`fsla.routing.masks`). The heads, the
+hidden width and the value width are read off the arguments, never declared twice. It is the whole job --
 the projection, every level's solve, the write gain (folded into write level 0's scale), the quantization into
 unit-max rows and the value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
 behind it (docs/api.md section 2): on CUDA with no gradient, the producer kernel's one launch, which is not built on
@@ -36,30 +36,8 @@ from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
 from fsla.values import Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "level_facts", "prefill_descriptor",
-           "produce", "projection_dtype", "route_logits"]
-
-
-@dataclass(frozen=True)
-class ProducerPlan:
-    """What one layer's producer computes, compiled once from its declaration: the routing, the heads, the widths
-    in and out, and ``consumer``, the kernel family the masks are emitted for (:data:`fsla.routing.masks.PREFILL` or
-    :data:`~fsla.routing.masks.DECODE`): the producer's output layout is a static parameter per consumer, so no
-    conversion stands between the producer and the op. Every per-call decision is read off this, never off the data."""
-
-    routing: Routing
-    num_heads: int
-    hidden_size: int
-    d_v: int
-    consumer: str = PREFILL
-
-    def __post_init__(self) -> None:
-        for name in ("num_heads", "hidden_size", "d_v"):
-            value = getattr(self, name)
-            if type(value) is not int or value < 1:
-                raise ValueError(f"{name} must be a positive exact int, got {value!r}")
-        if self.consumer not in (PREFILL, DECODE):
-            raise ValueError(f"consumer is {PREFILL!r} or {DECODE!r}, got {self.consumer!r}")
+__all__ = ["ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "level_facts", "prefill_descriptor",
+           "produce_decode", "produce_prefill", "projection_dtype", "route_logits"]
 
 
 @dataclass(frozen=True)
@@ -89,24 +67,46 @@ def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
     return route_W.transpose(1, 2).contiguous().transpose(1, 2)
 
 
-def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
-    """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks)``, the operands the ops take: the fused kernel's on CUDA
-    with no gradient -- not built on this line (:func:`fsla.ops._ext.not_built`) -- the composition's otherwise. The
-    masks come in the layout of the consumer the plan names (:mod:`fsla.routing.masks`)."""
-    if x.ndim != 3 or x.shape[-1] != plan.hidden_size:
-        raise ValueError(f"x must be [B, T, {plan.hidden_size}], got {tuple(x.shape)}")
+def produce_prefill(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
+    """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks)``, the operands the prefill takes, the masks token-packed (:data:`fsla.routing.masks.PREFILL`):
+    the fused kernel's on CUDA with no gradient -- not built on this line (:func:`fsla.ops._ext.not_built`) -- the composition's otherwise."""
+    return _produce(x, routing, weights, PREFILL)
+
+
+def produce_decode(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
+    """``x [B, 1, hidden]`` -> ``(RouteFactors, Values, Masks)``, the operands the decode step takes, the masks digit-packed (:data:`fsla.routing.masks.DECODE`):
+    the fused kernel's on CUDA with no gradient -- not built on this line (:func:`fsla.ops._ext.not_built`) -- the composition's otherwise."""
+    return _produce(x, routing, weights, DECODE)
+
+
+def _produce(x: torch.Tensor, routing: Routing, weights: ProducerWeights, consumer: str) -> tuple[RouteFactors, Values, Masks]:
+    _geometry(x, weights)
     operands = (x, weights.route_W, weights.route_bias, weights.gain_bias, weights.v_W)
     if x.is_cuda and x.dtype != torch.float64 and not requires_backward(*(t for t in operands if t is not None)):
         not_built("produce")
-    return _composition(x, plan, weights)
+    return _composition(x, routing, weights, consumer)
 
 
-def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
+def _geometry(x: torch.Tensor, weights: ProducerWeights) -> tuple[int, int]:
+    """``(num_heads, d_v)`` as the arguments state them: ``num_heads`` is ``route_W``'s leading extent, ``hidden`` is ``x``'s last (and ``route_W``'s
+    middle), ``d_v`` is ``v_W``'s rows over the heads. A shape that does not state them is refused naming the shapes."""
+    route_W, v_W = weights.route_W, weights.v_W
+    if route_W.ndim != 3:
+        raise ValueError(f"route_W must be [H, hidden, columns], got {tuple(route_W.shape)}")
+    num_heads, hidden = route_W.shape[0], route_W.shape[1]
+    if x.ndim != 3 or x.shape[-1] != hidden or hidden < 1:
+        raise ValueError(f"x must be [B, T, hidden] with hidden = route_W's {hidden} (route_W {tuple(route_W.shape)}), got {tuple(x.shape)}")
+    if v_W.ndim != 2 or num_heads < 1 or v_W.shape[0] < num_heads or v_W.shape[0] % num_heads:
+        raise ValueError(f"v_W must be [H * d_v, hidden] with H = route_W's {num_heads}, so a whole d_v of at least 1 a head; "
+                         f"got v_W {tuple(v_W.shape)} against route_W {tuple(route_W.shape)}")
+    return num_heads, v_W.shape[0] // num_heads
+
+
+def _composition(x: torch.Tensor, routing: Routing, weights: ProducerWeights, consumer: str) -> tuple[RouteFactors, Values, Masks]:
     """The producer in torch: the fp64 and host reference, and the path a gradient takes."""
     B, T, _ = x.shape
-    H = plan.num_heads
-    routing = plan.routing
-    read_logits, write_logits, gain_logits = route_logits(x, plan, weights)
+    H, d_v = _geometry(x, weights)
+    read_logits, write_logits, gain_logits = route_logits(x, routing, weights)
     read_bh, write_bh, support = production_routing_levels(read_logits, write_logits, routing.resolved)
 
     #: THE LEVELS AS THEY ARE: no level need sum to 1 (docs/CONSTITUTION.md#r23). The producer's write gain is its
@@ -116,16 +116,16 @@ def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) 
                           device=x.device)
     write_levels = (write_levels[0] * g_write.unsqueeze(-1), *write_levels[1:])
     routes = RouteFactors.from_levels(routing.topology, read_levels, write_levels)
-    masks = _masks(plan, read_levels, write_levels, support, B=B, H=H)
+    masks = _masks(routing, consumer, read_levels, write_levels, support, B=B, H=H)
 
     #: `v` FLOWS bf16 into the format (docs/api.md section 4.1); the fp64 reference computes it in fp64
     v_dtype = torch.float64 if x.dtype == torch.float64 else torch.bfloat16
     v = F.linear(x.to(v_dtype), weights.v_W.to(v_dtype))
-    values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=plan.d_v))
+    values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=d_v))
     return routes, values, masks
 
 
-def route_logits(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights):
+def route_logits(x: torch.Tensor, routing: Routing, weights: ProducerWeights):
     """The projection step alone: ``(read_logits, write_logits, gain_logits)`` as the solve reads them.
 
     TOKEN-MAJOR ``[B, T, H, W]`` on the bf16 (CUDA) path -- the GEMM's own output order, so the head axis is free
@@ -134,8 +134,8 @@ def route_logits(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights):
     """
     dtype = projection_dtype(x)
     return _packed_router_logits(
-        x, weights.route_W, plan.routing.resolved, route_bias=weights.route_bias, projection_dtype=dtype,
-        token_major=dtype is torch.bfloat16, gain_columns=plan.routing.gain_columns)
+        x, weights.route_W, routing.resolved, route_bias=weights.route_bias, projection_dtype=dtype,
+        token_major=dtype is torch.bfloat16, gain_columns=routing.gain_columns)
 
 
 def _write_gain(gain_logits, gain_bias, *, B, T, H, dtype, device) -> torch.Tensor:
@@ -151,23 +151,23 @@ def _public(levels: tuple[torch.Tensor, ...], *, B: int, H: int) -> tuple[torch.
     return tuple(level.reshape(B, H, -1, level.shape[-1]).permute(0, 2, 1, 3) for level in levels)
 
 
-def _masks(plan: ProducerPlan, read_levels, write_levels, support, *, B: int, H: int) -> Masks:
-    """THE MASKS the producer emits, in the layout of ``plan.consumer``: a bit where the producer's own level is
+def _masks(routing: Routing, consumer: str, read_levels, write_levels, support, *, B: int, H: int) -> Masks:
+    """THE MASKS the producer emits, in the layout of ``consumer``: a bit where the producer's own level is
     nonzero (the producer knows what it gives). For the prefill, a level the CUDA solve wrote support words for takes
     them as the kernel wrote them (:func:`_solve_words`); the host composition packs the floating level."""
     def packed(level: torch.Tensor) -> torch.Tensor:
-        return pack_tokens(level != 0) if plan.consumer == PREFILL else pack_digits(level != 0)
+        return pack_tokens(level != 0) if consumer == PREFILL else pack_digits(level != 0)
 
-    resolved = plan.routing.resolved
+    resolved = routing.resolved
     sides = []
     for side, levels in enumerate((read_levels, write_levels)):
         out = []
         for index, level in enumerate(levels):
-            words = None if support is None or plan.consumer != PREFILL else _solve_words(
+            words = None if support is None or consumer != PREFILL else _solve_words(
                 resolved, index, side, support, B=B, H=H)
             out.append(packed(level) if words is None else words)
         sides.append(tuple(out))
-    return Masks(plan.consumer, *sides)
+    return Masks(consumer, *sides)
 
 
 def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: int, H: int) -> torch.Tensor | None:

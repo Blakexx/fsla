@@ -205,8 +205,7 @@ untouched. The environment's developer commands come with
 `requirements.lock`, on the same venv's bin. The tree's own code reaches a pinned tool by its pin or recorded path; a
 check finds the environment's commands (ast-grep, ruff) on the PATH the graph or the venv sets, which is the
 environment's own. THE GAP: the rows sourced from the OS's packages are pinned in the image (its package layer) but
-on a host they are the host OS's own, which init does not install; `tools/build/dag_to_dot.py`'s optional `--svg` runs
-that graphviz's `dot` from PATH.
+on a host they are the host OS's own, which init does not install.
 
 | Tool | Source | Role |
 |---|---|---|
@@ -215,7 +214,7 @@ that graphviz's `dot` from PATH.
 | Nsight Compute 2026.4, Nsight Systems 2026.5 | `tools/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
 | `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
-| `graphviz`, `sqlite3` | the image's package layer; a host's own | dependency/DAG rendering, the store's record index inspection |
+| `graphviz`, `sqlite3` | the image's package layer; a host's own | dependency rendering, the store's record index inspection |
 | `universal-ctags` | the image's package layer; a host's own | cross-referencing the `csrc/` tree |
 | `jq`, `fd` (via `fd-find`) | the image's package layer; a host's own | the shell one-liners this repo's own docs use |
 | `clang-tools-14` (clang-query) | the image's package layer; a host's own | AST queries the lints and an author use; clang-tidy is the graph's pinned one (`@clang_tidy`), run by the unit lints |

@@ -14,7 +14,7 @@ mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; 
 ``workspace`` is everything derived during the call, one buffer a caller lays out with :func:`fsla.build_workspace`: the op runs no derivation
 pass of its own.
 
-ONE SEGMENT a call: the op runs the prefill DAG (:mod:`fsla.engine.dags.prefill_dag`)
+ONE SEGMENT a call: the op runs the prefill call (:mod:`fsla.engine.prefill_call`)
 over the segment it is handed and continues the state it is handed. Splitting a long
 sequence into segments is the LAYER's (:class:`fsla.FSLA`), because only the layer can
 bound the projections as well as the op. The op is forward-only until the native
@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING
 import torch
 
 from fsla._state import FSLAState
-from fsla.engine import BackwardNotImplemented
 from fsla.engine.facts.operands import operands_of, requires_backward
+from fsla.engine.types import BackwardNotImplemented
 
 if TYPE_CHECKING:
     from fsla.ops.descriptor import Descriptor
@@ -73,7 +73,7 @@ def fsla_op(
     width no built arm carries, ``T`` off the window -- RAISES, naming the clause. A gradient raises too, until
     the native backward is rebuilt.
     """
-    from fsla.engine.dags.prefill_dag import PrefillContext, validate_context
+    from fsla.engine.prefill_call import PrefillContext, validate_context
 
     ctx = PrefillContext(routes=routes, values=values, masks=masks, descriptor=descriptor, workspace=workspace, decay=decay, state=state,
                          want_state=state is not None)
@@ -104,7 +104,7 @@ class _PrefillNode(torch.autograd.Function):
 
     @staticmethod
     def forward(_node, ctx, box, *_operands):  # type: ignore[override]
-        from fsla.engine.dags.prefill_dag import run_prefill
+        from fsla.engine.prefill_call import run_prefill
 
         y, box["state_out"] = run_prefill(ctx)
         return y

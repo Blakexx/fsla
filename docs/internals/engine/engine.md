@@ -1,164 +1,103 @@
 # The engine
 
-Mirror of `fsla/engine/` — the umbrella's ROOT (the runner, the value types, the
-plans) and its `facts/` domain. This page explains WHY the structure is shaped as it
-is and how its pieces connect; the code is the authoritative statement of how each
-body works. What is DECIDED from facts is [the rule layer's page](rules.md).
+Mirror of `fsla/engine/` — the umbrella's ROOT (the value types, the launch bundles, the profiler
+range), its two calls (`prefill_call.py`, `decode_step.py`) and its `facts/` and `rules/` domains. This page
+explains WHY the structure is shaped as it is and how its pieces connect; the code is the authoritative
+statement of how each body works. What is DECIDED from values is [the rule layer's page](rules.md).
 
 Symbols: `B` batch, `T` tokens, `H` heads, `D` routing depth, `N` leaf count, `d_v`
 value width, `BC` the carry's box in leaves (the arena's allocation extent), `BH = B*H`.
 
 ## <a id="the-three-bands"></a>1. What the engine is
 
-One structure carries every kernel family from a call's raw inputs to its launch
-arguments:
+The host side of a call, from its raw inputs to its launch arguments:
 
 ```
-Context  ->  DAG  ->  launch
+validate  ->  steps, in order  ->  Launch  ->  execute(launch)
 ```
 
-* a **Context** (`PrefillContext`, `DecodeContext`) is a frozen record of the RAW
-  inputs — the routing bundle, the values, the decay dial, the state, the expert
-  overrides. Nothing derived.
-* a **DAG** is an ordered tuple of declared nodes in THREE BANDS. Band 1 nodes may
-  launch and may allocate, and produce FACTS: what is true about this call. Band 2
-  nodes are RULES — pure host folds from facts to decisions, which launch nothing and
-  allocate nothing ([`rules.md`](rules.md)). They are interleaved, not phased.
-* there is NO PLAN OBJECT: a family's launch node launches from the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its validated
-  context) and its workspace, everything derived from the facts being the family's one launch function's in `common/plan/`.
-* the launch node reads its descriptor and its facts and decides nothing. A launch site that
-  decides anything is the condition this engine exists to remove.
-
-The engine puts under one declaration what would otherwise be five conventions agreeing
-by hand: the facade's host order, the prefill seam's argument threading, the decode
-geometry object, the state's residency entry, and the arena's side-stream/event pattern.
+* each call is ONE PLAIN FUNCTION: `run_prefill` ([`prefill_call.md`](prefill_call.md)) and
+  `decode_step_gated` ([`decode_step.md`](decode_step.md)). Its body is its steps as explicit calls in
+  their order, passing values as arguments and locals; the order is the code's.
+* a step may launch and may allocate. A RULE ([`rules.md`](rules.md)) is a pure host fold from values to
+  a decision, which launches nothing and allocates nothing.
+* there is NO PLAN OBJECT: a family's launch step launches from the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its validated
+  context) and its workspace, everything derived from the call's facts being the family's one launch function's in `common/plan/`.
+* the launch step reads its descriptor and its operands and decides nothing. A launch site that
+  decides anything is the condition this structure exists to remove.
 
 ## <a id="the-split-rule"></a>2. What lives where
 
-ONE umbrella package with three domains under it, and one sentence decides what is in
-it at all:
+ONE umbrella package, and one sentence decides what is in it at all:
 
-> **What crosses the EXTENSION BOUNDARY lives in `fsla/ops/`. What a DAG walk produces
-> or decides lives in `fsla/engine/`.**
+> **What crosses the EXTENSION BOUNDARY lives in `fsla/ops/`. What a call's host steps produce
+> or decide lives in `fsla/engine/`.**
 
-* `fsla/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
-  framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
-  `validate_capturable`), the value types, the
+* `fsla/engine/` (the ROOT) — the SHARED CORE: the value types, the
   refusal every no-backward clause raises —
-  `BackwardNotImplemented` — (`types.py`), and the per-family launches (`plan.py`: the internal `PrefillLaunch`/`DecodeLaunch` bundles of `descriptor`, `operands`, `workspace`).
-* `fsla/engine/facts/` — band 1, BODIES INCLUDED. The packing, the write-atom
+  `BackwardNotImplemented` — (`types.py`), the per-family launches (`plan.py`: the internal `PrefillLaunch`/`DecodeLaunch` bundles of `descriptor`, `operands`, `workspace`) and
+  the profiler range (`trace.py`).
+* `fsla/engine/prefill_call.py`, `fsla/engine/decode_step.py` — the two calls: the context, the fast-fail, the steps and the one function that runs them.
+* `fsla/engine/facts/` — BODIES INCLUDED. The packing, the write-atom
   bitmap and the atom fold of the masks (`planes.py`), the operand list (`operands.py`), the adapters that read those facts off a routing
   bundle and the
-  gradient clause they fold into — `refuse_backward` (`call.py`) — and the declared nodes over them (`nodes.py`). A fact primitive is not
+  gradient clause they fold into — `refuse_backward` (`call.py`). A fact primitive is not
   a wrapper that defers its logic elsewhere; the primitive IS here.
-* `fsla/engine/rules/` — band 2, one declared fold per decision.
-* `fsla/engine/dags/` — the per-family compositions: the tuple, its context, its
-  terminal node.
+* `fsla/engine/rules/` — one fold per decision.
 * `fsla/ops/` — the launches and the bodies around them. `decode.py` is the geometry,
   the scratch and `step`, plus `_decode_step` — those same bodies in the step's order
   for a caller holding tensors rather than a bundle; the fold and the factor tables are
   IN the step's one launch and have no separate body here
   ([`decode/decode_fold.md`](../decode/decode_fold.md), [`decode/decode_lattice.md`](../decode/decode_lattice.md)).
 
-**A domain reaches the core through the ROOT, never through a sibling domain.**
-`fsla/engine/__init__.py` re-exports the core for exactly that: `from fsla.engine
-import rule` is the import a rule module writes, so `rule` is a property of the engine
-rather than of whichever domain happened to define it. The core itself imports no
-domain, which is what keeps that re-export from being a cycle; `fsla/engine/facts/`
-re-exports nothing, because a domain that is also a route to something it does not own
-is the mis-homing this layout removes. `fsla.engine.rules` therefore never acquires a
-dependency on the extension: the primitives that DO reach it are `fsla.engine.facts`
-modules, imported by module.
+**A domain reaches the core through its own module, never through a sibling domain.**
+The core imports no domain, and `fsla/engine/facts/` re-exports nothing, because a domain
+that is also a route to something it does not own is the mis-homing this layout removes.
+`fsla.engine.rules` therefore never acquires a dependency on the extension: the primitives
+that DO reach it are `fsla.engine.facts` modules, imported by module.
 
-## <a id="a-dag-is-code"></a>3. A DAG is code
+## <a id="a-dag-is-code"></a>3. A call is a function
 
-There is no graph library and no topological sort. A DAG is a literal tuple and
-**the order in the tuple IS the execution order**, chosen by the DAG's author for an
-efficient issue order. `needs` exists to make that order CHECKABLE and readable:
-`validate_dag` refuses, at import time, a DAG whose node reads a fact no earlier node
-or seed produces. A missing edge is therefore an authoring error, never a runtime
-surprise.
+There is no graph library, no fact dictionary and no topological sort. The call is a function
+whose body is its steps in the order the author chose for an efficient issue order, each
+step taking what it reads as arguments. A step that needs a value an earlier step did not
+produce is a name error at its first run, never a runtime surprise.
 
-The runner is the whole execution model:
+A shipped call selects nothing by call class: stateless and stateful prefill are one function (the
+state's absence is a runtime-null operand, `state_in is None`), and dense and paged decode are one
+function (a dense step's `page_table is None`). Intra-call variation is a null operand, which is free
+and costs no hot-loop register; a bool per fact would be `2^n` specializations of everything downstream.
 
-* a node whose variants do not contain the call's VARIANT — the VariantRule's own output,
-  read as a fact — is SKIPPED, and its facts are
-  seeded null — the runtime-null output skip;
-* a node whose facts are already in the bag is skipped, which is how a SUPPLIED fact
-  short-circuits every node upstream of it;
-* otherwise its needs are asserted present and it is called.
+## <a id="the-profiler-range"></a>4. The profiler range
 
-## <a id="variants"></a>4. Variants, and why not per-fact bools
+`fsla.engine.trace.span(name)` opens an NVTX range around each step of a call under the step's own name,
+so a new step appears in `nsys` with one `with span(...)` and no registry. It is guarded by
+`torch.cuda.is_available()`, so a CPU-only import never raises: the range is a profiling aid and never a
+correctness dependency, and its absence never changes behaviour.
 
-Specialization is per CALL CLASS, and the set is CLOSED AT FOUR: `PREFILL_STATELESS`
-prefill-stateless and `Variant.PREFILL_STATEFUL` prefill-stateful for the prefill family, `Variant.DECODE_DENSE` decode-dense and
-`DECODE_PAGED` decode-paged for the decode family. Each family has its own VariantRule over its own
-facts — `variant` folds `CallClass`'s four bits, `decode_variant` folds the one bit a decode
-step has — and a variant earns its name only by selecting a DIFFERENT node set. A growth
-step does not: it is `DECODE_PAGED` walked twice around an admission
-([`decode_dag.md` §1](decode_dag.md#the-two-variants)).
+## <a id="memoization"></a>5. The held scratch
 
-A bool per fact would be `2^n` specializations of everything downstream, so intra-variant
-variation is carried as a null plan FIELD instead — `state_in is None`, a dense step's
-`page_table is None` — which is free and costs no hot-loop register.
+The one cache a call keeps is the decode step's per-sequence scratch (`decode_step.scratch`): a module-level
+`WeakKeyDictionary` keyed on the state object, each value a dict keyed `(descriptor, BH, device)`, for device
+allocations belonging to ONE live sequence. The weakness is required
+rather than incidental: a dropped sequence must drop its buffers, and two live
+sequences must never share one.
 
-## <a id="the-suppliable-set"></a>5. The suppliable set is closed
-
-Production is the sole pluggable node. A caller may substitute the routing bundle and
-the packed amplitude planes it stands for; everything DOWNSTREAM of that boundary —
-the tables, the bitmaps, the liveness bits, the residency plan — is one canonical
-implementation, un-overridable and gated once. A context that supplies a canonical
-fact RAISES rather than forking fact production, because two ungated producers of one
-fact is exactly what the two-purposes doctrine forbids.
-
-The round trip through DRAM at that boundary is not a cost to engineer away; it IS
-the pluggability seam.
-
-## <a id="streams-and-the-join"></a>6. Streams and capture
-
-Node metadata declares the discipline the arena implements:
-
-* `stream="side"` — issued on the arena's side stream.
-* `capturable=True` — this node may stand inside a CUDA-graph capture: it reads no
-  device value on the host and allocates nothing per step.
-  `validate_capturable` refuses a captured recipe holding a node without it
-  ([`decode_dag.md` §4](decode_dag.md#capturable)).
-* `reference_only=True` — this node is a GATE's independent second derivation of a
-  fact the shipped path derives its own way. `validate_dag` refuses any DAG containing
-  one, which is what keeps that independence from being deleted by a well-meaning
-  wiring ([`decode_dag.md` §6](decode_dag.md#reference-only)).
-
-## <a id="memoization"></a>7. Memoization is a node attribute
-
-Not a per-site convention:
-
-* `pure_of=(...)` names the facts a pure host derivation is a function OF, and gives
-  the node a plain dict cache. It is for CONFIG derivations — the geometry of a
-  shape, the arm of a topology — whose answer is identical for identical keys.
-* `per_state=True` gives the node a `WeakKeyDictionary` keyed on the state object,
-  for device allocations belonging to ONE live sequence. The weakness is required
-  rather than incidental: a dropped sequence must drop its buffers, and two live
-  sequences must never share one.
-
-A memo key that is not one of the node's own inputs is refused at declaration.
-
-**A `per_state` cache holds REBUILDABLE TRANSIENTS ONLY**, and the state is its KEY
-rather than one of its inputs: every other need is a declared memo key, so what is
-cached is a function of facts a rebuild has, and the body never reads the sequence at
-all. That is what makes the handle-IS-the-sequence invariant survive caching — two
+**The held scratch is REBUILDABLE TRANSIENTS ONLY**, and the state is its KEY
+rather than an input of the build: the build is a function of `(descriptor, BH, device)`, and
+never reads the sequence at all. That is what makes the handle-IS-the-sequence invariant survive caching — two
 handles onto one geometry get interchangeable objects, and a fork or a rollback
-inherits nothing through a cache (`docs/internals/state.md` §9.1).
-`tests/unit/test_facts_memo.py` drives every shipped `per_state` node with a state that
-raises on any attribute read, so the property is proven per node rather than declared.
+inherits nothing through the cache (`docs/internals/state.md` §9.1).
+`tests/unit/test_decode_scratch.py` builds the scratch with a state that
+raises on any attribute read, so the property is proven rather than declared.
 
-A PRIMITIVE whose answer is a function of the loaded binary rather than of any fact is
-not a node and no node memo reaches it: the binary's arm census (`fsla.ops.decode.arms`) is
+A PRIMITIVE whose answer is a function of the loaded binary rather than of any call fact is
+cached by nothing here: the binary's arm census (`fsla.ops.decode.arms`) is
 read by the bench provider, never by a call.
 
-## <a id="refusals"></a>8. Refusals are one call at the head
+## <a id="refusals"></a>6. Refusals are one call at the head
 
-Each kernel family has ONE `validate_context(ctx)`, run immediately after the context
-is built and before any fact node. It consolidates the operand-type refusals, the descriptor's checks against the call, the gradient refusal and the suppliable-set closure (the prefill's device and unbuilt-kernel refusals are made earlier, where its descriptor is). Scattering preconditions across the DAG
+Each kernel family has ONE `validate_context`, run first in its call, before any step. It consolidates the operand-type refusals, the descriptor's checks against the call and the gradient refusal (the prefill's device and unbuilt-kernel refusals are made earlier, where its descriptor is). Scattering preconditions across the steps
 would allow a refusal three
 launches in, with the operands already consumed; one call at the head makes that
 unreachable by construction.
@@ -178,16 +117,16 @@ type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §5). NO MODULE UNDER `f
 hides an inversion from the import graph without removing it, so the rule layer holds
 none.
 
-## <a id="the-plan"></a>9. What a launch bundle may hold
+## <a id="the-plan"></a>7. What a launch bundle may hold
 
 A host field is some rule's verdict; a tensor field is a reference to a terminal
 fact. **No bundle field may be `O(N * L)`**: a launch bundle is held for as long as its call is,
 so a field added for one launch's convenience is retained with it.
 
-A fact can also be an OPERAND, and the engine does not pretend otherwise: the
+A value can also be an OPERAND, and the engine does not pretend otherwise: the
 state-out plane is both a launch argument and the call's result.
 
-## <a id="neutrality"></a>10. The neutrality gate
+## <a id="neutrality"></a>8. The neutrality gate
 
 A host refactor that claims neutrality is answerable to what the extension RETURNED —
 `y`, the state plane and the facts themselves — off a fixed cell set, compared across

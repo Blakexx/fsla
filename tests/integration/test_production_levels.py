@@ -50,7 +50,7 @@ import torch
 from conftest import fuse_gain_columns, produce_routing, raw_side_gain, resolved_routing_from_topology
 
 import fsla.ops.produce as production_path
-from fsla.ops.produce import ProducerPlan, ProducerWeights, route_logits
+from fsla.ops.produce import ProducerWeights, route_logits
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.producer import Routing
 from fsla.routing.reference import routing_factor_levels as oracle_factor_levels
@@ -694,11 +694,10 @@ def _production_logits(topology, params):
     """The `(read, write)` logits the shipped producer computes for these parameters: its projection step
     (`route_logits`), under the caller's parameter tensors -- reconstructing it is how a gate ends up measuring a
     second implementation."""
-    H, hidden_size, _ = params["route_W"].shape
-    plan = ProducerPlan(routing=Routing(topology.levels), num_heads=H, hidden_size=hidden_size, d_v=8)
+    routing = Routing(topology.levels)
     weights = ProducerWeights(route_W=fuse_gain_columns(params["route_W"], params["gain_W"]), route_bias=None,
                               gain_bias=params["gain_bias"], v_W=params["x"].new_zeros(0))
-    read_logits, write_logits, _ = route_logits(params["x"], plan, weights)
+    read_logits, write_logits, _ = route_logits(params["x"], routing, weights)
     return read_logits, write_logits
 
 

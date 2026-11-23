@@ -50,10 +50,11 @@ import pytest
 import torch
 from conftest import reference_produce
 
-from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
 from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_lattice
 from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
+from fsla.routing.masks import DECODE
 from fsla.values import Values
 from tests.integration.test_decode_paging import (
     _COLS,
@@ -351,7 +352,7 @@ def test_the_captured_step_is_the_eager_step():
     """Same kernels, same order, the same state bytes and `y` to its sums' order -- the capture owes exactly this."""
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
-    routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
+    routes, _values, masks = reference_produce(layer, x[:, token], DECODE)
     descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
@@ -409,7 +410,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     """
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
-    routes, _values, masks = reference_produce(layer, x[:, token], layer.step_plan)
+    routes, _values, masks = reference_produce(layer, x[:, token], DECODE)
     descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
@@ -440,7 +441,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     #: The same pair, eagerly, on its own sequence. `_sequence` is seeded, so the two
     #: states are the same state and the two tokens are the same token.
     layer2, x2, v2, eager_state = _sequence()
-    eager_routes, _values, eager_masks = reference_produce(layer2, x2[:, token], layer2.step_plan)
+    eager_routes, _values, eager_masks = reference_produce(layer2, x2[:, token], DECODE)
     eager_static, eager_static_v, eager_static_masks = _static(eager_routes, v2[:, token], eager_masks)
     _fill(eager_static, eager_static_v, eager_static_masks, eager_routes, v2[:, token], eager_masks)
     assert _make_growth(eager_state, eager_static) == (row, column), (

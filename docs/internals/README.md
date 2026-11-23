@@ -4,7 +4,7 @@
 `src/` component the mirror does not repeat (`csrc/fsla/src/decode/decode.cuh` → `docs/internals/decode/decode.md`;
 `csrc/fsla/fsla_api.cpp` → `docs/internals/fsla_api.md`); a `.cu` and its `.cuh` share one doc, since they are one
 component. And one page a Python module group the kernels' host side is built from: `engine/` mirrors `fsla/engine/`
-(the package, the rule layer, the two DAGs), `state.md` mirrors `fsla/_state.py`, `paging/paging.md`
+(the package, the rule layer, the two calls), `state.md` mirrors `fsla/_state.py`, `paging/paging.md`
 mirrors `fsla/ops/paging.py` and `padding.md` mirrors `fsla/ops/padding.py`. `tools/` mirrors `tools/`, one page a
 script with something to say ([the tools map](tools/README.md)); `hardware/` mirrors `hardware/` (the contract registry: [its page](hardware/registry.md)).
 

@@ -69,15 +69,14 @@ y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode 
 
 `fsla.union_routing(width, alpha)` is the alternative level: one shared entmax solve split across the two duties.
 
-The same call through the op: the producer makes a call's factors, values and masks (`produce`), and each call takes the validated
+The same call through the op: the producer makes a call's factors, values and masks (`produce_prefill`, `produce_decode`), and each call takes the validated
 descriptor of its kind (`prefill_descriptor`, `decode_descriptor`) beside its data. There is no plan object: what the call derives goes in a
 workspace the caller builds (`fsla.build_workspace`).
 
 ```python
 import torch
-from fsla.ops.produce import ProducerPlan, ProducerWeights, produce, prefill_descriptor, decode_descriptor, projection_dtype
-from fsla.routing.masks import DECODE          # PREFILL is the default consumer
-from fsla.engine.dags.decode_dag import decode_step_gated, growth_pending, admit_growth
+from fsla.ops.produce import ProducerWeights, produce_prefill, produce_decode, prefill_descriptor, decode_descriptor, projection_dtype
+from fsla.engine.decode_step import decode_step_gated, growth_pending, admit_growth
 
 H, hidden, d_v = 8, 1024, 64
 x = ...                                        # [B, T, hidden], CUDA
@@ -88,16 +87,14 @@ weights = ProducerWeights(
     v_W=torch.randn(H * d_v, hidden, device="cuda", dtype=torch.bfloat16))
 
 # prefill: the masks come in the prefill layout (refused by name until the carry is built, as in the layer)
-plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v)
-routes, values, masks = produce(x, plan, weights)
+routes, values, masks = produce_prefill(x, routing, weights)       # H, hidden and d_v are read off the weights and x
 state = fsla.state()
 descriptor = prefill_descriptor(routing.topology, d_v=d_v, decay=False, tokens=x.shape[1], batch_heads=x.shape[0] * H, stateful=True)
 workspace = fsla.build_workspace(routes, values, masks, descriptor)
 y, state = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state)
 
-# decode: the same producer, the masks in the decode layout, and the descriptor of the call on this device
-step_plan = ProducerPlan(routing=routing, num_heads=H, hidden_size=hidden, d_v=d_v, consumer=DECODE)
-routes, values, masks = produce(x_token, step_plan, weights)       # x_token: [B, 1, hidden]
+# decode: the decode producer, the masks in the decode layout, and the descriptor of the call on this device
+routes, values, masks = produce_decode(x_token, routing, weights)  # x_token: [B, 1, hidden]
 descriptor = decode_descriptor(routing.topology, d_v=d_v, decay=False, batch_heads=x_token.shape[0] * H, device=x_token.device)
 y, state = decode_step_gated(routes, values, masks, state, descriptor)
 if growth_pending(state):                       # a head whose state needed one more atom skipped itself

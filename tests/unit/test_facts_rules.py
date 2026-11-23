@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The rule layer, WITHOUT a device: every band-2 fold, fed values and asserted on.
+"""The rule layer, WITHOUT a device: every rule, fed values and asserted on.
 
-A rule is a pure host fold from facts to a decision, and it reads a fact's shape,
+A rule is a pure host fold from values to a decision, and it reads a value's shape,
 dtype, device and PRESENCE but never its contents. That is what makes this battery
 possible at all: it feeds plain tuples and ints, calls no kernel and
 touches no device, and it must pass under `CUDA_VISIBLE_DEVICES=""`. Before P75 the
@@ -15,120 +15,18 @@ drift apart.
 """
 from __future__ import annotations
 
-import importlib
-import inspect
-import pkgutil
 from pathlib import Path
 
 import pytest
 import torch
 
-import fsla.engine.rules as rules_pkg
 from fsla.engine.rules import (
     admission,
-    decode_variant,
     envelope,
     run_table,
-    variant,
 )
-from fsla.engine.runner import Node
-from fsla.engine.types import CallClass, Variant
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-# ---------------------------------------------------------------------------
-# The layer itself
-# ---------------------------------------------------------------------------
-
-def _rule_modules():
-    return [importlib.import_module(f"fsla.engine.rules.{info.name}")
-            for info in pkgutil.iter_modules(rules_pkg.__path__)]
-
-
-def test_every_function_under_rules_is_a_declared_rule():
-    """THE MARKER IS THE INVENTORY. `fsla/engine/rules/` holds band-2 folds and nothing
-    else, so an ordinary helper landing here -- one that could launch, allocate or
-    read a tensor's contents unnoticed -- fails by being unmarked."""
-    unmarked = []
-    for module in _rule_modules():
-        for name, obj in vars(module).items():
-            if name.startswith("_") or not inspect.isfunction(obj):
-                continue
-            if obj.__module__ != module.__name__:
-                continue
-            if not isinstance(getattr(obj, "node", None), Node):
-                unmarked.append(f"{module.__name__}.{name}")
-    assert not unmarked, (
-        f"{unmarked} live under fsla/engine/rules/ without the `rule` marker; a rule "
-        "declares its facts and its band, and an unmarked function declares nothing")
-
-
-def test_a_rule_declares_the_host_band_and_no_memo():
-    """Band 2 is pure host work on the DAG's parallel front: no stream, no join, no
-    device-to-host read, and -- this stage -- no memo anywhere new."""
-    for module in _rule_modules():
-        for name, obj in vars(module).items():
-            declared = getattr(obj, "node", None)
-            if not isinstance(declared, Node):
-                continue
-            where = f"{module.__name__}.{name}"
-            assert declared.stream == "host", where
-            assert declared.pure_of == () and not declared.per_state, where
-            assert declared.pure is obj, where
-
-
-def test_a_rule_whose_parameters_are_not_its_facts_is_refused():
-    """The adapter from the fact bag to the fold is a LOOKUP, so the parameter names
-    are the fact names -- checked at declaration rather than at the walk."""
-    from fsla.engine.runner import rule
-
-    with pytest.raises(ValueError, match="parameter names are the FACT names"):
-        @rule(gives=("arm",), needs=("widths", "manifest"))
-        def wrong(widths, census):
-            return None
-
-
-def test_a_rule_runs_as_a_node_over_a_fact_bag():
-    """Rules are NODES, not a phase: the same fold a caller invokes with values is
-    what the walk runs, and `.node` is the one it walks."""
-    from fsla.engine.runner import run
-
-    facts = run((variant.node,), {"call_class": CallClass(False, False, False, False)})
-    assert facts["variant"] is Variant.PREFILL_STATELESS
-
-
-# ---------------------------------------------------------------------------
-# VariantRule
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("state_in", [False, True])
-@pytest.mark.parametrize("state_out", [False, True])
-@pytest.mark.parametrize("paged", [False, True])
-@pytest.mark.parametrize("grad", [False, True])
-def test_the_variant_is_v1_exactly_when_no_state_bit_is_engaged(state_in, state_out, paged, grad):
-    """GRAD IS NOT A VARIANT: it is a retention decision, and the variant must not move
-    with it -- a grad-bearing stateless call runs the subgraph exactly."""
-    engaged = state_in or state_out or paged
-    assert variant(CallClass(state_in, state_out, paged, grad)) is (Variant.PREFILL_STATEFUL if engaged
-                                                                 else Variant.PREFILL_STATELESS)
-
-
-@pytest.mark.parametrize("paged", [False, True])
-def test_the_decode_variant_is_the_backing_and_nothing_else(paged):
-    """A GROWTH STEP IS NOT A VARIANT. DECODE_PAGED is walked twice around an admission, so the
-    only thing that selects a different node set at T = 1 is dense vs paged."""
-    assert decode_variant(paged) is (Variant.DECODE_PAGED if paged else Variant.DECODE_DENSE)
-
-
-def test_the_four_variants_are_the_four_call_classes():
-    """The set is CLOSED at four: prefill and decode, each over its two backings."""
-    assert [m.name for m in Variant] == ["PREFILL_STATELESS", "PREFILL_STATEFUL", "DECODE_DENSE", "DECODE_PAGED"]
-
-
-# ---------------------------------------------------------------------------
-# ArmRule
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

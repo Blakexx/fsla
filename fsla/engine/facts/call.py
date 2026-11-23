@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fsla.engine import BackwardNotImplemented
 from fsla.engine.facts.operands import operands_of, requires_backward
+from fsla.engine.types import BackwardNotImplemented
 
 
 def refuse_backward(routes, values, decay: Any = None) -> None:

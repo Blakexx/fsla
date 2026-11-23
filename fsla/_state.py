@@ -430,7 +430,7 @@ class FSLAState:
         case to serve and nothing to admit here: the step asks its own residency question
         on the device, admits from the slack pool where there is one, and where there is
         not, the admission its verdict calls for is :meth:`_decode_entry_arena`, between
-        two walks of the step (docs/internals/engine/decode_dag.md#the-two-variants). The
+        two walks of the step (docs/internals/engine/decode_step.md#the-two-variants). The
         arena rides along for its pool buffers alone; a dense state has none.
 
         Dense states hand back a VIEW of their own plane, which is what makes the

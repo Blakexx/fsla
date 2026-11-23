@@ -392,7 +392,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the page's planes and its codec | [`internals/common/state_page.md`](internals/common/state_page.md) |
 | the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |
 | the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve) |
-| the host order of a call | [`internals/engine/prefill_dag.md`](internals/engine/prefill_dag.md), [`internals/engine/decode_dag.md`](internals/engine/decode_dag.md) |
+| the host order of a call | [`internals/engine/prefill_call.md`](internals/engine/prefill_call.md), [`internals/engine/decode_step.md`](internals/engine/decode_step.md) |
 | the digits, the row alignment law and the atom byte | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |

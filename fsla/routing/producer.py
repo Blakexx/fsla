@@ -3,7 +3,7 @@
 """THE ROUTING A LAYER COMPUTES, DECLARED: its levels, the write gain and the projection bias.
 
 FSLA is linear attention under a structured feature map, and the feature map is declared, not supplied: a
-:class:`Routing` is DATA, the layer owns the weights it implies, and the producer (:func:`fsla.ops.produce.produce`)
+:class:`Routing` is DATA, the layer owns the weights it implies, and the producer (:func:`fsla.ops.produce.produce_prefill`)
 computes the bundle from them in one call. The format and its producer are ours, so a routing the registry does not
 hold is added to the registry -- its activation, its solve, its reference and its oracle -- never plugged in beside
 it (docs/api.md section 2).

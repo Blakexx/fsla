@@ -12,7 +12,7 @@ structural rather than provenance-based.
 
 The bundle carries tensors and nothing else, which is why it is constructible rather
 than sealed. What its invariants are, and why unit-sum-ness is not among them:
-``docs/api.md`` section 2.1. The layer's producer (:func:`fsla.ops.produce.produce`) builds it from a declared
+``docs/api.md`` section 2.1. The layer's producer (:func:`fsla.ops.produce.produce_prefill`) builds it from a declared
 :class:`~fsla.routing.producer.Routing`; :meth:`RouteFactors.from_levels` builds it from any levels, equally checked.
 """
 

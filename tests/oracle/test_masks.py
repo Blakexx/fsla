@@ -13,7 +13,7 @@ import torch
 from conftest import build_layer
 
 from fsla.ops.naive import naive_fsla
-from fsla.ops.produce import ProducerPlan, activation_walks, produce
+from fsla.ops.produce import activation_walks, produce_decode, produce_prefill
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
 from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
@@ -77,11 +77,11 @@ def _layer_and_x(T):
 
 
 @pytest.mark.parametrize("consumer", (PREFILL, DECODE))
-def test_the_producer_returns_the_masks_in_the_plans_consumer_layout(consumer):
+def test_each_producer_returns_the_masks_in_its_consumers_layout(consumer):
     T = 1 if consumer == DECODE else 70
     layer, x = _layer_and_x(T)
-    plan = ProducerPlan(routing=layer.routing, num_heads=2, hidden_size=32, d_v=32, consumer=consumer)
-    routes, _values, masks = produce(x, plan, layer._weights(x))
+    produce = produce_decode if consumer == DECODE else produce_prefill
+    routes, _values, masks = produce(x, layer.routing, layer._weights(x))
     assert masks.consumer == consumer
     masks.check(routes)
     for side in ("read", "write"):
@@ -91,10 +91,18 @@ def test_the_producer_returns_the_masks_in_the_plans_consumer_layout(consumer):
             assert bool((bits >= (rows != 0)).all()), "a mask covers every nonzero row digit"
 
 
-def test_a_producers_consumer_is_one_of_the_two():
-    layer, _x = _layer_and_x(1)
-    with pytest.raises(ValueError, match="consumer is"):
-        ProducerPlan(routing=layer.routing, num_heads=2, hidden_size=32, d_v=32, consumer="gather")
+def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name():
+    """`num_heads` is `route_W`'s leading extent, `hidden` is `x`'s last and `route_W`'s middle, `d_v` is `v_W`'s rows over the heads."""
+    layer, x = _layer_and_x(4)
+    weights = layer._weights(x)
+    routes, values, _masks = produce_prefill(x, layer.routing, weights)
+    assert (routes.heads, values.d_v) == (2, 32)
+    with pytest.raises(ValueError, match=r"x must be \[B, T, hidden\] with hidden = route_W's 32"):
+        produce_prefill(x[..., :16], layer.routing, weights)
+    with pytest.raises(ValueError, match=r"v_W must be \[H \* d_v, hidden\]"):
+        produce_prefill(x, layer.routing, type(weights)(weights.route_W, weights.route_bias, weights.gain_bias, weights.v_W[:3]))
+    with pytest.raises(ValueError, match=r"route_W must be \[H, hidden, columns\]"):
+        produce_decode(x[:, :1], layer.routing, type(weights)(weights.route_W[0], weights.route_bias, weights.gain_bias, weights.v_W))
 
 
 def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():

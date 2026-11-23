@@ -215,12 +215,10 @@ CTA that built them ([§12](#factor-tables)); the step's one leaf-level output i
 
 `fsla.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
 condensation — the same set derived from the Cartesian-product definition in torch,
-wired into the engine DAG as `write_atom_bitmap`'s `reference_only=True` node
-(`fsla/engine/dags/decode_dag.py`) and exercised directly by the paging/growth
+held by `fsla/engine/decode_step.py`'s `write_atom_bitmap`, which no step calls, and exercised directly by the paging/growth
 integration tests (`tests/integration/test_decode_growth_trigger.py`,
 `test_decode_graph_step.py`, `test_decode_paging.py`, `test_page_arena_vmm.py`). It
-is not a fallback and not a second path a caller may select — `reference_only` is what
-`validate_dag` refuses to let an executed recipe select — it is what makes the gate a
+is not a fallback and not a second path a caller may select — no step of the decode call invokes it — it is what makes the gate a
 check rather than the kernel agreeing with itself ([§39](#second-derivation)).
 
 ## <a id="the-gate"></a>4c. The verdict is PER BATCH-HEAD, and the done flags are what make a replay idempotent
@@ -309,7 +307,7 @@ host-admitted one reach the same state and the same `y`.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
-With no host read inside it the step is capturable, and `fsla.engine.dags.decode_dag.decode_step_gated`
+With no host read inside it the step is capturable, and `fsla.engine.decode_step.decode_step_gated`
 is the decode entry. The CALLER owns the verdict, at whatever synchronization it already has
 (a decode loop syncs once per token to sample):
 
@@ -823,10 +821,10 @@ there is no second address space for the factor tables to fall back to either.
 
 ---
 
-# Part C — the host side (`fsla/ops/decode.py`, `fsla/engine/dags/decode_dag.py`)
+# Part C — the host side (`fsla/ops/decode.py`, `fsla/engine/decode_step.py`)
 
-The step's ORDER, the two memo disciplines and the capturability declaration are the
-DAG's page ([`engine/decode_dag.md`](../engine/decode_dag.md)); what follows is what the
+The step's ORDER, the scratch's holding discipline and the capturability statement are the
+step's page ([`engine/decode_step.md`](../engine/decode_step.md)); what follows is what the
 KERNELS impose on the host.
 
 ## <a id="decay-domain"></a>36. Decode's decay domain has no admissibility precondition

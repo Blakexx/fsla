@@ -62,7 +62,7 @@ plane, which the bit-identity gate compares the paged backing against. `fsla.sta
 a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
 step can admit into itself, with no host round trip. `0.0` — the default — is exact
 commitment. Two calls read and refill it off the
-step's own path: `fsla.engine.dags.decode_dag.pool_headroom(state)` (the slack slots the
+step's own path: `fsla.engine.decode_step.pool_headroom(state)` (the slack slots the
 thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
 See [`internals/state.md`](internals/state.md#the-slack-pool) and
 [`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
@@ -82,7 +82,7 @@ decode step pad below the op, and the intra reads the rows at their own widths.
 ### 1.1 The built envelope IS the surface
 
 The prefill is the carry and the intra over a BUILT MATRIX
-(`fsla.engine.dags.prefill_dag`). **Everything outside it raises.** There is no second arm behind this surface: the
+(`fsla.engine.prefill_call`). **Everything outside it raises.** There is no second arm behind this surface: the
 fp64 oracle
 (`fsla.ops.naive.naive_fsla`) is the executable spec — what tests and measurements
 call directly — and it is not reachable by dispatch, because a dispatch to it at
@@ -169,7 +169,7 @@ addressing somebody else's bytes inside a kernel. Re-laying out a state is an ex
 op, never a side effect of a call. See
 [`internals/state.md`](internals/state.md#format).
 
-**Status.** `fsla_op` validates the call against the envelope and walks the prefill DAG.
+**Status.** `fsla_op` validates the call against the envelope and runs the prefill call.
 No carry kernel is built (`fsla.ops.carry.carry` raises `KernelNotBuilt`), so a prefill does not run
 ([`docs/open-work.md`](open-work.md)).
 
@@ -293,9 +293,9 @@ FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, ...
 ```
 
 RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data -- the levels, the write gain and
-the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
+the projection bias -- and the layer owns every weight it implies: the
 packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
-call (`fsla.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
+call (`fsla.ops.produce.produce_prefill`, or `produce_decode` for the decode step) turns a stretch of tokens into the bundle -- the projection, the exact
 entmax/softmax solves, the write gain, the unit-max rows and the bf16 values -- and on CUDA with no gradient
 that call is ONE LAUNCH of the fused producer kernel, the bundle's rows and scales views of the planes it writes --
 a kernel not built on this line, so the call raises `fsla.ops._ext.KernelNotBuilt` there
@@ -394,7 +394,7 @@ is the result the data fixes. The backward saves the masks and they carry no gra
 fsla.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
 ```
 
-The producer emits them in the layout of the consumer its plan names (`ProducerPlan.consumer`, a static field), so no
+The producer emits them in the layout of the consumer it is made for (`produce_prefill` the prefill's, `produce_decode` the decode step's), so no
 conversion stands between the producer and the op, and each op documents the layout it reads:
 
 | consumer | a level's mask | bit |
@@ -538,7 +538,7 @@ build these objects and pass them; do not assert on their fields.
 **There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
 is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
-`descriptor`, the `operands` (the data, masks included) and the `workspace` -- built at a DAG's terminal node and never public. The
+`descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The
 state's BACKING is the state's own, chosen when it is made -- `fsla.state(backing="paged")`, the default, or `"dense"`, one dense plane, the bit-identity gate's -- never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and the descriptor of a call answers the same question before it.
 

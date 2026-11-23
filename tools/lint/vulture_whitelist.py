@@ -93,6 +93,10 @@ class _Whitelist:
     # `shlex.shlex` READS `whitespace_split` and `commenters` when it tokenizes: `tools/lint/graph_only.py` sets them on its lexer.
     whitespace_split = None
     commenters = None
+    #: `fsla/engine/decode_step.py`'s `write_atom_bitmap` is the growth gate's INDEPENDENT second derivation of the write-atom set: no call
+    #: invokes it BY DESIGN (docs/internals/decode/decode.md#second-derivation), so a caller would be the independence lost.
+    write_atom_bitmap = None
+
     dont_write_bytecode = None  # sys's flag, set by the front door (bazel/front_door.py): a store vulture reads as unused
 
 
@@ -104,4 +108,4 @@ _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
                _.free, _.Activation, _.state_size, _.sequence_length,
                _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary, _.pytest_tier,
-               _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode)
+               _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode, _.write_atom_bitmap)

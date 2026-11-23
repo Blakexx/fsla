@@ -4,9 +4,8 @@
 
     FSLA(Routing([...]), hidden_size=..., num_heads=..., d_v=..., decay=..., layer_idx=...)
 
-The routing is DECLARED (:class:`~fsla.routing.producer.Routing`): data the layer compiles once into a producer
-plan. The layer owns every weight the declaration implies -- the packed routing projection, its bias, the write
-gain's bias, ``v_proj`` and ``o_proj`` -- and one producer call (:func:`fsla.ops.produce.produce`) turns a stretch
+The routing is DECLARED (:class:`~fsla.routing.producer.Routing`): data the producer reads. The layer owns every weight the declaration implies -- the packed routing projection, its bias, the write
+gain's bias, ``v_proj`` and ``o_proj`` -- and one producer call (:func:`fsla.ops.produce.produce_prefill`) turns a stretch
 of tokens into the bundle the op takes. ``d_v`` is the per-head value width, which is the LAYER's: it sizes
 ``v_proj`` and ``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
 SOURCE (:mod:`fsla.routing.decay`), the slot that decides where the recurrence's
@@ -46,7 +45,7 @@ import torch
 import torch.nn as nn
 
 from fsla._inference_copy import InferenceCopy, reads_copy
-from fsla.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
 from fsla.engine.facts.call import refuse_backward
 from fsla.interface import (
     BackwardNotImplemented,
@@ -57,16 +56,15 @@ from fsla.interface import (
 from fsla.ops._ext import not_built
 from fsla.ops.prefill import build_workspace
 from fsla.ops.produce import (
-    ProducerPlan,
     ProducerWeights,
     decode_descriptor,
     hidden_contiguous,
     prefill_descriptor,
-    produce,
+    produce_decode,
+    produce_prefill,
     projection_dtype,
 )
 from fsla.routing.decay import validate_decay_source
-from fsla.routing.masks import DECODE
 from fsla.routing.producer import Routing, _init_packed_router
 from fsla.routing.side_gain import init_side_gain_bias
 
@@ -153,11 +151,9 @@ class FSLA(nn.Module):
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
         if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
             raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
-        #: the plan validates `hidden_size` and `num_heads`
-        self.plan = ProducerPlan(routing=routing, num_heads=num_heads, hidden_size=hidden_size, d_v=d_v)
-        #: the same producer, emitting the masks in the DECODE layout (digit-packed) for the one-token step
-        self.step_plan = ProducerPlan(routing=routing, num_heads=num_heads, hidden_size=hidden_size, d_v=d_v,
-                                      consumer=DECODE)
+        for name, value in (("hidden_size", hidden_size), ("num_heads", num_heads)):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive exact int, got {value!r}")
         if decay is not None:
             validate_decay_source(decay, routing.topology, num_heads)
 
@@ -287,7 +283,7 @@ class FSLA(nn.Module):
         step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
         """
         decay = None if self.decay is None else self.decay()
-        routes, values, masks = self._produce(x, self.step_plan)
+        routes, values, masks = produce_decode(x, self.routing, self._weights(x))
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
@@ -300,10 +296,10 @@ class FSLA(nn.Module):
         """The output projection, bf16 operands, in the caller's dtype."""
         return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
-    def _produce(self, x: torch.Tensor, plan: ProducerPlan | None = None):
+    def _produce(self, x: torch.Tensor):
         """One stretch of tokens into the format: ``(routes, values, masks)``, from one producer call, the masks in the
-        layout of the consumer ``plan`` names."""
-        return produce(x, self.plan if plan is None else plan, self._weights(x))
+        prefill's layout."""
+        return produce_prefill(x, self.routing, self._weights(x))
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
         """The layer's weights as the producer reads them: the reused copies when no gradient flows."""
@@ -326,7 +322,7 @@ class FSLA(nn.Module):
         if self.memory_budget is not None:
             not_built("prefill")
         B, L, _ = x.shape
-        routes, values, masks = self._produce(x, self.plan)
+        routes, values, masks = self._produce(x)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
         descriptor = prefill_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, tokens=L,
                                         batch_heads=B * self.num_heads, stateful=state is not None, device=x.device)

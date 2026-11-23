@@ -1,19 +1,13 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The engine: ONE structure carries every kernel family from raw inputs to a launch.
+"""The engine: the host side of a call, from raw inputs to a launch.
 
-    Context -> DAG -> Launch -> execute(launch)
+    prefill_call / decode_step -> Launch -> execute(launch)
 
-This ROOT holds the shared CORE and nothing family-specific: the DAG framework
-(:mod:`fsla.engine.runner`), the value types (:mod:`fsla.engine.types`) and
-the launch bundles (:mod:`fsla.engine.plan`). The DOMAINS are its subpackages --
-:mod:`fsla.engine.facts` (the fact primitives and their bodies),
-:mod:`fsla.engine.rules` (the band-2 folds) and :mod:`fsla.engine.dags` (the
-per-family compositions).
-
-The core is re-exported here because that is the layering statement: a domain reaches
-it THROUGH this module and never through a sibling domain, so `rule` is a property of
-the engine rather than of the fact-finder that happened to define it
+This ROOT holds the shared CORE and nothing family-specific: the value types (:mod:`fsla.engine.types`), the launch bundles
+(:mod:`fsla.engine.plan`) and the profiler range (:mod:`fsla.engine.trace`). The two calls are plain functions beside them
+(:mod:`fsla.engine.prefill_call`, :mod:`fsla.engine.decode_step`); their primitives are the subpackages
+:mod:`fsla.engine.facts` (the packing, the operand list, the gradient clause) and :mod:`fsla.engine.rules` (the pure host folds)
 (docs/internals/engine/engine.md).
 """
 
@@ -25,38 +19,15 @@ from fsla.engine.plan import (
     PrefillOperands,
     PrefillWorkspace,
 )
-from fsla.engine.runner import (
-    Node,
-    node,
-    rule,
-    run,
-    validate_capturable,
-    validate_dag,
-)
-from fsla.engine.types import (
-    MMA_K_QUANTUM,
-    SUPPLIABLE,
-    BackwardNotImplemented,
-    CallClass,
-    Variant,
-)
+from fsla.engine.types import MMA_K_QUANTUM, BackwardNotImplemented
 
 __all__ = [
     "MMA_K_QUANTUM",
-    "SUPPLIABLE",
     "BackwardNotImplemented",
-    "CallClass",
     "DecodeLaunch",
     "DecodeOperands",
     "DecodeWorkspace",
-    "Node",
     "PrefillLaunch",
     "PrefillOperands",
     "PrefillWorkspace",
-    "Variant",
-    "node",
-    "rule",
-    "run",
-    "validate_capturable",
-    "validate_dag",
 ]
