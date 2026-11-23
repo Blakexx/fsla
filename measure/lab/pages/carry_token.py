@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+from collections import defaultdict
 
 from _record import Record
 
@@ -49,6 +50,9 @@ LOOPED = ", a group's steps a voted loop on its count"
 TABLED = ", an entry's dense line from the tokens' table"
 SPREAD = ", an entry's dense line from a 2 GB table of the tokens"
 AHEAD = ", loaded a window ahead"
+LISTED = ", the readout's passes its packet's"
+READY = ", its tiles and lines offsets ready to add"
+PADDED = ", a half in two padded passes"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -131,7 +135,9 @@ def short(name: str) -> str:
     for suffix, words in ((COLUMN, "the box's width word choosing its fold"), (CLEARED, "its tiles cleared"),
                           (COUNTED, "a group's steps counted at run time"), (LOOPED, "a group's steps a voted loop on its count"),
                           (SPREAD, "an entry's dense line from a 2 GB table of the tokens"), (TABLED, "an entry's dense line from the tokens' table"),
-                          (AHEAD, "loaded a window ahead"), (SPLIT, "registers 176 / 112 / 48"),
+                          (AHEAD, "loaded a window ahead"),
+                          (LISTED, "the readout's passes its packet's"), (READY, "its tiles and lines offsets ready to add"),
+                          (PADDED, "a half in two padded passes"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
             probes.append(words)
@@ -488,6 +494,88 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         "only, and writes the entries' token indices, no dense line), so the two forms are not compared end to end here."
     )
 
+    # ---- (i) the readout's passes its packet's: the listed readout, the ready packet and the padded packets, against the fixed readout
+    fixed_n = PREFIX + TOKEN4
+    listed_n, ready_n = fixed_n + LISTED, fixed_n + LISTED + READY
+    padded_n, ready_padded_n = listed_n + PADDED, ready_n + PADDED
+    forms = {"fixed": fixed_n, "listed": listed_n, "ready": ready_n, "listed padded": padded_n, "ready padded": ready_padded_n}
+    fm = {k: {n: w(n, nm) for n in (1, 132)} for k, nm in forms.items()}
+    exact_forms = all(exact(nm) for nm in forms.values())
+    gap = {k: (v[132] - v[1]) / v[1] for k, v in fm.items()}
+
+    def more(a, b):
+        return f"{g(abs(a - b))} cycles, {pct(abs(a - b) / b)} {'over' if a > b else 'under'}"
+
+    assert exact_forms, "lab page: a row of the listed readout is not exact"
+    assert abs(gap["fixed"]) <= SAME < gap["listed"] < gap["ready"] < gap["ready padded"], (
+        "lab page: the gaps between the grids are not the paragraph (i)'s order: " + str(gap))
+    assert against(fm["ready"][1], fm["listed"][1])[0] < -SAME and against(fm["ready"][132], fm["listed"][132])[1] == "the same as", (
+        "lab page: the ready offsets are not a gain at one CTA and none at 132")
+    listed_text = (
+        "(i) THE READOUT'S PASSES ITS PACKET'S: the readout's slots take their read digit, their readers, the readers' bytes and their output lines from a "
+        "packet in global memory, and a half's passes are a loop on the packet's count (the four-digit grouped fold's window, the host playing the gather). "
+        f"At one CTA and at {sms} CTAs: the fixed readout {g(fm['fixed'][1])} and {g(fm['fixed'][132])}; the listed readout on the fixed readout's own readers "
+        f"{g(fm['listed'][1])} and {g(fm['listed'][132])}; the same with the packet's offsets ready to add (a slot's tile of the image in 16-byte lines, a token's "
+        f"output line in bytes) {g(fm['ready'][1])} and {g(fm['ready'][132])}; the listed readout with a half in two passes of four slots and four pads "
+        f"{g(fm['listed padded'][1])} and {g(fm['listed padded'][132])}, and the ready form on those padded packets {g(fm['ready padded'][1])} and "
+        f"{g(fm['ready padded'][132])}; every row {'exact' if exact_forms else 'NOT exact'}. THE LISTED FORM OVER THE FIXED READOUT: at {sms} CTAs "
+        f"{more(fm['listed'][132], fm['fixed'][132])}, at one CTA {more(fm['listed'][1], fm['fixed'][1])}. THE READY FORM AGAINST THE LISTED: at {sms} CTAs "
+        f"{more(fm['ready'][132], fm['listed'][132])} (called {against(fm['ready'][132], fm['listed'][132])[1].removesuffix(' as')} within {pct(SAME)}), at one CTA "
+        f"{more(fm['ready'][1], fm['listed'][1])}; on the padded packets, at {sms} CTAs {more(fm['ready padded'][132], fm['listed padded'][132])}, at one CTA "
+        f"{more(fm['ready padded'][1], fm['listed padded'][1])}. THE PADDED PACKETS: the listed form with a half in two passes is {more(fm['listed padded'][132], fm['listed'][132])} "
+        f"the one-pass listed form at {sms} CTAs ({more(fm['listed padded'][1], fm['listed'][1])} at one CTA), the ready form {more(fm['ready padded'][132], fm['ready'][132])} "
+        f"at {sms} CTAs ({more(fm['ready padded'][1], fm['ready'][1])} at one CTA). THE GAP BETWEEN THE GRIDS, one CTA to {sms} (a window at {sms} CTAs over a window at one CTA): "
+        f"the fixed readout {pct(gap['fixed'])}, the listed {pct(gap['listed'])}, the ready {pct(gap['ready'])}, the listed on padded packets {pct(gap['listed padded'])}, "
+        f"the ready on padded packets {pct(gap['ready padded'])}. WHAT THE FIGURES SHOW AND NOTHING BEYOND: a readout driven by its packet is exact on both packets; "
+        f"ready offsets are a gain at one CTA ({pct(abs(against(fm['ready'][1], fm['listed'][1])[0]))} under the listed form) and none at {sms} CTAs "
+        f"({against(fm['ready'][132], fm['listed'][132])[1].removesuffix(' as')} the listed); the forms that load their packet from global memory in the read side's roles slow with the card's CTAs "
+        f"(the gaps above) and the fixed readout does not ({pct(gap['fixed'])}, called the same within {pct(SAME)}). OPEN: WHY. The candidate: at one CTA a block's packets "
+        f"stay cached between launches and at {sms} the card's buffers do not fit the cache; it is not measured (the record holds no counter of the packets' loads). "
+        "NOT BUILT: the read packet landed in shared memory by the bulk copy, as the fold's packet is ([`open-work.md`](../open-work.md) C-o)."
+    )
+
+    # ---- the two readouts' timelines: CTA 0 of each every-stamp row, each role's cycles a window a warp by state
+    def role_states(n, name):
+        rec, scope, cta = cta0(n, name)
+        span = cta.steady(SKIP)
+        assert span is not None, f"lab page: the record of {name!r} holds too few windows"
+        t0, t1, nw = span
+        by_role: dict[str, dict[str, float]] = {}
+        members: dict[str, int] = {}
+        for wp in cta.warps:
+            members[wp.role] = members.get(wp.role, 0) + 1
+            cta.clip(wp.index, t0, t1, by_role.setdefault(wp.role, defaultdict(float)))
+        out = {}
+        for role in ("readout", "drain"):
+            out[role] = {lab.split(": ", 1)[1]: v / (members[role] * nw) for lab, v in by_role[role].items()}
+        return (t1 - t0) / nw, out, scope.removeprefix("cta")
+
+    timeline_rows = ((fixed_n + FINE, "the fixed readout"), (listed_n + FINE, "the listed readout"), (ready_n + FINE, "the ready packet's"))
+    timeline_parts = []
+    drain_waits = []
+    for nm, label in timeline_rows:
+        assert nm in rows[132], f"lab page: the record holds no row {nm!r}"
+        win, states, scope_ = role_states(132, nm)
+
+        def line(role, keys):
+            return ", ".join(f"{k} {g(states[role].get(k, 0.0))}" for k in keys)
+
+        timeline_parts.append(
+            f"{label}: the row's window {g(w(132, nm))} cycles ({g(win)} in CTA {scope_}'s steady span); the readout, in cycles a window a warp, "
+            f"{line('readout', ('issuing steps', 'storing the panel', 'waits on panel # drained', 'waits on tile group # published', 'waits on its readout steps'))}; "
+            f"the drain {line('drain', ('adding', 'waits on panel # filled'))}"
+        )
+        drain_waits.append(states["drain"].get("waits on panel # filled", 0.0))
+    assert all(x > 0 for x in drain_waits)
+    timelines_text = (
+        "THE TWO READOUTS' TIMELINES (the three every-stamp rows of the four-digit grouped fold at "
+        f"{sms} CTAs, CTA {scope132}; `bazel run //tools:lab -- trace carry_token --record measure/lab/results/carry_token/sm_90a.blocks{sms}.json --row \"<row>\"` "
+        "with the rows' endings `groups of four, every warp's timeline stamped$`, `packet's, every warp's timeline stamped$` and `ready to add, every warp's timeline stamped$`): "
+        + "; ".join(timeline_parts) + ". What they show: in all three the drain waits on a panel the readout fills "
+        f"({', '.join(g(x) for x in drain_waits)} cycles a window a warp, the fixed, the listed and the ready) and the readout waits on the panels the drain has drained "
+        "(its own wait, above); how much of the window each waits is the figures above."
+    )
+
     # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants
     src = (root / "measure/lab/experiments/carry_token.cu").read_text()
     for needle in (
@@ -518,7 +606,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     grouping = (
         "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
-        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}\n- {loop_text}\n- {table_text}"
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}\n- {loop_text}\n- {table_text}\n- {listed_text}"
     )
 
     # ---- rows of the experiment the record does not hold yet
@@ -581,6 +669,8 @@ WHAT IT DECIDES. {grid} {layout} {fold_text} {read_side} {marks_text}
 {bytes_text}
 
 {not_here}
+
+{timelines_text}
 
 THE PHASES, in each role's own window of the coarse row's record at {sms} CTAs (CTA {scope132}), cycles:
 - the fold: image {g(image)}, fill {g(fill)}, steps {g(steps)}.

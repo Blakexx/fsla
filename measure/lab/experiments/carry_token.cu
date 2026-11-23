@@ -907,7 +907,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
               const uint32_t place[4] = {now.list.place[g].x, now.list.place[g].y, now.list.place[g].z, now.list.place[g].w};
 #pragma unroll
               for (int bx = 0; bx < 2; ++bx)
-                images[bx] = uint64_t((first_line + place[j] + bx * (kBoxBytes >> 4)) & 0x3fffu) | uint64_t(8) << 16 | uint64_t(kBrickLines) << 32;
+                images[bx] = lab::wg_desc_lines(first_line + place[j] + bx * (kBoxBytes >> 4), 8, kBrickLines);
             } else {
               const uint32_t image = base + kImageAt + (now.list.place[g].x >> (8 * j) & 255u) * kImageTile;
 #pragma unroll

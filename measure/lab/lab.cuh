@@ -287,9 +287,10 @@ __device__ __forceinline__ bool mbar_test(uint32_t a, uint32_t parity) {
 //: atom's plain form): a line of 16 bytes is one row's or column's K 0-7, a brick 8 such lines, its K 8-15 `lbo`
 //: lines on, the next brick `sbo` lines on. M|N-MAJOR (an `_mn` atom): a line is one K's 8 rows or columns, a
 //: brick's K 0-7 8 lines, its K 8-15 `lbo` lines on, the next brick `sbo` lines on
-__device__ __forceinline__ uint64_t wg_desc(uint32_t a, uint32_t lbo, uint32_t sbo) {
-  return uint64_t((a >> 4) & 0x3fffu) | (uint64_t(lbo & 0x3fffu) << 16) | (uint64_t(sbo & 0x3fffu) << 32);
+__device__ __forceinline__ uint64_t wg_desc_lines(uint32_t line, uint32_t lbo, uint32_t sbo) {
+  return uint64_t(line & 0x3fffu) | (uint64_t(lbo & 0x3fffu) << 16) | (uint64_t(sbo & 0x3fffu) << 32);
 }
+__device__ __forceinline__ uint64_t wg_desc(uint32_t a, uint32_t lbo, uint32_t sbo) { return wg_desc_lines(a >> 4, lbo, sbo); }
 
 __device__ __forceinline__ void wg_fence() { asm volatile("wgmma.fence.sync.aligned;" ::: "memory"); }
 
