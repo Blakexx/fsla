@@ -1,9 +1,10 @@
 # The prefill call
 
 `fsla/engine/prefill_call.py`: one SEGMENT of a prefill -- its routes and values -- into its readout,
-against the state the call is handed. `fsla.fsla_op` validates the context in the caller's grad mode
-(`validate_context`), then runs `run_prefill` inside an autograd node whose backward refuses. It runs over the descriptor of the call and the workspace
-its caller built (`fsla.build_workspace`) and derives nothing of its own. The layer (`fsla.FSLA`) calls the op once a segment; the segment
+against the state the call is handed. `fsla.prefill` validates the context in the caller's grad mode
+(`validate_context`), builds the call's descriptor from its inputs (`descriptor_of`: the bundles' extents and declaration, whether a decay and a state are handed, the operands'
+device, through `fsla.ops.produce`'s memoized builder; its device refusal and its owed-kernel refusal are made there), then runs `run_prefill` inside an autograd node whose
+backward refuses. `run_prefill` builds the workspace the steps pass between them (`fsla.ops.prefill`'s private builder; its layout is owed, `docs/open-work.md` row A-g). The layer (`fsla.FSLA`) calls the op once a segment; the segment
 length is an output of the prefill launch function (`docs/api.md` section 4.2, `docs/open-work.md` row A-f).
 
 ## The steps, in order
@@ -18,7 +19,7 @@ length is an output of the prefill launch function (`docs/api.md` section 4.2, `
 
 Each step runs inside a profiler range under its own name ([`engine.md`](engine.md#the-profiler-range)).
 
-The call holds the steps that run over a descriptor and a workspace. The state's entry (`FSLAState._kernel_entry`) needs the arena's
+The call holds the steps that run over its descriptor and workspace. The state's entry (`FSLAState._kernel_entry`) needs the arena's
 allocation extent, the carry's box leaves, which only the prefill launch function's carve gives, so the entry on the prefill path is that
 function's (`docs/open-work.md` rows A-c and A-f); a prefill is refused before any of it could run.
 

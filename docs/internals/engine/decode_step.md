@@ -8,7 +8,7 @@ step lives or dies by are held: it must be capturable, and its growth must self-
 Symbols used below: `B` batch, `H` heads, `BH = B*H`, `D` level count, `N` leaf count,
 `d_v` value width, **atom** = 16 consecutive leaves = the page granule.
 
-## <a id="the-two-variants"></a>1. Dense and paged are the two BACKINGS, and a growth step is neither
+## <a id="the-two-backings"></a>1. Dense and paged are the two BACKINGS, and a growth step is neither
 
 The step is ONE function for both backings — a dense call simply never finds
 an atom the table does not map, because it has no table. The host-visible verdict READ is
@@ -24,11 +24,12 @@ carries no done flag yet and the step it had skipped performs.
 
 ## <a id="the-order"></a>2. The step, read top to bottom
 
-`decode_step_gated` validates (`validate_context`, the fast-fail) and then calls, in this order:
+`decode_step_gated(routes, values, masks, state, *, decay=None)` takes its inputs only. It validates (`validate_context`, the fast-fail) and then calls, in this order:
 
 | step | returns |
 |---|---|
 | `decode_call` | `BH`, `device` (refuses a grouped bundle) |
+| `descriptor_of` | the call's descriptor, from the bundle's declaration, `d_v`, whether a decay is handed, `BH` and the device |
 | `scratch` | the per-sequence buffers |
 | `backing` | `carried_plane`, `page_table`, `pool` |
 | `state_plane` | the plane the kernel indexes |
@@ -51,7 +52,7 @@ of its own either.
 `backing` is `FSLAState._decode_entry`: the plane, table and slack pool the state already
 has, over the residency it already has — it admits nothing itself. `build_launch` derives the decay arm's `dials`: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
-already holds; its `descriptor` is the validated one the call was handed (`fsla.ops.produce.decode_descriptor`), and the state plane's leaf order is derived from the state's format here
+already holds; its `descriptor` is the one `descriptor_of` built, and the state plane's leaf order is derived from the state's format here
 (`fsla.ops.decode.lattice_of`).
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the descriptor's arm,
@@ -85,7 +86,7 @@ there at someone's first `graph.replay()`.
 
 ## <a id="the-scratch"></a>5. The descriptor and the scratch, and why the scratch is held the way it is
 
-THERE IS NO DECODE PLAN. The decode op takes the validated `Descriptor` (`fsla.ops.descriptor`: every device fact and every call fact, immutable, hashable; the
+THERE IS NO DECODE PLAN. The decode op builds the validated `Descriptor` itself (`descriptor_of`, over `fsla.ops.produce._decode_descriptor`: every device fact and every call fact, immutable, hashable; the
 key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
 `plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
 lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;

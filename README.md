@@ -29,8 +29,8 @@ measured in the lab before it is written into the library.
 | fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
 | decode (the `T = 1` step, over the paged fixed-size state) | **built** |
 | entmax / softmax row solves, the paged state | built |
-| prefill: the carry, the gather pass, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla_op` refuses every prefill call by name until the carry exists |
-| backward | **not built.** `fsla_op` refuses any call that carries a gradient; there is no training path yet |
+| prefill: the carry, the gather pass, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
+| backward | **not built.** `fsla.prefill` refuses any call that carries a gradient; there is no training path yet |
 | depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
 
 [`docs/open-work.md`](docs/open-work.md) is the full list of what is owed, with where each item's contract lives.
@@ -69,14 +69,13 @@ y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode 
 
 `fsla.union_routing(width, alpha)` is the alternative level: one shared entmax solve split across the two duties.
 
-The same call through the op: the producer makes a call's factors, values and masks (`produce_prefill`, `produce_decode`), and each call takes the validated
-descriptor of its kind (`prefill_descriptor`, `decode_descriptor`) beside its data. There is no plan object: what the call derives goes in a
-workspace the caller builds (`fsla.build_workspace`).
+The same call through the op: the producer makes a call's factors, values and masks (`produce_prefill`, `produce_decode`), and each call takes only its
+inputs. A call builds its own descriptor and workspace inside; there is no plan object.
 
 ```python
 import torch
-from fsla.ops.produce import ProducerWeights, produce_prefill, produce_decode, prefill_descriptor, decode_descriptor, projection_dtype
-from fsla.engine.decode_step import decode_step_gated, growth_pending, admit_growth
+import fsla
+from fsla.ops.produce import ProducerWeights, produce_prefill, produce_decode, projection_dtype
 
 H, hidden, d_v = 8, 1024, 64
 x = ...                                        # [B, T, hidden], CUDA
@@ -89,17 +88,14 @@ weights = ProducerWeights(
 # prefill: the masks come in the prefill layout (refused by name until the carry is built, as in the layer)
 routes, values, masks = produce_prefill(x, routing, weights)       # H, hidden and d_v are read off the weights and x
 state = fsla.state()
-descriptor = prefill_descriptor(routing.topology, d_v=d_v, decay=False, tokens=x.shape[1], batch_heads=x.shape[0] * H, stateful=True)
-workspace = fsla.build_workspace(routes, values, masks, descriptor)
-y, state = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state)
+y, state = fsla.prefill(routes, values, masks, state=state)
 
-# decode: the decode producer, the masks in the decode layout, and the descriptor of the call on this device
+# decode: the decode producer and the masks in the decode layout
 routes, values, masks = produce_decode(x_token, routing, weights)  # x_token: [B, 1, hidden]
-descriptor = decode_descriptor(routing.topology, d_v=d_v, decay=False, batch_heads=x_token.shape[0] * H, device=x_token.device)
-y, state = decode_step_gated(routes, values, masks, state, descriptor)
-if growth_pending(state):                       # a head whose state needed one more atom skipped itself
-    admit_growth(state)
-    y, state = decode_step_gated(routes, values, masks, state, descriptor)
+y, state = fsla.decode_step_gated(routes, values, masks, state)
+if fsla.growth_pending(state):                  # a head whose state needed one more atom skipped itself
+    fsla.admit_growth(state)
+    y, state = fsla.decode_step_gated(routes, values, masks, state)
 ```
 
 The masks' layouts: **prefill**, int32 `[B, H, ceil(T / 32), width_l]` per level and side, token-packed (bit `t % 32` of

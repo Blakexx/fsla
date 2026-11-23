@@ -21,7 +21,7 @@ future layer-level recurrences become fields on this container, never on the op'
 the membership rule (docs/internals/state.md §7) needs a place to land them.
 
 **Execution backends: two arms, and the choice is STRUCTURAL.** ``'prefill'`` is the
-prefill arm through :func:`fsla.fsla_op` — DELETED pending the rebuild (the op raises,
+prefill arm through :func:`fsla.prefill` — DELETED pending the rebuild (the op raises,
 naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
 ``T = 1`` sibling kernel, which bypasses selection architecturally (at one token
 there is no tile to choose, no split, a statistics population of one) and carries
@@ -49,17 +49,14 @@ from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pend
 from fsla.engine.facts.call import refuse_backward
 from fsla.interface import (
     BackwardNotImplemented,
-    fsla_op,
     operands_of,
+    prefill,
     requires_backward,
 )
 from fsla.ops._ext import not_built
-from fsla.ops.prefill import build_workspace
 from fsla.ops.produce import (
     ProducerWeights,
-    decode_descriptor,
     hidden_contiguous,
-    prefill_descriptor,
     produce_decode,
     produce_prefill,
     projection_dtype,
@@ -275,9 +272,8 @@ class FSLA(nn.Module):
 
     def _step(self, x: torch.Tensor, state) -> torch.Tensor:
         """ONE DECODED TOKEN WITH NO HOST READ INSIDE: the producer's launch, the gated decode step and the output
-        projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable: the descriptor is
-        asked for on every step (:func:`fsla.ops.produce.decode_descriptor`, memoized process-wide: no device read after the
-        first). A batch-head
+        projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable: the step builds its
+        descriptor on every call (memoized process-wide: no device read after the first). A batch-head
         whose write atoms the state can neither address nor admit is a no-op; the caller owns the verdict at its own
         synchronization -- ``growth_pending(state)``, then ``admit_growth(state)`` and the step again (a captured
         step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
@@ -287,9 +283,7 @@ class FSLA(nn.Module):
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
-        descriptor = decode_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None,
-                                       batch_heads=x.shape[0] * self.num_heads, device=x.device)
-        out, _state = decode_step_gated(routes, values, masks, state, descriptor, decay=decay)
+        out, _state = decode_step_gated(routes, values, masks, state, decay=decay)
         return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
 
     def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -314,20 +308,14 @@ class FSLA(nn.Module):
         return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
-        """THE PREFILL (docs/api.md section 4.2). With no ``memory_budget`` it is one op call: the producer's one call, the descriptor of the call
-        (:func:`fsla.ops.produce.prefill_descriptor`, memoized process-wide: nothing is cached on the layer), the workspace the public builder
-        lays out and the op. WITH a budget the layer must ask the planner how many tokens fit it beside the state -- the answer is the prefill
+        """THE PREFILL (docs/api.md section 4.2). With no ``memory_budget`` it is one op call: the producer's one call and :func:`fsla.prefill`, which builds its own descriptor and workspace. WITH a budget the layer must ask the planner how many tokens fit it beside the state -- the answer is the prefill
         launch function's (docs/open-work.md row A-f), which is not written -- and loop over segments carrying the state; until then a budgeted
         prefill is refused by name here, the one place the layer would have segmented."""
         if self.memory_budget is not None:
             not_built("prefill")
-        B, L, _ = x.shape
         routes, values, masks = self._produce(x)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
-        descriptor = prefill_descriptor(self.topology, d_v=self.d_v, decay=self.decay is not None, tokens=L,
-                                        batch_heads=B * self.num_heads, stateful=state is not None, device=x.device)
-        workspace = build_workspace(routes, values, masks, descriptor)
-        return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state, decay=decay)
+        return prefill(routes, values, masks, state=state, decay=decay)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

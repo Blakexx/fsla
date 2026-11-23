@@ -113,7 +113,7 @@ always took. There is no new failure mode and no partial claim to unwind.
 
 **POOL-COVERED GROWTH RAISES NO VERDICT.** The step admitted itself, so there is nothing
 urgent for the host — `growth_pending` reads `False`. What a serving loop watches instead
-is `fsla.engine.decode_step.pool_headroom(state)`: the MINIMUM free slots over
+is `fsla.pool_headroom(state)`: the MINIMUM free slots over
 batch-heads (the first one to run out is the one that will need the host). It IS a
 device-to-host read and it does synchronize, which is why it is not on the step's path
 and why the pool exists in the first place: the caller polls it on its own schedule,

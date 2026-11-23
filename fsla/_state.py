@@ -9,8 +9,8 @@ Storage (an arena or a dense plane), a page table, the logical shape
 (docs/internals/state.md).
 
     s = fsla.state()                     # unbound; the first call binds the shape
-    y1, s = fsla.fsla_op(routes1, values1, state=s)
-    y2, s = fsla.fsla_op(routes2, values2, state=s)
+    y1, s = fsla.prefill(routes1, values1, masks1, state=s)
+    y2, s = fsla.prefill(routes2, values2, masks2, state=s)
 
 ``state=None`` is the stateless call and returns ``(y, None)``. That predicate --
 ``state is not None`` -- is the whole engagement signal at the op and at the layer.
@@ -420,7 +420,7 @@ class FSLAState:
             raise RuntimeError(
                 "a decode step continues a carried state, and this one carries nothing: "
                 "at T = 1 there is no prefill to run and no entry state to read. Run the "
-                "sequence's first tokens through fsla_op and step from the state it "
+                "sequence's first tokens through fsla.prefill and step from the state it "
                 "returns.")
 
     def _decode_entry(self, routes):
@@ -430,7 +430,7 @@ class FSLAState:
         case to serve and nothing to admit here: the step asks its own residency question
         on the device, admits from the slack pool where there is one, and where there is
         not, the admission its verdict calls for is :meth:`_decode_entry_arena`, between
-        two walks of the step (docs/internals/engine/decode_step.md#the-two-variants). The
+        two walks of the step (docs/internals/engine/decode_step.md#the-two-backings). The
         arena rides along for its pool buffers alone; a dense state has none.
 
         Dense states hand back a VIEW of their own plane, which is what makes the

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The decode step's one plain function, its fast-fail, and the host-side verdict entries.
 
-:func:`decode_step_gated` runs the steps below in order: :func:`decode_call`, :func:`scratch`, :func:`backing`,
+:func:`decode_step_gated` runs the steps below in order: :func:`decode_call`, :func:`descriptor_of`, :func:`scratch`, :func:`backing`,
 :func:`state_plane`, :func:`build_launch`, :func:`step`. The host-visible verdict is not a step: :func:`growth_pending` reads it at the
 caller's own synchronization (the layer's one-token ``forward``, or a serving loop replaying a captured step). A GROWTH STEP IS NOT A
 SECOND RECIPE -- it is the same call run twice around an admission, which is what makes the replay self-correcting and the step capturable
@@ -15,7 +15,8 @@ from weakref import WeakKeyDictionary
 from fsla.engine.plan import DecodeLaunch, DecodeOperands, DecodeWorkspace
 from fsla.engine.trace import span
 from fsla.ops import decode as bodies
-from fsla.ops.descriptor import Descriptor, check_workspace
+from fsla.ops._ext import device_index
+from fsla.ops.produce import _decode_descriptor
 
 #: ONE scratch per sequence: state -> {(descriptor, BH, device): DecodeScratch}, weak on the state so a dropped sequence drops its buffers and
 #: two live sequences never share one.
@@ -26,6 +27,13 @@ def decode_call(routes):
     """``(BH, device)`` of the step, after refusing a grouped bundle."""
     routes.refuse_grouped("the decode step")
     return routes.batch * routes.heads, routes.device
+
+
+def descriptor_of(routes, values, decay, BH, device):
+    """THE STEP'S DESCRIPTOR, from what the step is handed: the declaration, the value width, whether a decay is handed, ``BH`` and the device.
+    Memoized by the call and the device (:func:`fsla.ops.produce._decode_descriptor`): after a call's first, a host dictionary lookup, no device read and
+    no allocation, which keeps the step capturable."""
+    return _decode_descriptor(routes.topology, values.d_v, decay is not None, BH, device_index(device))
 
 
 def scratch(state, descriptor, BH, device):
@@ -95,7 +103,7 @@ def write_atom_bitmap(masks, descriptor):
     return bodies._write_atom_bitmap(live, widths, bodies.lattice_of(widths))
 
 
-def validate_context(routes, values, masks, state, descriptor, decay, workspace) -> None:
+def validate_context(routes, values, masks, state, decay) -> None:
     """THE FAST-FAIL, in ONE call: everything a decode step can be refused for here.
 
     It runs before the call's first step, so nothing here can refuse a step whose
@@ -107,11 +115,6 @@ def validate_context(routes, values, masks, state, descriptor, decay, workspace)
     if routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={routes.tokens}")
-    if type(descriptor) is not Descriptor:
-        raise TypeError(f"the decode step takes a fsla.Descriptor, got {type(descriptor).__name__}; "
-                        "fsla.ops.produce.decode_descriptor builds one from the declaration")
-    bodies.check_descriptor(descriptor, routes, values.device)
-    check_workspace(workspace, descriptor)
     bodies.check_decode_masks(masks, routes)
     bodies.guard_no_grad((*values.tensors(), *routes.tensors(),
                           *(decay.dials if decay is not None else ())))
@@ -130,7 +133,7 @@ def _scratch_of(state):
     return next(iter(held.values()))
 
 
-def decode_step_gated(routes, values, masks, state, descriptor, *, workspace=None, decay=None):  #: reserved: decode needs no per-call scratch (fsla.workspace_bytes is 0); the op's planner interface, checked when given
+def decode_step_gated(routes, values, masks, state, *, decay=None):
     """ONE decode step with NO host participation -- the decode entry, and CAPTURE-SAFE.
 
     Each batch-head is gated on the step's own device-side answer, so one whose write set
@@ -149,12 +152,11 @@ def decode_step_gated(routes, values, masks, state, descriptor, *, workspace=Non
     carries a done flag into the second and re-reads for its `y` without depositing again
     (docs/internals/decode/decode.md#done-flags).
 
-    ``descriptor`` is the validated context of the call (:func:`fsla.ops.produce.decode_descriptor`, or :func:`fsla.descriptor`: the device's
-    facts and the call's), the planner's launch function reads it for the arm and its arguments. ``workspace`` is the call's own scratch
-    (:func:`fsla.workspace_bytes`: decode needs none), checked for size and alignment when given.
+    The step builds its own descriptor from its arguments (:func:`descriptor_of`); the call carries only its inputs.
     """
-    validate_context(routes, values, masks, state, descriptor, decay, workspace)
+    validate_context(routes, values, masks, state, decay)
     BH, device = decode_call(routes)
+    descriptor = descriptor_of(routes, values, decay, BH, device)
     held = scratch(state, descriptor, BH, device)
     carried_plane, page_table, pool = backing(state, routes)
     plane = state_plane(values, descriptor, decay, carried_plane, page_table)

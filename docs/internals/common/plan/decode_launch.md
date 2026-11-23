@@ -23,7 +23,7 @@ parts are composed from two functions and stay structurally separate:
 - `decode_workspace(const Descriptor&)` is the scratch a call needs beside its operands: none (decode's buffers belong to the sequence and its
   state, never to the call), at the alignment every workspace carries.
 
-THERE IS NO DECODE PLAN. The op takes data and the descriptor (`op(data..., descriptor, workspace=None)`): the descriptor is every device fact and every call fact,
+THERE IS NO DECODE PLAN. The op takes its data (`op(data...)`) and builds the descriptor itself: the descriptor is every device fact and every call fact,
 immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the grid) is computed by this one launch
 function right before the launch and never stored. The level widths and each side's walk of each level are CALL FACTS because the caller's declaration decides them
 (`fsla.ops.produce.decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and

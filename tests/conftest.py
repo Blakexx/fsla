@@ -436,15 +436,3 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     routes, _values, _masks = produce_prefill(x, routing, weights)
     read_levels, write_levels = routes.dequantized()
     return SimpleNamespace(read_levels=read_levels, write_levels=write_levels)
-
-
-def hand_descriptor(routes, values, *, stateful=False, decay=None, device=0, **facts):
-    """A PREFILL descriptor of the call the bundles are, made by hand (a `Descriptor` holding the call's facts): the planner is a device read, and the
-    prefill's descriptor is owed on this line, so a test of the surface's own checks, which read the facts alone, builds one. `facts` override."""
-    from fsla.ops.descriptor import Descriptor
-    from fsla.ops.produce import level_facts
-
-    stated = {"d_v": values.d_v, "decay": int(decay is not None), "prefill": 1, "tokens": routes.tokens, "batch_heads": routes.batch * routes.heads,
-              "stateful": int(stateful),
-              **level_facts(routes.topology, tuple(routes.topology.padded_widths)), **facts}
-    return Descriptor(device=device, call=tuple(sorted(stated.items())), words=())

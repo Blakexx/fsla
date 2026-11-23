@@ -149,7 +149,7 @@ so the residency test is a pass over the WRITE list's candidate atoms
 fold and no second factor pass exist at all. There is nothing left for a probe kernel to be.
 
 So the order per step is ONE kernel, and then, only where the answer was yes and no pool
-covered it, `fsla_op`'s order at `L = 1`:
+covered it, the gated step's order at `L = 1`:
 
 ```
 decode_step        ->  fold, expand, THE VERDICT, walk, and the write-ATOM set,
@@ -307,8 +307,9 @@ host-admitted one reach the same state and the same `y`.
 
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
-With no host read inside it the step is capturable, and `fsla.engine.decode_step.decode_step_gated`
-is the decode entry. The CALLER owns the verdict, at whatever synchronization it already has
+With no host read inside it the step is capturable, and `fsla.decode_step_gated`
+(`fsla/engine/decode_step.py`) is the decode entry. It takes its inputs only -- `decode_step_gated(routes, values, masks, state, decay=None)` -- and builds its
+descriptor itself, by a memoized lookup (`fsla.ops.produce._decode_descriptor`) that after the call's first reads no device and allocates nothing. The CALLER owns the verdict, at whatever synchronization it already has
 (a decode loop syncs once per token to sample):
 
 ```

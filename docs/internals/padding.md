@@ -56,7 +56,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   (`fsla.ops.decode.decode_launch`, [`common/plan/decode_launch.md`](common/plan/decode_launch.md)) maps it to: the narrowest arm that holds it. Its
   per-level widths are NEVER padded: a level's width is a call fact of the descriptor (`width_bits_k`, its log2, [`docs/internals/hardware/registry.md`](hardware/registry.md#parts)), the contract's
   range runs from the state format's floor (`fsla._state.MIN_LEVEL_WIDTH`) to the decode path's capacity, and a width outside it is refused when the descriptor is made
-  (`fsla.ops.produce.decode_descriptor`), never padded to one inside it.
+  (the descriptor the decode step builds from its bundle, `fsla.ops.produce.decode_descriptor`'s rule), never padded to one inside it.
 * **intra** (`fsla.ops.intra.intra_forward`) pads nothing: it reads the bundle's rows
   where the producer stores them, at their own widths, each level a whole number of
   16-digit granules up to 256 (`fsla.ops.intra.reads`) -- a bundle outside that is never

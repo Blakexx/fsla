@@ -48,11 +48,9 @@ def _inputs(seed=0, T=_T, B=2):
 def test_a_raw_tensor_is_not_a_state():
     """The engine's fast-fail refuses a raw tensor where a FSLAState belongs.
 
-    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `fsla_op` itself is
+    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `prefill` itself is
     the deletion refusal and speaks before it reads its arguments.
     """
-    from conftest import hand_descriptor
-
     from fsla.engine.prefill_call import PrefillContext, validate_context
     from fsla.routing.masks import PREFILL
     from fsla.values import Values
@@ -63,7 +61,6 @@ def test_a_raw_tensor_is_not_a_state():
     values = Values.from_projection(v)
     with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
         validate_context(PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
-                                        descriptor=hand_descriptor(routes, values, stateful=True),
                                         state=torch.zeros(1), want_state=True))
 
 

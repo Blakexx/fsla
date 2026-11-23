@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE DESCRIPTOR: one device and one call as the planner (``csrc/fsla/src/common/plan/``, docs/internals/common/plan/environment.md) holds
-them, validated against the contract before any launch. It is the op's argument beside its data: immutable, hashable, reusable by every
+them, validated against the contract before any launch. Each call builds its own, internally: immutable, hashable, reusable by every
 call of the same shape on the same device. Python reads no hardware fact: the device's are the planner's read, the call's are the
 caller's, and what a launch takes from them is the planner's launch function's (:func:`fsla.ops.decode.decode_launch`).
 """
@@ -10,11 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cache
 
-import torch
-
 from fsla.ops._ext import device_index, extension, not_built
 
-__all__ = ["Descriptor", "check_workspace", "descriptor", "workspace_bytes"]
+__all__ = ["Descriptor", "descriptor", "workspace_bytes"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,21 +72,3 @@ def workspace_bytes(descriptor: Descriptor) -> int:
     """The workspace a call of ``descriptor`` needs beside its operands, in bytes: the planner's layout of its kind (the ``prefill`` fact
     chooses). Decode needs none; a prefill's layout is the prefill launch function's, which is not built, so asking for one is refused by name."""
     return _need(descriptor)[0]
-
-
-def check_workspace(workspace: torch.Tensor | None, descriptor: Descriptor) -> None:
-    """A caller's own workspace, refused by name when it is not a CUDA byte tensor, is too small or is misaligned for ``descriptor``. ``None`` is a
-    call that needs none (decode's): a prefill's layout is the prefill launch function's, and asking for it is refused by name."""
-    if workspace is None and not descriptor["prefill"]:
-        return
-    size, alignment = _need(descriptor)
-    if not isinstance(workspace, torch.Tensor) or workspace.dtype != torch.uint8 or workspace.dim() != 1 or not workspace.is_cuda:
-        raise TypeError("workspace is a contiguous 1-D CUDA uint8 tensor (or None, for a call that needs none)")
-    if not workspace.is_contiguous():
-        raise ValueError("workspace must be contiguous")
-    if workspace.numel() < size:
-        raise ValueError(f"workspace holds {workspace.numel()} bytes; the descriptor's call needs {size} (fsla.workspace_bytes)")
-    if workspace.data_ptr() % alignment:
-        raise ValueError(f"workspace's address is not a multiple of {alignment} bytes (fsla.workspace_bytes)")
-    if workspace.device.index != descriptor.device:
-        raise ValueError(f"workspace is on device {workspace.device.index}; the descriptor was made for device {descriptor.device}")

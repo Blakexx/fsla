@@ -50,7 +50,7 @@ import pytest
 import torch
 from conftest import reference_produce
 
-from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
+from fsla import admit_growth, decode_step_gated, growth_pending
 from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_lattice
 from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
@@ -250,9 +250,7 @@ _HIDDEN, _H, _T, _B = 64, 2, 128, 2
 def _sequence():
     """A prefilled paged state, the layer whose producer made it, and a stream of decode tokens.
 
-    The prefill leg ran on `fsla.fsla_op` until the K31 deletion batch removed
-    the arm (baseline = tag `baseline/pre-k31`). The state is now SEEDED the
-    facade's own way minus the launch: `_kernel_entry` binds the arena and the
+    The state is SEEDED the facade's own way minus the launch: `_kernel_entry` binds the arena and the
     fp64 oracle's `output_final_state` fills the committed pages, narrowed to
     the kernel's fp32 and crossed into the lattice leaf order the arena's atoms
     are cut from. What these cells gate (capture, replay, growth) reads the
@@ -314,14 +312,6 @@ def _copy_tensors(static, fresh):
                 buffer.copy_(level)
 
 
-def _step_descriptor(layer, batch):
-    """The descriptor the layer's one-token step runs under at ``batch`` sequences (`fsla.ops.produce.decode_descriptor`)."""
-    from fsla.ops.produce import decode_descriptor
-
-    return decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, batch_heads=batch * layer.num_heads,
-                             device=layer.route_W.device)
-
-
 def _static(routes, v, masks):
     """The bundles and the decode-layout masks over buffers that never move -- what capture requires of its inputs."""
     return _clone_tensors(routes), _clone_tensors(Values.from_projection(v)), _clone_tensors(masks)
@@ -333,17 +323,17 @@ def _fill(static, static_v, static_masks, routes, v, masks):
     _copy_tensors(static_masks, masks)
 
 
-def _capture(static, static_v, static_masks, state, descriptor):
+def _capture(static, static_v, static_masks, state):
     """Warm up on a side stream, then capture ONE gated step. Returns `(graph, y)`."""
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side):
         for _ in range(3):
-            decode_step_gated(static, static_v, static_masks, state, descriptor)
+            decode_step_gated(static, static_v, static_masks, state)
     torch.cuda.current_stream().wait_stream(side)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        y, _ = decode_step_gated(static, static_v, static_masks, state, descriptor)
+        y, _ = decode_step_gated(static, static_v, static_masks, state)
     return graph, y
 
 
@@ -353,14 +343,13 @@ def test_the_captured_step_is_the_eager_step():
     layer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
     routes, _values, masks = reference_produce(layer, x[:, token], DECODE)
-    descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
-    graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)
+    graph, y_graph = _capture(static, static_v, static_masks, state)
 
     #: Make the token's write set resident FIRST, so neither run is the vacuous no-op
     #: cell 5 is about.
-    decode_step_gated(static, static_v, static_masks, state, descriptor)
+    decode_step_gated(static, static_v, static_masks, state)
     if growth_pending(state):
         admit_growth(state)
     plane = state._arena.state
@@ -372,7 +361,7 @@ def test_the_captured_step_is_the_eager_step():
     assert not bytes_equal(captured_plane, snapshot), "the compared step did nothing"
 
     plane.copy_(snapshot)
-    eager_y, _ = decode_step_gated(static, static_v, static_masks, state, descriptor)
+    eager_y, _ = decode_step_gated(static, static_v, static_masks, state)
     torch.cuda.synchronize()
     assert_reordered_close(captured_y, eager_y, "the captured step's y")
     assert bytes_equal(captured_plane, plane)
@@ -411,10 +400,9 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     layer, x, v, state = _sequence()
     token = slice(_T + 5, _T + 6)
     routes, _values, masks = reference_produce(layer, x[:, token], DECODE)
-    descriptor = _step_descriptor(layer, x.shape[0])
     static, static_v, static_masks = _static(routes, v[:, token], masks)
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
-    graph, y_graph = _capture(static, static_v, static_masks, state, descriptor)
+    graph, y_graph = _capture(static, static_v, static_masks, state)
 
     row, column = _make_growth(state, static)
     plane = state._arena.state
@@ -446,10 +434,10 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     _fill(eager_static, eager_static_v, eager_static_masks, eager_routes, v2[:, token], eager_masks)
     assert _make_growth(eager_state, eager_static) == (row, column), (
         "the two sequences are not the same sequence")
-    decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, descriptor)
+    decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state)
     assert growth_pending(eager_state)
     admit_growth(eager_state)
-    eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state, descriptor)
+    eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state)
     torch.cuda.synchronize()
 
     assert_reordered_close(landed_y, eager_y, "the landed step's y")

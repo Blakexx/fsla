@@ -53,17 +53,14 @@ def _validate(routes, v) -> None:
 
 
 def _context(routes, values):
-    """The call's context: the bundle's own bits as the PREFILL-layout masks and the prefill descriptor of the call, made by hand (validation reads the
-    masks' shapes and the descriptor's facts) (a non-bundle is the type refusal's, which speaks before either is read)."""
-    from conftest import hand_descriptor
-
+    """The call's context: the bundle's own bits as the PREFILL-layout masks (validation reads the masks' shapes) (a non-bundle is the type
+    refusal's, which speaks before the masks are read)."""
     from fsla.engine.prefill_call import PrefillContext
     from tests.oracle.fixtures import masks_of
 
     if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
-        return PrefillContext(routes=routes, values=values, masks=None, descriptor=None)
-    return PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
-                          descriptor=hand_descriptor(routes, values))
+        return PrefillContext(routes=routes, values=values, masks=None)
+    return PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL))
 
 
 def _admitted(routes, v) -> None:
@@ -449,23 +446,28 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 #: `tests/integration/test_layer_dispatch.py` holds that refusal.
 
 
-def test_the_op_and_its_planner_arguments_are_a_descriptor_and_a_workspace_and_no_plan_object_exists():
-    """An operator is `op(data..., descriptor, workspace=None)`: the pinned parameter lists of the op, the descriptor's producer rule and the workspace's
-    builder are the surface, and no plan object is reachable from the layer, the expert door or the engine."""
+def test_the_calls_carry_only_their_inputs_and_no_plan_object_exists():
+    """A call is `op(inputs...)`: the pinned parameter lists of the prefill and the decode step are the surface, the descriptor and the workspace are
+    not exported, and no plan object is reachable from the layer, the expert door or the engine."""
     import inspect
 
     import fsla.engine as engine
     import fsla.expert as expert
     from fsla.ops.produce import prefill_descriptor
 
-    op = inspect.signature(fsla.fsla_op).parameters
-    assert list(op) == ["routes", "values", "masks", "descriptor", "workspace", "state", "decay"]
-    assert all(op[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("workspace", "state", "decay"))
-    assert op["workspace"].default is None and op["state"].default is None and op["decay"].default is None
-    assert list(inspect.signature(fsla.build_workspace).parameters) == ["routes", "values", "masks", "descriptor", "workspace"]
+    op = inspect.signature(fsla.prefill).parameters
+    assert list(op) == ["routes", "values", "masks", "state", "decay"]
+    assert all(op[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("state", "decay"))
+    assert op["state"].default is None and op["decay"].default is None
+    step = inspect.signature(fsla.decode_step_gated).parameters
+    assert list(step) == ["routes", "values", "masks", "state", "decay"]
+    assert step["decay"].kind is inspect.Parameter.KEYWORD_ONLY and step["decay"].default is None
     assert list(inspect.signature(prefill_descriptor).parameters) == [
         "topology", "d_v", "decay", "tokens", "batch_heads", "stateful", "device"]
-    assert fsla.workspace_bytes is not None
+    for gone in ("Descriptor", "descriptor", "workspace_bytes", "build_workspace", "prefill_descriptor", "decode_descriptor", "fsla_op"):
+        assert not hasattr(fsla, gone) and gone not in fsla.__all__
+    for kept in ("growth_pending", "admit_growth", "pool_headroom", "refill_pool"):
+        assert kept in fsla.__all__
     for gone in ("PrefillPlan", "prefill_plan", "Carve", "SidePlan"):
         assert not hasattr(expert, gone) and not hasattr(engine, gone) and gone not in fsla.__all__
     for gone in ("prefill_plan", "segment_tokens", "state_bytes"):
@@ -478,7 +480,7 @@ def test_the_op_and_its_planner_arguments_are_a_descriptor_and_a_workspace_and_n
 
 
 def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
-    """The layer's prefill dispatch lands on `fsla_op`, whose fast-fail speaks before any kernel could run: in
+    """The layer's prefill dispatch lands on `prefill`, whose fast-fail speaks before any kernel could run: in
     training mode the gradient clause (the prefill has no reverse pass yet), out of it the envelope's device
     clause for these CPU fp64 fixtures."""
     from fsla.engine.types import BackwardNotImplemented
@@ -514,7 +516,7 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 #: one: it was the adversarial handle a derive-then-immediately-use pipeline does
 #: not have, and the conformance family that used the same handle
 #: (`producer/stale-plan`) retired with it. What replaces the seam is that there is
-#: no plan: the chunk arm's geometry is the manifest's, and `fsla_op` refuses a pin
+#: no plan: the chunk arm's geometry is the manifest's, and `prefill` refuses a pin
 #: over it rather than accepting one it cannot honor.
 
 
@@ -565,7 +567,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             # Everything the CUDA prefill path resolves, imported by name.
             "import fsla;"
             "from fsla.layer import FSLA;"
-            "from fsla.interface import fsla_op;"
+            "from fsla.interface import prefill;"
             "from fsla.ops.decode import step_plane;"
             "from fsla.engine.facts.call import refuse_backward;"
             "from fsla.engine.rules.envelope import envelope;"

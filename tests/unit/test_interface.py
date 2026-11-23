@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op stack (`fsla/interface.py`) and the O-3 name contract.
 
-Two things are gated here. The first is THE ENVELOPE -- what `fsla_op` runs and what
+Two things are gated here. The first is THE ENVELOPE -- what `prefill` runs and what
 it refuses -- because the layer-dispatch autograd gap is a failure that produces no
 exception and no wrong number, only a `grad_fn` that quietly is not there, and the
 answer to it is a refusal rather than a second arm. The second is the NAME contract:
@@ -19,12 +19,11 @@ import pathlib
 
 import pytest
 import torch
-from conftest import build_layer, hand_descriptor
+from conftest import build_layer
 
 import fsla
 from fsla.engine.rules import envelope
 from fsla.interface import BackwardNotImplemented, operands_of, requires_backward
-from fsla.ops._ext import KernelNotBuilt
 from fsla.values import Values
 
 # --- the predicate -----------------------------------------------------------
@@ -70,7 +69,7 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     """A real `RouteFactors` bundle, on the smallest topology the tests need.
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
-    carrying only `topology`/`normalization`. New: `fsla_op` takes a
+    carrying only `topology`/`normalization`. New: `prefill` takes a
     `RouteFactors`, which the fixture takes from a layer's producer -- `requires_grad`
     on the source stream `x` reaches every tensor the producer derives (read/write
     levels, gains), exactly as `requires_grad` on the five loose tensors used to.
@@ -81,49 +80,49 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
     routes, _values, masks = layer._produce(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
-    return v, routes, masks, hand_descriptor(routes, Values.from_projection(v))
+    return v, routes, masks
 
 
 def test_a_grad_bearing_prefill_is_refused_loudly():
     """The prefill has no reverse pass until the native backward is rebuilt, so a call that carries a gradient
     must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
-    The same bundle without a gradient is refused by name as an unbuilt prefill kernel."""
-    v, routes, masks, descriptor = _tiny_routing(requires_grad=True)
+    The same bundle without a gradient is refused by the envelope's device clause, the CPU operands' (the descriptor's device clause)."""
+    v, routes, masks = _tiny_routing(requires_grad=True)
     values = Values.from_projection(v)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
-        fsla.fsla_op(routes, values, masks, descriptor)
-    with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b"):
-        fsla.fsla_op(routes, values, masks, descriptor)
+        fsla.prefill(routes, values, masks)
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+        fsla.prefill(routes, values, masks)
 
 
-def test_fsla_op_has_no_consumer_only_kwargs_to_silently_ignore():
+def test_prefill_has_no_consumer_only_kwargs_to_silently_ignore():
     """OLD: `fsla_func` accepted CUDA-consumer-only options (`paging`, ...) on
     BOTH arms and refused them explicitly with `ValueError` on the reference
     arm -- one function, two arms, one of which had to actively reject what the
-    other used. `fsla_op` structurally cannot have that failure mode: paging,
+    other used. `prefill` structurally cannot have that failure mode: paging,
     scheduling and every other CUDA-consumer detail live behind
     `fsla.expert.execute`'s own seam, reachable only from the CUDA path, and
-    `fsla_op`'s signature carries no CUDA-consumer-only parameter at all -- so
+    `prefill`'s signature carries no CUDA-consumer-only parameter at all -- so
     passing one is a plain `TypeError` (unknown keyword) regardless of which arm
     the call would otherwise take, rather than a case the op has to notice and
     refuse."""
-    v, routes, masks, descriptor = _tiny_routing(requires_grad=True)
+    v, routes, masks = _tiny_routing(requires_grad=True)
     with pytest.raises(TypeError):
-        fsla.fsla_op(routes, v, masks, descriptor, paging=object())
+        fsla.prefill(routes, v, masks, paging=object())
 
 
 def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     """OLD: `fsla_forward` was a separate entrypoint that established its own
     no-grad context internally, so an inference caller could not be wrong about
-    it by forgetting to wrap the call. `fsla_op` merges the two entrypoints into
+    it by forgetting to wrap the call. `prefill` merges the two entrypoints into
     one: there is no separate inference spelling any more, and the caller's own
     `torch.no_grad()` is what an inference site now uses -- exactly as any other
     PyTorch op. The surviving half of the old claim: wrapped in `torch.no_grad()`,
     an every-input-requires-grad call is ADMITTED past the gradient clause, because
     the predicate is gradient REACHABILITY and not the `requires_grad` flag.
     """
-    v, routes, _masks, _descriptor = _tiny_routing(requires_grad=True)
+    v, routes, _masks = _tiny_routing(requires_grad=True)
     with torch.no_grad():
         assert requires_backward(v, *routes.tensors()) is False
         #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
@@ -132,7 +131,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
-    v, routes, _masks, _descriptor = _tiny_routing(requires_grad=False)
+    v, routes, _masks = _tiny_routing(requires_grad=False)
     with torch.no_grad():
         assert "CUDA kernel" in envelope(routes.device)
 
@@ -183,6 +182,6 @@ def test_the_top_level_exports_are_exactly_the_declared_api():
     nobody promised and everybody will import anyway."""
     for name in fsla.__all__:
         assert hasattr(fsla, name), f"{name} is in __all__ but not importable"
-    assert "fsla_op" in fsla.__all__
+    assert "prefill" in fsla.__all__
     assert not any(name.startswith("_") and name != "__version__" for name in fsla.__all__), (
-        "a private name must not be re-exported: the op's public spelling is fsla_op")
+        "a private name must not be re-exported: the op's public spelling is prefill")

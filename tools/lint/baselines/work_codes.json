@@ -981,12 +981,6 @@
   },
   {
    "path": "tests/integration/test_decode_graph_step.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "a87bd18ff004a3d8",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_graph_step.py",
    "message": "names the work code 'P67-a'",
    "line_sha256": "8935a47594464944",
    "count": 1

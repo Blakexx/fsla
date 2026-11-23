@@ -1,6 +1,6 @@
 # The carried state, and the facade that engages it
 
-Mirror doc for `fsla/_state.py` and for `fsla_op`'s stateful half in
+Mirror doc for `fsla/_state.py` and for `fsla.prefill`'s stateful half in
 `fsla/interface.py`. It is the contract the repository carries: the design ledger
 that produced it is a workflow record, and this file is what a reader ten years from
 now is owed.
@@ -23,8 +23,8 @@ made mechanical.
 
 ```python
 s = fsla.state()                        # unbound
-y, s = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace, state=s) # bound to this call's shape; s is mutated
-y, _ = fsla.fsla_op(routes, values, masks, descriptor, workspace=workspace)  # stateless: (y, None)
+y, s = fsla.prefill(routes, values, masks, state=s) # bound to this call's shape; s is mutated
+y, _ = fsla.prefill(routes, values, masks)  # stateless: (y, None)
 ```
 
 `fsla.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in
@@ -76,7 +76,7 @@ means no state object at that end -- nothing is read, written, or allocated ther
 A fresh state has a strategy and nothing else. The FIRST call that receives it takes
 `[B, H, N, cols]`, the device and the backing kind from the call itself. `cols` needs
 `d_v`, which is NOT on the routing — the value width is the value stream's own fact —
-so `fsla_op` sources it from `v.shape[-1]`.
+so `fsla.prefill` sources it from `v.shape[-1]`.
 
 <a id="format"></a>**THE STATE OWNS ITS FORMAT**. What binds at that
 first call is a FORMAT DESCRIPTOR (`state.format`, a frozen `StateFormat`), and it is
@@ -297,13 +297,13 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`fsla.engine.decode_step.decode_step_gated(routes, v, masks, state, descriptor, decay=...)` takes and
-returns the state exactly as `fsla_op` does, and its caller owns the verdict (`growth_pending`, then
-`admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
+`fsla.decode_step_gated(routes, values, masks, state, decay=...)` takes and
+returns the state exactly as `fsla.prefill` does, and its caller owns the verdict (`fsla.growth_pending`, then
+`fsla.admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
 behind that seam:
 
 * **The descriptor and the scratch** (`Descriptor`, `DecodeScratch`) are the
-  decode step's own (the descriptor the scratch's key, the scratch held per sequence), not the state's — launch machinery fails the
+  decode step's own (the step builds the descriptor from its inputs; the descriptor the scratch's key, the scratch held per sequence), not the state's — launch machinery fails the
   membership test. The ORDER and the holding discipline are that step's page
   ([`engine/decode_step.md` §5](engine/decode_step.md#the-scratch)); what the state owes
   them is only its identity, which is what the scratch table is keyed on.

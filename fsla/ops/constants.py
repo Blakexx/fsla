@@ -25,7 +25,7 @@ from __future__ import annotations
 #:
 #: The value is shared by the oracle (``fsla/ops/naive.py``) and decode
 #: (``fsla/ops/decode.py``); the deleted chunk consumer read it too, and the intra
-#: will again. It is NOT on the public surface: ``fsla_op`` takes no ``eps``,
+#: will again. It is NOT on the public surface: ``fsla.prefill`` takes no ``eps``,
 #: because a number that changes the function is not a caller's argument. The
 #: kernel holds no copy either -- the decode config takes ``eps`` as a runtime
 #: argument -- so this constant is the single origin of the value on every path.

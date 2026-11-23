@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE OP AGAINST THE fp64 ORACLE: `fsla.interface.fsla_op`'s output and its handed-back state, per slot.
+"""THE OP AGAINST THE fp64 ORACLE: `fsla.prefill`'s output and its handed-back state, per slot.
 
 THE REFERENCE IS `fsla.ops.naive.naive_fsla` DIRECTLY, on the bundle's own dequantized levels and values -- the op gate
 compares on the same quantized inputs the kernels read (ruling 2026-09-26). The atom fold, the carry, the den pass,
@@ -20,10 +20,9 @@ import pytest
 import torch
 
 import fsla
-from fsla.interface import fsla_op
 from fsla.ops.window import window_of
 from measure.cells import by_name, carry_cells, realize
-from measure.subjects import bundle_of, prefill_descriptor_of
+from measure.subjects import bundle_of
 from tests.oracle import reference
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT, PREFILL_STATE
@@ -41,10 +40,9 @@ def operands(spec, tokens: slice = slice(None)):
 
 
 def call(operands_, state=None):
-    """The op over one call's operands (``routes, values, masks``): its descriptor by the producer's rule, its workspace by the public builder."""
+    """The op over one call's operands (``routes, values, masks``)."""
     routes, values, masks = operands_
-    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None)
-    return fsla_op(routes, values, masks, descriptor, workspace=fsla.build_workspace(routes, values, masks, descriptor), state=state)
+    return fsla.prefill(routes, values, masks, state=state)
 
 
 def oracle(routes, values, entry=None):

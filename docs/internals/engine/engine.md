@@ -22,7 +22,7 @@ validate  ->  steps, in order  ->  Launch  ->  execute(launch)
 * a step may launch and may allocate. A RULE ([`rules.md`](rules.md)) is a pure host fold from values to
   a decision, which launches nothing and allocates nothing.
 * there is NO PLAN OBJECT: a family's launch step launches from the call's descriptor (a `fsla.ops.descriptor.Descriptor`, its validated
-  context) and its workspace, everything derived from the call's facts being the family's one launch function's in `common/plan/`.
+  context, which the call builds itself from its inputs) and its workspace (internal to the call), everything derived from the call's facts being the family's one launch function's in `common/plan/`.
 * the launch step reads its descriptor and its operands and decides nothing. A launch site that
   decides anything is the condition this structure exists to remove.
 
@@ -56,7 +56,7 @@ that is also a route to something it does not own is the mis-homing this layout 
 `fsla.engine.rules` therefore never acquires a dependency on the extension: the primitives
 that DO reach it are `fsla.engine.facts` modules, imported by module.
 
-## <a id="a-dag-is-code"></a>3. A call is a function
+## <a id="a-call-is-a-function"></a>3. A call is a function
 
 There is no graph library, no fact dictionary and no topological sort. The call is a function
 whose body is its steps in the order the author chose for an efficient issue order, each

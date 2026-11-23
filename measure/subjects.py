@@ -60,7 +60,7 @@ class Subject:
     what: str
     #: THE LEVEL IT PRICES (Blake, 2026-09-15), recorded with every sample so a reading never crosses two of them:
     #: `kernel` is one family's launches and nothing around them; `op` is everything the op does over bare operands and
-    #: a state -- the facts, the paging, the packing and the kernels -- as `fsla_op` calls it; `layer` adds the
+    #: a state -- the facts, the paging, the packing and the kernels -- as `prefill` calls it; `layer` adds the
     #: projections that produce the routing, and is the ONLY level at which this library is compared with another.
     level: str
     #: THE BODY'S OWN NAME, for `ncu -k regex:`. A PREFIX would capture whichever kernel
@@ -86,31 +86,20 @@ class Subject:
 # ------------------------------------------------------------------ carry cells
 
 def prefill_op(fx) -> Launch:
-    """THE PREFILL AS THE OP RUNS IT: `fsla.interface.fsla_op` over the cell's bundle, stateless -- the validation, the
+    """THE PREFILL AS THE OP RUNS IT: `fsla.prefill` over the cell's bundle, stateless -- the validation, the
     carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
-    from fsla import build_workspace
-    from fsla.interface import fsla_op
+    from fsla import prefill
     from measure.cells import realize
 
     spec = fx["cell"]
     routes, values, masks = bundle_of(spec, realize(spec))
-    descriptor = prefill_descriptor_of(routes, values)
-    workspace = build_workspace(routes, values, masks, descriptor)
 
     def run():
-        return fsla_op(routes, values, masks, descriptor, workspace=workspace)
+        return prefill(routes, values, masks)
 
     run()
     return Launch(name=f"prefill|{spec.name}", call=run)
-
-
-def prefill_descriptor_of(routes, values, *, stateful: bool = False):  #: reserved: set by the prefill tests that carry a state
-    """The prefill's descriptor of a bundle: the call the bundle is, stated by the producer's rule over its topology."""
-    from fsla.ops.produce import prefill_descriptor
-
-    return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
-                              stateful=stateful, device=routes.device)
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
@@ -177,21 +166,18 @@ def _one_segment(spec, layer) -> None:
 
 
 def layer_op(fx) -> Launch:
-    """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `fsla.interface.fsla_op`, stateless --
+    """THE OP ALONE on the layer's own bundle (the producer run once, untimed): `fsla.prefill`, stateless --
     the carry, the intra, the glue and the readout. Beside `layer_prefill` it splits the
     layer into the producer and the op; beside the stage subjects, the op into its launches and its glue."""
-    from fsla import build_workspace
-    from fsla.interface import fsla_op
+    from fsla import prefill
 
     spec, layer = fx["cell"], fx["layer"]
     _one_segment(spec, layer)
     with torch.no_grad():
         routes, values, masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())
-    descriptor = prefill_descriptor_of(routes, values)
-    workspace = build_workspace(routes, values, masks, descriptor)
 
     def run():
-        return fsla_op(routes, values, masks, descriptor, workspace=workspace)[0]
+        return prefill(routes, values, masks)[0]
 
     run()
     return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)
@@ -205,9 +191,8 @@ def decode_step(fx) -> Launch:
     step, at the same context position, over the same residency.
     """
     import fsla
-    from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
     from fsla.engine.facts import planes
-    from fsla.ops.produce import decode_descriptor, produce_decode
+    from fsla.ops.produce import produce_decode
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -217,8 +202,6 @@ def decode_step(fx) -> Launch:
     #: not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
     routes = fx["routes"]
-    descriptor = decode_descriptor(layer.topology, d_v=layer.d_v, decay=layer.decay is not None, batch_heads=routes.batch * routes.heads,
-                                   device=fx["x"].device)
     #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
     with torch.no_grad():
         masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
@@ -241,10 +224,10 @@ def decode_step(fx) -> Launch:
         with torch.no_grad():
             routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token))
             values = fsla.Values.from_projection(v_token)
-            y, state = decode_step_gated(routes, values, masks, seeded["state"], descriptor)
-            if growth_pending(state):
-                admit_growth(state)
-                y, state = decode_step_gated(routes, values, masks, state, descriptor)
+            y, state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
+            if fsla.growth_pending(state):
+                fsla.admit_growth(state)
+                y, state = fsla.decode_step_gated(routes, values, masks, state)
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory
@@ -257,7 +240,7 @@ def decode_step(fx) -> Launch:
 #: once it is built: no kernel of the op is built on this line, so a capture of it finds nothing and a launch refuses by name.
 SUBJECTS = {
     "prefill": Subject("prefill", "carry", prefill_op,
-                       "the stateless prefill as fsla_op runs it: carry, intra, glue and readout",
+                       "the stateless prefill as `prefill` runs it: carry, intra, glue and readout",
                        level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
                             "the producer's batched multi-level solve",

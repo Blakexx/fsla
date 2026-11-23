@@ -297,9 +297,9 @@ them, and any other caller supplies whatever valid plan it wants. The op refuses
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
 result: a level walked by its lists that turns out dense, or walked whole where it was sparse, costs time and
 nothing else. THE PLAN IS A ROLE, NOT AN OBJECT (Blake, 2026-11-22: "data chagnes the mathematics, plan changes the execution of those
-mathematics. thats the exact spec we want"). No operator takes a plan object: it takes its data, a DESCRIPTOR and an
-optional WORKSPACE -- `op(data..., descriptor, workspace=None)` -- and the state is its own argument, in and out, never
-part of the workspace. The plan's host half is the descriptor: the validated context of the call, every device fact and
+mathematics. thats the exact spec we want"). No operator takes a plan object: it takes its data and nothing else -- `op(data...)` -- and the state is its own argument, in and out
+(Blake, 2026-11-23: the public contract carries all inputs; each call builds its own descriptor and its own workspace inside, and the workspace is
+something built just to pass around). The plan's host half is the descriptor, which each call builds from its inputs: the validated context of the call, every device fact and
 every call fact, reusable and hashable; a call fact that states a choice names an action as above (a side of a level
 walked by its lists), and everything derived from the facts -- the carve, the window, the grid, the segment -- is computed
 by the family's one launch function right before the launch and stored nowhere. The plan's device half is the DEVICE

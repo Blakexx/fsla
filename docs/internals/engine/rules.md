@@ -119,7 +119,7 @@ taxonomy and no call-class knowledge in it. The eighth argument triple — a pag
 no state at all — is refused at the binding before the derivation is reached, and derives
 the stateless row in any case.
 
-**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule, and a
+**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a rule -- a pure host function from the call's three facts to the table -- and a
 kernel that takes it reads the `uint32` as a launch argument beside the bitmap it predicates
 over and derives nothing: a second derivation behind the extension boundary could not promise
 that the table a call PLANS is the table it RUNS, and the seven rows above could only be

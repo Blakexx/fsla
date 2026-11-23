@@ -3,7 +3,7 @@
 Mirrors [`tools/op_timeline.py`](../../../tools/op_timeline.py).
 
 THE OP'S TIMELINE: what a call spends outside its kernels. A registered subject (`measure.subjects`, the bench's own
-build of it; `prefill` by default, the op as `fsla_op` runs it) is called `--warmup` times untimed, then `--calls` times
+build of it; `prefill` by default, the op as `fsla.prefill` runs it) is called `--warmup` times untimed, then `--calls` times
 under `torch.profiler` (CPU and CUDA activity), each call synchronized before and after. It prints, a call:
 
 - the wall time, the kernels' busy time (the union of their intervals) and the idle remainder -- the GPU waiting on

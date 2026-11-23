@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """The bundles a launch travels in.
 
-NO FAMILY HAS A PLAN. An operator is ``op(data..., descriptor, workspace=None)``: the data is what is given at the boundary and changes the
-mathematics, the validated descriptor (:class:`fsla.ops.descriptor.Descriptor`) is every device fact and every call fact, and the workspace is
+NO FAMILY HAS A PLAN. An operator is ``op(data...)``: the data is what is given at the boundary and changes the
+mathematics; the call builds the validated descriptor (:class:`fsla.ops.descriptor.Descriptor`), every device fact and every call fact, and the workspace,
 what the call derives. Everything derived from the descriptor's facts is the planner's launch function's, computed right before the launch and
 never stored (docs/internals/common/plan/decode_launch.md).
 
-A LAUNCH is one internal bundle per kernel family (:class:`DecodeLaunch`, :class:`PrefillLaunch`), built at a DAG's terminal node and passed to
+A LAUNCH is one internal bundle per kernel family (:class:`DecodeLaunch`, :class:`PrefillLaunch`), built by the call's launch step (``build_launch`` in ``fsla/engine/decode_step.py``, ``launch`` in ``fsla/engine/prefill_call.py``) and passed to
 the launcher, never public. It holds three named parts: the ``descriptor``, the ``operands`` (the data -- rows, scales, values, masks, dials, the
-state and its page table -- what the oracle also takes) and the ``workspace`` (what the call derives for itself). The public op takes the operands
-and the descriptor as arguments; the launch is how they travel inside it (docs/internals/engine/engine.md).
+state and its page table -- what the oracle also takes) and the ``workspace`` (what the call derives for itself). The public op takes the operands as arguments;
+the launch is how they and the call's descriptor travel inside it (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class PrefillOperands:
 
 @dataclass(frozen=True, slots=True)
 class PrefillWorkspace:
-    """What the prefill call derives: ``buffer``, the one byte buffer :func:`fsla.ops.prefill.build_workspace` laid out, whose first region is the
+    """What the prefill call derives: ``buffer``, the one byte buffer the call's private workspace builder (:func:`fsla.ops.prefill._build_workspace`) laid out, whose first region is the
     device plan (the call's decisions). The state is not in it: the state is the op's own argument, in and out."""
 
     buffer: torch.Tensor | None

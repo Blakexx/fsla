@@ -1,6 +1,6 @@
 """THE OP ON ONE SEGMENT, AND THE LAYER'S SEGMENTS.
 
-`fsla_op` runs the prefill DAG over the segment it is handed, under the descriptor and the workspace its caller built, and continues
+`fsla.prefill` runs the prefill call over the segment it is handed, building its own descriptor and workspace, and continues
 the state it is handed; the layer splits a sequence into segments by a declared memory budget, so its projections are bounded with the op.
 Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
 readout to fp32 ULPs, the layer's through its bf16 output projection), and the budget's refusal by name while the prefill launch function
@@ -48,19 +48,6 @@ def _bundles(tokens: int, heads: int = 2):
     return routes, values, masks
 
 
-def _descriptor(routes, values, *, stateful=False):
-    """The prefill's descriptor of a bundle, by the producer's rule: owed while the prefill kernel is not built, so it is refused here, by name."""
-    from fsla.ops.produce import prefill_descriptor
-
-    return prefill_descriptor(routes.topology, d_v=values.d_v, decay=False, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
-                              stateful=stateful, device=routes.device)
-
-
-def _op(routes, values, masks, descriptor, **kwargs):
-    """`fsla_op` over a call whose workspace its caller built (`fsla.build_workspace`)."""
-    return fsla.fsla_op(routes, values, masks, descriptor, workspace=fsla.build_workspace(routes, values, masks, descriptor), **kwargs)
-
-
 def _cut_masks(masks, span: slice):
     """One stretch of a call's masks: the token-packed words of the stretch, whole 32-token words (a window is)."""
     first, last = span.start // 32, -(-span.stop // 32)
@@ -85,11 +72,11 @@ def _cut(bundle, span: slice):
 def test_the_op_matches_the_fp64_oracle_per_slot():
     routes, values, masks = _bundles(2 * window_of())
     with torch.no_grad():
-        y, state = _op(routes, values, masks, _descriptor(routes, values))
+        y, state = fsla.prefill(routes, values, masks)
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
     ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
-    assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="fsla_op readout")
+    assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="prefill readout")
 
 
 @pytest.mark.parametrize("paging", [True, False])
@@ -99,13 +86,12 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
     one state are the whole call to fp32 ULPs, in either backing."""
     routes, values, masks = _bundles(4 * window_of())
     with torch.no_grad():
-        whole, _ = _op(routes, values, masks, _descriptor(routes, values))
+        whole, _ = fsla.prefill(routes, values, masks)
         state = fsla.state(backing="paged" if paging else "dense")
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
             cut_routes, cut_values, cut_masks = _cut(routes, span), _cut(values, span), _cut_masks(masks, span)
-            y, state = _op(cut_routes, cut_values, cut_masks, _descriptor(cut_routes, cut_values, stateful=True),
-                           state=state)
+            y, state = fsla.prefill(cut_routes, cut_values, cut_masks, state=state)
             parts.append(y)
     assert state.paged is paging
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)

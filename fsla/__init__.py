@@ -8,13 +8,14 @@ decides which sub-states each token reads and writes. That reduction IS this API
 user who knows linear attention meets exactly ONE new concept here, the feature map,
 and everything else is linear attention's own contract.
 
-    fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state, decay=decay)
+    y, state = fsla.prefill(routes, values, masks, state=state, decay=decay)
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
 -- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; the op computes with ``r * m``),
-the ``state`` is its own argument, in and out, ``decay`` is the recurrence dial, ``descriptor`` is the call's validated run-time context
-(``fsla.ops.produce.prefill_descriptor``) and ``workspace`` is what the call derives, which ``build_workspace`` lays out. The layer DECLARES its routing -- the levels, each carrying its own
+the ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial. The call carries only its inputs: it builds its own descriptor
+and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``, whose growth verdict the
+caller owns (``fsla.growth_pending``, ``fsla.admit_growth``; ``fsla.pool_headroom`` and ``fsla.refill_pool`` at leisure). The layer DECLARES its routing -- the levels, each carrying its own
 width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
 bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
@@ -32,8 +33,8 @@ and not part of the contract.
 
 | Group | Names | Stability |
 |---|---|---|
-| op | `fsla_op` | STABLE, semver-major to break |
-| planner arguments | `descriptor`, `Descriptor`, `workspace_bytes`, `build_workspace` | STABLE |
+| op | `prefill`, `decode_step_gated` | STABLE, semver-major to break |
+| decode growth | `growth_pending`, `admit_growth`, `pool_headroom`, `refill_pool` | STABLE |
 | feature map | `RouteFactors`, `Masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
@@ -49,11 +50,10 @@ __version__ = "0.1.0.dev0"
 #: in the private `fsla._state` (renamed from `fsla/state.py`, whose public
 #: name the function was shadowing): docs/internals/state.md
 from fsla._state import FSLAState, state
-from fsla.interface import fsla_op
+from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending, pool_headroom, refill_pool
+from fsla.interface import prefill
 from fsla.layer import FSLA, LayerContinuation
-from fsla.ops.descriptor import Descriptor, descriptor, workspace_bytes
 from fsla.ops.naive import naive_fsla
-from fsla.ops.prefill import build_workspace
 from fsla.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import Masks
@@ -79,14 +79,14 @@ from fsla.routing.types import (
 from fsla.values import Values
 
 __all__ = [
-    # the op — the single autograd boundary (fsla/interface.py)
-    "fsla_op",
-    # the op's planner arguments: the validated context of a call, the workspace it needs and the builder that lays it out
-    # (fsla/ops/descriptor.py, fsla/ops/prefill.py)
-    "Descriptor",
-    "descriptor",
-    "workspace_bytes",
-    "build_workspace",
+    # the ops — the prefill, the single autograd boundary (fsla/interface.py), and the decode step with its growth verdict
+    # (fsla/engine/decode_step.py)
+    "prefill",
+    "decode_step_gated",
+    "growth_pending",
+    "admit_growth",
+    "pool_headroom",
+    "refill_pool",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Masks",

@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.interface.fsla_op`).
+"""THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.prefill`).
 
 The paged arena is the default backing and `fsla.state(backing="dense")` pins the dense plane (docs/api.md section 5):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
@@ -17,9 +17,8 @@ import pytest
 import torch
 
 import fsla
-from fsla.interface import fsla_op
 from measure.cells import by_name, realize
-from measure.subjects import bundle_of, prefill_descriptor_of
+from measure.subjects import bundle_of
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -35,9 +34,7 @@ def operands(spec, tokens: slice = slice(None)):
 def run(operands_, state):
     """The op over one call's operands, against ``state`` (whose backing is its own)."""
     routes, values, masks = operands_
-    descriptor = prefill_descriptor_of(routes, values, stateful=state is not None)
-    workspace = fsla.build_workspace(routes, values, masks, descriptor)
-    return fsla_op(routes, values, masks, descriptor, workspace=workspace, state=state)
+    return fsla.prefill(routes, values, masks, state=state)
 
 
 def calls(spec, parts, backing="paged"):
