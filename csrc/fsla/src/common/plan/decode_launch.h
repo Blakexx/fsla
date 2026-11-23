@@ -132,15 +132,6 @@ constexpr DecodeArgs decode_args(const DecodeDescriptor& d, const DecodeArm& arm
   return args;
 }
 
-//: the scratch a call needs beside its operands: its bytes and the alignment of its address (decode has no per-call scratch: its buffers belong to
-//: the sequence)
-struct WorkspaceNeed {
-  std::int64_t bytes;
-  std::int64_t alignment;
-};
-
-constexpr WorkspaceNeed decode_workspace(const DecodeDescriptor&) { return {0, 256}; }
-
 //: THE STEP'S GRID, from exact values right before the launch: one wave of the declared residency, at most `bh` heads' unit supply of
 //: `unit_ceiling` units each; `forced` (a gate's count, at least 1) replaces it, -1 leaves it
 constexpr int decode_grid(const DecodeArgs& args, std::int64_t unit_ceiling, std::int64_t bh,

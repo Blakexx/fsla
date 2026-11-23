@@ -1089,15 +1089,13 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 }
 
 //: THE LAUNCH A DESCRIPTOR MEANS, for the host: the arm's `d_v`, levels and decay, the padding of the call's
-//: value width, the workspace's bytes and alignment, then the level widths (`kDecodeMaxLevels` of them, 0 beyond the call's levels)
+//: value width, then the level widths (`kDecodeMaxLevels` of them, 0 beyond the call's levels)
 std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t device) {
   const plan::DecodeDescriptor d =
       plan::checked_descriptor<plan::decode::Kernel>(descriptor, static_cast<int>(device));
   const auto launch = plan::decode_launch(d);
-  const auto workspace = plan::decode_workspace(d);
   const auto& arm = launch.arm;
   std::vector<int64_t> out = {arm.d_v, arm.levels, arm.decay, launch.args.pad};
-  out.insert(out.end(), {workspace.bytes, workspace.alignment});
   out.insert(out.end(), launch.args.widths, launch.args.widths + plan::kDecodeMaxLevels);
   return out;
 }

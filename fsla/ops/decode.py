@@ -104,9 +104,9 @@ class DecodeLaunchFacts:
 @cache
 def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
     """The planner's decode launch for ``descriptor``, on its own device; the padded value width is the arm's ``d_v``. The launch's words are the arm, the
-    padding, the workspace the planner sizes (words 4 and 5, which no caller reads) and the level widths."""
+    padding and the level widths."""
     words = [int(x) for x in extension().fsla_decode_launch(list(descriptor.words), descriptor.device)]
-    return DecodeLaunchFacts(*words[:4], widths=tuple(words[6:6 + words[1]]))
+    return DecodeLaunchFacts(*words[:4], widths=tuple(words[4:4 + words[1]]))
 
 
 @cache

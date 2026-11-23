@@ -133,4 +133,4 @@ def test_a_budgeted_prefill_is_refused_by_name_before_anything_runs():
     layer = _layer(memory_budget=10 ** 9).cuda().eval()
     with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b") as refused:
         layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
-    assert "outside FSLA's contract" not in str(refused.value)
+    assert "outside FSLA's prefill contract" not in str(refused.value)

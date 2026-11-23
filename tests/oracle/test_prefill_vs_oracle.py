@@ -124,6 +124,6 @@ def test_a_prefill_with_a_decay_is_outside_the_contract():
     from fsla.ops.produce import prefill_descriptor
 
     routes, values, _masks = operands(by_name("flagship-alt-k4"))
-    with pytest.raises(RuntimeError, match="outside FSLA's contract"):
+    with pytest.raises(RuntimeError, match="outside FSLA's prefill contract"):
         prefill_descriptor(routes.topology, d_v=values.d_v, decay=True, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
                            stateful=False, device=routes.device)

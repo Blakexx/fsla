@@ -131,6 +131,6 @@ function and its arm are built (`docs/open-work.md` rows A-f and A-h).
 | reader | reads |
 |---|---|
 | `//hardware:<kernel>_facts` | the device table and the kernel's schema: `plan/<kernel>/facts.h` |
-| `//hardware:<kernel>_contexts` | the kernel's contract under the build's `--//:contract`, a line a context (`registry.contexts_text`): `arms_gen`'s input for decode |
+| `//hardware:decode_contexts` | decode's contract under the build's `--//:contract`, a line a context (`registry.contexts_text`): `arms_gen`'s input. A kernel has one where an arm generator reads it |
 | `//hardware:<kernel>_contract` | the kernel's contract and owed contexts as tables the run time holds, and its `Kernel` definition: `plan/<kernel>/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
 | `tools/supported.py` | each built kernel's contract: the README's support tables, a table a kernel with its call facts as columns |

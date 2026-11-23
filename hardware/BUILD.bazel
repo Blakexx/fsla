@@ -36,6 +36,9 @@ exports_files([
 #: THE KERNELS the registry holds: a folder of `kernels/`
 KERNELS = [path.split("/")[1] for path in glob(["kernels/*/schema.json"])]
 
+#: the kernels whose arms the build generates from their contract (`//csrc/fsla:decode_plan`)
+ARM_KERNELS = ["decode"]
+
 [genrule(
     name = "%s_facts_header" % kernel,
     srcs = [":registry"],
@@ -54,14 +57,15 @@ KERNELS = [path.split("/")[1] for path in glob(["kernels/*/schema.json"])]
     includes = ["."],
 ) for kernel in KERNELS]
 
-#: THE CONTRACT of each kernel: every context the build's contract holds, a line each (`registry.contexts_text`); `--//:contract` names a narrowed one
+#: THE CONTRACT of a kernel with an arm generator, which reads it: every context the build's contract holds, a line each
+#: (`registry.contexts_text`); `--//:contract` names a narrowed one
 [contract_output(
     name = "%s_contexts" % kernel,
     out = "%s_contexts.txt" % kernel,
     kernel = kernel,
     registry = ":registry",
     what = "contexts",
-) for kernel in KERNELS]
+) for kernel in ARM_KERNELS]
 
 [contract_output(
     name = "%s_contract_header" % kernel,

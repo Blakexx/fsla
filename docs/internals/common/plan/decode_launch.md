@@ -20,8 +20,6 @@ parts are composed from two functions and stay structurally separate:
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)).
-- `decode_workspace(const DecodeDescriptor&)` is the scratch a call needs beside its operands: none (decode's buffers belong to the sequence and its
-  state, never to the call), at the alignment every workspace carries.
 
 EVERY CONTEXT OF DECODE'S CONTRACT IS A DECODE STEP, so the matcher tests no call kind. THERE IS NO DECODE PLAN. The op takes its data (`op(data...)`) and builds the descriptor itself: the descriptor is every device fact and every call fact,
 immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the grid) is computed by this one launch
