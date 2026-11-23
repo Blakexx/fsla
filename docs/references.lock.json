@@ -1657,6 +1657,7 @@
   {"doc": "docs/lab/carry_token.md", "pinned_at": "e55eb45b8160", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "2f79cae53ef7", "reviewed": true, "sha256": "", "target": "docs/lab/gather_group.md"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "0d4122bac4a2", "reviewed": true, "sha256": "", "target": "docs/lab/step_rolled.md"},
+  {"doc": "docs/lab/carry_token.md", "pinned_at": "ada6fa5ada97", "reviewed": true, "sha256": "", "target": "docs/open-work.md"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "e55eb45b8160", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/carry_token.cu"},
   {"doc": "docs/lab/carry_token.md", "pinned_at": "b551de5d1ae8", "reviewed": true, "sha256": "", "target": "measure/lab/results/carry_token/sm_90a.blocks1.json"},
   {"doc": "docs/lab/carry_window.md", "pinned_at": "c98cbf59c46c", "reviewed": true, "sha256": "280b33a4ebc8d817", "target": "docs/ARCHITECTURE.md#1-what-the-kernel-computes"},
