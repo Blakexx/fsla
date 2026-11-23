@@ -3,7 +3,7 @@
 A kernel declares its arm family in a `.bzl` beside it: the arm's key (`<FAMILY>_KEY`, the fields that make one
 instantiation) and its kernel and declarations. The arms are either literal rows (`arms`, with each field's domain, in canonical order: a
 family with per-arm units needs them at load time) or a rows file (`arms_file`) a host tool wrote, the arm list `arms_gen` evaluates
-the family's launch function's arm half into over the contract (docs/internals/decode/arms_gen.md). `arm_family` makes, for that one list:
+the family's launch function's arm half into over the contract (docs/internals/common/plan/arms_gen.md). `arm_family` makes, for that one list:
 
 - one translation unit per arm and per BUILT architecture (`<name>_arm_<i>_sm_<arch>`) when the family has per-arm units
   (`unit`), whose source is the family's arm header and one `<NAME>_ARM_DEFINE(i, key...)` under the arm's own selection

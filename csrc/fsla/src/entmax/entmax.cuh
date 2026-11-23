@@ -440,7 +440,7 @@ inline LevelTable build_table(const std::vector<int64_t>& logit_off,
 //: TWO DTYPE AXES, ONE CALL: the LOGIT plane's and the route values'. -- see docs/internals/entmax/entmax.md#check-logits
 #ifdef __CUDACC__
 namespace detail {
-//: THE LOGIT PLANE IS bf16 ON THE SHIPPED PATH -- the router GEMM runs bf16 operands on -- see docs/internals/entmax/entmax.md#checklogits
+//: the logit plane is on the device; its dtype is the contract's to refuse (`dtype_code`)
 inline void check_logits(const Tensor& logits) {
   STD_TORCH_CHECK(logits.is_cuda(), "routing logits must be CUDA");
 }

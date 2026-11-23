@@ -7,14 +7,14 @@
         "lo": 2,
         "hi": 64
       },
-      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"
+      "declared_by": "docs/internals/common/plan/arms_gen.md#the-contract: the value widths a decode arm serves, 2 up to its widest arm; fsla/_state.py's StateFormat admits an even width from 2"
     },
     "decay": {
       "value": [
         0,
         1
       ],
-      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
+      "declared_by": "docs/internals/common/plan/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
     },
     "batch_heads": {
       "value": {

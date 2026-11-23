@@ -14,7 +14,7 @@
         0,
         1
       ],
-      "declared_by": "docs/internals/decode/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
+      "declared_by": "docs/internals/common/plan/arms_gen.md#the-contract: the recurrence either decays (1) or not (0)"
     },
     "batch_heads": {
       "value": {

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE ARM FAMILIES' GENERATED FILES, written from a family's rows file (`{"key": [...], "arms": [[...], ...]}`): its selection header, its Python
 table and its declarations, and the merge of declaration files into the one file the SASS gate reads. Run by `bazel/arms.bzl`'s rules; the
-rows are a literal's (`arm_rows`) or `arms_gen`'s (docs/internals/decode/arms_gen.md). Docs: docs/build-graph.md#arms.
+rows are a literal's (`arm_rows`) or `arms_gen`'s (docs/internals/common/plan/arms_gen.md). Docs: docs/build-graph.md#arms.
 """
 from __future__ import annotations
 

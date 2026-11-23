@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """DECODE'S LAUNCH FUNCTION OVER THE CONTRACT AND THE ARM GENERATOR (`csrc/fsla/src/common/plan/decode_launch.h`, `arms_gen.cpp`,
-docs/internals/decode/arms_gen.md): the arms the launch function reaches over the contract are the decode arm list, in canonical order
+docs/internals/common/plan/arms_gen.md): the arms the launch function reaches over the contract are the decode arm list, in canonical order
 (`d_v`, then `levels`, then `decay`); a contract context no arm covers fails the generator, naming the context, and so fails the build; a
 context whose ranges hold a point no arm covers fails it too, naming such a point, whatever the count of its ranged facts (the coverage check is the rule
 language's three-valued walk over the ranges, exact: no corner is sampled)."""
