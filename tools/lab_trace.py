@@ -54,7 +54,7 @@ FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX = (", every warp's timeline stamped", "
 DETAIL_SUFFIXES = (", the waits on the tile groups read stamped", ", the waits on the tile groups published stamped",
                    ", the waits on the panels filled stamped", ", the waits on the panels drained stamped",
                    ", the fold's steps by eighths stamped", ", the fold's fill by phases stamped",
-                   ", the waits on the packets landed stamped")
+                   ", the waits on the packets landed stamped", ", the readout's pass by phases stamped")
 TRACE_SUFFIXES = (FINE_SUFFIX, COARSE_SUFFIX, EDGES_SUFFIX, *DETAIL_SUFFIXES)
 
 

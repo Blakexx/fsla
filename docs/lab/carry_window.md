@@ -101,7 +101,7 @@ boxes each read and every launch reads again. One pair gives EACH BOX ITS OWN, 6
 keeps the 16 columns and runs 128 windows of their own addresses, 80 MB: a window's bytes are read by its 16
 boxes at once and, by the sizes, are not in a cache of 50 MB when the first asks.
 
-THE PACKED STREAM (a pair; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)). The same 256
+THE PACKED STREAM (a pair; [`hopper-carry.md`](../architecture/hopper-carry.md#the-packets)). The same 256
 entries a box a window fall UNEVENLY on its 16 lists, 8 to 24 a list. A list's full steps are whole-entry tiles; its
 last, part-filled step is stored TRUNCATED -- each value brick only the lines of the entries it has, then their
 dense lines and a line of their sparse bytes -- so nothing of a pad crosses global memory. A window's steps are
@@ -204,7 +204,7 @@ alone beside every warp's mean.
 THE BLOCK FORM'S SHARED PAIR: its plans and its one copy a slot are its second warp's first thread's, its 16
 steps' operands four a warp, its pads a warp in turn -- no warp of the warpgroup holds more of the slot's lone
 jobs than another. Checked as the form's rows are.
-THE READY PAIR (the block form; [`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)): a slot
+THE READY PAIR (the block form; [`hopper-carry.md`](../architecture/hopper-carry.md#the-packets)): a slot
 LANDS WITH ITS OPERANDS MADE -- its head the 16 steps' two operands as a slot at address 0 has them, a tile of
 zeros for an absent step's, its lists' value runs, and its coefficients bf16, a brick a run, padded with zero lines
 to the lists' steps -- and the fold waits on its bytes, adds its slot's address to each operand and steps: it
@@ -227,7 +227,7 @@ and its values are its column's ([`hopper-gather.md`](../architecture/hopper-gat
 these bracket what a box's own bytes cost its window. Checked as the form's rows are.
 
 THE TOKEN ROWS (the block form;
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-gather-stream)): THE FOLD LAYS ITS OWN SLOT from a view in token order. THE QUESTION: the design's stream holds a
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-packets)): THE FOLD LAYS ITS OWN SLOT from a view in token order. THE QUESTION: the design's stream holds a
 sparse block's live tokens once each as they come, so a token's value lines do not land where its digit's step reads
 them -- what does the fold moving them cost the window, beside the block form, whose value runs land in place? A
 slot's view is its 128 entries in token order -- each entry's places, its dense line and its 8 value lines, a brick a

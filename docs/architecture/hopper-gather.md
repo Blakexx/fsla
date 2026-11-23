@@ -1,12 +1,14 @@
 # The hopper gather: its design before it is built
 
-STATUS: PROPOSED, NOT LOCKED. No gather kernel is built on this line; this page is the design the first one is built
-from. A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet measured says so; where
+STATUS: PROPOSED, NOT LOCKED, AND BEHIND THE CARRY'S PAGE. No gather kernel is built on this line. What the gather writes is
+now the carry's packets ([`hopper-carry.md`](hopper-carry.md#the-packets): the grouped digit stream, RULED 2026-11-19,
+under the packet contract, RULED 2026-11-18); the sections below describe the token-list stream that preceded them and
+are rewritten with the gather's build ([`hopper-carry.md`](hopper-carry.md#the-order-of-the-build), step 2). A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet measured says so; where
 nothing is decided the page says OPEN.
 
 The gather is the hopper op's own kernel work (RULED 2026-11-15: a first-class kernel with an explicit design): it
 turns a side's masks and planes into the stream a group of carry CTAs shares
-([`hopper-carry.md`](hopper-carry.md#the-gather-stream)). What one carry CTA alone uses, that CTA makes.
+([`hopper-carry.md`](hopper-carry.md#the-packets)). What one carry CTA alone uses, that CTA makes.
 
 ## What it is handed
 
@@ -21,7 +23,7 @@ order is the producer's readers' measured access, and this reader is the first m
 
 ONLY WHAT A GROUP OF CTAS SHARES (RULED 2026-11-15, the day's later ruling: "the expansion is unique to each final
 cta, not something shared. each final cta should own it, to distribute load"). A coefficient is a (sparse block, dense
-block)'s -- one carry CTA's alone -- and that CTA forms it ([`hopper-carry.md`](hopper-carry.md#the-gather-stream)).
+block)'s -- one carry CTA's alone -- and that CTA forms it ([`hopper-carry.md`](hopper-carry.md#the-packets)).
 The stream is THE TOKEN LIST (RULED 2026-11-13, in force again): a sparse block's live tokens once each, in token
 order, packed -- a token's values as the bundle holds them and its sparse bytes on the block's digits -- read by the
 carry CTAs that share the block. It is a ring of a few windows a CTA group (RULED 2026-11-15).

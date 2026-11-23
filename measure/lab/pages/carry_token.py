@@ -53,6 +53,9 @@ AHEAD = ", loaded a window ahead"
 LISTED = ", the readout's passes its packet's"
 READY = ", its tiles and lines offsets ready to add"
 PADDED = ", a half in two padded passes"
+ONE_BLOCK = ", every CTA on one block's reader packets"
+FAR = ", the drain's lines loaded a pass ahead"
+SPLIT_READ = ", the readout's pass by phases stamped"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -137,12 +140,18 @@ def short(name: str) -> str:
                           (SPREAD, "an entry's dense line from a 2 GB table of the tokens"), (TABLED, "an entry's dense line from the tokens' table"),
                           (AHEAD, "loaded a window ahead"),
                           (LISTED, "the readout's passes its packet's"), (READY, "its tiles and lines offsets ready to add"),
-                          (PADDED, "a half in two padded passes"), (SPLIT, "registers 176 / 112 / 48"),
+                          (PADDED, "a half in two padded passes"), (FAR, "the drain's lines loaded a pass ahead"),
+                          (ONE_BLOCK, "every CTA on one block's reader packets (not checked)"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
             probes.append(words)
             rest = rest.replace(suffix, "")
     probe = ", ".join(probes)
+    if SPLIT_READ in rest:
+        kind = "coarse, the waits on the tile groups published and the panels drained, the readout's pass by phases"
+        rest = rest.replace(COARSE_SUF, "").replace(SPLIT_READ, "")
+        for suffix, _ in DETAILS[1:4:2]:
+            rest = rest.replace(suffix, "")
     for suffix, words in DETAILS:
         if suffix in rest:
             kind, rest = f"coarse, {words}", rest.replace(COARSE_SUF, "").replace(suffix, "")
@@ -205,7 +214,11 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     checked = sum(1 for c in full["checks"] if "ok" in c)
     isolation = [c["variant"] for c in full["checks"] if "ok" not in c and "isolation" in c.get("reason", "")]
+    one_block = [c["variant"] for c in full["checks"] if "ok" not in c and "reads block 0's reader packets" in c.get("reason", "")]
     assert checked == sum(1 for c in one["checks"] if "ok" in c)
+    assert isolation == [c["variant"] for c in one["checks"] if "ok" not in c and "isolation" in c.get("reason", "")]
+    assert one_block == [c["variant"] for c in one["checks"] if "ok" not in c and "reads block 0's reader packets" in c.get("reason", "")]
+    assert all(v.endswith(ONE_BLOCK) for v in one_block), "lab page: an unchecked one-block row does not end with its suffix"
     # a rule: every row of the record is checked or named unchecked, and the record's checks are its own
     check_names = {c["variant"] for c in full["checks"]}
     assert all(nm in check_names for nm in names), "lab page: a row of the record has neither a check nor an unchecked mark"
@@ -530,7 +543,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"ready offsets are a gain at one CTA ({pct(abs(against(fm['ready'][1], fm['listed'][1])[0]))} under the listed form) and none at {sms} CTAs "
         f"({against(fm['ready'][132], fm['listed'][132])[1].removesuffix(' as')} the listed); the forms that load their packet from global memory in the read side's roles slow with the card's CTAs "
         f"(the gaps above) and the fixed readout does not ({pct(gap['fixed'])}, called the same within {pct(SAME)}). OPEN: WHY. The candidate: at one CTA a block's packets "
-        f"stay cached between launches and at {sms} the card's buffers do not fit the cache; it is not measured (the record holds no counter of the packets' loads). "
+        f"stay cached between launches and at {sms} the card's buffers do not fit the cache; (j)'s one-block rows test it, and (j) states what they show. "
         "NOT BUILT: the read packet landed in shared memory by the bulk copy, as the fold's packet is ([`open-work.md`](../open-work.md) C-o)."
     )
 
@@ -550,7 +563,13 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
             out[role] = {lab.split(": ", 1)[1]: v / (members[role] * nw) for lab, v in by_role[role].items()}
         return (t1 - t0) / nw, out, scope.removeprefix("cta")
 
-    timeline_rows = ((fixed_n + FINE, "the fixed readout"), (listed_n + FINE, "the listed readout"), (ready_n + FINE, "the ready packet's"))
+    far_n = listed_n + FAR
+    timeline_rows = (
+        (fixed_n + FINE, "the fixed readout"),
+        (listed_n + FINE, "the listed readout"),
+        (ready_n + FINE, "the ready packet's"),
+        (far_n + FINE, "the listed readout with the drain's lines a pass ahead"),
+    )
     timeline_parts = []
     drain_waits = []
     for nm, label in timeline_rows:
@@ -568,12 +587,100 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         drain_waits.append(states["drain"].get("waits on panel # filled", 0.0))
     assert all(x > 0 for x in drain_waits)
     timelines_text = (
-        "THE TWO READOUTS' TIMELINES (the three every-stamp rows of the four-digit grouped fold at "
+        "THE TWO READOUTS' TIMELINES (the four every-stamp rows of the four-digit grouped fold at "
         f"{sms} CTAs, CTA {scope132}; `bazel run //tools:lab -- trace carry_token --record measure/lab/results/carry_token/sm_90a.blocks{sms}.json --row \"<row>\"` "
-        "with the rows' endings `groups of four, every warp's timeline stamped$`, `packet's, every warp's timeline stamped$` and `ready to add, every warp's timeline stamped$`): "
-        + "; ".join(timeline_parts) + ". What they show: in all three the drain waits on a panel the readout fills "
-        f"({', '.join(g(x) for x in drain_waits)} cycles a window a warp, the fixed, the listed and the ready) and the readout waits on the panels the drain has drained "
+        "with the rows' endings `groups of four, every warp's timeline stamped$`, `packet's, every warp's timeline stamped$`, `ready to add, every warp's timeline stamped$` and `a pass ahead, every warp's timeline stamped$`): "
+        + "; ".join(timeline_parts) + ". What they show: in all four the drain waits on a panel the readout fills "
+        f"({', '.join(g(x) for x in drain_waits)} cycles a window a warp, the fixed, the listed, the ready and the listed with its lines a pass ahead) and the readout waits on the panels the drain has drained "
         "(its own wait, above); how much of the window each waits is the figures above."
+    )
+
+    # ---- (j) the packets cached at the full grid; the drain's lines and the ready offsets a pass ahead
+    cu_text = (root / "measure/lab/experiments/carry_token.cu").read_text()
+    assert "(PROBE & (kReady | kFar)) == (kReady | kFar) ? 104" in cu_text and "(PROBE & (kReady | kFar)) == (kReady | kFar) ? 56" in cu_text, (
+        "lab page: the ready-and-far kernel's registers are no longer 176 / 104 / 56")
+    one_names = {k: nm + ONE_BLOCK for k, nm in forms.items() if k != "fixed"}
+    far_names = {k: nm + FAR for k, nm in (("listed", listed_n), ("listed padded", padded_n), ("ready", ready_n), ("ready padded", ready_padded_n))}
+    for nm in (*one_names.values(), *far_names.values()):
+        assert nm in rows[132] and nm in rows[1], f"lab page: the record holds no row {nm!r}"
+    ob = {k: {n: w(n, nm) for n in (1, 132)} for k, nm in one_names.items()}
+    fr = {k: {n: w(n, nm) for n in (1, 132)} for k, nm in far_names.items()}
+    assert all(exact(nm) for nm in far_names.values()), "lab page: a pass-ahead row is not exact"
+    assert not any(one_names[k] not in one_block for k in ob), "lab page: a one-block row is checked"
+    cached_same = all(against(ob[k][132], fm[k][132])[1] == "the same as" for k in ("listed", "listed padded"))
+    assert cached_same, "lab page: a listed one-block row moved at the full grid"
+    ob_text = (
+        f"(j) THE PACKETS CACHED AT THE FULL GRID. The one-block rows: every CTA reads one block's reader packets, which the cache then holds at any grid; their outputs "
+        f"are that block's readers' and the rows are not checked. At {sms} CTAs each against its own-packets row: the listed readout {g(ob['listed'][132])} against {g(fm['listed'][132])} "
+        f"({more(ob['listed'][132], fm['listed'][132])}); the ready form {g(ob['ready'][132])} against {g(fm['ready'][132])} ({more(ob['ready'][132], fm['ready'][132])}); "
+        f"the listed form on the padded packets {g(ob['listed padded'][132])} against {g(fm['listed padded'][132])} ({more(ob['listed padded'][132], fm['listed padded'][132])}); "
+        f"the ready form on the padded packets {g(ob['ready padded'][132])} against {g(fm['ready padded'][132])} ({more(ob['ready padded'][132], fm['ready padded'][132])}). "
+        f"WHAT THEY SHOW AND NOTHING BEYOND: with the packets cached at the full grid the listed row does not move ({g(ob['listed'][132])} against {g(fm['listed'][132])}, "
+        f"{against(ob['listed'][132], fm['listed'][132])[1].removesuffix(' as')} within {pct(SAME)}; on the padded packets {g(ob['listed padded'][132])} against {g(fm['listed padded'][132])}, "
+        f"{against(ob['listed padded'][132], fm['listed padded'][132])[1].removesuffix(' as')}), so the listed forms' growth from one CTA to {sms} ({pct(gap['listed'])}, "
+        f"{pct(gap['listed padded'])} on the padded packets) is not their packets' loads being cold; the ready form's rows move by the figures stated "
+        f"({more(ob['ready'][132], fm['ready'][132])}, {more(ob['ready padded'][132], fm['ready padded'][132])} on the padded packets)."
+    )
+
+    def adding(n, nm):
+        win, states, _ = role_states(n, nm)
+        return states["drain"]["adding"], states["drain"].get("waits on panel # filled", 0.0), win
+
+    dl132, dl132w, _ = adding(132, listed_n + FINE)
+    df132, df132w, _ = adding(132, far_n + FINE)
+    dl1, dl1w, _ = adding(1, listed_n + FINE)
+    assert df132 < dl132, "lab page: the pass-ahead drain is not less busy than the listed drain at the full grid"
+    far_text = (
+        f"THE DRAIN'S LINES A PASS AHEAD (the drain loads a group's lines a pass ahead, a set of lines a group of the pass, where the listed form loads them a group ahead): "
+        f"the listed row against its pass-ahead row, at {sms} CTAs {g(fm['listed'][132])} and {g(fr['listed'][132])} ({more(fr['listed'][132], fm['listed'][132])}), at one CTA "
+        f"{g(fm['listed'][1])} and {g(fr['listed'][1])} ({more(fr['listed'][1], fm['listed'][1])}); on the padded packets, at {sms} CTAs {g(fm['listed padded'][132])} and "
+        f"{g(fr['listed padded'][132])} ({more(fr['listed padded'][132], fm['listed padded'][132])}), at one CTA {g(fm['listed padded'][1])} and {g(fr['listed padded'][1])} "
+        f"({more(fr['listed padded'][1], fm['listed padded'][1])}); every row exact. From the every-stamp rows (CTA {scope132}, cycles a window a warp, the drain's \"adding\"): "
+        f"the listed row at {sms} CTAs {g(dl132)}, the pass-ahead row at {sms} CTAs {g(df132)}, the listed row at one CTA {g(dl1)}: the pass-ahead drain's busy time at {sms} CTAs "
+        f"is {g(abs(df132 - dl1))} cycles {'over' if df132 > dl1 else 'under'} the listed drain's at one CTA, {g(dl132 - df132)} under the listed drain's at {sms} CTAs "
+        f"(its wait on a panel filled {g(df132w)} against {g(dl132w)} and, at one CTA, {g(dl1w)}), while the window moves by {more(fr['listed'][132], fm['listed'][132])} (the plain rows): the drain "
+        "was stalled on its lines at the full grid and was not what bound the window."
+    )
+    ready_far_text = (
+        f"READY OFFSETS A PASS AHEAD (registers 176 / 104 / 56 a thread, the folds, the readout, the drain: the readout's 8 registers a thread moved to the drain; no traced row, its stamped kernels spill): "
+        f"at {sms} CTAs {g(fr['ready'][132])} against the listed row's {g(fm['listed'][132])} ({more(fr['ready'][132], fm['listed'][132])}), the ready form's {g(fm['ready'][132])} "
+        f"({more(fr['ready'][132], fm['ready'][132])}) and the listed pass-ahead row's {g(fr['listed'][132])} ({more(fr['ready'][132], fr['listed'][132])}); the fixed readout's {g(fm['fixed'][132])} "
+        f"({more(fr['ready'][132], fm['fixed'][132])}). At one CTA {g(fr['ready'][1])} against the listed row's "
+        f"{g(fm['listed'][1])} ({more(fr['ready'][1], fm['listed'][1])}), the ready form's {g(fm['ready'][1])} ({more(fr['ready'][1], fm['ready'][1])}: slower than the ready form alone, "
+        f"as measured, with 8 registers a thread moved from the readout to the drain) and the fixed readout's {g(fm['fixed'][1])} ({more(fr['ready'][1], fm['fixed'][1])}). "
+        f"On the padded packets {g(fr['ready padded'][132])} and {g(fr['ready padded'][1])} (at {sms} CTAs and at one CTA) against the ready form's {g(fm['ready padded'][132])} and {g(fm['ready padded'][1])}. "
+        f"OPEN: why the listed forms slow with the grid beyond the drain's stall (the one-block rows leave the listed form's {pct(gap['listed'])} from one CTA to {sms} where it was, and the pass-ahead row, which takes the drain's busy time at {sms} CTAs "
+        f"to about its one-CTA figure, moves the window by {more(fr['listed'][132], fm['listed'][132])}); where the listed readout's instructions are (the static counts, above, are "
+        "the compiled loops' sizes and no row prices them)."
+    )
+    far_all = f"{ob_text} {far_text} {ready_far_text}"
+
+    # ---- the readout's pass by phases: the two kSplitRead rows at the full grid, CTA 0
+    split_fixed = fixed_n + COARSE_SUF + DETAILS[1][0] + DETAILS[3][0] + SPLIT_READ
+    split_far = far_n + COARSE_SUF + DETAILS[1][0] + DETAILS[3][0] + SPLIT_READ
+    for nm in (split_fixed, split_far):
+        assert nm in rows[132], f"lab page: the record holds no row {nm!r}"
+        assert plain_of(nm) in rows[132], f"lab page: the row {nm!r} has no plain twin"
+    phase_keys = ("expanding", "at its coefficients' barrier", "issuing steps", "after its steps' issue", "storing the panel",
+                  "waits on tile group # published", "waits on panel # drained")
+    st_f_win, st_f, sc_f = role_states(132, split_fixed)
+    st_l_win, st_l, _ = role_states(132, split_far)
+    for st in (st_f, st_l):
+        assert all(k in st["readout"] for k in phase_keys), f"lab page: a readout state is missing in {sorted(st['readout'])}"
+
+    def states_line(st):
+        return ", ".join(f"{k} {g(st['readout'][k])}" for k in phase_keys)
+
+    diffs = ", ".join(f"{k} {st_l['readout'][k] - st_f['readout'][k]:+,.0f}" for k in phase_keys)
+    split_text = (
+        f"THE READOUT'S PASS BY PHASES (the two rows with the readout's pass stamped by phases and the waits on the tile groups published and the panels drained, at {sms} CTAs, CTA {sc_f}; "
+        f"`bazel run //tools:lab -- trace carry_token --record measure/lab/results/carry_token/sm_90a.blocks{sms}.json --row \"the readout's pass by phases stamped$\"`): "
+        f"the fixed readout, the row's window {g(w(132, split_fixed))} cycles ({g(st_f_win)} in CTA {sc_f}'s steady span; its unstamped row {g(twin(split_fixed, 132))}, "
+        f"{more(w(132, split_fixed), twin(split_fixed, 132))}), the readout in cycles a window a warp: {states_line(st_f)}; "
+        f"the listed readout with the drain's lines a pass ahead, the row's window {g(w(132, split_far))} cycles ({g(st_l_win)} in the steady span; its unstamped row {g(twin(split_far, 132))}, "
+        f"{more(w(132, split_far), twin(split_far, 132))}), the readout: {states_line(st_l)}. "
+        f"THE DIFFERENCE, the listed readout minus the fixed readout, in cycles a window a warp: {diffs}. "
+        "These rows' stamps cost several hundred cycles a window (the windows above against their unstamped rows'), so the differences are what read, not the states' own figures."
     )
 
     # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants
@@ -606,7 +713,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
     grouping = (
         "THE GROUPED FOLD (a group's tokens once, a step 16 tokens' value lines against a tile of 16 tokens by four digits' 64 columns), cycles a window "
-        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}\n- {loop_text}\n- {table_text}\n- {listed_text}"
+        f"a CTA at {sms} CTAs unless said, {'every row exact' if exact_group else 'NOT every row exact'}:\n- {col_text}\n- {sixteen}\n- {waste}\n- {run_time}\n- {pair_text}\n- {counted_text}\n- {loop_text}\n- {table_text}\n- {listed_text}\n- {far_all}"
     )
 
     # ---- rows of the experiment the record does not hold yet
@@ -657,7 +764,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     dates = f"{one['date'][:10]} {one['date'][11:16]} and {full['date'][11:16]} UTC" if one["date"][:10] == full["date"][:10] else f"{one['date'][:10]} and {full['date'][:10]} UTC"
     text = f"""MEASURED ({card(instance, full["device"], sms)}, driver {full["driver"]}, toolkit {toolkit}, the clock locked; {dates} (the one-CTA and the full-grid records), the
 experiment at {sha}, {full["reps"]} repetitions; the labels name the boxes of the two records, which hold no box's id; the {checked} checked rows pass at one CTA
-and at {sms}{f", the {len(isolation)} isolation rows are unchecked (their kernels are not the carry's)" if isolation else ""}; `sm_90a.blocks1.json` and `sm_90a.blocks{sms}.json`, each with its traced rows' records beside it). {UNIT[0].upper() + UNIT[1:]}:
+and at {sms}{f", the {len(isolation)} isolation rows are unchecked (their kernels are not the carry's)" if isolation else ""}{f"{' and' if isolation else ','} the {len(one_block)} one-block rows are unchecked for their own reason (every CTA reads block 0's reader packets, so its outputs are that block's readers' and the state is not the grid's: they are not isolation rows)" if one_block else ""}; `sm_90a.blocks1.json` and `sm_90a.blocks{sms}.json`, each with its traced rows' records beside it). {UNIT[0].upper() + UNIT[1:]}:
 
 {table}
 
@@ -671,6 +778,8 @@ WHAT IT DECIDES. {grid} {layout} {fold_text} {read_side} {marks_text}
 {not_here}
 
 {timelines_text}
+
+{split_text}
 
 THE PHASES, in each role's own window of the coarse row's record at {sms} CTAs (CTA {scope132}), cycles:
 - the fold: image {g(image)}, fill {g(fill)}, steps {g(steps)}.
