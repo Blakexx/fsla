@@ -10,6 +10,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
+load("//bazel:arms.bzl", "ARM_FAMILIES")
 load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
@@ -54,8 +55,9 @@ fsla_extension(
         "//tests:__pkg__",
     ],
     deps = [
-        "//csrc/fsla:decode_declarations",
-        "//csrc/fsla:entmax_units",
+        "//csrc/fsla:%s_declarations" % family
+        for family in ARM_FAMILIES
+    ] + [
         "//csrc/fsla:registration",
         "//csrc/fsla:runtime",
         "//csrc/fsla:stamp_unit",

@@ -1,0 +1,32 @@
+{
+  "facts": [
+    {
+      "name": "width",
+      "type": "int",
+      "unit": "columns of a level",
+      "read": "CALL",
+      "doc": "the width of the launch's level, a real width: the matcher pads it to the width class that selects the arm (common/plan/entmax_launch.h)"
+    },
+    {
+      "name": "levels",
+      "type": "int",
+      "unit": "levels of one launch",
+      "read": "CALL",
+      "doc": "the levels one launch solves, one CTA row of the grid each; they share one width class"
+    },
+    {
+      "name": "logit_dtype",
+      "type": "int",
+      "unit": "0 fp32, 1 bf16",
+      "read": "CALL",
+      "doc": "the element type of the logit plane the solve reads (or, for a backward, the logit gradient it writes)"
+    },
+    {
+      "name": "value_dtype",
+      "type": "int",
+      "unit": "0 fp32, 1 bf16",
+      "read": "CALL",
+      "doc": "the element type of the route values the solve writes (or, for a backward, reads)"
+    }
+  ]
+}

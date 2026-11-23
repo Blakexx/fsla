@@ -1,0 +1,41 @@
+{
+  "name": "call",
+  "doc": "the call's contract of the independent entmax VJP (`factor_backward_kernel`, csrc/fsla/src/entmax/factor.cu): every width, both alphas where the kernel has one, the four dtype pairs and 1 to 16 levels. A list is alternatives, each its own context; a range is one context.",
+  "facts": {
+    "width": {
+      "value": {
+        "lo": 1,
+        "hi": 256
+      },
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: every width from 1 (topology states a level width from 1, fsla/routing/topology.py) up to MAX_BRANCH_WIDTH 256 is served by the arm of its padded width class"
+    },
+    "levels": {
+      "value": {
+        "lo": 1,
+        "hi": 16
+      },
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: one launch solves from 1 up to 16 levels, the level table's size; a deeper topology issues a second launch"
+    },
+    "alpha_tenths": {
+      "value": [
+        15,
+        20
+      ],
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the entmax exponents FSLA's activation registry holds are 1.5 and 2.0 (fsla/routing/activations.py), each its own context"
+    },
+    "logit_dtype": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the logit plane is fp32 or bf16"
+    },
+    "value_dtype": {
+      "value": {
+        "lo": 0,
+        "hi": 1
+      },
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the route values are fp32 or bf16, independently of the logits"
+    }
+  }
+}

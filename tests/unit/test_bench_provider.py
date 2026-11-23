@@ -30,6 +30,7 @@ def binary(monkeypatch):
     tables = SimpleNamespace(decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     declared_decode = tuple(tables.decode)
     monkeypatch.setattr(decode, "arms", lambda: tuple(tables.decode))
+    monkeypatch.setattr(provider, "_carried", lambda family: tuple(tables.decode))
     monkeypatch.setattr(provider, "_declared_families", lambda: ["decode"])
     monkeypatch.setattr(provider, "_declared", lambda family: declared_decode)
     #: a full-contract build's record, planted as the tables are

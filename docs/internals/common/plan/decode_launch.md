@@ -7,7 +7,7 @@ parameters carry. The three parts are composed from three functions and stay str
   and `decay`, so it is evaluable and exact over the contract's RANGES ([`rules.md#exact`](rules.md#exact)): the arms the descriptor can reach, and `gap` when some point
   of it reaches no arm. `decode_arm(const DecodeDescriptor&)` is the arm of a point, the same walk: over a point exactly one leaf (compile-time facts in `rules.h`). The Hopper
   build (`cc` 900) serves a call's `d_v` with the narrowest arm that holds it (`kDecodeArmWidths`, 32 and 64: `d_v` 1 to 32 reach the 32 arm,
-  33 to 64 the 64 arm), one to four `levels`, `decay` 0 or 1: sixteen arms. `arms_gen` ([`../../decode/arms_gen.md`](../../decode/arms_gen.md))
+  33 to 64 the 64 arm), one to four `levels`, `decay` 0 or 1: sixteen arms. `arms_gen` ([`arms_gen.md`](arms_gen.md))
   walks it over every context of the contract to collect the arms and to fail the build on a gap.
 - `decode_args(const DecodeDescriptor&, const DecodeArm&)` is the ARGS half, computed from EXACT values only and never evaluated over a range (a range
   aborts): the compute capability of the build to launch, the CTA's threads (`decode_threads(regs_per_sm)`, the register file over `kDecodeRegsPerThread`, the one
@@ -17,16 +17,12 @@ parameters carry. The three parts are composed from three functions and stay str
   holds it, so the padding is the launch function's, not a second law beside it), the device's SMs, and what the call states of its levels:
   each level's width (`widths`, `1 << width_bits_k` for a level the call has, 0 beyond its `levels`), its offset into the flattened per-level rows
   (`row_offsets`, the prefix sums of the widths) and `write_dense` (whether the step deposits whole atoms: DERIVED here, 1 when the innermost level's `write_listed_k` fact is 0).
-- `decode_layout(const DecodeArm&, const DecodeArgs&)` is the LAYOUT half: the lattice's box of the level widths, solved by `lattice_solve` ([`lattice.md`](lattice.md): C++ owns the lattice), and every field the step
-  derives from it and the widths. `DecodeLayout` holds `lat_k`, `lat_m`, the per-level owner spans `lat_s` and grids `lat_g`, the grid suffix products `lat_gsuf`, the span bit counts `lat_sbits`, the run shifts
-  `lat_run_shift`, the leaf bits of an owner `lat_local_bits`, of its unit `lat_inner_bits` and the rest `lat_outer_bits`, the unit's shifts `lat_oshift`, `atoms_per_unit_shift` and
-  `lat_units_per_atom_shift` (the atom's reconciliation with the unit), the word layout of the digit masks (`mask_off`, `mask_words`, `mask_total`), of the compacted owner lists (`olist_off`, `olist_total`)
-  and of the write side's digit lists (`dlist_off`, `dlist_total`); `write_atoms` (the write walks whole atoms: `write_dense` and a unit of at least an atom), `owner_holds_atom` (an owner holds at least one
-  atom, which a paged backing needs), the `leaves`, the `total_rows`, the `unit_ceiling` (`leaves / lat_s[D-1]`, the units a head supplies the grid), and the step's shared memory `smem_bytes`
-  (`decode_smem_bytes`: the staged amplitudes, the value, each warp's fold row and the tables) with whether it `fits` the budget. Every array is 0 beyond the call's levels. The refusals the layout
-  implies are this header's, in one set of words: `decode_smem_refusal` (the step's shared memory over the budget, a declared capacity refused loudly rather than taken as a slower path) and
-  `decode_paged_refusal` (a paged backing under an owner that holds less than one atom); the host throws them, the matcher words them. `decode.cu`'s `fill_lattice` copies the layout into the
-  step's parameters and derives nothing.
+- `decode_layout(const DecodeArm&, const DecodeArgs&)` is the LAYOUT half, and it is the matcher's because the lattice's law is launch logic: how the level widths fall into the
+  box the step walks (`lattice_solve`, [`lattice.md`](lattice.md): C++ owns the lattice) is a distillation of the call's facts into what to launch, which is what a matcher holds
+  ("anything that has any kind of logic for that mapping should be in a matcher", the owner, 2026-11-23). So the matcher returns the layout whole and `decode.cu`'s `fill_lattice` copies it into
+  the step's parameters and derives nothing; the fields, and what each is the step's parameter of, are `DecodeLayout`'s in the header. The refusals the layout implies are this header's,
+  in one set of words: `decode_smem_refusal` (the step's shared memory over the budget, a declared capacity refused loudly rather than taken as a slower path) and `decode_paged_refusal` (a
+  paged backing under an owner that holds less than one atom); the host throws them, the matcher words them.
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)). The host passes the layout's `unit_ceiling`.

@@ -8,7 +8,7 @@ torch's C shim) and `torch/headeronly/` (the dtype enum, `IntHeaderOnlyArrayRef`
 `csrc/fsla` includes `torch/extension.h`, ATen or c10, so the binary does not depend on torch's C++ ABI and one build
 loads under every torch from `tools/build_flags.py`'s `TORCH_MIN` on ([`../fsla_api.md`](../fsla_api.md),
 [`docs/build.md`](../../build.md#stable-abi)). A header that needs only the refusal macro
-(`common/arm_switch.cuh`, `dispatch_switch.cuh`) includes `torch/headeronly/util/Exception.h` itself, so a host-only
+(`common/arm_switch.cuh`) includes `torch/headeronly/util/Exception.h` itself, so a host-only
 probe of it compiles without the CUDA runtime headers.
 
 | name | what it is |

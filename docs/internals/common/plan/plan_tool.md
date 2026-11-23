@@ -1,9 +1,9 @@
 # `plan_tool` (`csrc/fsla/src/common/plan/plan_tool.cpp`)
 
-The planner ([`planner.md`](planner.md)) and a kernel's launch function on a synthetic environment: the kernel (`--kernel decode` or `--kernel prefill`), the
+The planner ([`planner.md`](planner.md)) and a kernel's launch function on a synthetic environment: the kernel (`--kernel decode`, `--kernel prefill` or one of the six entmax kernels), the
 device's facts and the call's given on the command line, no GPU. For decode ([`decode_launch.md`](decode_launch.md)) it prints the descriptor, the arm and its arguments, the launch's layout (the `lattice:` line, `k m bc owners spans grids`, then `unit:`, `tables:` and `step:` lines: the unit's bits, the tables' sizes, the leaves, rows, unit ceiling, shared-memory bytes and whether they fit the budget) (and the grid, given a
-unit ceiling, the batch times heads and a forced count); for the prefill ([`prefill_launch.md`](prefill_launch.md)) the descriptor, or with `--carve json` the carve. A refusal goes to stderr, exit 1. `//csrc/fsla:plan_tool` is its target;
-`tests/unit/test_planner.py` drives it with devices of other SM counts in range, a count and facts out of range, and calls outside the contract.
+unit ceiling, the batch times heads and a forced count); for the prefill ([`prefill_launch.md`](prefill_launch.md)) the descriptor, or with `--carve json` the carve. For an entmax kernel ([`entmax_launch.md`](entmax_launch.md)) it prints the descriptor, the arm (`lw`, `ipt`, `alpha15` where the kernel has one, `logit`, `value`) and the launch (`klass`, `levels`); `--call` takes several calls, `;` between them, each printed in turn, and `--widths w,...` holds the launch's levels to its one width class (`class: one`, or the refusal). A refusal goes to stderr, exit 1. `//csrc/fsla:plan_tool` is its target;
+`tests/unit/test_entmax_matcher.py` drives the entmax kernels with every width, both alphas and the four dtype pairs; `tests/unit/test_planner.py` drives it with devices of other SM counts in range, a count and facts out of range, and calls outside the contract.
 
     plan_tool --kernel decode --device cc=900,regs_per_sm=65536,smem_per_sm=233472,smem_per_cta_optin=232448,max_threads_per_sm=2048,sm_count=120 \
               --call d_v=48,levels=3,decay=1,batch_heads=1,width_bits_1=4,... [--model <text>] [--grid unit_ceiling=256,bh=64,forced=-1]

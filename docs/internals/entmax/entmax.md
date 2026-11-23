@@ -199,14 +199,29 @@ and `production.py`'s `_Plan` is what groups a walk into those launches.
 how the `WarpScan` associates the prefix sums. Running a width-3 level in a width-64 arm
 would therefore round `tau` differently in fp32 and could move a support boundary — it
 would not be the loop it replaces. Widths INSIDE a class may differ freely; the kernel
-reads each level's own `width` from the table. `build_table` refuses a mixed-class table
-rather than padding to the largest.
+reads each level's own `width` from the table. The matcher refuses a mixed-class launch
+(`entmax_class_refusal`, `build_table` raises it) rather than padding to the largest.
 
 That this is exactly the loop is gated, at `rtol = 0`:
 `test_the_batched_solve_is_the_per_level_loop_bit_for_bit` runs four levels of one class
 as one launch and as four, and asserts `torch.equal` on values, second output, midpoints
-and support words. The launch itself is written once, the `(lane width, items per thread)` pair derived from the
-padded width inside it ([`dispatch_switch.md#one-launch`](../dispatch_switch.md#one-launch)).
+and support words. The launch itself is written once, per kernel: the matcher (`common/plan/entmax_launch.h`,
+[`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the call's facts to the arm, and `arm_switch` over the kernel's
+generated arm set ([`../common/arm_switch.md`](../common/arm_switch.md)) selects the instantiation `launch_*_at<Bt, LW, IPT, ALPHA15, LogitT, OutT>`
+names.
+
+<a id="the-contract"></a>**The contract: one registry for each kernel.** "A kernel is a thing that has compiled arms that we run, the
+descriptors describe the public contract that enters into those arms, the matchers map that contract to arms" (the owner, 2026-11-23), and asked whether the
+six kernels share one registry or each has its own: "One per kernel". So `union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward` and `softmax_backward`
+each have `hardware/kernels/<kernel>/` (`schema.json`, `parts/call.json`, `descriptors/hopper_<kernel>.json`), whose facts are the call's, in the caller's terms:
+`width` (1 to 256: every width the topology states, from 1 up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
+has no scalar enum type, so alpha is an exact integer code; absent from the two softmax kernels), `logit_dtype` and `value_dtype` (0 fp32, 1 bf16 each, all four pairs). The contract states
+exactly what the kernels serve; a call outside it is refused naming the fact and the nearest context's range. The matcher
+([`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the contract to the arm, so the instantiations are generated from it: 8 width classes, 2 alphas and 4 dtype pairs are
+64 arms of each kernel with an alpha, 8 classes and 4 dtype pairs the 32 of each softmax kernel (`ARM_FAMILIES`, one family for each kernel; [`../../build-graph.md#arms`](../../build-graph.md#arms)).
+The SASS gate holds every arm to be carried exactly once, and each arm keeps what its SASS shows of the two rules the solves predate (`csrc/fsla/src/entmax/arms.bzl`).
+The public surface's own limits stay its own: the activation registry's alpha rows and the topology's branch width limit are validated at the surface, and
+`tests/unit/test_entmax_matcher.py` ties each to the contracts' ranges.
 
 <a id="check-logits"></a><a id="checklogits"></a>Two dtype axes meet in one call, the logit plane's and the route
 values': bf16 on the shipped path (the router GEMM's bf16 output), fp32 on the gates that want the solve's
@@ -254,7 +269,7 @@ unchanged.
 
 <a id="rowsort"></a>Phase B needs one token's row in descending order. `RowSort<LW, IPT>::sort` is the ONE
 entry point; which network it lowers to is decided by the WIDTH CLASS at compile time —
-the same axis `int_switch` already derives `(LW, IPT)` from, so this is not a new
+the same axis the matcher derives `(LW, IPT)` from, so this is not a new
 dispatch axis, it is the existing one.
 
 | `W_PAD` | `IPT` | network | why |

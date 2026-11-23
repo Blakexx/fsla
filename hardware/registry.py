@@ -601,6 +601,8 @@ struct Kernel {{
 
   static constexpr bool is_set(std::string_view fact) {{ return ::{ns}::is_set(fact); }}
 
+  static constexpr int member_of(std::string_view fact, std::string_view member) {{ return ::{ns}::member_of(fact, member); }}
+
   static const std::vector<ContractContext<Descriptor>>& contract() {{ return ::{ns}::contract(); }}
 
   static const std::vector<OwedContext<Descriptor>>& owed() {{ return ::{ns}::owed(); }}

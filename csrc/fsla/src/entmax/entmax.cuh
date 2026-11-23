@@ -17,6 +17,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include "common/torch_seam.cuh"
@@ -30,6 +32,7 @@
 #include <cuda_bf16.h>
 
 #include "common/hardware.cuh"
+#include "plan/entmax_launch.h"
 #endif
 
 namespace fsla {
@@ -368,7 +371,7 @@ __device__ __forceinline__ void union_write(const float (&values)[IPT], float (&
 }
 
 //: THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448 -- see docs/internals/entmax/entmax.md#max-batched-levels
-constexpr int MAX_BATCHED_LEVELS = 16;
+constexpr int MAX_BATCHED_LEVELS = ::fsla::plan::kEntmaxMaxLevels;
 
 struct LevelTable {
   int64_t logit_off[MAX_BATCHED_LEVELS];
@@ -406,31 +409,22 @@ T* ptr_or_null(const std::optional<Tensor>& t) {
   return t.has_value() ? (T*)t->data_ptr() : nullptr;
 }
 
-//: The padded width is what selects the `(lane width, items per thread)` pair, and every -- see docs/internals/entmax/entmax.md#paddedwidth
-inline int padded_width(int width) {
-  int w = 1;
-  while (w < width) w <<= 1;
-  return w < 2 ? 2 : w;
-}
-
+//: THE LEVEL TABLE of a launch the matcher has accepted (its levels within `MAX_BATCHED_LEVELS`) whose width class is `klass`: the offsets and widths
+//: copied, refused when the tables disagree or a level is of another class
 inline LevelTable build_table(const std::vector<int64_t>& logit_off,
                               const std::vector<int64_t>& value_off,
                               const std::vector<int64_t>& support_off,
-                              const std::vector<int64_t>& widths,
+                              const std::vector<int64_t>& widths, int klass,
                               const std::vector<int64_t>& midpoint_off = {}) {
   const int n = (int)widths.size();
-  STD_TORCH_CHECK(n > 0 && n <= MAX_BATCHED_LEVELS, "batched level count must be in [1, ",
-                  MAX_BATCHED_LEVELS, "], got ", n);
   STD_TORCH_CHECK((int)logit_off.size() == n && (int)value_off.size() == n,
                   "level offset tables must match the width table");
   STD_TORCH_CHECK(support_off.empty() || (int)support_off.size() == n,
                   "support offset table must match the width table");
-  const int klass = padded_width((int)widths[0]);
+  const std::string refusal = ::fsla::plan::entmax_class_refusal(widths, klass);
+  STD_TORCH_CHECK(refusal.empty(), refusal);
   LevelTable table{};
   for (int i = 0; i < n; ++i) {
-    STD_TORCH_CHECK(padded_width((int)widths[i]) == klass,
-                    "a batched solve must be one width class; level ", i, " has width ", widths[i],
-                    " against class ", klass);
     table.logit_off[i] = logit_off[i];
     table.value_off[i] = value_off[i];
     table.support_off[i] = support_off.empty() ? 0 : support_off[i];
@@ -449,30 +443,33 @@ namespace detail {
 //: THE LOGIT PLANE IS bf16 ON THE SHIPPED PATH -- the router GEMM runs bf16 operands on -- see docs/internals/entmax/entmax.md#checklogits
 inline void check_logits(const Tensor& logits) {
   STD_TORCH_CHECK(logits.is_cuda(), "routing logits must be CUDA");
-  STD_TORCH_CHECK(logits.scalar_type() == Dtype::Float || logits.scalar_type() == Dtype::BFloat16,
-                  "routing logits must be fp32 or bf16");
 }
 
-template <typename Body>
-inline void logit_value_switch(Dtype logit, Dtype value, Body&& body) {
-  STD_TORCH_CHECK(logit == Dtype::Float || logit == Dtype::BFloat16,
-                  "routing logits must be fp32 or bf16");
-  STD_TORCH_CHECK(value == Dtype::Float || value == Dtype::BFloat16,
-                  "route values must be fp32 or bf16");
-  if (logit == Dtype::Float) {
-    if (value == Dtype::Float)
-      body(float{}, float{});
-    else
-      body(float{}, __nv_bfloat16{});
-  } else {
-    if (value == Dtype::Float)
-      body(__nv_bfloat16{}, float{});
-    else
-      body(__nv_bfloat16{}, __nv_bfloat16{});
-  }
+//: A PLANE'S DTYPE as the code the contract states (`plan/entmax_launch.h`), and the code's type in an arm's body
+inline int dtype_code(Dtype dtype) {
+  if (dtype == Dtype::Float) return ::fsla::plan::kEntmaxFp32;
+  return dtype == Dtype::BFloat16 ? ::fsla::plan::kEntmaxBf16 : ::fsla::plan::kEntmaxNoDtype;
+}
+
+template <int CODE>
+using DtypeOfCode = std::conditional_t<CODE == ::fsla::plan::kEntmaxFp32, float, __nv_bfloat16>;
+
+//: the width the call's facts state: its first level's, 0 for a call with no level
+inline int64_t first_width(const std::vector<int64_t>& widths) {
+  return widths.empty() ? 0 : widths[0];
 }
 }  // namespace detail
 #endif  // __CUDACC__
+
+//: THE LEVEL BOUND and THE WIDTH CLASS the matcher states, for the host: no device
+int64_t max_levels();
+
+int64_t width_class(int64_t width);
+
+//: THE ARMS THIS BINARY CARRIES, a row each: `[lw, ipt, alpha15, logit, value]`, the dtypes as the contract's codes
+std::vector<std::vector<int64_t>> union_forward_arms();
+
+std::vector<std::vector<int64_t>> union_backward_arms();
 
 //: ONE LAUNCH, MANY LEVELS: the entries take BASE tensors plus per-level COLUMN -- see docs/internals/entmax/entmax.md#union-forward
 void union_forward(const Tensor& read_logits, const Tensor& write_logits, Tensor& midpoint_values,

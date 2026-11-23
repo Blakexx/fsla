@@ -86,7 +86,7 @@ def _declared(family: str) -> tuple:
 
 def _declared_families() -> list[str]:
     """The families this tree declares: `ARM_FAMILIES` in `bazel/arms.bzl`, the one registry (a literal read by AST), each
-    answering what the binary carries through its op module (`fsla.ops.<family>`)."""
+    answering what the binary carries through its own op (`fsla_<family>_arms`)."""
     from tools.arm_families import arm_families
 
     return sorted(arm_families(CHECKOUT))
@@ -114,12 +114,17 @@ def _refuse_an_iteration_binary() -> None:
                            "(`bazel run //:library`, no --//:contract)")
 
 
-def _refuse_a_partial_binary() -> None:
-    import importlib
+def _carried(family: str) -> tuple:
+    """The arms THIS BINARY carries for `family`, as its own op reports them (`fsla_<family>_arms`, the op the build's arm gate asks)."""
+    from fsla.ops._ext import extension
 
+    return tuple(tuple(int(x) for x in row) for row in getattr(extension(), f"fsla_{family}_arms")())
+
+
+def _refuse_a_partial_binary() -> None:
     for family in _declared_families():
         declared = {tuple(int(x) for x in row) for row in _declared(family)}
-        built = {tuple(int(x) for x in arm) for arm in importlib.import_module(f"fsla.ops.{family}").arms()}
+        built = {tuple(int(x) for x in arm) for arm in _carried(family)}
         if declared - built:
             raise RuntimeError(f"this binary carries the {family} arms {sorted(built)} and lacks the declared arms "
                                f"{sorted(declared - built)}: a binary that lacks arms this tree declares (a stale or "

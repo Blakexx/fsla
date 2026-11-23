@@ -7,7 +7,7 @@ load("//bazel:arms.bzl", "ARM_FAMILIES", "arm_family")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "census_test", "include_root", "fsla_headers", "tool_test", "tree_part", "tree_test", "unit_lint_test", "unit_sass", "with_contract")
 load(":src/decode/arms.bzl", "DECODE_DECLARATIONS", "DECODE_KERNEL", "DECODE_KEY")
-load(":src/entmax/declarations.bzl", "ENTMAX_DECLARATIONS")
+load(":src/entmax/arms.bzl", "ENTMAX_DECLARATIONS", "ENTMAX_FAMILIES", "ENTMAX_INCLUDER", "ENTMAX_KERNEL", "ENTMAX_KEYS", "ENTMAX_SPELLINGS")
 load(":units.bzl", "RUNTIME_UNITS")
 
 package(default_visibility = ["//visibility:public"])
@@ -98,21 +98,9 @@ cuda_unit(
     deps = _DEPS,
 )
 
-#: the producer's solves, whose kernels keep what they predate the checker's rules with (`src/entmax/declarations.bzl`), declared beside them
-_ENTMAX_UNITS = ["src/entmax/entmax.cu", "src/entmax/factor.cu"]
-
-cuda_unit(
-    name = "entmax_units",
-    srcs = _ENTMAX_UNITS,
-    copts = NVCC_FLAGS,
-    declarations = ENTMAX_DECLARATIONS,
-    host_cc = _HOST_CC,
-    deps = _DEPS,
-)
-
 cuda_unit(
     name = "units",
-    srcs = [unit for unit in glob(["src/**/*.cu"]) if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS and unit not in _ENTMAX_UNITS],
+    srcs = [unit for unit in glob(["src/**/*.cu"]) if unit != _STAMP_UNIT and unit not in RUNTIME_UNITS],
     copts = NVCC_FLAGS,
     host_cc = _HOST_CC,
     deps = _DEPS,
@@ -140,18 +128,20 @@ cc_library(
     hdrs = glob(["src/common/plan/*.h"]),
     includes = ["src/common"],
     deps = [
-        "//hardware:decode_contract",
-        "//hardware:decode_facts",
         "//hardware:prefill_contract",
         "//hardware:prefill_facts",
+    ] + [
+        "//hardware:%s_%s" % (family, part)
+        for family in ARM_FAMILIES
+        for part in ("contract", "facts")
     ],
 )
 
-#: DECODE'S ARM GENERATOR: the matcher evaluated over the whole contract. It writes the rows file `arm_family` instantiates and
-#: the selection record, and FAILS the build, naming the context, when a contract context reaches no arm (docs/internals/decode/arms_gen.md)
+#: THE ARM GENERATOR, one for every family: the family's matcher evaluated over the whole of its contract. It writes the rows file `arm_family` instantiates and
+#: the selection record, and FAILS the build, naming the context, when a contract context reaches no arm (docs/internals/common/plan/arms_gen.md)
 cc_binary(
-    name = "decode_arms_gen",
-    srcs = ["src/decode/arms_gen.cpp"],
+    name = "arms_gen",
+    srcs = ["src/common/plan/arms_gen.cpp"],
     additional_compiler_inputs = [_HOST_CC],
     copts = ["-std=c++20"],
     deps = [":plan_headers"],
@@ -166,16 +156,17 @@ cc_binary(
     deps = [":plan_headers"],
 )
 
-genrule(
-    name = "decode_plan",
-    srcs = ["//hardware:decode_contexts"],
+#: EACH FAMILY'S PLAN: its contract's contexts evaluated by the generator, the family's rows file and selection record
+[genrule(
+    name = "%s_plan" % family,
+    srcs = ["//hardware:%s_contexts" % family],
     outs = [
-        "decode_plan/decode_arm_rows.json",
-        "decode_plan/decode_selection_record.txt",
+        "%s_plan/%s_arm_rows.json" % (family, family),
+        "%s_plan/%s_selection_record.txt" % (family, family),
     ],
-    cmd = "$(execpath :decode_arms_gen) --contexts $(execpath //hardware:decode_contexts) --out-dir $(RULEDIR)/decode_plan",
-    tools = [":decode_arms_gen"],
-)
+    cmd = "$(execpath :arms_gen) --contexts $(execpath //hardware:%s_contexts) --out-dir $(RULEDIR)/%s_plan" % (family, family),
+    tools = [":arms_gen"],
+) for family in ARM_FAMILIES]
 
 #: THE NARROWED CONTRACT'S PLAN AND PLANNER (tests/unit/test_narrowed_contract.py): the same tool and planner built under a development contract
 with_contract(
@@ -199,6 +190,18 @@ arm_family(
     kernel = DECODE_KERNEL,
     key = DECODE_KEY,
 )
+
+#: THE PRODUCER'S SOLVES' FAMILIES, one for each kernel (`src/entmax/arms.bzl`): the arms the kernel's contract reaches, each held by the SASS gate to be carried once
+[arm_family(
+    name = family,
+    arms_file = ":%s_plan/%s_arm_rows.json" % (family, family),
+    built_archs = BUILT_ARCHS,
+    declarations = ENTMAX_DECLARATIONS[family],
+    includer = ENTMAX_INCLUDER[family],
+    kernel = ENTMAX_KERNEL[family],
+    key = ENTMAX_KEYS[family],
+    spellings = ENTMAX_SPELLINGS,
+) for family in ENTMAX_FAMILIES]
 
 cc_library(
     name = "registration",

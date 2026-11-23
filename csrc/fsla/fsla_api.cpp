@@ -140,6 +140,15 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "routing_softmax_backward(Tensor values, Tensor d_values, Tensor? d_values_second, Tensor(a!) d_logits, "
       "int[] logit_offsets, int[] value_offsets, int[] widths, bool accumulate, int heads) -> ()");
 
+  m.def("entmax_max_levels() -> int");
+  m.def("entmax_width_class(int width) -> int");
+  m.def("fsla_union_forward_arms() -> int[][]");
+  m.def("fsla_union_backward_arms() -> int[][]");
+  m.def("fsla_factor_forward_arms() -> int[][]");
+  m.def("fsla_factor_backward_arms() -> int[][]");
+  m.def("fsla_softmax_forward_arms() -> int[][]");
+  m.def("fsla_softmax_backward_arms() -> int[][]");
+
   // ---- the T=1 decode path -------------------------------------------------
   m.def(
       "fsla_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, "
@@ -194,6 +203,14 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("entmax_factor_backward", TORCH_BOX(&fsla::entmax::factor_backward));
   m.impl("routing_softmax_forward", TORCH_BOX(&fsla::entmax::softmax_forward));
   m.impl("routing_softmax_backward", TORCH_BOX(&fsla::entmax::softmax_backward));
+  m.impl("entmax_max_levels", TORCH_BOX(&fsla::entmax::max_levels));
+  m.impl("entmax_width_class", TORCH_BOX(&fsla::entmax::width_class));
+  m.impl("fsla_union_forward_arms", TORCH_BOX(&fsla::entmax::union_forward_arms));
+  m.impl("fsla_union_backward_arms", TORCH_BOX(&fsla::entmax::union_backward_arms));
+  m.impl("fsla_factor_forward_arms", TORCH_BOX(&fsla::entmax::factor_forward_arms));
+  m.impl("fsla_factor_backward_arms", TORCH_BOX(&fsla::entmax::factor_backward_arms));
+  m.impl("fsla_softmax_forward_arms", TORCH_BOX(&fsla::entmax::softmax_forward_arms));
+  m.impl("fsla_softmax_backward_arms", TORCH_BOX(&fsla::entmax::softmax_backward_arms));
   m.impl("fsla_decode_forward", TORCH_BOX(&fsla::decode::fsla_decode_forward));
   m.impl("fsla_decode_ledger_bind", TORCH_BOX(&fsla::decode::fsla_decode_ledger_bind));
   m.impl("fsla_decode_ledger_warps", TORCH_BOX(&fsla::decode::fsla_decode_ledger_warps));

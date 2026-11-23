@@ -39,14 +39,14 @@ separate claim from the capacity is [`decode.md`
 <a id="arm-subset"></a><a id="fsladecodearms"></a>**THE ARM LIST IS DATA, AND A BUILD COMPILES THE ARMS ITS CONTRACT REACHES.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, the arms
 `decode_reach` (`common/plan/decode_launch.h`) reaches over the contract (`hardware/`), which `arms_gen` writes as the rows of an
-arm family of `bazel/arms.bzl` ([`arms_gen.md`](arms_gen.md), [`../../build-graph.md#arms`](../../build-graph.md#arms)), so a BUILD that names a declared narrowed contract
+arm family of `bazel/arms.bzl` ([`arms_gen.md`](../common/plan/arms_gen.md), [`../../build-graph.md#arms`](../../build-graph.md#arms)), so a BUILD that names a declared narrowed contract
 (`--//:contract=decode_d32_l2`) compiles the arms that contract reaches and nothing else, through the generated
 `decode_selection.inc` that `decode.cu` alone includes
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
 resource, so this is what makes iterating on a few arms cost a few arms.
 
-**THE LAUNCH IS WRITTEN ONCE.** [`dispatch_switch.md`](../dispatch_switch.md) refuses
-the MACRO LADDER -- a `#define` per axis whose BODY restates the `<<<...>>>`. Decode selects through
+**THE LAUNCH IS WRITTEN ONCE.** The MACRO LADDER -- a `#define` per axis whose BODY restates the `<<<...>>>`, so an
+`N`-axis dispatch spells the launch `2^N` times inside an expansion the compiler cannot type-check -- is the form refused. Decode selects through
 `arm_switch<DecodeArmSet>` ([`../common/arm_switch.md`](../common/arm_switch.md)): the body receives an arm whose three
 fields are constants, the launch is a single generic lambda taking three `integral_constant`s, and no `<<<...>>>` is
 spelled twice.

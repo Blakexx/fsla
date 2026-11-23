@@ -232,7 +232,7 @@ The compiled key is the family's own:
 | decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, gather pass (designs, not built) | none: one instantiation each | every width, kind and offset, from the plan or the layout |
-| entmax solves | the padded width class, alpha, the operand dtypes | the level table |
+| entmax solves, each kernel its own family | the padded width class (its lane width and items a thread), alpha (not the softmax kernels), the two operand dtypes (`csrc/fsla/src/entmax/arms.bzl`) | the level table |
 
 The window `W`, the warp counts and the register budgets are constants. **Structure is branched on, never a
 statistic**: a CTA-uniform branch over a generated, declared set is legal with the four enforcement layers of

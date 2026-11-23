@@ -907,7 +907,7 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="fsladecodearms"></a>`fsla_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
 - <a id="note-l1083"></a>the two backings' validation: [`decode_api.md#paged-state`](decode_api.md#paged-state)
 - <a id="note-l1131"></a>the admission buffers: [`decode_api.md#the-step`](decode_api.md#the-step)
-- <a id="launch"></a>the one launch site: [`dispatch_switch.md#one-launch`](../dispatch_switch.md#one-launch)
+- <a id="launch"></a>the one launch site: [`../common/arm_switch.md`](../common/arm_switch.md)
 - <a id="rowsf16"></a>the rows' storage type: [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)
 - <a id="spanof"></a>`span_of`, the fold as an address: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)
 - <a id="span"></a>`Span`: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)

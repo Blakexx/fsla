@@ -28,7 +28,7 @@ load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration", "kernel_pattern")
 
 #: THE FAMILIES A BUILD SHIPS, each `arm_family`'d in `csrc/fsla/BUILD.bazel` with its declaration beside its kernel
 #: (`csrc/fsla/src/<family>/arms.bzl`): the build rules read this list and no other
-ARM_FAMILIES = ["decode"]
+ARM_FAMILIES = ["decode", "union_forward", "union_backward", "factor_forward", "factor_backward", "softmax_forward", "softmax_backward"]
 
 #: the tool every family's generated files come from (bazel/arm_emit.py), and the interpreter that runs it
 _EMIT_ATTRS = {
@@ -111,6 +111,8 @@ def _arm_declarations_impl(ctx):
             "--archs", ",".join(ctx.attr.archs_flag[BuildSettingInfo].value)]
     for d in ctx.attr.declarations:
         args += ["--declared", d]
+    if ctx.attr.spellings:
+        args += ["--spellings", ctx.attr.spellings]
     _emit(ctx, "declarations", ctx.file.rows, out, args, "Writing %s's arm declarations")
     return [
         CudaUnitInfo(units = depset(), declarations = depset(), declaration_files = depset([out])),
@@ -124,6 +126,7 @@ arm_declarations = rule(
         "rows": attr.label(mandatory = True, allow_single_file = True, doc = "the family's rows file"),
         "kernel": attr.string(mandatory = True, doc = "the arm's kernel pattern (`cuda.bzl`'s `kernel_pattern`), `@field@` standing for a template argument the emitter fills"),
         "declarations": attr.string_list(doc = "the family's declarations (`arm_declaration`), each as JSON"),
+        "spellings": attr.string(doc = "the spelling of each key field whose template argument is a type, JSON: `{field: [the type's name for value 0, for value 1, ...]}`"),
         "archs_flag": attr.label(default = "//:archs", providers = [BuildSettingInfo]),
     },
     provides = [CudaUnitInfo, CcInfo],
@@ -197,7 +200,7 @@ def _arm_source(name, i, row, arm_header, define, selection_header):
         ),
     )
 
-def arm_family(name, key, includer, built_archs, arms = None, domains = None, arms_file = None, unit = None, kernel = None, declarations = []):
+def arm_family(name, key, includer, built_archs, arms = None, domains = None, arms_file = None, unit = None, kernel = None, declarations = [], spellings = {}):
     """One kernel's arm family: its selection header, its Python table and, when `unit` is given, one translation unit
     per arm and built architecture.
 
@@ -216,6 +219,8 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
         and `@cc@` for the architecture (`bazel/cuda.bzl`'s `kernel_pattern`): `<name>_declarations` then holds each arm's exact pattern, which the SASS gate
         holds the binary to (every arm carried once), and the `declarations`.
       declarations: the family's declarations (`arm_declaration`), over the arms they select; they need `kernel`.
+      spellings: `{field: [spelling of value 0, of value 1, ...]}` for each key field whose template argument is a type (`float`, `__nv_bfloat16`), a code in
+        the key: the arm's pattern spells that argument as the type its value indexes, and the host maps the code back to the type in the arm's body.
     """
     if (arms == None) == (arms_file == None):
         fail("%s: the arms are literal rows (`arms`, `domains`) or a rows file (`arms_file`), one of them" % name)
@@ -246,6 +251,7 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
             rows = rows,
             kernel = kernel_pattern(kernel),
             declarations = [json.encode(d) for d in declarations],
+            spellings = json.encode(spellings) if spellings else "",
         )
     if unit == None:
         return

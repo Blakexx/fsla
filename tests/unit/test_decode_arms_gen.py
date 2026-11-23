@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 from hardware import registry  # noqa: E402
 
-TOOL = ROOT / "csrc" / "fsla" / "decode_arms_gen"
+TOOL = ROOT / "csrc" / "fsla" / "arms_gen"
 PLAN = ROOT / "csrc" / "fsla" / "decode_plan"
 
 #: every arm the contract reaches: each built value width at each depth and decay
@@ -111,7 +111,7 @@ def test_a_hole_only_some_points_of_a_range_fall_in_is_found_and_named(tmp_path,
 
 
 def test_a_context_missing_a_schema_fact_is_refused(tmp_path):
-    line = "hopper_decode d_v=32 levels=1 decay=0\tcc=900:900\td_v=32:32\tlevels=1:1\tdecay=0:0\n"
+    line = "# kernel: decode\nhopper_decode d_v=32 levels=1 decay=0\tcc=900:900\td_v=32:32\tlevels=1:1\tdecay=0:0\n"
     run, _ = _run(line, tmp_path)
     assert run.returncode == 1 and "states no value for the schema's fact" in run.stderr
 

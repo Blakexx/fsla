@@ -256,11 +256,13 @@ def arm_families() -> list[str]:
 
 
 def check_no_torch_in_arm_tus() -> list[str]:
-    """No torch include under any registered family's sources; and the ast-grep rule scans those same directories."""
+    """No torch include under any registered family's sources (the directory its `arms.bzl` declares it in: the producer's six solves share `entmax/`); and the ast-grep rule scans those same directories."""
     import yaml
 
     findings = []
-    dirs = [CSRC_FSLA / "src" / family for family in arm_families()]
+    families = arm_families()
+    dirs = [arms_bzl.parent for arms_bzl in sorted((CSRC_FSLA / "src").glob("*/arms.bzl"))
+            if any(re.search(rf"^{family.upper()}_KEY\s*=", arms_bzl.read_text(), re.MULTILINE) for family in families)]
     scoped = set(yaml.safe_load(TORCH_RULE.read_text())["files"])
     for directory in dirs:
         glob = f"{directory.relative_to(ROOT)}/**"

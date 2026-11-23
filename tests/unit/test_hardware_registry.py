@@ -59,8 +59,8 @@ def test_every_file_of_the_registry_holds_its_schema():
                 assert sum(k in record for k in registry.PROVENANCE) == 1
 
 
-def test_the_registry_holds_a_registry_a_kernel_and_the_prefill_fact_is_nowhere():
-    assert registry.kernels() == ["decode", "prefill"]
+def test_the_registry_holds_a_registry_each_kernel_and_the_prefill_fact_is_nowhere():
+    assert registry.kernels() == ["decode", "factor_backward", "factor_forward", "prefill", "softmax_backward", "softmax_forward", "union_backward", "union_forward"]
     assert tuple(registry.kernel_schema("decode")) == DECODE_CALL
     assert tuple(registry.kernel_schema("prefill")) == PREFILL_CALL
     assert "prefill" not in registry.schema() and not any("prefill" in registry.kernel_schema(k) for k in registry.kernels())
@@ -379,9 +379,10 @@ def test_check_validates_the_owed_parts_and_descriptors_as_any_others(tree):
 
 
 def test_a_kernel_with_no_descriptor_at_all_holds_nothing_and_a_registry_with_none_supports_nothing(tree):
-    for path in (tree / "kernels" / "decode" / "descriptors").glob("*.json"):
-        path.unlink()
-    for path in (tree / "kernels" / "decode" / "descriptors" / "dev").glob("*.json"):
-        path.unlink()
+    for kernel in registry.kernels(tree):
+        for path in (tree / "kernels" / kernel / "descriptors").glob("*.json"):
+            path.unlink()
+        for path in (tree / "kernels" / kernel / "descriptors" / "dev").glob("*.json"):
+            path.unlink()
     with pytest.raises(registry.RegistryError, match="nothing is supported"):
         registry.check(tree)

@@ -20,8 +20,14 @@
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
-#include "dispatch_switch.cuh"
+#include "common/arm_switch.cuh"
 #include "entmax.cuh"
+#include "plan/entmax_launch.h"
+#include "plan/environment.h"
+#include "plan/union_backward/contract.h"
+#include "plan/union_forward/contract.h"
+#include "union_backward_selection.inc"
+#include "union_forward_selection.inc"
 
 namespace fsla {
 namespace entmax {
@@ -289,98 +295,106 @@ union_backward_kernel(const LogitT* __restrict__ read_logits,
 }
 
 // ---------------------------------------------------------------------------
-// HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on
-// nothing. One launch per union level. The (w_pad -> LW, IPT) table and why the launch
-// count is unchanged from the Triton lowering: docs/internals/entmax/entmax.md#launch-shape
+// HOST DISPATCH -- the matcher (`common/plan/entmax_launch.h`) chooses the arm from the call's
+// facts, so the kernel branches on nothing. One launch per union level. The arm's lane width and
+// items a thread and why the launch count is unchanged from the Triton lowering:
+// docs/internals/entmax/entmax.md#launch-shape
 // ---------------------------------------------------------------------------
-template <class Bt, typename LogitT, typename OutT>
+using UnionForward = plan::union_forward::Kernel;
+using UnionBackward = plan::union_backward::Kernel;
+
+//: THE ARM SETS, defined over the generated selection headers: the key `(lw, ipt, alpha15, logit, value)` of each kernel
+FSLA_DEFINE_ARM_SET(UnionForwardArmSet, UNION_FORWARD);
+FSLA_DEFINE_ARM_SET(UnionBackwardArmSet, UNION_BACKWARD);
+
+template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 void launch_forward_at(const Tensor& rl, const Tensor& wl, Tensor& mid, Tensor& sup, Tensor& rv,
-                       Tensor& wv, const LevelTable& table, int levels, int w_pad, int heads,
-                       double alpha) {
+                       Tensor& wv, const LevelTable& table, int levels, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/entmax.md#nstreams
   const int n_streams = rl.size(0) * heads, tokens = rl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
-  const bool a15 = alpha == 1.5;
-
-  //: THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is -- see docs/internals/entmax/entmax.md#kwpad
-  int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
-      w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
-        constexpr int kWPad = decltype(WPAD)::value;
-        constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
-        constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        bool_switch(a15, [&](auto A15) {
-          union_forward_kernel<Bt, kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
-              <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
-                  mid.mutable_data_ptr<float>(), sup.mutable_data_ptr<int32_t>(),
-                  (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens, heads, table,
-                  five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv), five(wv),
-                  five(sup));
-        });
-      });
+  union_forward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+      (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(), mid.mutable_data_ptr<float>(),
+      sup.mutable_data_ptr<int32_t>(), (OutT*)rv.data_ptr(), (OutT*)wv.data_ptr(), tokens, heads,
+      table, five_logits(rl, heads), five_logits(wl, heads), five(mid), five(rv), five(wv),
+      five(sup));
   FSLA_CUDA_LAUNCH_CHECK();
 }
 
-//: `launch_forward_at` at `rl`'s card's build: the one branch to the build, outside every launch.
-template <typename LogitT, typename OutT>
+//: `launch_forward_at` at the arm the matcher chose, at `rl`'s card's build: the one branch to the arm, and inside it the one branch to the build, outside every launch.
 void launch_forward(const Tensor& rl, const Tensor& wl, Tensor& mid, Tensor& sup, Tensor& rv,
-                    Tensor& wv, const LevelTable& table, int levels, int w_pad, int heads,
-                    double alpha) {
-  build_switch(card_of(rl.get_device_index()), [&](auto b) {
-    constexpr ::denseref::arch::Build kB = decltype(b)::build;
-    if constexpr (in_image(kB))
-      launch_forward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
-          rl, wl, mid, sup, rv, wv, table, levels, w_pad, heads, alpha);
-  });
+                    Tensor& wv, const LevelTable& table,
+                    const plan::EntmaxLaunch<UnionForward>& launch, int heads) {
+  const plan::EntmaxAlphaArm& arm = launch.arm;
+  arm_switch<UnionForwardArmSet>(
+      {{arm.lw, arm.ipt, arm.alpha15, arm.logit, arm.value}}, [&](auto built) {
+        constexpr int kLane = decltype(built)::values[0], kItems = decltype(built)::values[1];
+        constexpr bool kAlpha15 = decltype(built)::values[2] != 0;
+        using LogitT = DtypeOfCode<decltype(built)::values[3]>;
+        using OutT = DtypeOfCode<decltype(built)::values[4]>;
+        build_switch(card_of(rl.get_device_index()), [&](auto b) {
+          constexpr ::denseref::arch::Build kB = decltype(b)::build;
+          if constexpr (in_image(kB)) {
+            using Bt = ::denseref::arch::BuildTag<kB>;
+            launch_forward_at<Bt, kLane, kItems, kAlpha15, LogitT, OutT>(
+                rl, wl, mid, sup, rv, wv, table, launch.levels, heads);
+          }
+        });
+      });
 }
 
-template <class Bt, typename LogitT, typename OutT>
+template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 void launch_backward_at(const Tensor& rl, const Tensor& wl, const Tensor& mid, const Tensor& sup,
                         const Tensor& rv, const Tensor& wv, const Tensor& dr, const Tensor& dw,
-                        Tensor& drl, Tensor& dwl, const LevelTable& table, int levels, int w_pad,
-                        int heads, double alpha) {
+                        Tensor& drl, Tensor& dwl, const LevelTable& table, int levels, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/entmax.md#nstreams-2
   const int n_streams = drl.size(0) * heads, tokens = drl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
-  const bool a15 = alpha == 1.5;
-
-  int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
-      w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
-        constexpr int kWPad = decltype(WPAD)::value;
-        constexpr int kLaneWidth = kWPad < 32 ? kWPad : 32;
-        constexpr int kItemsPerThread = kWPad / kLaneWidth;
-        bool_switch(a15, [&](auto A15) {
-          union_backward_kernel<Bt, kLaneWidth, kItemsPerThread, decltype(A15)::value, LogitT, OutT>
-              <<<grid, BLOCK_THREADS, 0, stream>>>(
-                  (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(),
-                  mid.mutable_data_ptr<float>(), sup.mutable_data_ptr<int32_t>(),
-                  (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
-                  (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), (LogitT*)drl.data_ptr(),
-                  (LogitT*)dwl.data_ptr(), tokens, heads, table, five_logits(rl, heads),
-                  five_logits(wl, heads), five(mid), five(rv), five(wv), five(dr), five(dw),
-                  five_logits(drl, heads), five_logits(dwl, heads), five(sup));
-        });
-      });
+  union_backward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+      (const LogitT*)rl.data_ptr(), (const LogitT*)wl.data_ptr(), mid.mutable_data_ptr<float>(),
+      sup.mutable_data_ptr<int32_t>(), (const OutT*)rv.data_ptr(), (const OutT*)wv.data_ptr(),
+      (const OutT*)dr.data_ptr(), (const OutT*)dw.data_ptr(), (LogitT*)drl.data_ptr(),
+      (LogitT*)dwl.data_ptr(), tokens, heads, table, five_logits(rl, heads), five_logits(wl, heads),
+      five(mid), five(rv), five(wv), five(dr), five(dw), five_logits(drl, heads),
+      five_logits(dwl, heads), five(sup));
   FSLA_CUDA_LAUNCH_CHECK();
 }
 
-//: `launch_backward_at` at `rl`'s card's build: the one branch to the build, outside every launch.
-template <typename LogitT, typename OutT>
+//: `launch_backward_at` at the arm the matcher chose, at `rl`'s card's build.
 void launch_backward(const Tensor& rl, const Tensor& wl, const Tensor& mid, const Tensor& sup,
                      const Tensor& rv, const Tensor& wv, const Tensor& dr, const Tensor& dw,
-                     Tensor& drl, Tensor& dwl, const LevelTable& table, int levels, int w_pad,
-                     int heads, double alpha) {
-  build_switch(card_of(rl.get_device_index()), [&](auto b) {
-    constexpr ::denseref::arch::Build kB = decltype(b)::build;
-    if constexpr (in_image(kB))
-      launch_backward_at<::denseref::arch::BuildTag<kB>, LogitT, OutT>(
-          rl, wl, mid, sup, rv, wv, dr, dw, drl, dwl, table, levels, w_pad, heads, alpha);
-  });
+                     Tensor& drl, Tensor& dwl, const LevelTable& table,
+                     const plan::EntmaxLaunch<UnionBackward>& launch, int heads) {
+  const plan::EntmaxAlphaArm& arm = launch.arm;
+  arm_switch<UnionBackwardArmSet>(
+      {{arm.lw, arm.ipt, arm.alpha15, arm.logit, arm.value}}, [&](auto built) {
+        constexpr int kLane = decltype(built)::values[0], kItems = decltype(built)::values[1];
+        constexpr bool kAlpha15 = decltype(built)::values[2] != 0;
+        using LogitT = DtypeOfCode<decltype(built)::values[3]>;
+        using OutT = DtypeOfCode<decltype(built)::values[4]>;
+        build_switch(card_of(rl.get_device_index()), [&](auto b) {
+          constexpr ::denseref::arch::Build kB = decltype(b)::build;
+          if constexpr (in_image(kB)) {
+            using Bt = ::denseref::arch::BuildTag<kB>;
+            launch_backward_at<Bt, kLane, kItems, kAlpha15, LogitT, OutT>(
+                rl, wl, mid, sup, rv, wv, dr, dw, drl, dwl, table, launch.levels, heads);
+          }
+        });
+      });
 }
 
 }  // namespace detail
+
+//: THE ARMS THIS BINARY CARRIES, as `[lw, ipt, alpha15, logit, value]` rows
+std::vector<std::vector<int64_t>> union_forward_arms() {
+  return detail::UnionForwardArmSet::rows();
+}
+
+std::vector<std::vector<int64_t>> union_backward_arms() {
+  return detail::UnionBackwardArmSet::rows();
+}
 
 void union_forward(const Tensor& read_logits, const Tensor& write_logits, Tensor& midpoint_values,
                    Tensor& support_words, Tensor& read_values, Tensor& write_values,
@@ -393,19 +407,21 @@ void union_forward(const Tensor& read_logits, const Tensor& write_logits, Tensor
   detail::check_logits(read_logits);
   STD_TORCH_CHECK(read_logits.scalar_type() == write_logits.scalar_type(),
                   "read/write routing logits must share a dtype");
-  STD_TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
   STD_TORCH_CHECK(read_values.scalar_type() == write_values.scalar_type(),
                   "read/write route values must share a dtype");
-  const auto table =
-      detail::build_table(logit_offsets, value_offsets, support_offsets, widths, midpoint_offsets);
-  const int levels = (int)widths.size(), w_pad = detail::padded_width((int)widths[0]);
-  const DeviceGuard guard(read_logits.get_device_index());
-  detail::logit_value_switch(
-      read_logits.scalar_type(), read_values.scalar_type(), [&](auto L, auto V) {
-        detail::launch_forward<decltype(L), decltype(V)>(read_logits, write_logits, midpoint_values,
-                                                         support_words, read_values, write_values,
-                                                         table, levels, w_pad, (int)heads, alpha);
-      });
+  using K = detail::UnionForward;
+  const int device = read_logits.get_device_index();
+  const int logit = detail::dtype_code(read_logits.scalar_type());
+  const int value = detail::dtype_code(read_values.scalar_type());
+  const int64_t width = detail::first_width(widths);
+  const int64_t levels = static_cast<int64_t>(widths.size());
+  const auto call = plan::entmax_alpha_call<K>(width, levels, alpha, logit, value);
+  const auto launch = plan::entmax_launch<K>(plan::descriptor_of<K>(device, call));
+  const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths,
+                                         launch.klass, midpoint_offsets);
+  const DeviceGuard guard(device);
+  detail::launch_forward(read_logits, write_logits, midpoint_values, support_words, read_values,
+                         write_values, table, launch, (int)heads);
 }
 
 void union_backward(const Tensor& read_logits, const Tensor& write_logits,
@@ -421,19 +437,26 @@ void union_backward(const Tensor& read_logits, const Tensor& write_logits,
   detail::check_logits(read_logits);
   STD_TORCH_CHECK(read_logits.scalar_type() == d_read_logits.scalar_type(),
                   "the union VJP writes logit gradients in the logits' own dtype");
-  STD_TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "union entmax supports alpha 1.5 / 2.0 only");
-  const auto table =
-      detail::build_table(logit_offsets, value_offsets, support_offsets, widths, midpoint_offsets);
-  const int levels = (int)widths.size(), w_pad = detail::padded_width((int)widths[0]);
-  const DeviceGuard guard(read_logits.get_device_index());
-  detail::logit_value_switch(read_logits.scalar_type(), read_values.scalar_type(),
-                             [&](auto L, auto V) {
-                               detail::launch_backward<decltype(L), decltype(V)>(
-                                   read_logits, write_logits, midpoint_values, support_words,
-                                   read_values, write_values, d_read, d_write, d_read_logits,
-                                   d_write_logits, table, levels, w_pad, (int)heads, alpha);
-                             });
+  using K = detail::UnionBackward;
+  const int device = read_logits.get_device_index();
+  const int logit = detail::dtype_code(read_logits.scalar_type());
+  const int value = detail::dtype_code(read_values.scalar_type());
+  const int64_t width = detail::first_width(widths);
+  const int64_t levels = static_cast<int64_t>(widths.size());
+  const auto call = plan::entmax_alpha_call<K>(width, levels, alpha, logit, value);
+  const auto launch = plan::entmax_launch<K>(plan::descriptor_of<K>(device, call));
+  const auto table = detail::build_table(logit_offsets, value_offsets, support_offsets, widths,
+                                         launch.klass, midpoint_offsets);
+  const DeviceGuard guard(device);
+  detail::launch_backward(read_logits, write_logits, midpoint_values, support_words, read_values,
+                          write_values, d_read, d_write, d_read_logits, d_write_logits, table,
+                          launch, (int)heads);
 }
+
+//: THE LEVEL BOUND and THE WIDTH CLASS, for the host: pure functions of the matcher, no device
+int64_t max_levels() { return plan::kEntmaxMaxLevels; }
+
+int64_t width_class(int64_t width) { return plan::entmax_padded_width(static_cast<int>(width)); }
 
 }  // namespace entmax
 }  // namespace fsla

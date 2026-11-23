@@ -2,7 +2,7 @@
 
 `hardware/` holds the PUBLIC CONTRACT: every run-time context FSLA accepts, a fact each (the device's and the call's), and nothing else
 is supported. A context is never shaped by what a kernel can or cannot do: support is the matchers' business, and the build refuses a
-contract context the arm half of a launch function maps to no arm ([`arms_gen.md`](../decode/arms_gen.md)). So a run-time refusal means one thing: the caller's
+contract context the arm half of a launch function maps to no arm ([`arms_gen.md`](../common/plan/arms_gen.md)). So a run-time refusal means one thing: the caller's
 context is outside the contract.
 
 THE FORM. The owner's rulings (2026-11-23): "a kernel is a thing that has compiled arms that we run, the desciproits describe the public contract that enters into
@@ -19,7 +19,7 @@ hardware/kernels/<kernel>/parts/          the kernel's parts (a call part, a dep
 hardware/kernels/<kernel>/descriptors/    the kernel's descriptors, with dev/ (narrowed contracts) and owed/
 ```
 
-Two kernels are registered: `decode` (built) and `prefill` (OWED entire: its kernels are not built, so every descriptor of it is in `owed/` and its contract holds no context).
+Eight kernels are registered: `decode` (built), `prefill` (OWED entire: its kernels are not built, so every descriptor of it is in `owed/` and its contract holds no context) and the producer's six solves, one registry for each kernel template (`union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward`, `softmax_backward`: "One per kernel", the owner, 2026-11-23). A solve's call facts are `width`, `levels`, `alpha_tenths` (not the softmax kernels), `logit_dtype` and `value_dtype`; its one `call` part and its one Hopper descriptor state the contract ([`../entmax/entmax.md#the-contract`](../entmax/entmax.md#the-contract)).
 
 <a id="schema"></a>
 
@@ -94,7 +94,7 @@ A device enters the contract by a MEASURED part, in four steps (the reviewer als
 3. COMMIT THE PART: rename `<id>.candidate.json` to `<id>.json` (`hardware/parts/device/`), add to each kernel that serves the device a descriptor composing it with that kernel's parts, and commit. THE REGISTRY REFUSES
    A CANDIDATE FILE (`registry.CANDIDATE`): `registry.check()` and `registry.contexts(kernel)` fail naming it, so a candidate never reaches the contract unreviewed.
 4. THE BUILD'S CONTRACT CHECK THEN COVERS IT: the part's contexts are in `//hardware:decode_contexts`, the kernel's matcher is evaluated over them, and a context mapped to no arm
-   fails the build ([`arms_gen.md`](../decode/arms_gen.md)).
+   fails the build ([`arms_gen.md`](../common/plan/arms_gen.md)).
 
 <a id="narrowed"></a>
 
@@ -131,6 +131,6 @@ function and its arm are built (`docs/open-work.md` rows A-f and A-h).
 | reader | reads |
 |---|---|
 | `//hardware:<kernel>_facts` | the device table and the kernel's schema: `plan/<kernel>/facts.h` |
-| `//hardware:decode_contexts` | decode's contract under the build's `--//:contract`, a line a context (`registry.contexts_text`): `arms_gen`'s input. A kernel has one where an arm generator reads it |
+| `//hardware:<family>_contexts` | the family's contract under the build's `--//:contract` (decode and the six entmax kernels, the `ARM_FAMILIES`), a line a context (`registry.contexts_text`): `arms_gen`'s input |
 | `//hardware:<kernel>_contract` | the kernel's contract and owed contexts as tables the run time holds, and its `Kernel` definition: `plan/<kernel>/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
 | `tools/supported.py` | each built kernel's contract: the README's support tables, a table a kernel with its call facts as columns |

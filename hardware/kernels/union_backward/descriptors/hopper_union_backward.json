@@ -1,0 +1,8 @@
+{
+  "name": "hopper_union_backward",
+  "gpus": "H100",
+  "compose": [
+    "device/hopper_sm90a",
+    "call"
+  ]
+}

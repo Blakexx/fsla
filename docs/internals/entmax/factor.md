@@ -167,8 +167,9 @@ move a support boundary. Widths inside a launch may differ (3 and 4 are one clas
 their padded widths may not. What batching changes is the launch SHAPE; the
 arithmetic each row performs is the arithmetic the per-level loop performed.
 
-The host `build_table` refuses a mixed-class table rather than padding to the
-largest, and the caller (`production.py`) is what groups the plan walk into tables.
+The matcher refuses a mixed-class launch rather than padding to the largest
+(`entmax_class_refusal`, [`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md); the host `build_table` raises it), and the caller (`production.py`) is what groups the plan walk into tables;
+its class and its level bound are the matcher's, which it reads from the extension.
 
 ## <a id="stored-form"></a>5. The stored form is what the solve WRITES
 

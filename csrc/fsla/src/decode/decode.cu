@@ -42,7 +42,6 @@
 #include "decode_fold.cuh"
 #include "decode_lattice.cuh"
 #include "decode_leaf.cuh"
-#include "dispatch_switch.cuh"
 
 namespace fsla {
 namespace decode {

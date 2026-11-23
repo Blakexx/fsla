@@ -4,7 +4,7 @@ visible; a device tier runs alone. Every tier takes the library: collecting a ti
 
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "NVCC_FLAGS")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("//bazel:arms.bzl", "arm_family", "arm_rows", "arm_selection")
+load("//bazel:arms.bzl", "ARM_FAMILIES", "arm_family", "arm_rows", "arm_selection")
 load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
 load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
@@ -138,8 +138,8 @@ pytest_tier(
         "@warpline//:recorder",
         ":arm_switch_probe_built",
         ":arm_switch_probe_empty",
-        "//csrc/fsla:decode_arms_gen",
-        "//csrc/fsla:decode_plan",
+        "//csrc/fsla:arms_gen",
+    ] + ["//csrc/fsla:%s_plan" % family for family in ARM_FAMILIES] + [
         "//csrc/fsla:plan_tool",
         "//csrc/fsla:decode_plan_narrowed",
         "//csrc/fsla:plan_tool_narrowed",

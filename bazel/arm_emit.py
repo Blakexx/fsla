@@ -63,10 +63,11 @@ def table(family: str, key: list[str], rows: list[list[int]]) -> str:
             f"ARMS = ({body})\n")
 
 
-def kernel_pattern(pattern: str, key: list[str], row: list[int], arch: str) -> str:
+def kernel_pattern(pattern: str, key: list[str], row: list[int], arch: str, spellings: dict[str, list[str]]) -> str:
     """An arm's exact kernel pattern: `pattern` (escaped and anchored by `bazel/cuda.bzl`'s `kernel_pattern`, the one place a name is) with each `@<field>@` a
-    field of the key and `@cc@` the architecture's compute capability as `__CUDA_ARCH__` reads it (`90a` is 900)."""
-    values = {field: str(value) for field, value in zip(key, row)}
+    field of the key and `@cc@` the architecture's compute capability as `__CUDA_ARCH__` reads it (`90a` is 900). A field whose template argument is a type
+    has a spelling (`spellings`: the field's list of spellings, the arm's value the index): the type's name stands for it."""
+    values = {field: spellings[field][value] if field in spellings else str(value) for field, value in zip(key, row)}
     values["cc"] = str(int(arch.removesuffix("a")) * 10)
     parts = pattern.split("@")
     for i in range(1, len(parts), 2):
@@ -76,12 +77,13 @@ def kernel_pattern(pattern: str, key: list[str], row: list[int], arch: str) -> s
     return "".join(parts)
 
 
-def declarations(family: str, key: list[str], rows: list[list[int]], picked: list[int], kernel: str, declared: list[dict], archs: list[str]) -> dict:
+def declarations(family: str, key: list[str], rows: list[list[int]], picked: list[int], kernel: str, declared: list[dict], archs: list[str],
+                 spellings: dict[str, list[str]]) -> dict:
     found, arms = [], []
     for arch in archs:
         on = "sm_" + arch
         for i in picked:
-            pattern = kernel_pattern(kernel, key, rows[i], arch)
+            pattern = kernel_pattern(kernel, key, rows[i], arch, spellings)
             arms.append({"arch": on, "family": family, "arm": i, "kernel": pattern})
             for d in declared:
                 if d["arch"] in (None, on) and all(rows[i][key.index(f)] in wanted for f, wanted in d["where"].items()):
@@ -113,6 +115,7 @@ def main() -> int:
     ap.add_argument("--kernel", default="")
     ap.add_argument("--declared", action="append", default=[], help="a declaration, JSON")
     ap.add_argument("--archs", default="")
+    ap.add_argument("--spellings", default="{}", help="JSON: for each key field whose template argument is a type, the type's spelling for each value of the field")
     ap.add_argument("--base", type=Path)
     ap.add_argument("--file", action="append", default=[], type=Path)
     ap.add_argument("--out", type=Path, required=True)
@@ -131,7 +134,8 @@ def main() -> int:
     elif a.what == "table":
         a.out.write_text(table(a.family, key, rows))
     else:
-        out = declarations(a.family, key, rows, picked, a.kernel, [json.loads(d) for d in a.declared], [x for x in a.archs.split(",") if x])
+        out = declarations(a.family, key, rows, picked, a.kernel, [json.loads(d) for d in a.declared], [x for x in a.archs.split(",") if x],
+                           json.loads(a.spellings))
         a.out.write_text(json.dumps(out, indent=1) + "\n")
     return 0
 

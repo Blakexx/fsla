@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "plan/arm_family.h"
 #include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/lattice.h"
@@ -190,10 +191,77 @@ void print_decode(const Named& device_facts, const Named& call_facts, const std:
   }
 }
 
+//: THE WIDTHS OF A LAUNCH'S LEVELS, a comma list
+std::vector<std::int64_t> parse_widths(const std::string& text) {
+  std::vector<std::int64_t> out;
+  std::size_t at = 0;
+  while (at < text.size()) {
+    std::size_t end = text.find(',', at);
+    if (end == std::string::npos) end = text.size();
+    out.push_back(std::stoll(text.substr(at, end - at)));
+    at = end + 1;
+  }
+  return out;
+}
+
+//: ONE ENTMAX KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch; `widths` (the levels' widths of the launch) are held to the launch's one width class
+template <typename K>
+void print_entmax(const Named& device_facts, const Named& call_facts, const std::string& model,
+                  const std::string& widths_text) {
+  using Family = fsla::plan::ArmFamily<K>;
+  const auto device = fsla::plan::device_descriptor<K>(device_facts, model);
+  if (!device.ok()) refuse(device.refusal);
+  const auto call = fsla::plan::describe<K>(device.descriptor, call_facts, model);
+  if (!call.ok()) refuse(call.refusal);
+  const auto launch = fsla::plan::entmax_launch<K>(call.descriptor);
+  const auto key = Family::key(launch.arm);
+
+  std::printf("descriptor: %s\n", fsla::plan::spell<K>(call.descriptor).c_str());
+  std::string arm;
+  for (std::size_t i = 0; i < key.size(); ++i) {
+    arm += (i ? " " : "") + std::string(Family::fields[i]) + "=" + std::to_string(key[i]);
+  }
+  std::printf("arm: %s\n", arm.c_str());
+  std::printf("launch: klass=%d levels=%d\n", launch.klass, launch.levels);
+  if (!widths_text.empty()) {
+    const std::string refusal =
+        fsla::plan::entmax_class_refusal(parse_widths(widths_text), launch.klass);
+    if (!refusal.empty()) refuse(refusal);
+    std::printf("class: one\n");
+  }
+}
+
+//: THE SIX ENTMAX KERNELS: `run` is called with the definition of the one named `kernel`, if it is one of them
+template <typename Run>
+bool with_entmax_kernel(const std::string& kernel, Run run) {
+  using namespace fsla::plan;
+  const auto each = [&](auto k) {
+    if (kernel != decltype(k)::name) return false;
+    run(k);
+    return true;
+  };
+  return each(union_forward::Kernel{}) || each(union_backward::Kernel{})
+         || each(factor_forward::Kernel{}) || each(factor_backward::Kernel{})
+         || each(softmax_forward::Kernel{}) || each(softmax_backward::Kernel{});
+}
+
+bool kernel_is_entmax(const std::string& kernel) {
+  return with_entmax_kernel(kernel, [](auto) {});
+}
+
+void print_entmax_kernel(const std::string& kernel, const Named& device_facts,
+                         const Named& call_facts, const std::string& model,
+                         const std::string& widths_text) {
+  with_entmax_kernel(kernel, [&](auto k) {
+    print_entmax<decltype(k)>(device_facts, call_facts, model, widths_text);
+  });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string kernel, device_text, call_text, model, grid_text, carve_text, lattice_text;
+  std::string kernel, device_text, call_text, model, grid_text, carve_text, lattice_text,
+      widths_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--lattice") {
@@ -210,6 +278,8 @@ int main(int argc, char** argv) {
       carve_text = argv[i + 1];
     } else if (flag == "--grid") {
       grid_text = argv[i + 1];
+    } else if (flag == "--widths") {
+      widths_text = argv[i + 1];
     } else {
       refuse("unknown argument " + flag);
     }
@@ -217,9 +287,9 @@ int main(int argc, char** argv) {
   const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
   if (argc % 2 == 0 || (lattice_text.empty() && !launch_given)) {
     refuse(
-        "usage: plan_tool --kernel decode|prefill --device name=v,... --call name=v,... [--model text] "
-        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve) | plan_tool --lattice w1,w2,... "
-        "(the lattice of level widths, no device)");
+        "usage: plan_tool --kernel decode|prefill|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
+        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve) | [--widths w,...] (an entmax kernel: the launch's "
+        "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device)");
   }
   if (!lattice_text.empty()) {
     if (!kernel.empty() || !device_text.empty() || !call_text.empty()) {
@@ -232,6 +302,20 @@ int main(int argc, char** argv) {
   std::vector<std::string> keep;
   keep.reserve(64);
   const Named device_facts = parse(device_text, keep);
+  const std::size_t device_names = keep.size();
+  if (kernel_is_entmax(kernel)) {
+    //: an entmax kernel's calls, `;` between them: each printed in turn, the first refused ends the run
+    std::size_t at = 0;
+    while (at <= call_text.size()) {
+      std::size_t end = call_text.find(';', at);
+      if (end == std::string::npos) end = call_text.size();
+      keep.resize(device_names);
+      print_entmax_kernel(kernel, device_facts, parse(call_text.substr(at, end - at), keep), model,
+                          widths_text);
+      at = end + 1;
+    }
+    return 0;
+  }
   const Named call_facts = parse(call_text, keep);
   if (kernel == "decode") {
     if (!carve_text.empty()) refuse("--carve is the prefill's");
@@ -249,7 +333,7 @@ int main(int argc, char** argv) {
     if (!call.ok()) refuse(call.refusal);
     std::printf("descriptor: %s\n", fsla::plan::spell<Prefill>(call.descriptor).c_str());
   } else {
-    refuse("no kernel '" + kernel + "': the kernels are decode and prefill");
+    refuse("no kernel '" + kernel + "': the kernels are decode, prefill and the entmax kernels");
   }
   return 0;
 }

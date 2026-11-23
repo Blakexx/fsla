@@ -18,6 +18,7 @@ fallback on CUDA: `fsla.ops._ext` raises loudly if the wheel is missing
 
 from __future__ import annotations
 
+from functools import cache
 from math import prod
 
 import torch
@@ -193,20 +194,23 @@ def _heads(logits: torch.Tensor) -> int:
 # which is what makes `producer.py`'s "one batched solve" true rather than aspirational.
 # ---------------------------------------------------------------------------
 
-#: The kernel's own bound on one launch's level table (`entmax.cuh::MAX_BATCHED_LEVELS`).
-#: A topology deeper than this issues a second launch of the same arm, not a wider table.
-_MAX_BATCHED_LEVELS = 16
+@cache
+def _max_batched_levels() -> int:
+    """The levels one launch's table holds: the matcher's bound (`common/plan/entmax_launch.h`), read from the extension. A topology deeper than this
+    issues a second launch of the same arm, not a wider table."""
+    return _extension().entmax_max_levels()
 
 
+@cache
 def _width_class(width: int) -> int:
-    """The PADDED width, which is what selects the template arm.
+    """The PADDED width, which is what selects the template arm: the matcher's answer (`common/plan/entmax_launch.h`), read from the extension.
 
     Two levels may share a launch only if they share this. `LW`/`IPT` set how the sort
     permutes and how the prefix scan associates, so running a narrow level in a wider
     arm would round `tau` differently and could move a support boundary -- the batch has
     to be the loop, not an approximation of it.
     """
-    return max(1 << (int(width) - 1).bit_length(), 2)
+    return _extension().entmax_width_class(int(width))
 
 
 class _Launch:
@@ -222,7 +226,7 @@ class _Launch:
         self.logit, self.value, self.midpoint, self.support, self.widths = [], [], [], [], []
 
     def full(self) -> bool:
-        return len(self.widths) == _MAX_BATCHED_LEVELS
+        return len(self.widths) == _max_batched_levels()
 
     def add(self, width, logit_off, value_off, midpoint_off, support_off) -> None:
         self.widths.append(int(width))

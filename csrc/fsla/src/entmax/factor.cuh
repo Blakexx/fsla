@@ -13,6 +13,15 @@
 namespace fsla {
 namespace entmax {
 
+//: THE ARMS THIS BINARY CARRIES, a row each: `[lw, ipt, alpha15, logit, value]` (`[lw, ipt, logit, value]` for the softmax kernels), the dtypes as the contract's codes
+std::vector<std::vector<int64_t>> factor_forward_arms();
+
+std::vector<std::vector<int64_t>> factor_backward_arms();
+
+std::vector<std::vector<int64_t>> softmax_forward_arms();
+
+std::vector<std::vector<int64_t>> softmax_backward_arms();
+
 //: `mask` is a detached boolean candidate mask laid out like `logits`; absent means every -- see docs/internals/entmax/factor.md#factorforward
 void factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Tensor& values,
                     const std::optional<Tensor>& values_second, Tensor& support_words,
