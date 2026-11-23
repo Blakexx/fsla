@@ -57,13 +57,14 @@ form. What the carry is handed, a (CTA, window):
   a pad, a zero byte. THE MASK'S FORMAT CARRIES THE COUNTS the listing needs, a word's count of its digit's live tokens
   before it, written by the library's mask packing; a mask packed otherwise breaks it as a wrong mask does (Blake,
   2026-11-23: "i think its fine to say just use our mask packing code or it will break").
-  MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) to (k)): a readout from lists is exact, an
-  entry loaded three passes ahead and its row two so that no load waits on another; the listing on the drain warps,
-  its mask a window ahead and the counts handed with it, is 2.1% of the window at one CTA and 11.4% at 132 CTAs,
-  each beside its twin without a listing; the twin itself is 9.2% dearer at 132 CTAs than at one, and the two are not
-  parted. NOT MEASURED: the lists consumed (the lab's
-  readout took a packet's, and its drain its packet's offsets); a digit of more than 16 readers a window; a reader's
-  byte on its digit loaded.
+  MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) to (l)): the lists consumed, with no read
+  packet -- each fold warp listing two read digits' readers of the next window behind its image, the readout and the
+  drain taking a reader's line from the lists -- exact, 5,645 cycles a window at 132 CTAs and 5,110 at one, against
+  the fixed readout's 4,278 and 4,251 and the best packet-driven row's 4,945 and 4,871. NOT BUILT, each named on that
+  page: the fold's mask words loaded a window ahead (they are loaded and used at once, and the form is 10.5% dearer at
+  132 CTAs than at one); the drain's adds trimmed (its chunk is 181 instructions against the fixed drain's 63). NOT
+  MEASURED: a count of passes from the lists; a digit of more than 16 readers a window; a reader's byte on its digit
+  loaded.
 - NOT BUILT: the gather that writes the fold's packets ([`hopper-gather.md`](hopper-gather.md)); the lab's host played
   it.
 
@@ -90,9 +91,9 @@ at a token list's values, an eighth of the carry's work ([`lab/gather_pass.md`](
 
 | the role | threads | registers a thread | what it holds |
 |---|---|---|---|
-| a FOLD warpgroup a box, two | 128 each | 176 | the box's state, 16 accumulator sets of 8; it lands its packets, expands its entries' coefficients and steps them |
+| a FOLD warpgroup a box, two | 128 each | 176 | the box's state, 16 accumulator sets of 8; it lands its packets, expands its entries' coefficients and steps them; behind its image a warp lists two read digits' readers of the next window |
 | the READOUT warpgroup | 128 | 104 to 112 | a pass's 8 slots' sums, 64 a thread, and two passes of entries and rows on their way |
-| DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines; they list the window's readers from the read mask |
+| DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines; a reader's output line is the CTA's lists' |
 
 A warpgroup's registers are set once, at its role's head; two counts in one warpgroup hang the CTA. Every barrier
 wait is a suspending poll. Shared memory: a box's packet slots, the two boxes' images, the readout's coefficient

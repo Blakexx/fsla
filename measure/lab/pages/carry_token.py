@@ -60,6 +60,7 @@ SCAN = ", its drain warps also listing the window's readers from the mask"
 ROOM = ", registers 176 / 104 / 56"
 EARLY = ", the mask loaded a window ahead"
 COUNTS = ", the live tokens before each word handed with it"
+OWN = ", its readers' places the CTA's own lists from the read mask"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -148,6 +149,7 @@ def short(name: str) -> str:
                           (SCAN, "its drain warps also listing the window's readers from the mask"),
                           (ROOM, "registers 176 / 104 / 56"), (EARLY, "the mask loaded a window ahead"),
                           (COUNTS, "the live tokens before each word handed with it"),
+                          (OWN, "its readers' places the CTA's own lists from the read mask"),
                           (ONE_BLOCK, "every CTA on one block's reader packets (not checked)"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
@@ -551,7 +553,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"({against(fm['ready'][132], fm['listed'][132])[1].removesuffix(' as')} the listed); the forms that load their packet from global memory in the read side's roles slow with the card's CTAs "
         f"(the gaps above) and the fixed readout does not ({pct(gap['fixed'])}, called the same within {pct(SAME)}). OPEN: WHY. The candidate: at one CTA a block's packets "
         f"stay cached between launches and at {sms} the card's buffers do not fit the cache; (j)'s one-block rows test it, and (j) states what they show. "
-        "NOT BUILT: the readout and the drain taking lists the CTA made itself ([`open-work.md`](../open-work.md) C-o)."
+        "BUILT LATER, in (l): the readout and the drain taking lists the CTA made itself ([`open-work.md`](../open-work.md) C-o)."
     )
 
     # ---- the two readouts' timelines: CTA 0 of each every-stamp row, each role's cycles a window a warp by state
@@ -614,8 +616,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     fr = {k: {n: w(n, nm) for n in (1, 132)} for k, nm in far_names.items()}
     assert all(exact(nm) for nm in far_names.values()), "lab page: a pass-ahead row is not exact"
     assert not any(one_names[k] not in one_block for k in ob), "lab page: a one-block row is checked"
-    cached_same = all(against(ob[k][132], fm[k][132])[1] == "the same as" for k in ("listed", "listed padded"))
-    assert cached_same, "lab page: a listed one-block row moved at the full grid"
+    cached_same = against(ob["listed"][132], fm["listed"][132])[1] == "the same as"
+    assert cached_same, "lab page: the listed one-block row moved at the full grid"
     ob_text = (
         f"(j) THE PACKETS CACHED AT THE FULL GRID. The one-block rows: every CTA reads one block's reader packets, which the cache then holds at any grid; their outputs "
         f"are that block's readers' and the rows are not checked. At {sms} CTAs each against its own-packets row: the listed readout {g(ob['listed'][132])} against {g(fm['listed'][132])} "
@@ -624,8 +626,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"the ready form on the padded packets {g(ob['ready padded'][132])} against {g(fm['ready padded'][132])} ({more(ob['ready padded'][132], fm['ready padded'][132])}). "
         f"WHAT THEY SHOW AND NOTHING BEYOND: with the packets cached at the full grid the listed row does not move ({g(ob['listed'][132])} against {g(fm['listed'][132])}, "
         f"{against(ob['listed'][132], fm['listed'][132])[1].removesuffix(' as')} within {pct(SAME)}; on the padded packets {g(ob['listed padded'][132])} against {g(fm['listed padded'][132])}, "
-        f"{against(ob['listed padded'][132], fm['listed padded'][132])[1].removesuffix(' as')}), so the listed forms' growth from one CTA to {sms} ({pct(gap['listed'])}, "
-        f"{pct(gap['listed padded'])} on the padded packets) is not their packets' loads being cold; the ready form's rows move by the figures stated "
+        f"{more(ob['listed padded'][132], fm['listed padded'][132])}: {against(ob['listed padded'][132], fm['listed padded'][132])[1].removesuffix(' as')} within {pct(SAME)}, so a move of the padded row at its edge is stated, not called nothing), "
+        f"so the listed form's growth from one CTA to {sms} ({pct(gap['listed'])}) is not its packets' loads being cold (the padded packets' growth, {pct(gap['listed padded'])}, is shown by the same rows to that extent only); the ready form's rows move by the figures stated "
         f"({more(ob['ready'][132], fm['ready'][132])}, {more(ob['ready padded'][132], fm['ready padded'][132])} on the padded packets)."
     )
 
@@ -712,7 +714,51 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         "A DENSER MASK is not measured and the row is valid only at the lab's 16 readers a digit in a window: this lab's list area holds 16 places a read digit and the index wraps, "
         "so a digit with more readers than 16 in a window would overwrite its list; denser does not only run more rounds of the emission."
     )
-    far_all = f"{ob_text} {far_text} {ready_far_text}\n- {scan_text}\n- {tuned_text}"
+    # ---- (l) the consumed form: the fixed readout's passes and drain's chunks taking the lists the fold warps made from the read mask
+    own_n = fixed_n + OWN
+    own_c = own_n + COARSE_SUF
+    for nm in (own_n, own_c):
+        assert nm in rows[132] and nm in rows[1], f"lab page: the record holds no row {nm!r}"
+        assert exact(nm), "lab page: a consumed-form row is not exact"
+    assert own_c in traces[132], "lab page: the record holds no trace of the consumed form's coarse row"
+    ow = {n: w(n, own_n) for n in (1, 132)}
+    best = fr["ready"]
+    assert ow[132] > fm["fixed"][132] and ow[1] > fm["fixed"][1], "lab page: the consumed form is not over the fixed readout at both grids"
+    assert ow[132] > best[132] and ow[1] > best[1], "lab page: the consumed form is not over the ready-pass-ahead row at both grids"
+    oph, operiod, ofolds, oscope = fold_phases(132, own_c)
+    assert oscope.removeprefix("cta") == scope132, "lab page: the consumed form's coarse row's first CTA is not the fixed coarse row's"
+    oread, oread_period = side_phases(132, own_c, "readout")
+    odrain, odrain_period = side_phases(132, own_c, "drain")
+
+    def phase_line(phases_):
+        return ", ".join(f"{nm} {g(d)}" for _s, d, nm in phases_)
+
+    def fold_line(ph_):
+        return ", ".join(f"{k} {g(v)}" for k, v in ph_.items())
+
+    own_text = (
+        f"(l) THE CTA'S OWN LISTS, CONSUMED (`kOwn`: there is no read packet; each fold warp lists two read digits' readers of the next window from the read mask, its words and their counts loaded and used at once, "
+        f"right after its image, into the window's third of three windows of lists in shared memory, and arrives at a barrier, the first two windows' lists made before the first, one arrival; the readout runs the fixed "
+        f"readout's passes, one a half, and takes each reader's line from the lists where the fixed readout computes its place, awaiting a window's lists at the window's first pass; the drain takes each reader's output line "
+        f"from the lists; the lists are checked by the output). Cycles a window a CTA, every row exact: at {sms} CTAs the consumed form {g(ow[132])} against the fixed readout's {g(fm['fixed'][132])} "
+        f"({more(ow[132], fm['fixed'][132])}) and against the best packet-driven row, the ready offsets a pass ahead, {g(best[132])} ({more(ow[132], best[132])}); at one CTA {g(ow[1])} against "
+        f"{g(fm['fixed'][1])} ({more(ow[1], fm['fixed'][1])}) and against {g(best[1])} ({more(ow[1], best[1])}). ITS GROWTH FROM ONE CTA TO {sms}: the consumed form {more(ow[132], ow[1])}, "
+        f"the fixed readout {more(fm['fixed'][132], fm['fixed'][1])} ({pct(gap['fixed'])}, called the same within {pct(SAME)}), the ready offsets a pass ahead {more(best[132], best[1])}. "
+        f"FROM THE COARSE ROW AT {sms} CTAs (CTA {scope132}; `bazel run //tools:lab -- trace carry_token --record measure/lab/results/carry_token/sm_90a.blocks{sms}.json --row \"its readers' places the CTA's own lists from the read mask, every warp's phases stamped$\"`): "
+        f"the row's window {g(w(132, own_c))} cycles (the fixed readout's coarse row {g(w(132, COARSE))}; its unstamped row {g(ow[132])}); the fold, the mean of its {ofolds} warpgroups, a window of {g(operiod)} cycles in their own windows "
+        f"(the fixed coarse row's {g(period)}): {fold_line(oph)} (`window` is the image) (the fixed coarse row's: {fold_line(ph)}); the readout, its window {g(oread_period)} cycles (the fixed coarse row's {g(read_period)}), by phase: {phase_line(oread)} "
+        f"(the fixed coarse row's: {phase_line(read_ph)}); the drain, its window {g(odrain_period)} cycles (the fixed coarse row's {g(drain_period)}), by phase: {phase_line(odrain)} "
+        f"(the fixed coarse row's: {phase_line(drain_ph)}). A coarse row stamps no waits, so a phase holds its waits. "
+        "THE STATIC COUNTS (`ledger carry_token --static --arch sm_90a`, kernel probes 4194384 the consumed form, 80 the fixed readout): the fold's window loop holds 507 instructions in the consumed form against 406 in the fixed kernel "
+        "(in the consumed form, four loops of 23 instructions each beside it and two of 26 and 25 inside it, 1 shared store in each); "
+        "the readout's loop 737 against 705; the drain's chunk loop 181 instructions (32 shared load, 16 global add) against 63 (16 shared load, 16 global add), inside a loop of 18 that takes the window's lists. "
+        "WHAT THE ROW IS NOT: its passes are the fixed readout's passes, not counted from the lists (a count of passes from the lists is not built); its mask is 16 readers a digit a window and the row is valid only there "
+        "(the list area holds 16 places a read digit); a reader's byte on its digit is the lab's formula, not loaded. "
+        "NOT PARTED: the consumed form's cost over the fixed readout is not parted between the fold warps' listing, the barrier on the lists, and the readout's and the drain's reads from them; "
+        "no row here isolates one. NOT BUILT: the fold loads its mask words and counts and uses them at once (a window ahead is not built in this row); the drain's chunk is the static figure against the fixed drain's, "
+        "and its adds are not trimmed further."
+    )
+    far_all = f"{ob_text} {far_text} {ready_far_text}\n- {scan_text}\n- {tuned_text}\n- {own_text}"
 
     # ---- the readout's pass by phases: the two kSplitRead rows at the full grid, CTA 0
     split_fixed = fixed_n + COARSE_SUF + DETAILS[1][0] + DETAILS[3][0] + SPLIT_READ
