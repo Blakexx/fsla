@@ -57,6 +57,9 @@ ONE_BLOCK = ", every CTA on one block's reader packets"
 FAR = ", the drain's lines loaded a pass ahead"
 SPLIT_READ = ", the readout's pass by phases stamped"
 SCAN = ", its drain warps also listing the window's readers from the mask"
+ROOM = ", registers 176 / 104 / 56"
+EARLY = ", the mask loaded a window ahead"
+COUNTS = ", the live tokens before each word handed with it"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -143,6 +146,8 @@ def short(name: str) -> str:
                           (LISTED, "the readout's passes its packet's"), (READY, "its tiles and lines offsets ready to add"),
                           (PADDED, "a half in two padded passes"), (FAR, "the drain's lines loaded a pass ahead"),
                           (SCAN, "its drain warps also listing the window's readers from the mask"),
+                          (ROOM, "registers 176 / 104 / 56"), (EARLY, "the mask loaded a window ahead"),
+                          (COUNTS, "the live tokens before each word handed with it"),
                           (ONE_BLOCK, "every CTA on one block's reader packets (not checked)"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
@@ -599,7 +604,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
 
     # ---- (j) the packets cached at the full grid; the drain's lines and the ready offsets a pass ahead
     cu_text = (root / "measure/lab/experiments/carry_token.cu").read_text()
-    assert "(PROBE & (kReady | kFar)) == (kReady | kFar) ? 104" in cu_text and "(PROBE & (kReady | kFar)) == (kReady | kFar) ? 56" in cu_text, (
+    assert "(PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 104" in cu_text and "(PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 56" in cu_text, (
         "lab page: the ready-and-far kernel's registers are no longer 176 / 104 / 56")
     one_names = {k: nm + ONE_BLOCK for k, nm in forms.items() if k != "fixed"}
     far_names = {k: nm + FAR for k, nm in (("listed", listed_n), ("listed padded", padded_n), ("ready", ready_n), ("ready padded", ready_padded_n))}
@@ -673,12 +678,41 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"{g(fr['ready padded'][132])} ({more(sc['ready padded'][132], fr['ready padded'][132])}), at one CTA {g(sc['ready padded'][1])} against {g(fr['ready padded'][1])} "
         f"({more(sc['ready padded'][1], fr['ready padded'][1])}). Every row is exact, and the lists are exact: the lists are checked against the host's (the last window's, copied out at the launch's end) "
         f"and the checks' detail says \"{list_detail[132]}\" at {sms} CTAs and \"{list_detail[1]}\" at one CTA, on both listing rows. WHAT THIS IS AND IS NOT: it is the listing's cost on the drain warps of that kernel, at a mask of one reader a digit in every 64 tokens "
-        "(the sparsest end: a denser mask runs more rounds of the emission, NOT MEASURED); the lists are not consumed, the readout still takes its packet's, so the readout reading them from shared memory is not in the row; "
-        "a reader's byte on its digit is not loaded (the lab computes it). NOT PARTED: the mask's words are loaded and used at once at the window's start, so the row's cost is not parted between the mask's load "
+        "(the sparsest end; a denser mask is NOT MEASURED, and this lab's list area holds 16 places a read digit with the index wrapping, so a digit with more than 16 readers in a window would overwrite its list: the row is valid only at the lab's 16 a digit); the lists are not consumed, the readout still takes its packet's, so the readout reading them from shared memory is not in the row; "
+        "a reader's byte on its digit is not loaded (the lab computes it). NOT PARTED: in this row the mask's words are loaded and used at once at the window's start (the tuned row below loads them a window ahead), so the row's cost is not parted between the mask's load "
         f"and the scan and the emission; and the row costs more at {sms} CTAs than at one CTA ({more(sc['ready'][132], sc['ready'][1])} on the packets, {more(sc['ready padded'][132], sc['ready padded'][1])} on the padded packets), "
         "a difference no row here explains."
     )
-    far_all = f"{ob_text} {far_text} {ready_far_text}\n- {scan_text}"
+    # ---- (k) tuned: the ready kernel at the pass-ahead kernel's registers, and its drain warps listing from a mask loaded ahead, the counts handed
+    twin_n = ready_n + ROOM
+    tuned_n = ready_n + SCAN + ROOM + EARLY + COUNTS
+    for nm in (twin_n, tuned_n):
+        assert nm in rows[132] and nm in rows[1], f"lab page: the record holds no row {nm!r}"
+        assert exact(nm), "lab page: a tuned-listing row is not exact"
+    tdets = [c["detail"] for c in full["checks"] + one["checks"] if c["variant"] == tuned_n and "ok" in c]
+    assert len(tdets) == 2 and all(d.split("; ")[-1].startswith("0 of ") and d.endswith(" listed places differ") for d in tdets), (
+        f"lab page: the tuned listing's lists are not exact: {tdets}")
+    tuned_detail = {n: [c["detail"] for c in (full if n == 132 else one)["checks"] if c["variant"] == tuned_n][0].split("; ")[-1] for n in (1, 132)}
+    tw = {n: w(n, twin_n) for n in (1, 132)}
+    tu = {n: w(n, tuned_n) for n in (1, 132)}
+    assert tw[132] > tw[1] and tu[132] > tu[1], "lab page: the twin or the tuned row does not cost more at the full grid than at one CTA"
+    tuned_text = (
+        f"(k, tuned) THE LISTING TUNED (`kScan | kEarly | kCounts | kRoom`: the same listing at registers 176 / 104 / 56, a window's words of the read mask loaded a window ahead, and each word's count of its digit's live tokens "
+        f"before it handed with the mask, a byte a word in a second plane the host lays, so no scan of the lanes' counts; the emission's rounds unchanged; the lists checked and not consumed). "
+        f"Its twin is the ready-offsets kernel at the same registers with no listing (`kRoom`), cycles a window a CTA: at {sms} CTAs the tuned listing {g(tu[132])} against the twin's {g(tw[132])} "
+        f"({more(tu[132], tw[132])}), at one CTA {g(tu[1])} against {g(tw[1])} ({more(tu[1], tw[1])}); beside the first listing's cost on its own kernel (above): "
+        f"{more(sc['ready'][132], fr['ready'][132])} at {sms} CTAs and {more(sc['ready'][1], fr['ready'][1])} at one CTA. Every row is exact and the lists are exact: the checks' detail says "
+        f"\"{tuned_detail[132]}\" at {sms} CTAs and \"{tuned_detail[1]}\" at one CTA. THE BYTE'S LIMIT is a limit of this lab row: a byte holds at most 255 live tokens of a digit before a word in a window, "
+        f"and the lab's mask has 16 a digit a window. THE STATIC COUNTS (`ledger carry_token --static --arch sm_90a`, kernel probes 3981392 the tuned listing, 442448 the first listing, 2146384 the twin): "
+        "the drain's window loop holds 60 instructions with the tuned listing (the drain's add loop of 163, 32 global add, inside it, and four loops of 19, 1 shared store each, beside it; "
+        "instructions outside every loop 297), 112 with the first listing (20 shuffle; add loop 160; 279 outside) and 21 without a listing (the twin, add loop 163; 260 outside). "
+        f"NOT PARTED: the tuned row costs more at {sms} CTAs than at one CTA ({more(tu[132], tu[1])}), on a twin that itself costs more at {sms} CTAs than at one ({more(tw[132], tw[1])}); "
+        "the twin is the ready-offsets kernel without a pass of lead, whose drain paragraph (j) shows stalled on its offsets at the full grid, and no row here parts the grid's cost from the listing's. "
+        "NOT BUILT: the tuned listing on the pass-ahead kernel, and the mask a window ahead with the lanes' scan (a drain's registers spill in each). "
+        "A DENSER MASK is not measured and the row is valid only at the lab's 16 readers a digit in a window: this lab's list area holds 16 places a read digit and the index wraps, "
+        "so a digit with more readers than 16 in a window would overwrite its list; denser does not only run more rounds of the emission."
+    )
+    far_all = f"{ob_text} {far_text} {ready_far_text}\n- {scan_text}\n- {tuned_text}"
 
     # ---- the readout's pass by phases: the two kSplitRead rows at the full grid, CTA 0
     split_fixed = fixed_n + COARSE_SUF + DETAILS[1][0] + DETAILS[3][0] + SPLIT_READ
