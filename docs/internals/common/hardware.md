@@ -31,8 +31,8 @@ defaults, which are what the SM design does; the binary runs a device on its arc
 ## Families, builds and products
 
 Every device part names its FAMILY -- `hopper` (sm_90a: the part is named as it is compiled, with the architecture's own features; its compute capability
-900), `blackwell` (reserved, no part) -- the name a kernel's schedule is selected by (`Family`, numbered in the order of `registry.FAMILIES`; the
-constitution's R8). Instruction differences stay at the atom, read at the compiling architecture.
+900) -- the name a kernel's schedule is selected by (`Family`: one member a family the device parts state, in the order of their compute
+capabilities; the constitution's R8). Instruction differences stay at the atom, read at the compiling architecture.
 
 <a id="builds"></a>
 A BUILD is the key a kernel compiles at: `Build{cc}`, one for each architecture a device part states (`registry.architectures()`); a device runs its
