@@ -53,10 +53,11 @@
 // the readout still takes its packet's -- so the row prices the listing alone; with `kEarly` the mask's words are loaded
 // a window ahead, and with `kCounts` the live tokens before each word are handed with the mask, a byte a word, in place
 // of the scan of the lanes' counts -- both on the ready-offsets kernel at registers 176 / 104 / 56 (`kRoom`), beside that
-// kernel without a listing); and the fixed readout's passes with its readers' places THE CTA'S OWN LISTS (`kOwn`): the
-// drain warps list a window's readers a window ahead into shared memory, two windows of lists, and arrive at a barrier;
-// the readout takes a reader's place from them where it computed it, and the drain a reader's output line -- no read
-// packet at all, the lists consumed and so checked by the output),
+// kernel without a listing); and the fixed readout's passes with its readers' lines THE CTA'S OWN LISTS (`kOwn`): each
+// fold warp lists two read digits' readers of the next window, after its image, into shared
+// memory (three windows of lists) and arrives at a barrier; the readout takes a reader's line from them where it
+// computed its place, and the drain a reader's output line -- no read packet at all, the lists consumed and so checked
+// by the output),
 // and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
@@ -132,7 +133,7 @@ constexpr int kChunkDigits = 4, kTokens = 16 * kChunkDigits, kChunks = kLists / 
 //: the box's zeros, two bricks of zeros 16 lines apart (an absent step's B); and a box's window's TABLE, landed
 constexpr int kImageAt = 4 * kPoolBytes, kPanelAt = kImageAt + 2 * kBoxBytes, kBarsAt = kPanelAt + 2 * kPanelBytes;
 constexpr int kCoefTile = 2 * 17 * 16, kCoefAt = kBarsAt + 128, kZeroAt = kCoefAt + 2 * 2 * 4 * kCoefTile;
-constexpr int kOneAt = kZeroAt + 2 * 2 * 16 * 16, kOneBytes = 160 * 16, kScanAt = kOneAt + 2 * kOneBytes, kSmemBytes = kScanAt + 2 * 512;
+constexpr int kOneAt = kZeroAt + 2 * 2 * 16 * 16, kOneBytes = 160 * 16, kScanAt = kOneAt + 2 * kOneBytes, kSmemBytes = kScanAt + 3 * 512;
 //: A BOX'S POOL, in lines: the window's value lines as they land -- a brick a run of 256, entry `e`'s line `c` at
 //: `256 c + e`, so the bank group of a line is its entry's position mod 8 -- then the 32 steps' coefficient tiles, a
 //: step 16 lines of its entries' low digits and, `kTilePitch` on, 16 of their high
@@ -142,12 +143,10 @@ static_assert(kSmemBytes <= 232448);
 //: the barriers, 8 bytes each: an image's tile group published and read (a group is the 4 read digits `8 h + c + 2 j`
 //: of a chunk `2 h + c`: every fold thread holds a quarter of it); a panel filled and drained; a box's window landed
 constexpr int kTilesReady = 0, kTilesRead = 32, kPanelReady = 64, kPanelFreed = 80, kPoolLanded = 96;
-//: (`kOwn`) a window's lists made: the four drain warps' arrivals
+//: (`kOwn`) a window's lists made: the eight fold warps' arrivals
 constexpr int kListsReady = 112;
 //: the named barriers: a box's fold warpgroup together behind its stores, and the readout's
 constexpr int kPoolId = 1, kReadId = 11;
-//: (`kOwn`) the four drain warps together, before a half of the lists is rewritten
-constexpr int kDrainId = 12;
 constexpr int kOutWindows = 4;
 //: a window's steps are this many rounds of its 16 lists
 constexpr int kBlockRounds = 2;
@@ -290,8 +289,8 @@ enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 12
                    //: `kRoom` (with `kReady`, without `kFar`): registers 176 / 104 / 56, the split the pass-ahead kernel takes -- the
                    //: tuned listing's kernel and its twin without a listing
                    kRoom = 2097152,
-                   //: `kOwn`: the fixed readout's passes, a reader's place taken from lists the CTA's drain warps made from the read
-                   //: mask a window ahead (the tuned listing), by the readout for its row and by the drain for its output line
+                   //: `kOwn`: the fixed readout's passes, a reader's line taken from lists the CTA's fold warps made from the read
+                   //: mask a window ahead, after their image, by the readout for its row and by the drain for its output line
                    kOwn = 4194304 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
@@ -345,12 +344,39 @@ __device__ __forceinline__ void steps_done(Tracer<TRACE, DETAIL>& tr, uint32_t s
   lab::wg_wait<0>();
   tr.stamp(warpline::kWaitEnd, site);
 }
+//: A WARP'S LISTING of `N` read digits of a window: a lane's words of the read mask and each digit's live tokens before
+//: them, a byte each; a digit's live tokens' LINES, in order, two bytes each, to `lists` (16 a digit) -- the lab's line of
+//: a token is its place over 64, where a kernel's is the place itself
+template <int N>
+__device__ __forceinline__ void list_lines(uint16_t* lists, const uint32_t (&mask)[N], uint32_t counts, int lane) {
+  uint32_t word[N];
+#pragma unroll
+  for (int digit = 0; digit < N; ++digit) word[digit] = mask[digit];
+#pragma unroll
+  for (int digit = 0; digit < N; ++digit) {
+    uint32_t before = counts >> (8 * digit) & 255u;
+    //: a lane's first live token, with no vote; then a round a further one, until no lane holds any
+    if (word[digit] != 0u) {
+      lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
+      ++before;
+      word[digit] &= word[digit] - 1u;
+    }
+#pragma unroll 1
+    while (__any_sync(0xffffffffu, word[digit] != 0u) != 0) {
+      if (word[digit] != 0u) {
+        lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
+        ++before;
+        word[digit] &= word[digit] - 1u;
+      }
+    }
+  }
+}
 //: A FOLD WARPGROUP: its box's state; a window is the image, then the wait on its packet, its entries' coefficients
 //: expanded, and 32 steps that read A from the packet's value lines where its header says
 template <int TRACE, int DETAIL, int PROBE>
 __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long long* times,
-                                          float* state, const uint32_t* values, const uint32_t* table, unsigned long long* trace,
-                                          int windows) {
+                                          float* state, const uint32_t* values, const uint32_t* table, const uint32_t* readers,
+                                          unsigned long long* trace, int windows) {
   const int tid = threadIdx.x, box = tid >> 7, warp = (tid >> 5) & 3, lane = tid & 31, q = lane >> 2, t = lane & 3;
   const uint32_t bars = base + kBarsAt;
   //: a list's first step writes its accumulator whole: nothing is cleared (a cleared one in a role's branch
@@ -400,6 +426,23 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   };
   //: (`kAhead`: the first window's, then each window's behind the entries of the window before)
   if constexpr ((PROBE & kAhead) != 0) rows_of(0);
+  //: (`kOwn`) THE WARP'S TWO READ DIGITS' READERS OF WINDOW `v`, listed from the read mask into the window's third of the lists
+  [[maybe_unused]] const auto list_window = [&](int v) {
+    const int digits = 2 * (4 * box + warp);
+    const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
+    const uint32_t* const words = block + kReadMaskAt + (v % kCallWindows) * 512 + 16 * lane + digits;
+    const uint32_t mask[2] = {words[0], words[1]};
+    const uint32_t counts = reinterpret_cast<const uint16_t*>(block + kReadCountAt + (v % kCallWindows) * 128)[8 * lane + digits / 2];
+    list_lines<2>(reinterpret_cast<uint16_t*>(smem + kScanAt + 512 * (v % 3)) + 16 * digits, mask, counts, lane);
+  };
+  //: the first two windows' lists, one arrival: the readout's first passes take them
+  if constexpr ((PROBE & kOwn) != 0) {
+    list_window(0);
+    list_window(1);
+    lab::bulk_fence();
+    __syncwarp();
+    arrive(bars + kListsReady, tr);
+  }
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     tr.stamp(warpline::kPhaseBegin, kMarkWindow);
@@ -435,6 +478,16 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       lab::bulk_fence();
       __syncwarp();
       if constexpr ((PROBE & kAlone) == 0) arrive(bars + kTilesReady + 8 * k, tr, kWaitTilesReady);
+    }
+    //: (`kOwn`) THE NEXT WINDOW'S READERS, behind the image: the readout has read every tile group of the window before, so
+    //: it is past its wait on this window's lists and the drain past the lists of three windows back, whose third these take
+    if constexpr ((PROBE & kOwn) != 0) {
+      if (w > 0) {
+        list_window(w + 1);
+        lab::bulk_fence();
+        __syncwarp();
+        arrive(bars + kListsReady, tr);
+      }
     }
     //: THE WINDOW: its packet landed; a thread's two entries' coefficients, each a dense line loaded and expanded by
     //: its sparse byte to the two lines of its step's tile its word names; its pad; then 32 steps
@@ -721,21 +774,25 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
   //: a pass's bytes in set `s`, the pass's parity in its window: a set is loaded two passes ahead
   uint4 row[2][kG];
   uint32_t reader_at[2][kG];
-  const auto load = [&](int c, int s) {
-    //: (`OWN`) the window's lists, made by the drain warps: awaited before a reader's place is taken from them
-    if constexpr (OWN != 0) await(bars + kListsReady, static_cast<uint32_t>(c / kChunks) & 1u, tr);
+  const auto load = [&](int c, int s, bool first) {
+    //: (`OWN`) the chunk's window `v`'s lists, the fold warps': awaited at the window's first pass, before a reader's line is
+    //: taken from them -- the folds' listing `v - 1` (the first two windows' are their one listing before the first)
+    if constexpr (OWN != 0) {
+      const int v = c / kChunks;
+      if (first && v != 1) await(bars + kListsReady, static_cast<uint32_t>(v == 0 ? 0 : v - 1) & 1u, tr);
+    }
 #pragma unroll
     for (int g = 0; g < kG; ++g) {
       const int k = (c + g) % kChunks, digit = 8 * (k >> 1) + (k & 1) + 2 * warp;
       uint32_t place = static_cast<uint32_t>(n);
       if constexpr (OWN != 0)
-        place = static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(smem + kScanAt + 512 * ((c / kChunks) & 1))[16 * digit + n]);
+        place = static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(smem + kScanAt + 512 * ((c / kChunks) % 3))[16 * digit + n]);
       reader_at[s][g] = reader_of(blockIdx.x, ((c + g) / kChunks) * kWindow + 16 * digit + place);
       row[s][g] = reinterpret_cast<const uint4*>(dense)[reader_row(reader_at[s][g], box)];
     }
   };
-  load(0, 0);
-  load(kG, 1);
+  load(0, 0, true);
+  load(kG, 1, false);
   float d[kG * kChunkDigits][8];
   //: the lane's two lines of its digit's tile on its box (a group's tiles 8 on), and its sums' rows of a panel
   uint8_t* const lines = smem + kCoefAt + (2 * warp + box) * kCoefTile + ((n >> 3) * 17 + (n & 7)) * 16;
@@ -788,7 +845,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       }
       lab::wg_commit();
       //: the bytes of the pass after next, issued under the steps into the set this pass's coefficients freed
-      load(c + 2 * kG, s);
+      load(c + 2 * kG, s, c4 == 0);
       if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkIssued);
       steps_done(tr, kStepsRead);
 #pragma unroll
@@ -1207,36 +1264,11 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
   lab::WarpMark::stop(times);
 }
 
-//: A DRAIN WARP'S LISTING of its four read digits of a window: a lane's words of the read mask and each digit's live tokens
-//: before them; a digit's live tokens' LINES, in order, two bytes each, to `lists` (16 a digit) -- the lab's line of a
-//: token is its place over 64, where a kernel's is the place itself
-__device__ __forceinline__ void list_places(uint16_t* lists, uint4 mask, uint32_t counts, int lane) {
-  uint32_t word[4] = {mask.x, mask.y, mask.z, mask.w};
-#pragma unroll
-  for (int digit = 0; digit < 4; ++digit) {
-    uint32_t before = counts >> (8 * digit) & 255u;
-    //: a lane's first live token, with no vote; then a round a further one, until no lane holds any
-    if (word[digit] != 0u) {
-      lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
-      ++before;
-      word[digit] &= word[digit] - 1u;
-    }
-#pragma unroll 1
-    while (__any_sync(0xffffffffu, word[digit] != 0u) != 0) {
-      if (word[digit] != 0u) {
-        lists[16 * digit + (before & 15u)] = static_cast<uint16_t>((32 * lane + __ffs(static_cast<int>(word[digit])) - 1) >> 6);
-        ++before;
-        word[digit] &= word[digit] - 1u;
-      }
-    }
-  }
-}
-
-//: THE DRAIN WARP OF `kOwn`: the fixed drain's chunks, with a window's readers LISTED A WINDOW AHEAD (its mask a window
-//: before that) into the window's half of the lists and arrived at, and a reader's output line its place in its list
+//: THE DRAIN WARP OF `kOwn`: the fixed drain's chunks, a reader's output line taken from the window's lists (the fold
+//: warps')
 template <int TRACE, int DETAIL>
 __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long long* times, uint32_t* out,
-                                          const uint32_t* readers, unsigned long long* trace, int windows) {
+                                          unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
   tr.bind(trace);
   tr.edge(kMarkEntry);
@@ -1244,13 +1276,6 @@ __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long lon
   const uint32_t bars = base + kBarsAt;
   constexpr int kBatches = kTokens / kDrains / kBatch;
   static_assert(kDrains == 4);
-  const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
-  const auto mask_of = [&](int w) {
-    return reinterpret_cast<const uint4*>(block + kReadMaskAt + (w % kCallWindows) * 512)[4 * lane + mine];
-  };
-  const auto before_of = [&](int w) { return block[kReadCountAt + (w % kCallWindows) * 128 + 4 * lane + mine]; };
-  //: window `w`'s lists: the half of the lists its parity names, the warp's four digits' places
-  const auto lists_of = [&](int w) { return reinterpret_cast<uint16_t*>(smem + kScanAt + 512 * (w & 1)); };
   uint32_t held[2][kBatch];
   const auto load = [&](int c, int batch, int h) {
 #pragma unroll
@@ -1259,29 +1284,11 @@ __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long lon
       held[h][i] = reinterpret_cast<const uint32_t*>(row)[lane];
     }
   };
-  //: the first window's lists, and the second's mask on its way
-  list_places(lists_of(0) + 64 * mine, mask_of(0), before_of(0), lane);
-  lab::bulk_fence();
-  __syncwarp();
-  arrive(bars + kListsReady, tr);
-  uint4 early = mask_of(1);
-  uint32_t early_before = before_of(1);
   lab::WarpMark::start(times);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    //: THE NEXT WINDOW'S LISTS, from the mask loaded a window ago; the mask after that issued behind it
-    const uint4 mask = early;
-    const uint32_t counts = early_before;
-    early = mask_of(w + 2);
-    early_before = before_of(w + 2);
-    //: the half the next window's lists go to holds the window before's, which the other drain warps may still be adding
-    //: from: the four meet first (the readout took its places from that half a window ago)
-    lab::bar_sync(kDrainId, kGroup);
-    list_places(lists_of(w + 1) + 64 * mine, mask, counts, lane);
-    lab::bulk_fence();
-    __syncwarp();
-    arrive(bars + kListsReady, tr);
-    const uint16_t* const lists = lists_of(w);
+    //: the window's lists: made a window ago, and read by the readout before it filled this window's panels
+    const uint16_t* const lists = reinterpret_cast<const uint16_t*>(smem + kScanAt + 512 * (w % 3));
 #pragma unroll 1
     for (int k = 0; k < kChunks; ++k) {
       const int c = kChunks * w + k;
@@ -1293,16 +1300,15 @@ __device__ __forceinline__ void drain_own(uint8_t* smem, uint32_t base, long lon
       const int digit0 = 8 * (k >> 1) + (k & 1);
       const long long first = static_cast<long long>(blockIdx.x) * (kOutWindows * kWindow) + (w % kOutWindows) * kWindow + 16 * digit0;
       uint8_t* const at = reinterpret_cast<uint8_t*>(out + first * (kChannels / 2) + lane);
-      //: the warp's first reader's place of the chunk's first digit: every other is a constant on from it
-      const uint16_t* const places = lists + 16 * digit0 + mine;
+      //: the warp's first reader's line of the chunk's first digit: every other is a constant on from it
+      const uint16_t* const lines = lists + 16 * digit0 + mine;
 #pragma unroll
       for (int batch = 0; batch < kBatches; ++batch) {
 #pragma unroll
         for (int i = 0; i < kBatch; ++i) {
           const int m = batch * kBatch + i;
-          //: the warp's token `m`: digit `digit0 + 2 (m / 4)`'s reader `mine + 4 (m % 4)`, its line its place in its list
-          //: (a line is 128 bytes)
-          const uint32_t bytes = static_cast<uint32_t>(places[32 * (m / 4) + 4 * (m % 4)]) << 7;
+          //: the warp's token `m`: digit `digit0 + 2 (m / 4)`'s reader `mine + 4 (m % 4)`; a line is 128 bytes
+          const uint32_t bytes = static_cast<uint32_t>(lines[32 * (m / 4) + 4 * (m % 4)]) << 7;
           lab::red_add_f16x2(reinterpret_cast<uint32_t*>(at + 32 * (m / 4) * (2 * kChannels) + bytes), held[batch & 1][i]);
         }
       }
@@ -1340,7 +1346,7 @@ __global__ void __launch_bounds__(kThreads, 1)
       lab::mbar_init(base + kBarsAt + kPanelReady + 8 * p, kGroup / 32);
       lab::mbar_init(base + kBarsAt + kPanelFreed + 8 * p, kDrains);
     }
-    lab::mbar_init(base + kBarsAt + kListsReady, kDrains);
+    lab::mbar_init(base + kBarsAt + kListsReady, 2 * kGroup / 32);
   }
   lab::bulk_fence();
   __syncthreads();
@@ -1354,11 +1360,11 @@ __global__ void __launch_bounds__(kThreads, 1)
       //: the window loop: a fold of each width, each its own straight body
       const uint32_t width =
           values[((blockIdx.x * 2 + (threadIdx.x >> 7)) % kColumns * kCallWindows * static_cast<uint32_t>(kOneLines) + kOneWide) * 4];
-      if (width == 4) fold_role<TRACE, DETAIL, (PROBE & kAlone) | kWide | kFull>(smem, base, times, state, values, table, trace, windows);
-      else if (width == 1) fold_role<TRACE, DETAIL, PROBE & kAlone>(smem, base, times, state, values, table, trace, windows);
+      if (width == 4) fold_role<TRACE, DETAIL, (PROBE & kAlone) | kWide | kFull>(smem, base, times, state, values, table, readers, trace, windows);
+      else if (width == 1) fold_role<TRACE, DETAIL, PROBE & kAlone>(smem, base, times, state, values, table, readers, trace, windows);
       else __trap();
     } else {
-      fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, table, trace, windows);
+      fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, table, readers, trace, windows);
     }
   } else if (tid < kDrainAt) {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 104 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
@@ -1368,7 +1374,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   } else {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 56 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kOwn) != 0) drain_own<TRACE, DETAIL>(smem, base, times, out, readers, trace, windows);
+    else if constexpr ((PROBE & kOwn) != 0) drain_own<TRACE, DETAIL>(smem, base, times, out, trace, windows);
     else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar, PROBE & (kScan | kCounts | kEarly)>(smem, base, times, out, readers, trace, windows);
     else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar>(smem, base, times, out, readers, trace, windows);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
