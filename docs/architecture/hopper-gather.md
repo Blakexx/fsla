@@ -31,10 +31,8 @@ distribute load"): a coefficient is one carry CTA's, and that CTA forms it.
   step's tile, its byte on its digit, its token's index. THE MERGE RULE (RULED 2026-11-19, the starting rule): never
   add a tensor step to save a line; among the layouts of fewest steps, the fewest lines.
 - A BOX'S ROWS ON ITS OTHER LEVEL are not the pass's: the carry loads them by the token's index (RULED 2026-11-23).
-- READ PACKETS, a (block of 16 read digits, window), read by the 8 CTAs whose regions hold the block: passes of 8
-  slots, a slot 16 readers of one digit -- a reader's token index and its byte on its digit -- with each slot's tile
-  and each reader's output line as offsets ready to add, and a window's count of passes. MEASURED from packets the
-  host laid ([`lab/carry_token.md`](../lab/carry_token.md)); NOT DESIGNED in the pass.
+- THE READ SIDE IS NOT THE PASS'S: a carry CTA lists its own readers from the read mask
+  ([`hopper-carry.md`](hopper-carry.md#the-packets)).
 - A WINDOW'S COUNTS -- a block's packets, a read block's passes -- are the device plan's
   ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)).
 - WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13); the pass reads no data to decide a walk.
@@ -59,18 +57,17 @@ every copy. The carry's learnings, to be applied where a measurement shows this 
 
 ## Its order of work
 
-OPEN. The token list's pass the lab ran moved a window's live tokens' lines from lists the host made; its lists from
-the masks, as the digit lists' kernels make theirs, are not run for it. The lab kernels' timelines are their sources'
+OPEN. The passes the labs ran moved a window's live tokens' lines from lists the host made; lists from the masks, as
+the digit lists' kernels make theirs, are not run for the packets. The lab kernels' timelines are their sources'
 headers ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 
 ## Beside the carry
 
-RULED 2026-11-15: persistent gather CTAs beside the carry's, in one grid, a gather CTA a multiprocessor of its own.
-NOT DESIGNED: the hand-off between a gather CTA and its readers (no barrier crosses CTAs without a cluster), which
-gather CTA serves which carry CTAs, the split's rule, what the split leaves the intra; CONSTITUTION R22's
-independent units against the ring's waits. MEASURED: the token list's values and sparse lines are 122
-SM-cycles a token a side against the carry's some 850 expanding its own (some 6,800 cycles a window) -- a multiprocessor in
-eight the pass's, as that kernel stands.
+RULED 2026-11-15: persistent gather CTAs beside the carry's, in one grid, a gather CTA a multiprocessor of its own. A
+block's packets are a ring read by a unit's 16 carry CTAs ([`hopper-carry.md`](hopper-carry.md#the-hand-off)); the
+split of a card's multiprocessors, a unit's start and the ring's waits are not designed. MEASURED: a token list's
+values and sparse lines are 122 SM-cycles a token a side against the carry's some 850 expanding its own -- a
+multiprocessor in eight the pass's, as that kernel stood.
 
 ## What is measured
 
@@ -79,7 +76,7 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 - The shared part with tables for a carry that expands bytes, its lists made from the mask: exact, and at the
   price of the same lines moved from the host's lists.
 - THE TOKEN LIST'S PASS, its lists the host's: exact; its lines moved, 122 SM-cycles a token for a side's values and
-  sparse lines and 155 for its dense segments, 291 and 448 at 32 live digits; its copies alone are nearly all of it
+  sparse lines and 155 for its dense segments (a box's rows on its other level, the carry's own loads since 2026-11-23), 291 and 448 at 32 live digits; its copies alone are nearly all of it
   (118 and 147).
 - NOT THE FORM: the coefficient runs with sparse by dense formed here, a window's lists made once: exact, and three
   times the same entries' bytes moved; a slot a dense block a trip, 512 trips a window. With the shared part it is
@@ -93,11 +90,9 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 
 1. The ring where the card's memory binds the pass: the labs' ring rows ran on 8 and 16 CTAs, where a CTA's copies do.
 
-2. The boundaries' fields: what a CTA is handed to place a token, beside the masks.
-3. The read side's stream: its token indices.
-4. The mask's order on the public surface.
-5. The split of a card's multiprocessors between gather and carry CTAs, and the hand-off.
-6. What the ring does on a card whose cache does not hold it: the token list cost the carry the same read before or
+2. The mask's order on the public surface.
+3. The split of a card's multiprocessors between gather CTAs and the carry's units, and a unit's start.
+4. What the ring does on a card whose cache does not hold it: the token list cost the carry the same read before or
    not while its boxes read it together; a ring's waits and a denser cell's bytes are not measured.
 
 ## Blackwell

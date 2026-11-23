@@ -707,7 +707,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         "the drain's window loop holds 60 instructions with the tuned listing (the drain's add loop of 163, 32 global add, inside it, and four loops of 19, 1 shared store each, beside it; "
         "instructions outside every loop 297), 112 with the first listing (20 shuffle; add loop 160; 279 outside) and 21 without a listing (the twin, add loop 163; 260 outside). "
         f"NOT PARTED: the tuned row costs more at {sms} CTAs than at one CTA ({more(tu[132], tu[1])}), on a twin that itself costs more at {sms} CTAs than at one ({more(tw[132], tw[1])}); "
-        "the twin is the ready-offsets kernel without a pass of lead, whose drain paragraph (j) shows stalled on its offsets at the full grid, and no row here parts the grid's cost from the listing's. "
+        "the twin is the ready-offsets kernel without a pass of lead for its drain's offsets, and no row here parts the twin's own cost at the full grid from the listing's. "
         "NOT BUILT: the tuned listing on the pass-ahead kernel, and the mask a window ahead with the lanes' scan (a drain's registers spill in each). "
         "A DENSER MASK is not measured and the row is valid only at the lab's 16 readers a digit in a window: this lab's list area holds 16 places a read digit and the index wraps, "
         "so a digit with more readers than 16 in a window would overwrite its list; denser does not only run more rounds of the emission."

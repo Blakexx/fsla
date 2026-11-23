@@ -272,8 +272,8 @@ fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 On hopper the gather pass reads a side's masks and planes and writes the carry's PACKETS (RULED 2026-11-18: the carry
 consumes them blindly and the gather lays them out as is best): for a block of 16 digits a side walks by its lists, a
 window's live tokens' value lines -- a token once a group of digits it is live in (RULED 2026-11-19) -- with each
-membership's place, its byte and its token's index; for the read side, passes of readers and their output offsets. A
-carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
+membership's place, its byte and its token's index. The read side has no packet: a carry CTA lists its own readers
+from the read mask, whose format carries the counts the listing needs. A carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
 pass runs in its own CTAs beside the carry's, in one grid, the stream a ring (RULED 2026-11-15); the hand-off between
 the two is not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
 [`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). Sparsity is declared, never detected: the masks are

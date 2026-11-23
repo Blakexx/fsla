@@ -21,7 +21,11 @@ then the fold of the window's writes into the state.
   A-f).
 - ONE CTA A MULTIPROCESSOR (R15), a CTA a (box pair, batch-head). Where a call has more CTAs than the card has
   multiprocessors they run in waves, each CTA its boxes' whole segment; carry CTAs meet each other only at the output's
-  adds (R22). A carry CTA also takes its packets from the gather's CTAs: [the hand-off](#the-hand-off), not designed.
+  adds (R22). A carry CTA also takes its packets from the gather's CTAs: [the hand-off](#the-hand-off).
+- A UNIT is a batch-head's pair of blocks of the level the write side walks by its lists: the 16 CTAs that hold the
+  pair's boxes, one a block of the read side's listed level. They are all the readers of the pair's two value streams,
+  and units are taken head by head, pair by pair (Blake, 2026-11-23: "looping by head, by sparse box, so the gather is
+  servign as many ctas as possible at once").
 - THE WINDOW is the card's (1,024 tokens on hopper, provisional), global to every box.
 - THE SKELETON'S CELL: two levels of 256 digits, each side walking one level by its lists and the other whole, 64
   value channels, a segment a whole number of windows, the state zero at entry and not stored. What a wider contract
@@ -44,26 +48,40 @@ form. What the carry is handed, a (CTA, window):
 - A PACKET HOLDS 256 MEMBERSHIPS (two a fold thread) and 8 steps of 64 columns. A window whose box has more is MORE
   PACKETS, each the same trip; the fold loops on the window's count of them. NOT BUILT in the lab, which ran one
   packet a window.
-- A READ PACKET a CTA: PASSES of 8 slots, a slot the 16 readers of one read digit. A reader's entry is its token's
-  index (by which the readout loads its row) and its byte on its digit; a slot's tile of the state's image and a
-  reader's output line are OFFSETS READY TO ADD; a window's count of passes a half. A slot no reader holds is a pad, a
-  zero byte. MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) and (j)): exact on both of the
-  lab's packets. The form the kernel starts from is the lab's ready offsets loaded a pass ahead: an entry is loaded
-  three passes ahead and its row two, so no load waits on another, and a group's output offsets a pass ahead, where a
-  group of lead left the drain stalled on them at the full grid.
-- NOT BUILT: the gather that writes either ([`hopper-gather.md`](hopper-gather.md)); the lab's host played it.
+- THE READ SIDE HAS NO PACKET. Fanned along the level the write side walks whole, a unit's CTAs each hold a different
+  block of read digits, so a reader list is one CTA's alone, and that CTA makes it (Blake, 2026-11-23: "each cta read
+  step just does the packet formation itself, since its largely going to be unique work per cta anyway"; "if the
+  repeated work is cheap and saves memory, then its worth doing"). A CARRY CTA LISTS ITS OWN READERS from the read
+  mask: a pass is 8 slots, a slot 16 readers of one read digit -- the digit's live tokens of the window, in order; a
+  reader's output line is its token's and a slot's tile its digit's, each one add from use; a slot no reader holds is
+  a pad, a zero byte. THE MASK'S FORMAT CARRIES THE COUNTS the listing needs, a word's count of its digit's live tokens
+  before it, written by the library's mask packing; a mask packed otherwise breaks it as a wrong mask does (Blake,
+  2026-11-23: "i think its fine to say just use our mask packing code or it will break").
+  MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) to (k)): a readout from lists is exact, an
+  entry loaded three passes ahead and its row two so that no load waits on another; the listing on the drain warps,
+  its mask a window ahead and the counts handed with it, is 2.1% of the window at one CTA and 11.4% at 132 CTAs
+  beside a kernel whose drain is stalled on its packet's offsets there. NOT MEASURED: the lists consumed (the lab's
+  readout took a packet's, and its drain its packet's offsets); a digit of more than 16 readers a window; a reader's
+  byte on its digit loaded.
+- NOT BUILT: the gather that writes the fold's packets ([`hopper-gather.md`](hopper-gather.md)); the lab's host played
+  it.
 
 ## The hand-off
 
-NOT DESIGNED, and designed before the gather and the carry are composed. RULED 2026-11-15: the stream is a ring of a
-few windows a CTA group, fed by persistent gather CTAs beside the carry's in one grid, so global memory holds windows of
-it and never a segment's. Not designed: how a gather CTA and the carry CTAs it serves hand a packet over (no barrier
-crosses CTAs without a cluster); which gather CTA serves which carry CTAs, and the split of a card's multiprocessors
-between them; what the ring does where the CTAs that share a block's packets drift apart; and the workspace's size,
-which the descriptor alone fixes ([`open-work.md`](../open-work.md) row A-g) while a stream written whole grows with
-the data. A carry CTA then waits on a gather CTA and a gather CTA on its readers: what that costs R22's independent
-units is shown before the form is built. MEASURED: a stream written whole before the carry costs the carry the same
-([`lab/carry_window.md`](../lab/carry_window.md)), and is what every lab ran.
+THE GATHER IS THE WRITE SIDE'S (Blake, 2026-11-23: "our cta layout is hold a few write digits, fan out over read. and
+that comes from teh fact that gather needs to layout values, and that read can use atomics to write back. so thats why
+a ring is possible ... so gather basically just becomes write side only"). A block's value stream -- its windows' fold
+packets -- is A RING of a few windows (RULED 2026-11-15), written by gather CTAs beside the carry's in one grid and read
+by the unit's 16 CTAs, which are all of its readers; the gather advances when the slowest of them has ("isnt it
+basically just a ring and the ctas need to signal when the ring can continue"). No barrier crosses CTAs without a
+cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the ring and the device plan:
+its size is the descriptor's, the same for every pattern of listed and whole levels.
+
+NOT DESIGNED PAST THAT, and designed with the gather: the split of a card's multiprocessors between gather CTAs and
+units; how a unit's 16 CTAs start together on persistent CTAs; what the ring's waits cost where a unit's CTAs drift
+apart, their read sides unequal (R22: shown before the form is composed). MEASURED: a stream written whole before the
+carry costs the carry the same ([`lab/carry_window.md`](../lab/carry_window.md)), and is what every lab ran; the pass
+at a token list's values, an eighth of the carry's work ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 
 ## The CTA
 
@@ -73,7 +91,7 @@ units is shown before the form is built. MEASURED: a stream written whole before
 |---|---|---|---|
 | a FOLD warpgroup a box, two | 128 each | 176 | the box's state, 16 accumulator sets of 8; it lands its packets, expands its entries' coefficients and steps them |
 | the READOUT warpgroup | 128 | 104 to 112 | a pass's 8 slots' sums, 64 a thread, and two passes of entries and rows on their way |
-| DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines and the output offsets of the groups ahead |
+| DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines; they list the window's readers from the read mask |
 
 A warpgroup's registers are set once, at its role's head; two counts in one warpgroup hang the CTA. Every barrier
 wait is a suspending poll. Shared memory: a box's packet slots, the two boxes' images, the readout's coefficient
@@ -90,9 +108,9 @@ digits, RULED 2026-11-20) and the word that picks one a box are the climb's; the
 1. THE IMAGE. Each fold warpgroup publishes its state as of the window's start, bf16, a tile group at a time behind
    the readout's read of the window before.
 2. THE READOUT, a half of the read digits at a time: the wait on the half's tile groups, then its passes, a loop on
-   the packet's count (a warp vote). A pass: a thread expands a reader's 16 bytes on a box by its byte on its digit
+   its lists' count (a warp vote). A pass: a thread expands a reader's 16 bytes on a box by its byte on its digit
    to its two lines of a coefficient tile; 16 steps, a slot's image tile by its coefficient tile on each box, into
-   one accumulator; the sums to a panel as f16 pairs; the drain warps add each token's line where the packet says.
+   one accumulator; the sums to a panel as f16 pairs; the drain warps add each reader's line at its token's.
 3. THE FOLD, a packet at a time: the wait on its landing; a thread's two entries expanded; a group's steps; the next
    packet's copy issued.
 
@@ -126,10 +144,11 @@ Skeleton first ([`KERNEL_STANDARDS.md` section 19](../KERNEL_STANDARDS.md#s19)):
 its real signature, shared-memory tenants and barriers, the composition correct in shape; then one component at a
 time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
-1. The prefill launch function: the carve, the folds' split, the window, the grid and the packets' capacities, from
-   the descriptor's facts alone. The hand-off's design ([above](#the-hand-off)), and with it the ring's size and the
-   workspace's layout.
-2. The gather from the masks: fold packets and read packets ([`hopper-gather.md`](hopper-gather.md)).
+1. The prefill launch function: the carve, the folds' split, the units, the window, the grid, the packets'
+   capacities, the ring's size and the workspace's layout, from the descriptor's facts alone; and the mask's counts in
+   the library's packing.
+2. The gather from the write masks: fold packets through the ring ([`hopper-gather.md`](hopper-gather.md)), and what
+   of [the hand-off](#the-hand-off) is not designed.
 3. The carry on real packets, the state zero at entry: `num` exact at the skeleton's cell; then the scales; then the
    den.
 4. The intra beside it ([`lab/intra_window.md`](../lab/intra_window.md)), and the op's two halves against
@@ -144,8 +163,8 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
   wait-after-issue debt).
 - UNEVEN HALVES: what a fold waits where its box's lists are quiet and its neighbour's busy; the split along a level
   walked whole is its alternative (R20).
-- HOW THE READ PACKET ARRIVES: by the roles' own loads, as measured, or landed in shared memory by a bulk copy as the
-  fold's is.
+- THE LISTING AT THE FULL GRID, its lists consumed and the drain's offsets its own; and at a denser mask, where its
+  emission runs more rounds.
 - WHERE THE LISTED READOUT'S INSTRUCTIONS ARE: its pass is some 90 over the fixed readout's.
 - THE READ SIDE'S COEFFICIENT FORM (RULED 2026-11-14, chosen by measurement): a reader's byte on its digit multiplied
   into its coefficients, as built, or applied to its sums after the step.
