@@ -277,8 +277,8 @@ def floor(widths, read_listed, write_listed, k: int, box, cluster, dv: int, toke
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--widths", type=int, nargs="+", required=True)
-    ap.add_argument("--read-sparse", type=int, nargs="+", required=True, help="a flag a level: 1 sparse, 0 dense")
-    ap.add_argument("--write-sparse", type=int, nargs="+", required=True)
+    ap.add_argument("--read-sparse", dest="read_listed", type=int, nargs="+", required=True, help="a flag a level: 1 sparse (walked by its lists), 0 dense")
+    ap.add_argument("--write-sparse", dest="write_listed", type=int, nargs="+", required=True)
     ap.add_argument("--k", type=int, required=True, help="a sparse level's live digits a token")
     ap.add_argument("--box", type=int, nargs="+", required=True, help="a box's digits of each level")
     ap.add_argument("--cluster", type=int, nargs="+", required=True, help="a cluster's boxes along each level")
