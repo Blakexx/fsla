@@ -69,7 +69,8 @@
 // stored, the arrival. THE LISTED READOUT's pass is that trip in a loop a half on the packet's count, its test a warp
 // vote: the lane's entry and its reader's row loaded two passes ahead through the packet (two chained global loads), a
 // step's A the tile of its slot's digit, the half's arrival at its groups read after its last pass's steps; its drain
-// warp loads a group's 16 lines of the packet (two loads) before its wait on the panel and adds where they say.
+// warp holds a group's 16 lines of the packet (two loads, issued a group ahead) and adds where they say; a window's
+// counts are loaded a window ahead in both roles: neither waits on a load of the packet.
 // A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
 // words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the
@@ -839,10 +840,12 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
                                                                + 2 * (16 * warp + 8 * ((lane >> 3) & 1))));
   lab::WarpMark::start(times);
   //: the block's passes run so far: a pass's record, and its panels' parity
-  uint32_t pass = 0;
+  uint32_t pass = 0, ahead = block[0];
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    const uint32_t counts = block[w % kCallWindows];
+    //: a window's counts, loaded a window ahead
+    const uint32_t counts = ahead;
+    ahead = block[(w + 1) % kCallWindows];
 #pragma unroll
     for (int half = 0; half < 2; ++half) {
 #pragma unroll
@@ -938,20 +941,29 @@ __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long 
       held[h][i] = reinterpret_cast<const uint32_t*>(row)[lane];
     }
   };
+  //: the warp's 16 tokens' lines of group `g` of pass `p`, the packet's: two loads
+  const auto lines_of = [&](uint32_t p, int g, uint4& low, uint4& high) {
+    const uint4* const listed = reinterpret_cast<const uint4*>(block + kReadHead + p * kPassWords + kPassLines) + 2 * (4 * g + mine);
+    low = listed[0], high = listed[1];
+  };
+  //: A GROUP'S LINES ARE LOADED A GROUP AHEAD AND A WINDOW'S COUNTS A WINDOW AHEAD: the drain is the read side's binding
+  //: chain, and a load it waited on would be the chain's
+  uint4 low, high;
+  lines_of(0, 0, low, high);
+  uint32_t ahead = block[0];
   lab::WarpMark::start(times);
   uint32_t pass = 0;
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
-    const uint32_t counts = block[w % kCallWindows];
-    const uint32_t total = (counts & 255u) + (counts >> 8 & 255u);
+    const uint32_t total = (ahead & 255u) + (ahead >> 8 & 255u);
+    ahead = block[(w + 1) % kCallWindows];
 #pragma unroll 1
-    for (uint32_t p = 0; p < total; ++p, ++pass) {
+    for (uint32_t p = 0; __all_sync(0xffffffffu, p < total) != 0; ++p, ++pass) {
 #pragma unroll
       for (int g = 0; g < 2; ++g) {
-        //: the warp's 16 tokens' lines of the group, the packet's, loaded before the wait
-        const uint4* const listed = reinterpret_cast<const uint4*>(block + kReadHead + pass * kPassWords + kPassLines) + 2 * (4 * g + mine);
-        const uint4 low = listed[0], high = listed[1];
         const uint32_t word[8] = {low.x, low.y, low.z, low.w, high.x, high.y, high.z, high.w};
+        //: the next group's lines, issued before this group's wait
+        lines_of(pass + g, 1 - g, low, high);
         await(bars + kPanelReady + 8 * g, pass & 1, tr, kWaitPanelReady);
         tr.stamp(warpline::kPhaseBegin, kMarkAdds);
         load(g, 0, 0);
