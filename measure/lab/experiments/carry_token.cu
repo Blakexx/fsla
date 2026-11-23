@@ -43,7 +43,9 @@
 // a readout whose passes are its packet's (`kListed`: a pass's 8 slots each name their read digit, their 16 readers and
 // those readers' output lines, and a half's passes are the packet's count -- on the fixed readout's own readers, and on a
 // half in two passes, each four slots and four pads; and under `kReady` the packet's own offsets where it held numbers: a
-// slot's tile of the image in lines and a token's output line in bytes, each one add from use),
+// slot's tile of the image in lines and a token's output line in bytes, each one add from use; and each of those with
+// every CTA on one block's reader packets (`kOneBlock`: the packets the cache's at any grid, the outputs one block's and
+// unchecked)),
 // and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
@@ -241,7 +243,10 @@ enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 12
                    kListed = 16384,
                    //: `kReady` (with `kListed`): the packet holds OFFSETS READY TO ADD -- a slot's tile of the image in lines, a
                    //: token's output line in bytes -- where `kListed` alone holds a digit and a line number
-                   kReady = 32768 };
+                   kReady = 32768,
+                   //: `kOneBlock` (with `kListed`): an isolation -- every CTA reads block 0's reader packets, which the cache then
+                   //: holds at any grid; its outputs are that block's readers' and are not checked
+                   kOneBlock = 65536 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -812,7 +817,7 @@ __device__ __forceinline__ void drain_role(uint8_t* smem, uint32_t base, long lo
 
 //: THE LISTED READOUT's warpgroup (`kListed`): a pass is the mirrored readout's -- 8 slots, a panel's group of 4 twice --
 //: with its slots' digits, its readers and their bytes the packet's, and a half's passes a voted loop on its count
-template <int TRACE, int DETAIL, int READY>
+template <int TRACE, int DETAIL, int READY, int ONE>
 __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long long* times, const uint32_t* dense,
                                             const uint32_t* readers, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
@@ -823,7 +828,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
   const uint32_t bars = base + kBarsAt;
   //: the lane's (token, box) of a slot: token `lane % 16` of the warp's slot of a group on box `lane / 16`
   const int n = lane & 15, box = lane >> 4;
-  const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
+  const uint32_t* const block = readers + (ONE != 0 ? 0 : static_cast<size_t>(blockIdx.x) * kReadBlock);
   //: A PASS'S LIST: a group's entry of the lane and the group's slots' digits, loaded three passes ahead. ITS SET: the list
   //: and the entries' readers' rows, loaded two passes ahead by entries that have landed -- no load waits on another
   struct List {
@@ -953,7 +958,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
 }
 
 //: THE LISTED READOUT's drain warp: a group's 16 tokens of its residue, each added at the line the packet names
-template <int TRACE, int DETAIL>
+template <int TRACE, int DETAIL, int ONE>
 __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long long* times, uint32_t* out,
                                              const uint32_t* readers, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
@@ -963,7 +968,7 @@ __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long 
   const uint32_t bars = base + kBarsAt;
   constexpr int kBatches = kTokens / kDrains / kBatch;
   static_assert(kDrains == 4 && kBatches * kBatch == 16);
-  const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
+  const uint32_t* const block = readers + (ONE != 0 ? 0 : static_cast<size_t>(blockIdx.x) * kReadBlock);
   //: the lane's word of the block's first line
   uint32_t* const at = out + static_cast<size_t>(blockIdx.x) * (kOutWindows * kWindow) * (kChannels / 2) + lane;
   uint32_t held[2][kBatch];
@@ -1022,7 +1027,7 @@ __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long 
 //: THE LISTED READOUT's drain warp where the packet's lines are OFFSETS READY TO ADD (`kReady`): a token's line is the
 //: block's first and the packet's four bytes; a batch's 8 offsets are loaded a group ahead, into the registers the same
 //: batch of this group freed
-template <int TRACE, int DETAIL>
+template <int TRACE, int DETAIL, int ONE>
 __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long long* times, uint32_t* out,
                                             const uint32_t* readers, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
@@ -1032,7 +1037,7 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
   const uint32_t bars = base + kBarsAt;
   constexpr int kBatches = kTokens / kDrains / kBatch;
   static_assert(kDrains == 4 && kBatches == 2 && kBatch == 8);
-  const uint32_t* const block = readers + static_cast<size_t>(blockIdx.x) * kReadBlock;
+  const uint32_t* const block = readers + (ONE != 0 ? 0 : static_cast<size_t>(blockIdx.x) * kReadBlock);
   //: the lane's word of the block's first line, addressed in bytes
   uint8_t* const at = reinterpret_cast<uint8_t*>(out + static_cast<size_t>(blockIdx.x) * (kOutWindows * kWindow) * (kChannels / 2) + lane);
   //: batch `batch` of group `g` of pass `p`: the warp's 8 tokens' offsets, two loads
@@ -1128,13 +1133,13 @@ __global__ void __launch_bounds__(kThreads, 1)
   } else if (tid < kDrainAt) {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL, PROBE & kReady>(smem, base, times, dense, readers, trace, windows);
+    else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL, PROBE & kReady, PROBE & kOneBlock>(smem, base, times, dense, readers, trace, windows);
     else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
     lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL>(smem, base, times, out, readers, trace, windows);
-    else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL>(smem, base, times, out, readers, trace, windows);
+    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock>(smem, base, times, out, readers, trace, windows);
+    else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL, PROBE & kOneBlock>(smem, base, times, out, readers, trace, windows);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
 }
@@ -1424,6 +1429,7 @@ void run(lab::Bench& b, const Buffers& held) {
                            + (PROBE & kSpread ? ", an entry's dense line from a 2 GB table of the tokens" : PROBE & kTabled ? ", an entry's dense line from the tokens' table" : "") + (PROBE & kAhead ? ", loaded a window ahead" : "")
                            + (PROBE & kListed ? ", the readout's passes its packet's" : "") + (PROBE & kReady ? ", its tiles and lines offsets ready to add" : "")
                            + (PROBE & kListed && READ == 1 ? ", a half in two padded passes" : "")
+                           + (PROBE & kOneBlock ? ", every CTA on one block's reader packets" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
                                         : TRACE & 1 ? ", the launch's two edges stamped" : "")
@@ -1576,7 +1582,8 @@ int main(int argc, char** argv) {
                            {0, 0, kWide | kFull | kTabled | kSpread | kAhead}, {2, 0, kWide | kFull | kTabled | kSpread | kAhead | kAlone},
                            {0, 0, kTabled | kAhead}, {0, 0, kTabled | kSpread | kAhead},
                            {0, 0, kWide | kFull | kListed}, {2, 0, kWide | kFull}, {3, 0, kWide | kFull}, {2, 0, kWide | kFull | kListed},
-                           {3, 0, kWide | kFull | kListed}, {0, 0, kWide | kFull | kListed | kReady}, {3, 0, kWide | kFull | kListed | kReady}};
+                           {3, 0, kWide | kFull | kListed}, {0, 0, kWide | kFull | kListed | kReady}, {3, 0, kWide | kFull | kListed | kReady},
+                           {0, 0, kWide | kFull | kListed | kOneBlock}, {0, 0, kWide | kFull | kListed | kReady | kOneBlock}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1696,5 +1703,10 @@ int main(int argc, char** argv) {
   run<0, 0, 3, kWide | kFull | kListed | kReady>(b, held);
   run<0, 0, 3, kWide | kFull | kListed | kReady, 1>(b, held);
   run<3, 0, 3, kWide | kFull | kListed | kReady>(b, held);
+  //: THE SAME ROWS WITH EVERY CTA ON ONE BLOCK'S READER PACKETS: what the packets' loads cost where the cache does not hold them
+  run<0, 0, 3, kWide | kFull | kListed | kOneBlock>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kOneBlock, 1>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kOneBlock>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kOneBlock, 1>(b, held);
   return 0;
 }
