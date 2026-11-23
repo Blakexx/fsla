@@ -48,6 +48,7 @@ TOKEN8 = ", groups of four taking four, two, one and one steps"
 LOOPED = ", a group's steps a voted loop on its count"
 TABLED = ", an entry's dense line from the tokens' table"
 SPREAD = ", an entry's dense line from a 2 GB table of the tokens"
+AHEAD = ", loaded a window ahead"
 TOKEN16 = ", a token on all 16 digits of its box, groups of four on one run of value lines"
 LAYOUTS = (
     (SHARED, "lists overlapping on shared tokens"),
@@ -129,7 +130,8 @@ def short(name: str) -> str:
             break
     for suffix, words in ((COLUMN, "the box's width word choosing its fold"), (CLEARED, "its tiles cleared"),
                           (COUNTED, "a group's steps counted at run time"), (LOOPED, "a group's steps a voted loop on its count"),
-                          (SPREAD, "an entry's dense line from a 2 GB table of the tokens"), (TABLED, "an entry's dense line from the tokens' table"), (SPLIT, "registers 176 / 112 / 48"),
+                          (SPREAD, "an entry's dense line from a 2 GB table of the tokens"), (TABLED, "an entry's dense line from the tokens' table"),
+                          (AHEAD, "loaded a window ahead"), (SPLIT, "registers 176 / 112 / 48"),
                           (IDLE, "the read side idle (not checked)")):
         if suffix in rest:
             probes.append(words)
@@ -440,8 +442,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     )
 
     # ---- who reads a membership's dense row: the packet's packed line, or the fold's own load from the tokens' table
-    def tab(n, layout, table, idle=False):
-        return rows[n][PREFIX + layout + table + ((IDLE + COARSE_SUF) if idle else "")]
+    def tab(n, layout, table, idle=False, ahead=False):
+        return rows[n][PREFIX + layout + table + (AHEAD if ahead else "") + ((IDLE + COARSE_SUF) if idle else "")]
 
     packed_g = {n: (w(n, group4), cycles_of(n, TOKEN4, idle=True)) for n in (1, 132)}
     packed_l = {n: w(n, PLAIN) for n in (1, 132)}
@@ -452,6 +454,9 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     def over(n, t):
         return tg[(n, t)][0] - packed_g[n][0], tg[(n, t)][1] - packed_g[n][1], tl[(n, t)] - packed_l[n]
 
+    ah = {(n, t): (tab(n, TOKEN4, t, ahead=True), tab(n, TOKEN4, t, idle=True, ahead=True)) for n in (1, 132) for t in (TABLED, SPREAD)}
+    al = {(n, t): tab(n, "", t, ahead=True) for n in (1, 132) for t in (TABLED, SPREAD)}
+    exact_ahead = all(exact(PREFIX + lay + t + AHEAD) for lay in (TOKEN4, "") for t in (TABLED, SPREAD))
     grow = {n: (tg[(n, SPREAD)][0] - tg[(n, TABLED)][0], tl[(n, SPREAD)] - tl[(n, TABLED)]) for n in (1, 132)}
     table_text = (
         "(h) WHO READS A MEMBERSHIP'S DENSE ROW: the packet's packed 16-byte line, or the fold's own load from the tokens' table by a two-byte index "
@@ -461,12 +466,26 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"{g(over(1, TABLED)[1])}); on the 2 GB table {g(tg[(132, SPREAD)][0])} and {g(tg[(132, SPREAD)][1])}, {g(over(132, SPREAD)[0])} and {g(over(132, SPREAD)[1])} "
         f"more (at one CTA {g(over(1, SPREAD)[0])} and {g(over(1, SPREAD)[1])}). The per-list fold on the table is {g(tl[(132, TABLED)])} against the packed "
         f"line's {g(packed_l[132])}, {g(over(132, TABLED)[2])} more (at one CTA {g(over(1, TABLED)[2])}); on the 2 GB table {g(tl[(132, SPREAD)])}, "
-        f"{g(over(132, SPREAD)[2])} more (at one CTA {g(over(1, SPREAD)[2])}). Every row is {'exact' if exact_tab else 'NOT exact'}. Two facts, and nothing beyond them: "
+        f"{g(over(132, SPREAD)[2])} more (at one CTA {g(over(1, SPREAD)[2])}). Every row is {'exact' if exact_tab and exact_ahead else 'NOT exact'}. Two facts, and nothing beyond them: "
         "the table's own load is not free even from a cached table (the 1 MB rows above); and it grows with the table's size by the DISTINCT rows a packet names "
         f"(the four-digit packet's 256 entries a box name 64 tokens, the per-list packet's name 256): the 2 GB table over the 1 MB one costs the grouped fold "
         f"{g(grow[132][0])} cycles and the per-list fold {g(grow[132][1])}, {grow[132][1] / grow[132][0]:.1f} times (at one CTA {g(grow[1][0])} and {g(grow[1][1])}, {grow[1][1] / grow[1][0]:.1f} times). "
+        f"THE ROWS LOADED A WINDOW AHEAD (behind the entries of the window before; the fold then holds the next window's two lines through its steps) "
+        f"against the same rows loaded at the window's start: the grouped fold on the table {g(ah[(132, TABLED)][0])} composed and {g(ah[(132, TABLED)][1])} with the read "
+        f"side idle against {g(tg[(132, TABLED)][0])} and {g(tg[(132, TABLED)][1])} (at one CTA {g(ah[(1, TABLED)][0])} and {g(ah[(1, TABLED)][1])} against "
+        f"{g(tg[(1, TABLED)][0])} and {g(tg[(1, TABLED)][1])}); on the 2 GB table {g(ah[(132, SPREAD)][0])} and {g(ah[(132, SPREAD)][1])} against "
+        f"{g(tg[(132, SPREAD)][0])} and {g(tg[(132, SPREAD)][1])} (at one CTA {g(ah[(1, SPREAD)][0])} and {g(ah[(1, SPREAD)][1])} against "
+        f"{g(tg[(1, SPREAD)][0])} and {g(tg[(1, SPREAD)][1])}). The per-list fold on the table {g(al[(132, TABLED)])} against {g(tl[(132, TABLED)])} "
+        f"(at one CTA {g(al[(1, TABLED)])} against {g(tl[(1, TABLED)])}); on the 2 GB table {g(al[(132, SPREAD)])} against {g(tl[(132, SPREAD)])} "
+        f"(at one CTA {g(al[(1, SPREAD)])} against {g(tl[(1, SPREAD)])}). The window-ahead kernels run at 176 / 112 / 48 registers a thread and the "
+        f"tabled per-list rows at 168 / 120 / 56: the per-list fold at 176 / 112 / 48 with its packed lines is {g(w(132, PREFIX + SPLIT))} "
+        f"(at one CTA {g(w(1, PREFIX + SPLIT))}), so (a compile fact of this kernel, from its header: the per-list fold spills at 168 registers a thread with the next window's two lines held through its steps) the per-list window-ahead rows are {g(al[(132, TABLED)] - w(132, PREFIX + SPLIT))} and "
+        f"{g(al[(132, SPREAD)] - w(132, PREFIX + SPLIT))} over that row, and {g(al[(132, TABLED)] - tl[(132, TABLED)])} over and "
+        f"{g(abs(al[(132, SPREAD)] - tl[(132, SPREAD)]))} {'over' if al[(132, SPREAD)] >= tl[(132, SPREAD)] else 'under'} the tabled rows at the window's start. What the figures show and nothing beyond: loading the rows "
+        "a window ahead takes nothing off the window and is a little more where it differs, so the table load's cost is not the rows' latency on the "
+        "window's path. The record names no cause for where the cost is paid (it holds no counter). "
         "NOT MEASURED: what the gather pays to write a packed 16-byte line a membership in its current form ([`gather_group`](gather_group.md)'s row is values "
-        "only, and writes the entries' token indices, no dense line), so the two forms are not compared end to end here; the rows loaded a window ahead."
+        "only, and writes the entries' token indices, no dense line), so the two forms are not compared end to end here."
     )
 
     # ---- the bytes a layout holds: arithmetic from the packet's layout, checked against the experiment's constants

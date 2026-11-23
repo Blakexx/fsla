@@ -68,8 +68,7 @@
 // words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the
 // readout's 64 sums (a chunk of 8 digits) and two passes' bytes and reader indices, 20 words; a drain's 16. The grouped fold
 // holds a pass's tile starts in 2 words (1 where a window is 4 steps) and its kernel is 176 registers a fold thread, 112 the
-// readout's and 48 a drain's; so is a `kAhead` kernel's (the per-list fold spills at 168 with the next window's two
-// lines held through its steps).
+// readout's and 48 a drain's; so is a `kAhead` kernel's.
 // see docs/internals/tools/lab.md#carry-token
 #include <chrono>
 
