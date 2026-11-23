@@ -227,7 +227,7 @@ and its values are its column's ([`hopper-gather.md`](../architecture/hopper-gat
 these bracket what a box's own bytes cost its window. Checked as the form's rows are.
 
 THE TOKEN ROWS (the block form;
-[`hopper-carry.md`](../architecture/hopper-carry.md#the-packets)): THE FOLD LAYS ITS OWN SLOT from a view in token order. THE QUESTION: the design's stream holds a
+[`hopper-carry.md`](../architecture/hopper-carry.md#the-packets)): THE FOLD LAYS ITS OWN SLOT from a view in token order. THE QUESTION: a token-list stream holds a
 sparse block's live tokens once each as they come, so a token's value lines do not land where its digit's step reads
 them -- what does the fold moving them cost the window, beside the block form, whose value runs land in place? A
 slot's view is its 128 entries in token order -- each entry's places, its dense line and its 8 value lines, a brick a

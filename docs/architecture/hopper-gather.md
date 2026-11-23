@@ -1,9 +1,7 @@
 # The hopper gather: its design before it is built
 
-STATUS: PROPOSED, NOT LOCKED, AND BEHIND THE CARRY'S PAGE. No gather kernel is built on this line. What the gather writes is
-now the carry's packets ([`hopper-carry.md`](hopper-carry.md#the-packets): the grouped digit stream, RULED 2026-11-19,
-under the packet contract, RULED 2026-11-18); the sections below describe the token-list stream that preceded them and
-are rewritten with the gather's build ([`hopper-carry.md`](hopper-carry.md#the-order-of-the-build), step 2). A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet measured says so; where
+STATUS: PROPOSED, NOT LOCKED. No gather kernel is built on this line; this page is the design the first one is built
+from. A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet measured says so; where
 nothing is decided the page says OPEN.
 
 The gather is the hopper op's own kernel work (RULED 2026-11-15: a first-class kernel with an explicit design): it
@@ -21,36 +19,29 @@ order is the producer's readers' measured access, and this reader is the first m
 
 ## What it writes
 
-ONLY WHAT A GROUP OF CTAS SHARES (RULED 2026-11-15, the day's later ruling: "the expansion is unique to each final
-cta, not something shared. each final cta should own it, to distribute load"). A coefficient is a (sparse block, dense
-block)'s -- one carry CTA's alone -- and that CTA forms it ([`hopper-carry.md`](hopper-carry.md#the-packets)).
-The stream is THE TOKEN LIST (RULED 2026-11-13, in force again): a sparse block's live tokens once each, in token
-order, packed -- a token's values as the bundle holds them and its sparse bytes on the block's digits -- read by the
-carry CTAs that share the block. It is a ring of a few windows a CTA group (RULED 2026-11-15).
-- A TOKEN LIVE ON SEVERAL DIGITS OF A BLOCK IS WRITTEN ONCE, where a list a digit writes it once a digit. ESTIMATED,
-  live digits falling independently: 1.14 digits a live token a block at 4.5 live digits of 256, 2.3 at 32, 16 dense
-  -- the token list's bytes grow with the tokens, never with their digits.
-- A BOX'S DENSE BYTES for its entries are the pass's to write too (RULED 2026-11-15: "the cleanest form is gather
-  writes it, that matches everything else it does"): a segment of the stream a dense block, 16 bytes a live token,
-  read by one CTA, which forms its coefficients from them. MEASURED: the stream's dense lines beside its values and
-  sparse lines ([`lab/gather_pass.md`](../lab/gather_pass.md)).
-- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13). The pass hands the carry no list (KERNEL_STANDARDS 29,
-  item 5); the lab's token rows ran from a table of each entry's places the host laid
-  ([`lab/carry_window.md`](../lab/carry_window.md)), and what a CTA is handed to count them itself is OPEN.
-- WHAT A CTA NEEDS TO TAKE ITS VIEW is the pass's to write, the group's to read (Blake, 2026-11-15: "the gather has
-  metadata about boundaries for all the ctas to consume like window edges and such"). PROPOSED, its fields: a window's
-  place in the stream and its live tokens; each of the block's 16 digits' count in the window, which is the window's
-  steps; a live token's 16 bits -- the block's digits it is live on, the masks' slice for the token -- so a CTA reads
-  neither the masks nor a list; on the read side each entry's token index; the segment's edges.
-- ITS SIZE, ESTIMATED: a live token's record is 9 lines a sparse block it is live in -- some 0.6 KB a token a side
-  at 4 to 5 live digits, 40 MB a side at 65,536 tokens, 2.3 KB a token at most. Written whole before the carry it costs the carry what a ring the cache holds does
-  ([`lab/carry_window.md`](../lab/carry_window.md)); the ring is ruled for global memory, and what it asks of the
-  hand-off is under "Beside the carry".
-- THE READ SIDE'S: the same without values, with each entry's token index. NOT DESIGNED past that.
-- NOT THE FORM, each measured: a list a digit with its value runs, and the coefficient runs in the step's format laid
-  here. With its operands made the carry's window is some 5,200 cycles against some 6,800 expanding its own, and the pass that
-  made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); their ~123 KB a window a CTA
-  cost three times the window once past the card's cache.
+THE CARRY'S PACKETS ([`hopper-carry.md`](hopper-carry.md#the-packets)), under the packet contract (RULED 2026-11-18:
+the carry consumes them blindly; their layout is the gather's, whatever is best). ONLY WHAT A GROUP OF CTAS SHARES
+(RULED 2026-11-15: "the expansion is unique to each final cta, not something shared. each final cta should own it, to
+distribute load"): a coefficient is one carry CTA's, and that CTA forms it.
+
+- FOLD PACKETS, a (block of 16 digits a side walks by its lists, window), read by the 16 CTAs that hold a box of the
+  block. THE GROUPED DIGIT STREAM (RULED 2026-11-19): values only; the block's digits in groups, a group's run the
+  tokens live on any of its digits, each written once in it; a step reads 16 consecutive lines of a run; a short step
+  is padded on the coefficient side, a zero byte, never by zero value lines. With each membership: its place in its
+  step's tile, its byte on its digit, its token's index. THE MERGE RULE (RULED 2026-11-19, the starting rule): never
+  add a tensor step to save a line; among the layouts of fewest steps, the fewest lines.
+- A BOX'S ROWS ON ITS OTHER LEVEL are not the pass's: the carry loads them by the token's index (RULED 2026-11-23).
+- READ PACKETS, a (block of 16 read digits, window), read by the 8 CTAs whose regions hold the block: passes of 8
+  slots, a slot 16 readers of one digit -- a reader's token index and its byte on its digit -- with each slot's tile
+  and each reader's output line as offsets ready to add, and a window's count of passes. MEASURED from packets the
+  host laid ([`lab/carry_token.md`](../lab/carry_token.md)); NOT DESIGNED in the pass.
+- A WINDOW'S COUNTS -- a block's packets, a read block's passes -- are the device plan's
+  ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)).
+- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13); the pass reads no data to decide a walk.
+- NOT THE FORM, each measured: a list a digit with its value runs, and coefficient runs in the step's format laid here
+  -- the pass that made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); a token-list
+  stream the fold lays its own slots from ([`lab/carry_window.md`](../lab/carry_window.md)).
+- NOT MEASURED: the pass writing either packet from the masks; its bytes a token in the packet form.
 
 ## The CTA
 

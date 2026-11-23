@@ -194,7 +194,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 **The carry's work is partitioned by ONE descriptor, the carve**
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the carve is re-derived by the prefill launch function, `open-work.md` row A-f):
 a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(their live digits a window, listed by the carry CTA itself, from the token list the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, listed in the packets the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -247,8 +247,8 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 
 ## 6. The kernels
 
-Five kernel families, in one call's order: the producer writes the bundle; the gather pass reads it once and writes the carry a token
-list, from which the carry CTA lays its own lists (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
+Five kernel families, in one call's order: the producer writes the bundle; the gather pass reads it once and writes the carry its
+packets (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
@@ -269,11 +269,14 @@ fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 
 ### 6.2 The gather pass
 
-On hopper the gather pass reads a sparse side's masks and writes the carry's stream: a sparse block's live tokens in
-token order, their values and sparse bytes (RULED 2026-11-13 and 2026-11-15). It runs in its own CTAs beside the
-carry's, in one grid, the stream a ring; a carry CTA lays its own lists from the stream and forms its own
-coefficients ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
-[`architecture/hopper-carry.md`](architecture/hopper-carry.md)). Sparsity is declared, never detected: the masks are
+On hopper the gather pass reads a side's masks and planes and writes the carry's PACKETS (RULED 2026-11-18: the carry
+consumes them blindly and the gather lays them out as is best): for a block of 16 digits a side walks by its lists, a
+window's live tokens' value lines -- a token once a group of digits it is live in (RULED 2026-11-19) -- with each
+membership's place, its byte and its token's index; for the read side, passes of readers and their output offsets. A
+carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
+pass runs in its own CTAs beside the carry's, in one grid, the stream a ring (RULED 2026-11-15); the hand-off between
+the two is not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
+[`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). Sparsity is declared, never detected: the masks are
 an input operand the pass uses blindly. No gather kernel is built on this line. Where the factor products and the tile
 unions come from, and the masks' format on the surface, are open ([`open-work.md`](open-work.md), row A-e).
 
@@ -283,8 +286,8 @@ One CTA a box and batch-head, one CTA an SM; the box's fp32 state lives in the C
 READOUT of the state as of the window's start by the window's readers, each token's partial sums added in fp32 into
 `num` and, as the v+1 channel, `den` (carry CTAs join only there, R22; on hopper a carry CTA also reads the ring its
 gather CTAs write, a hand-off not designed -- [`architecture/hopper-carry.md`](architecture/hopper-carry.md)); then the FOLD of the window's writes into the state.
-No carry kernel is built on this line: its hopper schedule is a design of its own, written before it is built
-([`architecture/hopper-carry.md`](architecture/hopper-carry.md), PROPOSED and not locked; section 9's forms;
+No carry kernel is built on this line: its hopper form is the design its kernel is built from
+([`architecture/hopper-carry.md`](architecture/hopper-carry.md); section 9's forms;
 [`open-work.md`](open-work.md)).
 
 ### 6.4 The intra — the within-window term
@@ -359,7 +362,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 
 | mechanism | hopper (sm_90) | blackwell (sm_100) |
 |---|---|---|
-| the operands | u8 rows expanded to bf16 where they are staged, a scale or a coefficient multiplied in fp32 there -- for the carry by each carry CTA, from the token list the gather pass writes (`architecture/hopper-carry.md`; MEASURED with the fold expanding the entries of a stream laid by digit, and laying its slots from token-ordered views at a quarter over that); bf16 values as stored (`architecture/precision.md`) | the same; the carry's staging NOT STATED |
+| the operands | u8 rows expanded to bf16 where they are staged, a scale or a coefficient multiplied in fp32 there -- for the carry by each carry CTA, from the bytes and token indices of the gather pass's packets (`architecture/hopper-carry.md`; MEASURED with the fold expanding its packet's entries and loading each token's row itself, `lab/carry_token.md`); bf16 values as stored (`architecture/precision.md`) | the same; the carry's staging NOT STATED |
 | the tensor products | `wgmma`: B from shared memory by descriptor, A from shared memory or from registers; fp32 accumulate; int8 for a window's pair products of rows, exact | `tcgen05`, operands and accumulators in tensor memory; the same two products |
 | state in the register file | a role a warpgroup, the registers moved between them (`setmaxnreg`, one count a whole warpgroup: the folds at 160 a thread, the readout at 104, the drain warps' warpgroup at 88); the fold's fp32 accumulators the readout's operand, narrowed in place | the accumulator in tensor memory |
 | the carry CTA's measured form | THE DESIGN'S FORM ([`architecture/hopper-carry.md`](architecture/hopper-carry.md)): no producer warp -- a fold warpgroup issues its own copies of the stream and makes its steps' operands where they land (MEASURED from a stream laid by digit, the fold expanding its entries' coefficients) -- the readout's coefficients in shared memory and its tokens on the step's columns, a pass 8 digits, and four drain warps; folds at 160 registers a thread, the readout at 104, the drain warps at 88: the least composed window MEASURED at even lists ([`carry_window`](lab/carry_window.md)), its den not measured. THE FORM THE DEN AND THE PRICES BELOW WERE MEASURED IN: two producer warps (one a box, a batch of 32 entries in registers each, two batches in flight) and two drain warps; the readout's A in TWO register sets reused across its chunk's commit groups (depth 2); every barrier wait a suspending poll (`mbarrier.try_wait`), never a plain polled loop; the fold's image K-major, a line one thread's own values; the den's fold half two more steps a slot in the slot's commit group, 8 columns wide, their A the slot's lists' coefficient bricks and their B a constant column of ones, the den's state 4 accumulators a thread; the den read as column 64 of the readout's steps, 72 columns wide, from a ninth brick of the image's tiles, an fp32 a token through the panel and one add a drain warp's lane, the readout at 88 registers and the fourth warpgroup at 104: 5.2% of the composed window with the tables cached and no clock inside a role (5.9% at an aligned cell) -- the fold's steps 64 cycles a window, the image's brick and store 91, the register split 88, the 72 columns 57, the panel's word and the drain's add 44 -- a dense write side unmeasured; the image tile's pitch an odd count of lines ([`carry_window`](lab/carry_window.md): PRICED at 2,014 SM-cycles a token, its tables read once (R22.2), and 832 when the cache holds them (824 with no clock inside a role), at the hardest cell MEASURED, on a card clocked at 1.76 to 1.82 GHz over the session (a memory-bound row's cycles follow the card's clock) -- sparse on opposite levels, 256 x 256 leaves; dense, R10's worst case, is priced higher by `tools/carry_floor.py` and unmeasured composed -- exact). The register-A mechanisms have no `tcgen05` analogue (the blackwell staging is the state's-image row's ESTIMATED form), and the common wait atom's suspending form is unwritten, owed with the first production kernel | NOT STATED: no blackwell carry is designed |

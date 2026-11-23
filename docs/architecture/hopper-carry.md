@@ -3,8 +3,9 @@
 STATUS: THE BUILD'S DESIGN. No carry kernel is built on this line ([`open-work.md`](../open-work.md)); the kernel is
 built from this page and then optimized as a hill climb (Blake, 2026-11-23: "if we know the general design then we
 should just implement it and optimize it as a hill climb rather than optimizing a lab kernel"). Every form says what
-it stands on: MEASURED (a lab's page holds the record), RULED, THE SKELETON'S (the build's first form, correct before
-fast and the climb's to change), or OPEN.
+it stands on: MEASURED (a lab's page holds the record), RULED, THE SKELETON'S (a choice the lab left open, made so the
+skeleton has every component in the shape it will live in, [`KERNEL_STANDARDS.md` section 19](../KERNEL_STANDARDS.md#s19);
+the climb changes it inside that shape), NOT DESIGNED, or OPEN.
 
 What the carry computes is [`ARCHITECTURE.md` section 6.3](../ARCHITECTURE.md#63-the-carry--the-inter-window-term): a
 window at a time, the readout of the state as of the window's start by the window's readers, into `num` and `den`,
@@ -19,7 +20,8 @@ then the fold of the window's writes into the state.
   prefill launch function, computed before the launch and stored nowhere (R24; [`open-work.md`](../open-work.md) row
   A-f).
 - ONE CTA A MULTIPROCESSOR (R15), a CTA a (box pair, batch-head). Where a call has more CTAs than the card has
-  multiprocessors they run in waves, each CTA its boxes' whole segment; CTAs meet only at the output's adds (R22).
+  multiprocessors they run in waves, each CTA its boxes' whole segment; carry CTAs meet each other only at the output's
+  adds (R22). A carry CTA also takes its packets from the gather's CTAs: [the hand-off](#the-hand-off), not designed.
 - THE WINDOW is the card's (1,024 tokens on hopper, provisional), global to every box.
 - THE SKELETON'S CELL: two levels of 256 digits, each side walking one level by its lists and the other whole, 64
   value channels, a segment a whole number of windows, the state zero at entry and not stored. What a wider contract
@@ -50,6 +52,18 @@ form. What the carry is handed, a (CTA, window):
   three passes ahead and its row two, so no load waits on another, and a group's output offsets a pass ahead, where a
   group of lead left the drain stalled on them at the full grid.
 - NOT BUILT: the gather that writes either ([`hopper-gather.md`](hopper-gather.md)); the lab's host played it.
+
+## The hand-off
+
+NOT DESIGNED, and designed before the gather and the carry are composed. RULED 2026-11-15: the stream is a ring of a
+few windows a CTA group, fed by persistent gather CTAs beside the carry's in one grid, so global memory holds windows of
+it and never a segment's. Not designed: how a gather CTA and the carry CTAs it serves hand a packet over (no barrier
+crosses CTAs without a cluster); which gather CTA serves which carry CTAs, and the split of a card's multiprocessors
+between them; what the ring does where the CTAs that share a block's packets drift apart; and the workspace's size,
+which the descriptor alone fixes ([`open-work.md`](../open-work.md) row A-g) while a stream written whole grows with
+the data. A carry CTA then waits on a gather CTA and a gather CTA on its readers: what that costs R22's independent
+units is shown before the form is built. MEASURED: a stream written whole before the carry costs the carry the same
+([`lab/carry_window.md`](../lab/carry_window.md)), and is what every lab ran.
 
 ## The CTA
 
@@ -112,8 +126,9 @@ Skeleton first ([`KERNEL_STANDARDS.md` section 19](../KERNEL_STANDARDS.md#s19)):
 its real signature, shared-memory tenants and barriers, the composition correct in shape; then one component at a
 time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
-1. The prefill launch function and the workspace's layout: the carve, the folds' split, the window, the grid, the
-   packets' capacities and the ring's size, from the descriptor's facts alone.
+1. The prefill launch function: the carve, the folds' split, the window, the grid and the packets' capacities, from
+   the descriptor's facts alone. The hand-off's design ([above](#the-hand-off)), and with it the ring's size and the
+   workspace's layout.
 2. The gather from the masks: fold packets and read packets ([`hopper-gather.md`](hopper-gather.md)).
 3. The carry on real packets, the state zero at entry: `num` exact at the skeleton's cell; then the scales; then the
    den.
@@ -134,7 +149,6 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
 - WHERE THE LISTED READOUT'S INSTRUCTIONS ARE: its pass is some 90 over the fixed readout's.
 - THE READ SIDE'S COEFFICIENT FORM (RULED 2026-11-14, chosen by measurement): a reader's byte on its digit multiplied
   into its coefficients, as built, or applied to its sums after the step.
-- THE HAND-OFF between a gather CTA and the carry CTAs it serves, and the ring.
 
 ## Blackwell
 
