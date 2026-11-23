@@ -45,7 +45,9 @@
 // half in two passes, each four slots and four pads; and under `kReady` the packet's own offsets where it held numbers: a
 // slot's tile of the image in lines and a token's output line in bytes, each one add from use; and each of those with
 // every CTA on one block's reader packets (`kOneBlock`: the packets the cache's at any grid, the outputs one block's and
-// unchecked)),
+// unchecked); and the listed rows with the drain's lines loaded a pass ahead (`kFar`: a set of lines a group of the pass, the
+// next pass's same group's loaded behind this one's; with `kReady` the kernel is 176 registers a fold thread, 104 the
+// readout's and 56 a drain's, and has no traced row: its stamped kernels spill)),
 // and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
@@ -73,7 +75,8 @@
 // vote: the lane's entry loaded three passes ahead and its reader's row two, by an entry that has landed (no load waits on
 // another), a
 // step's A the tile of its slot's digit, the half's arrival at its groups read after its last pass's steps; its drain
-// warp holds a group's 16 lines of the packet (two loads, issued a group ahead) and adds where they say; a window's
+// warp holds a group's 16 lines of the packet (two loads, issued a group ahead, under `kFar` a pass ahead) and adds where
+// they say; a window's
 // counts are loaded a window ahead in both roles: neither waits on a load of the packet.
 // A drain warp's trip is a group of 64 tokens, two batches of 8 a warp: the wait on the panel,
 // the chunk's 16 loads, its 16 adds, the arrival. Live: a fold thread's 128 accumulators beside the tile starts' 8
@@ -216,7 +219,9 @@ enum Detail : int {
   //: tile starts loaded -- and what it waits, at the fill's barrier: three marks more in its fill
   kSplitFill = 32,
   //: the folds' waits on their packets' landing, and the copies' issues (a copy's barrier: its issue is its release)
-  kWaitPacket = 64
+  kWaitPacket = 64,
+  //: the readout's pass by phases: its coefficients' expansion, their fence and barrier, its steps' issue, what follows it
+  kSplitRead = 128
 };
 //: AN ISOLATION ROW's change to the kernel: the read side idle -- the folds publish their image and wait on nobody
 //: `kWide` is not an isolation: the kernel whose fold steps groups of four digits (a width is a kernel's)
@@ -279,7 +284,8 @@ struct Tracer : lab::Trace<TRACE != 0> {
 enum Site : uint32_t { kMarkWindow = 0xc000u, kMarkExpand = 0xc001u, kMarkSteps = 0xc002u, kMarkPanel = 0xc003u, kMarkAdds = 0xc004u,
                        kStepsRead = 0xc007u, kMarkEntry = 0xc008u, kMarkExit = 0xc009u,
                        kMarkSteps8 = 0xc00au, kMarkSteps16 = 0xc00bu, kMarkSteps24 = 0xc00cu, kMarkTail = 0xc00du,
-                       kMarkZero = 0xc00eu, kMarkStarts = 0xc00fu, kMarkFillBar = 0xc010u };
+                       kMarkZero = 0xc00eu, kMarkStarts = 0xc00fu, kMarkFillBar = 0xc010u,
+                       kMarkReadBar = 0xc011u, kMarkIssued = 0xc012u };
 
 //: A WAIT at a barrier, suspended (`try_wait`), stamped
 template <int TRACE, int DETAIL>
@@ -702,6 +708,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       const int c = kChunks * w + c4, s = c4 / kG;
 #pragma unroll
       for (int g = 0; g < kG; ++g) await(bars + kTilesReady + 8 * (c4 + g), w & 1, tr, kWaitTilesReady);
+      if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkExpand);
       //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
       for (int g = 0; g < kG; ++g) {
@@ -718,6 +725,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
           *reinterpret_cast<uint4*>(lines + g * 8 * kCoefTile + 8 * 16 * h) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
         }
       }
+      if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkReadBar);
       lab::bulk_fence();
       lab::bar_sync(kReadId, kGroup);
       const uint32_t tiles = lab::held(base + kCoefAt);
@@ -738,6 +746,7 @@ __device__ __forceinline__ void read_role(uint8_t* smem, uint32_t base, long lon
       lab::wg_commit();
       //: the bytes of the pass after next, issued under the steps into the set this pass's coefficients freed
       load(c + 2 * kG, s);
+      if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkIssued);
       steps_done(tr, kStepsRead);
 #pragma unroll
       for (int g = 0; g < kG; ++g) arrive(bars + kTilesRead + 8 * (c4 + g), tr, kWaitTilesRead);
@@ -884,6 +893,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
       const uint32_t count = (counts >> (8 * half)) & 255u;
 #pragma unroll 1
       for (uint32_t p = 0; __all_sync(0xffffffffu, p < count) != 0; ++p, ++pass) {
+        if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkExpand);
         //: THE COEFFICIENTS, to shared memory: the reader's 16 bytes on the box by its byte on its digit
 #pragma unroll
         for (int g = 0; g < kG; ++g) {
@@ -900,6 +910,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
             *reinterpret_cast<uint4*>(lines + g * 8 * kCoefTile + 8 * 16 * h) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
           }
         }
+        if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkReadBar);
         lab::bulk_fence();
         lab::bar_sync(kReadId, kGroup);
         const uint32_t tiles = lab::held(base + kCoefAt);
@@ -930,6 +941,7 @@ __device__ __forceinline__ void read_listed(uint8_t* smem, uint32_t base, long l
         now = next;
         next = set_of(far);
         far = list_of(pass + 3);
+        if constexpr ((DETAIL & kSplitRead) != 0) tr.stamp(warpline::kPhaseBegin, kMarkIssued);
         steps_done(tr, kStepsRead);
         //: the half's tile groups are read once its last pass's steps are
         if (__all_sync(0xffffffffu, p + 1 == count) != 0) {
@@ -1034,7 +1046,7 @@ __device__ __forceinline__ void drain_listed(uint8_t* smem, uint32_t base, long 
 //: THE LISTED READOUT's drain warp where the packet's lines are OFFSETS READY TO ADD (`kReady`): a token's line is the
 //: block's first and the packet's four bytes; a batch's 8 offsets are loaded a group ahead, into the registers the same
 //: batch of this group freed
-template <int TRACE, int DETAIL, int ONE>
+template <int TRACE, int DETAIL, int ONE, int FAR>
 __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long long* times, uint32_t* out,
                                             const uint32_t* readers, unsigned long long* trace, int windows) {
   Tracer<TRACE, DETAIL> tr;
@@ -1052,9 +1064,13 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
     const uint4* const listed = reinterpret_cast<const uint4*>(block + kReadHead + p * kPassWords + kPassLines) + 4 * (4 * g + mine) + 2 * batch;
     low = listed[0], high = listed[1];
   };
-  uint4 low[kBatches], high[kBatches];
+  //: a set a group of the pass where the offsets are loaded a pass ahead (`FAR`), one set else
+  uint4 low[2][kBatches], high[2][kBatches];
 #pragma unroll
-  for (int batch = 0; batch < kBatches; ++batch) offsets_of(0, 0, batch, low[batch], high[batch]);
+  for (int batch = 0; batch < kBatches; ++batch) {
+    offsets_of(0, 0, batch, low[0][batch], high[0][batch]);
+    if constexpr (FAR != 0) offsets_of(0, 1, batch, low[1][batch], high[1][batch]);
+  }
   uint32_t ahead = block[0];
   lab::WarpMark::start(times);
   uint32_t pass = 0;
@@ -1076,12 +1092,14 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
             const uint8_t* const row = smem + kPanelAt + g * kPanelBytes + (mine + kDrains * (batch * kBatch + i)) * kRowBytes;
             held[i] = reinterpret_cast<const uint32_t*>(row)[lane];
           }
-          const uint32_t offset[kBatch] = {low[batch].x,  low[batch].y,  low[batch].z,  low[batch].w,
-                                           high[batch].x, high[batch].y, high[batch].z, high[batch].w};
+          const int set = FAR != 0 ? g : 0;
+          const uint32_t offset[kBatch] = {low[set][batch].x,  low[set][batch].y,  low[set][batch].z,  low[set][batch].w,
+                                           high[set][batch].x, high[set][batch].y, high[set][batch].z, high[set][batch].w};
 #pragma unroll
           for (int i = 0; i < kBatch; ++i) lab::red_add_f16x2(reinterpret_cast<uint32_t*>(at + offset[i]), held[i]);
-          //: the same batch of the next group
-          offsets_of(pass + g, 1 - g, batch, low[batch], high[batch]);
+          //: the same batch of the next group, or (`FAR`) of the next pass's same group
+          if constexpr (FAR != 0) offsets_of(pass + 1, g, batch, low[set][batch], high[set][batch]);
+          else offsets_of(pass + g, 1 - g, batch, low[set][batch], high[set][batch]);
         }
         __syncwarp();
         arrive(bars + kPanelFreed + 8 * g, tr, kWaitPanelFreed);
@@ -1138,14 +1156,14 @@ __global__ void __launch_bounds__(kThreads, 1)
       fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, table, trace, windows);
     }
   } else if (tid < kDrainAt) {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) ? 104 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
     else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL, PROBE & kReady, PROBE & kOneBlock>(smem, base, times, dense, readers, trace, windows);
     else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) ? 56 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock>(smem, base, times, out, readers, trace, windows);
+    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar>(smem, base, times, out, readers, trace, windows);
     else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar>(smem, base, times, out, readers, trace, windows);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
@@ -1447,7 +1465,8 @@ void run(lab::Bench& b, const Buffers& held) {
                            + (DETAIL & kWaitPanelFreed ? ", the waits on the panels drained stamped" : "")
                            + (DETAIL & kSplitSteps ? ", the fold's steps by eighths stamped" : "")
                            + (DETAIL & kSplitFill ? ", the fold's fill by phases stamped" : "")
-                           + (DETAIL & kWaitPacket ? ", the waits on the packets landed stamped" : "");
+                           + (DETAIL & kWaitPacket ? ", the waits on the packets landed stamped" : "")
+                           + (DETAIL & kSplitRead ? ", the readout's pass by phases stamped" : "");
   constexpr int kWarps = kThreads >> 5;
   auto kernel = window<TRACE, DETAIL, PROBE>;
   uint32_t* const values = held.values[LAYOUT];
@@ -1565,6 +1584,7 @@ void run(lab::Bench& b, const Buffers& held) {
                                  {kMarkAdds, "adding"}, {kStepsRead, "readout steps"}, {kMarkSteps8, "issuing steps 8 on"}, {kMarkSteps16, "issuing steps 16 on"},
                                  {kMarkSteps24, "issuing steps 24 on"}, {kMarkTail, "after the steps"}, {kMarkZero, "writing its pad"},
                                  {kMarkStarts, "loading tile starts"}, {kMarkFillBar, "at the fill's barrier"}, {kMarkEntry, "entry"},
+                                 {kMarkReadBar, "at its coefficients' barrier"}, {kMarkIssued, "after its steps' issue"},
                                  {kMarkExit, "exit"}});
     //: two CTAs of the grid, or its one
     if (b.sms > 1) b.trace(name, rows, kWarps, {0, b.sms / 2}, roles, legend);
@@ -1593,7 +1613,9 @@ int main(int argc, char** argv) {
                            {0, 0, kWide | kFull | kListed}, {2, 0, kWide | kFull}, {3, 0, kWide | kFull}, {2, 0, kWide | kFull | kListed},
                            {3, 0, kWide | kFull | kListed}, {0, 0, kWide | kFull | kListed | kReady}, {3, 0, kWide | kFull | kListed | kReady},
                            {0, 0, kWide | kFull | kListed | kOneBlock}, {0, 0, kWide | kFull | kListed | kReady | kOneBlock},
-                           {0, 0, kWide | kFull | kListed | kFar}, {3, 0, kWide | kFull | kListed | kFar}};
+                           {0, 0, kWide | kFull | kListed | kFar}, {3, 0, kWide | kFull | kListed | kFar},
+                           {2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, kWide | kFull}, {2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, kWide | kFull | kListed | kFar},
+                           {0, 0, kWide | kFull | kListed | kReady | kFar}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1722,5 +1744,11 @@ int main(int argc, char** argv) {
   run<0, 0, 3, kWide | kFull | kListed | kFar>(b, held);
   run<0, 0, 3, kWide | kFull | kListed | kFar, 1>(b, held);
   run<3, 0, 3, kWide | kFull | kListed | kFar>(b, held);
+  //: THE READOUT'S PASS BY PHASES, the fixed readout's and the listed one's
+  run<2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, 3, kWide | kFull>(b, held);
+  run<2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, 3, kWide | kFull | kListed | kFar>(b, held);
+  //: READY OFFSETS A PASS AHEAD (registers 176 / 104 / 56)
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kFar>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kFar, 1>(b, held);
   return 0;
 }
