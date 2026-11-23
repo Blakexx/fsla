@@ -357,14 +357,14 @@ into; neither reads the mask or owner-list arrays through any other route.
 
 ## <a id="capacities"></a>4. The lattice's declared capacity
 
-`kDecodeMaxSpan = 32` (`decode.cuh`), and it is the ONLY one. An owner's
+`kDecodeMaxSpan` (`decode.cuh`: the matcher library's `kLatticeMaxSpan`, 32), and it is the ONLY one. An owner's
 span `s_l` is read as a SINGLE 32-bit slice — both when a level's owner grid is
 built (§1) and when a unit's innermost run is resolved (§3) — so the span is a
 gate and never a slower fallback: the solver's admissibility
 (`lattice_admissible` in [`../common/plan/lattice.md`](../common/plan/lattice.md),
 `kLatticeMaxSpan`) accepts no box with a wider span, so the solver settles on a box whose every span
-the device can walk, before a launch, once, and negotiates nothing at one. A
-`static_assert` in `decode.cu` ties `kLatticeMaxSpan` to `kDecodeMaxSpan`; the decode
+the device can walk, before a launch, once, and negotiates nothing at one.
+`kDecodeMaxSpan` is `kLatticeMaxSpan` by definition; the decode
 build stamp carries `kDecodeMaxSpan`, so a host whose solver outgrew the device's box
 fails a device-side check (`decode_api.md#build-stamp`,
 `tests/unit/test_decode_capacity.py`).

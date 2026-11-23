@@ -881,7 +881,7 @@
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "41db5dbcb26e", "reviewed": true, "sha256": "d79cf1dd50c0ca30", "target": "docs/internals/decode/decode_fold.md#the-identity"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "d5250af8065c", "reviewed": true, "sha256": "", "target": "docs/internals/decode/decode_lattice.md"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "0685c902b308", "reviewed": true, "sha256": "9a28282d31357bf2", "target": "docs/internals/decode/decode_lattice.md#build-lists"},
-  {"doc": "docs/internals/decode/decode.md", "pinned_at": "cdb60b537ac8", "reviewed": true, "sha256": "60dd3c5bcd104902", "target": "docs/internals/decode/decode_lattice.md#capacities"},
+  {"doc": "docs/internals/decode/decode.md", "pinned_at": "98743298ac3f", "reviewed": true, "sha256": "0f20e6c509eb46f9", "target": "docs/internals/decode/decode_lattice.md#capacities"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "0685c902b308", "reviewed": true, "sha256": "083b264505ad7070", "target": "docs/internals/decode/decode_lattice.md#krotlevel"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "0685c902b308", "reviewed": true, "sha256": "c9f672c11c3c7e3c", "target": "docs/internals/decode/decode_lattice.md#the-candidate-slot"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "c9a169d76ceb", "reviewed": true, "sha256": "301d4d09f8161a93", "target": "docs/internals/decode/decode_lattice.md#the-digit-mask"},
