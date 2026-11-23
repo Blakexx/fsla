@@ -38,8 +38,9 @@
 // the four-digit tokens laid in a group's two tile places and on a token on two digits of its group, or a voted loop on
 // that count (`kLooped`: any count, on packets of one step a group, of two, and of four, two, one and one),
 // a fold whose entries' dense lines are its own scattered loads from the tokens' table (`kTabled`: the packet holds a
-// token's index an entry, two bytes, where it held the line; `kSpread` the same rows 32 KB apart, a 2 GB table),
-// and eleven ISOLATION rows (`kAlone`): a
+// token's index an entry, two bytes, where it held the line; `kSpread` the same rows 32 KB apart, a 2 GB table; `kAhead`
+// a window's rows loaded a window ahead, behind the entries of the window before),
+// and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
 // TIMELINE: a fold warpgroup's trip is a window: the image a tile group at a time, four -- the wait on the readout's
@@ -208,7 +209,10 @@ enum Detail : int {
 //: in the packet's header), not a line of the packet; `kSpread` with it: the table's rows 32 KB apart, 2 GB
 static_assert(kOneToken * 16 + 2 * 2 * kGroup <= kOneDense * 16);
 enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 128, kCleared = 256, kCounted = 512, kLooped = 1024,
-                   kTabled = 2048, kSpread = 4096 };
+                   kTabled = 2048, kSpread = 4096,
+                   //: `kAhead` (with `kTabled`): a window's rows are loaded a window ahead, behind the window before's entries
+                   //: (its kernel is 176 / 112 / 48: a fold holds the next window's two lines through its steps)
+                   kAhead = 8192 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -298,24 +302,30 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
   lab::bulk_fence();
   lab::bar_sync(kPoolId + box, kGroup);
   issue_one(0);
+  //: A THREAD'S TWO ENTRIES' DENSE LINES of window `w`: the packet's lines, or (`kTabled`) the fold's own loads from the tokens'
+  //: table -- the entry's token's index, two bytes of the packet's header in global memory, then that token's row, scattered
+  uint4 dense_line[2];
+  const auto rows_of = [&](int w) {
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+      const int e = (tid & (kGroup - 1)) + half * kGroup;
+      if constexpr ((PROBE & kTabled) != 0) {
+        const uint32_t token = reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + kOneToken)[e];
+        dense_line[half] = reinterpret_cast<const uint4*>(table)[(PROBE & kSpread) != 0 ? token << 11 : token];
+      } else {
+        dense_line[half] = (reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + e)[kOneDense];
+      }
+    }
+  };
+  //: (`kAhead`: the first window's, then each window's behind the entries of the window before)
+  if constexpr ((PROBE & kAhead) != 0) rows_of(0);
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     tr.stamp(warpline::kPhaseBegin, kMarkWindow);
     const int g = tid & (kGroup - 1);
     //: A THREAD'S TWO ENTRIES' DENSE LINES, loaded at the window's start: the image phase covers their latency (the
     //: window's line in the views' table is held as 32 bits: no address of it outlives the loads)
-    uint4 dense_line[2];
-#pragma unroll
-    for (int half = 0; half < 2; ++half) {
-      if constexpr ((PROBE & kTabled) != 0) {
-        //: FROM THE TOKENS' TABLE: the entry's token's index, two bytes of the packet's header in global memory, then that
-        //: token's row -- a scattered load, issued at the window's start as the packet's line is
-        const uint32_t token = reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + kOneToken)[g + half * kGroup];
-        dense_line[half] = reinterpret_cast<const uint4*>(table)[(PROBE & kSpread) != 0 ? token << 11 : token];
-      } else {
-        dense_line[half] = (reinterpret_cast<const uint4*>(values) + lab::held(one_line(w)) + g + half * kGroup)[kOneDense];
-      }
-    }
+    if constexpr ((PROBE & kAhead) == 0) rows_of(w);
     //: THE IMAGE, a tile group at a time behind the readout: channel m's fold digits `8 h` to `8 h + 7` of read
     //: digit b truncated to one line of tile b, `(m / 8) 17 + m % 8 + 8 h`, once the readout has read that group
     //: of the window before: 4 stores a thread a group.
@@ -389,6 +399,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
             *reinterpret_cast<uint4*>(image + (h == 0 ? word & 0xffffu : word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
           }
         }
+        if constexpr ((PROBE & kAhead) != 0)
+          if (w + 1 < windows) rows_of(w + 1);
         lab::bulk_fence();
         lab::bar_sync(kPoolId + box, kGroup);
         tr.stamp(warpline::kPhaseBegin, kMarkSteps);
@@ -538,6 +550,8 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
         *reinterpret_cast<uint4*>(image + (h == 0 ? word & 0xffffu : word >> 16) * 16) = make_uint4(pair[0], pair[1], pair[2], pair[3]);
       }
     }
+    if constexpr ((PROBE & kAhead) != 0)
+      if (w + 1 < windows) rows_of(w + 1);
     if constexpr ((DETAIL & kSplitFill) != 0) tr.stamp(warpline::kPhaseBegin, kMarkZero);
     //: A PAD's two lines are zero: a thread's third word, no line loaded and nothing multiplied
     {
@@ -799,7 +813,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   //: EACH ROLE'S WHOLE BODY IN ITS OWN BRANCH, a warpgroup's registers set at the branch's head: the folds' raise is
   //: the release of the readout and of the drains' warpgroup
   if (tid < kReadAt) {
-    lab::regs_up<(PROBE & kAlone) != 0 ? kAloneFoldRegs : (PROBE & (kWide | kSplit | kColumn)) != 0 ? 176 : kFoldRegs>();
+    lab::regs_up<(PROBE & kAlone) != 0 ? kAloneFoldRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 176 : kFoldRegs>();
     if constexpr ((PROBE & kColumn) != 0) {
       //: THE BOX'S WIDTH, its word of the device plan (here its first packet's header, in global memory), read before
       //: the window loop: a fold of each width, each its own straight body
@@ -812,11 +826,11 @@ __global__ void __launch_bounds__(kThreads, 1)
       fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, table, trace, windows);
     }
   } else if (tid < kDrainAt) {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn)) != 0 ? 112 : kReadRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
     else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn)) != 0 ? 48 : kDrainRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
@@ -1062,7 +1076,7 @@ void run(lab::Bench& b, const Buffers& held) {
   const std::string name = std::string("the token-stream carry: both sides") + (LAYOUT == 1 ? ", lists overlapping on shared tokens" : LAYOUT == 2 ? ", groups of four digits" : LAYOUT == 3 ? ", a token on all four digits of its group, groups of four" : LAYOUT == 4 ? ", a token on all four digits of its group, a list a digit" : LAYOUT == 5 ? ", a token on all 16 digits of its box, groups of four on one run of value lines" : LAYOUT == 6 ? ", a token on two digits of its group, groups of four" : LAYOUT == 7 ? ", a token on all four digits of its group, groups of four in a group's two tile places" : LAYOUT == 8 ? ", groups of four taking four, two, one and one steps" : "")
                            + (PROBE & kColumn ? ", the box's width word choosing its fold" : "") + (PROBE & kCleared ? ", its tiles cleared" : "")
                            + (PROBE & kCounted ? ", a group's steps counted at run time" : "") + (PROBE & kLooped ? ", a group's steps a voted loop on its count" : "")
-                           + (PROBE & kSpread ? ", an entry's dense line from a 2 GB table of the tokens" : PROBE & kTabled ? ", an entry's dense line from the tokens' table" : "")
+                           + (PROBE & kSpread ? ", an entry's dense line from a 2 GB table of the tokens" : PROBE & kTabled ? ", an entry's dense line from the tokens' table" : "") + (PROBE & kAhead ? ", loaded a window ahead" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
                                         : TRACE & 1 ? ", the launch's two edges stamped" : "")
@@ -1138,7 +1152,7 @@ void run(lab::Bench& b, const Buffers& held) {
         }
     }
   }
-  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
+  if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread | kAhead)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
   else b.check(name, wrong_state == 0 && wrong_out == 0,
           std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
               + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ");
@@ -1209,7 +1223,10 @@ int main(int argc, char** argv) {
                            {2, 0, kWide | kFull | kCleared | kCounted | kAlone}, {0, 0, kWide | kFull | kCleared | kLooped},
                            {2, 0, kWide | kFull | kCleared | kLooped | kAlone},
                            {0, 0, kWide | kFull | kTabled}, {2, 0, kWide | kFull | kTabled | kAlone}, {0, 0, kWide | kFull | kTabled | kSpread},
-                           {2, 0, kWide | kFull | kTabled | kSpread | kAlone}, {0, 0, kTabled}, {0, 0, kTabled | kSpread}};
+                           {2, 0, kWide | kFull | kTabled | kSpread | kAlone}, {0, 0, kTabled}, {0, 0, kTabled | kSpread},
+                           {0, 0, kWide | kFull | kTabled | kAhead}, {2, 0, kWide | kFull | kTabled | kAhead | kAlone},
+                           {0, 0, kWide | kFull | kTabled | kSpread | kAhead}, {2, 0, kWide | kFull | kTabled | kSpread | kAhead | kAlone},
+                           {0, 0, kTabled | kAhead}, {0, 0, kTabled | kSpread | kAhead}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1306,5 +1323,12 @@ int main(int argc, char** argv) {
   run<2, 0, 3, kWide | kFull | kTabled | kSpread | kAlone>(b, held);
   run<0, 0, 0, kTabled>(b, held);
   run<0, 0, 0, kTabled | kSpread>(b, held);
+  //: THE SAME ROWS LOADED A WINDOW AHEAD
+  run<0, 0, 3, kWide | kFull | kTabled | kAhead>(b, held);
+  run<2, 0, 3, kWide | kFull | kTabled | kAhead | kAlone>(b, held);
+  run<0, 0, 3, kWide | kFull | kTabled | kSpread | kAhead>(b, held);
+  run<2, 0, 3, kWide | kFull | kTabled | kSpread | kAhead | kAlone>(b, held);
+  run<0, 0, 0, kTabled | kAhead>(b, held);
+  run<0, 0, 0, kTabled | kSpread | kAhead>(b, held);
   return 0;
 }
