@@ -8,8 +8,8 @@ numbers rather than holding them (the constitution's R8; [`../KERNEL_STANDARDS.m
 
 A PRODUCT is a card (its row in [`measure/rates.json`](../internals/common/hardware.md#layers), found by the slug of its
 device name). It runs a BUILD -- `Build{cc}`, its architecture's -- and a build belongs to a FAMILY: `hopper` (sm_90, the one built: master is Hopper only, the `ampere` branch the
-frozen reference),
-`blackwell` (sm_100). The family is declared on the architecture's device part, never derived from capability flags; products
+frozen reference). A family exists where a device part states it: Blackwell (sm_100) has no part and so no family in the build.
+The family is declared on the architecture's device part, never derived from capability flags; products
 of one architecture share its kernels.
 
 | what differs | where it lives | selected by |

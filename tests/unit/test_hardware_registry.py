@@ -110,7 +110,8 @@ def test_a_device_part_names_its_architecture_family_and_compute_capability_and_
     path = tree / "parts" / "device" / "hopper_sm90a.json"
     original = json.loads(path.read_text())
     for edit, match in [(lambda d: d.pop("arch"), "names the architecture it is built as"),
-                        (lambda d: d.update(family="ampere"), "names its family"),
+                        (lambda d: d.pop("family"), "names its family"),
+                        (lambda d: d.update(family="Hopper 2"), "names its family"),
                         (lambda d: d.update(arch="sm_80a"), "not the compute capability sm_80a names")]:
         data = json.loads(json.dumps(original))
         edit(data)
