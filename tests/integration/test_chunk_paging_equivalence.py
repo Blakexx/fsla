@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE STATE'S BACKING IS INVISIBLE AND A CONTINUATION IS ONE CALL, at the op (`fsla.prefill`).
 
-The paged arena is the default backing and `fsla.state(backing="dense")` pins the dense plane (docs/api.md section 5):
+The paged arena is the default backing and `fsla.state(backing="dense")` pins the dense plane (docs/api.md section 1):
 the two give the same readout and the same state, bit for bit, on a fresh call and on a continuation. A stateless call
 hands no state back. A call whose writes reach a strict subset of the leaves a previous call wrote leaves every other
 leaf exactly as it found it -- an idle resident page is neither loaded nor stored.

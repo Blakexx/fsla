@@ -46,7 +46,8 @@ constexpr int kUnitBlockWarpsBits = 3;
 static_assert(1 << kUnitBlockWarpsBits == kUnitBlockWarps,
               "kUnitBlockWarpsBits must be log2(kUnitBlockWarps)");
 
-constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdecodemaxspan
+//: the owner span the device reads as one slice: the solver admits no wider one; decode.md#kdecodemaxspan
+constexpr int kDecodeMaxSpan = ::fsla::plan::kLatticeMaxSpan;
 
 //: `expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as -- see docs/internals/decode/decode.md#kdecodemaxexponent
 constexpr float kDecodeMaxExponent = 88.0f;

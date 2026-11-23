@@ -20,7 +20,7 @@ constexpr int kKindW = 0;
 constexpr int kKindR = 1;
 constexpr int kKindRW = 2;   // R_l & W_l
 constexpr int kKindRmW = 3;  // R_l & ~W_l
-constexpr int kKinds = 4;
+constexpr int kKinds = ::fsla::plan::kDecodeListKinds;
 
 //: `D + 2` term slots: the write product, one per level, and -- LAST -- the -- see docs/internals/decode/decode_lattice.md#kmaxterms
 constexpr int kMaxTerms = kMaxLevels + 2;

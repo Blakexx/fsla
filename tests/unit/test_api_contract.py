@@ -503,17 +503,6 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 # ---------------------------------------------------------------------------
 
 
-#: RETIRED at P67 D2-b, both rows of "The seam":
-#: `test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path`
-#: and `test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen`.
-#: Their subject is the plan-as-DATA seam (`Plan`, `derive_plan`, `execute`), which the tiled consumer's deletion takes whole. The second is a real loss and is recorded as
-#: one: it was the adversarial handle a derive-then-immediately-use pipeline does
-#: not have, and the conformance family that used the same handle
-#: (`producer/stale-plan`) retired with it. What replaces the seam is that there is
-#: no plan: the chunk arm's geometry is the manifest's, and `prefill` refuses a pin
-#: over it rather than accepting one it cannot honor.
-
-
 # ---------------------------------------------------------------------------
 # The installed layout
 # ---------------------------------------------------------------------------

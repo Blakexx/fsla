@@ -20,10 +20,10 @@ Symbols: `widths[l]` is level `l`'s width, `D` the levels, `k = 2^kappa` the uni
   side), then the LARGEST `k` (the carry family's codegen unit); the `(1, 1)` box when none is admissible. `(64, 64)` and `(256, 256)` both give `(4, 8)`, and `(16, 16, 16)` gives `k = 2`,
   whose one-level rectangle the `k = 4` box cannot reach.
 - **The atom's rectangle** (`lattice_atom_rectangle`): the trailing levels whose spans multiply into an atom, taken whole, and the digits of the next level out that complete it.
-- **The constants**, each stated once here: `kLatticeCapBc = 128`, the one number of the law that is a CHOICE rather than a consequence (the leaves one owner holds, stated on `BC` rather than on
+- **The constants**, stated here: `kLatticeCapBc = 128`, the one number of the law that is a CHOICE rather than a consequence (the leaves one owner holds, stated on `BC` rather than on
   `m` because `BC = k^D * m` grows with depth); `kLatticeMaxSpan = 32`, the owner span the device reads as one 32-bit slice; `kLatticeMaxSpanK = 4`; `kLatticeAtomLeaves = 16` and its log2
-  `kLatticeAtomShift`, the page granule. The kernel's own statements of the atom (`kAtomLeaves`, `kAtomShift`), of the span limit (`kDecodeMaxSpan`) and of the lists a level takes (`kKinds`) are
-  tied to these by a `static_assert` in `decode.cu`; Python's `MMA_K_QUANTUM` is tied to the atom's leaves by `tests/unit/test_lattice.py`, which reads the constant out of `plan_tool --lattice`,
+  `kLatticeAtomShift`, the page granule. The kernel's span limit (`kDecodeMaxSpan`) and its lists a level takes (`kKinds`, `kDecodeListKinds` of `decode_launch.h`) ARE these, by definition; the atom's
+  leaves have a second statement, the shared geometry's (`kAtomLeaves`, `kAtomShift` in `common/geom.cuh`), tied to these by a `static_assert` in `decode.cu`; Python's `MMA_K_QUANTUM` is tied to the atom's leaves by `tests/unit/test_lattice.py`, which reads the constant out of `plan_tool --lattice`,
   and the build stamp's span limit is tied to the solver's by `tests/unit/test_decode_capacity.py`.
 
 The header takes the level count as a template parameter, not as a constant of its own: `kDecodeMaxLevels` stays the one statement of the depth, in `decode_launch.h`.

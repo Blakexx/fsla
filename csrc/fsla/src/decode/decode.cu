@@ -786,10 +786,8 @@ int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
 
 }  // namespace detail
 
-static_assert(plan::kLatticeAtomLeaves == kAtomLeaves && plan::kLatticeAtomShift == kAtomShift
-                  && plan::kLatticeMaxSpan == kDecodeMaxSpan && plan::kDecodeListKinds == kKinds,
-              "the launch's lattice law and the kernel state its shared constants once each: "
-              "the atom's leaves, the owner span limit and the lists a level takes");
+static_assert(plan::kLatticeAtomLeaves == kAtomLeaves && plan::kLatticeAtomShift == kAtomShift,
+              "the launch's lattice law and the shared geometry state the atom's leaves alike");
 
 int64_t fsla_decode_capacity() { return kDecodeMaxLevelWidth; }
 

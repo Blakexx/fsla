@@ -1222,12 +1222,6 @@
   {
    "path": "tests/unit/test_api_contract.py",
    "message": "names the work code 'D2-b'",
-   "line_sha256": "84cf062aa7dfd91c",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_api_contract.py",
-   "message": "names the work code 'D2-b'",
    "line_sha256": "d04cf8da58f5e6ea",
    "count": 1
   },
@@ -1235,12 +1229,6 @@
    "path": "tests/unit/test_api_contract.py",
    "message": "names the work code 'P67'",
    "line_sha256": "2b527df09e86e2f7",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_api_contract.py",
-   "message": "names the work code 'P67'",
-   "line_sha256": "84cf062aa7dfd91c",
    "count": 1
   },
   {
