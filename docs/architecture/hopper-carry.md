@@ -146,7 +146,7 @@ Skeleton first ([`KERNEL_STANDARDS.md` section 19](../KERNEL_STANDARDS.md#s19)):
 its real signature, shared-memory tenants and barriers, the composition correct in shape; then one component at a
 time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
-1. The prefill launch function: the carve, the folds' split, the units, the window, the grid, the packets'
+1. The prefill launch function (its carve, units and window are built: [`internals/common/plan/prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the carve, the folds' split, the units, the window, the grid, the packets'
    capacities, the ring's size and the workspace's layout, from the descriptor's facts alone; and the mask's counts in
    the library's packing.
 2. The gather from the write masks: fold packets through the ring ([`hopper-gather.md`](hopper-gather.md)), and what

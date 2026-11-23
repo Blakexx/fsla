@@ -221,8 +221,8 @@ read dense allocation than fold, but once thats set, we can partition fold how w
 side its larger extent along a level it walks whole, and inside it the folds split along a level the write side walks by
 its lists first, otherwise along one it walks whole ("take any write sparse level first, otherwise write dense"). Split
 along a listed level, each fold has its own lists, tokens and steps as wide as the box; what the other split would
-share, and what uneven halves cost this one, are not measured, and the launch function that derives the split is owed
-([`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its boxes at entry and exit, so
+share, and what uneven halves cost this one, are not measured, and the launch function derives the split
+([`prefill_launch.md`](internals/common/plan/prefill_launch.md); its grid, ring and arms are owed: [`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its boxes at entry and exit, so
 its read-side warps' union and its write-side warps' union are the same leaves; the CTA's boxes are the SM's at one
 CTA per SM, the goal (R15). Where the accumulator lives (registers, tensor memory) changes how a warp touches its
 share, never who owns what.
