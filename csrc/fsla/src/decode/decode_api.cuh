@@ -25,7 +25,7 @@ void fsla_decode_ledger_bind(const std::optional<Tensor>& ledger);
 //: the phase ledger's warps at the current card's build, what a ledger is sized by; see decode_api.md#decode-ledger-warps
 int64_t fsla_decode_ledger_warps();
 
-//: THE LAUNCH A DESCRIPTOR MEANS on `device`: arm `d_v`, levels, decay; value padding; workspace bytes; alignment; level widths
+//: THE LAUNCH A DESCRIPTOR MEANS on `device`: arm `d_v`, levels, decay; value padding; level widths
 std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t device);
 
 //: THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION -- see docs/internals/decode/decode_api.md#note-l43

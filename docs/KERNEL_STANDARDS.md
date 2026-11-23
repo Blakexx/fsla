@@ -863,8 +863,9 @@ method is a procedure with a gate, not a memory.
 14. EVERY RUN PRINTS THE STANDARD COUNTERS (amended 2026-11-23, Blake's approval of this wording; the priced report it
    replaces could price no built architecture): for every kernel, instructions by pipe, shared-memory traffic by
    kind, L2 sectors, each pipe's measured busy share and the stall reasons
-   ([`tools/pipe_counters.py`](internals/tools/pipe_counters.md), printed by `tools/lab.py run`). A form's floor
-   comes from its timeline ([the stepped-kernel rule](#stepped)), never from a count times a rate. A hand-off
+   ([`tools/pipe_counters.py`](internals/tools/pipe_counters.md), printed by `tools/lab.py run`). A count times a
+   rate gives the floor of perfect overlap and full use (§28): a bound to measure a kernel against. It is never by
+   itself a prediction for a composed kernel, which comes from its timeline ([the stepped-kernel rule](#stepped)). A hand-off
    measured only inside the composed window hid a binding integer pipe that no gate printed: the measured busy
    share shows one. A budget states its instructions by class; a kernel over 1.3x its floor names the stall that
    holds it.
