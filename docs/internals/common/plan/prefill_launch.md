@@ -26,8 +26,8 @@ Levels are 0-based. A level is LISTED on a side when that side's `*_listed` fact
   (4) else -1 (a call of one level has that level in both roles). `boxes_per_cta` is 2 with a pair level, else 1. A pair level outside the box's levels doubles neither the lists nor
   the columns: the CTA's two boxes are the same box digits at two neighbouring digits of that level.
 - R4, THE FOLDS' SPLIT (CONSTITUTION R20: along a write-sparse level first, otherwise write dense). `split_level` is the write side's list level when the write side walks
-  it by its lists, else the pair level (the write side's list level where there is no pair). The CTA's region is 16 digits of each level in the box, 32 along the pair
-  level; a fold is half the region along the split level. `fold_lists` and `fold_columns` are the fold's extents along the write side's list and column levels; `fold_outer` is its
+  it by its lists, else the pair level (the write side's list level where there is no pair). The CTA's region is 16 digits of each level in the box, doubled along the pair
+  level -- 32 digits of a pair level in the box, 2 of one outside it (a box covers one digit of a level with no bits in it); a fold is half the region along the split level. `fold_lists` and `fold_columns` are the fold's extents along the write side's list and column levels; `fold_outer` is its
   extent in boxes along a pair level that is not one of the box's two levels: 2 where there is one and the folds do not split along it, else 1. A fold's leaves are
   `fold_lists * fold_columns * fold_outer`: 256 with a pair, 128 without.
   Where the write side's lists and columns are one level's bits (a call of one level), the pair and the split take its lists, the high bits: 16 and 16 with a pair, 8 and 16
