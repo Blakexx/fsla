@@ -19,6 +19,8 @@ with no CPU path by design, and executing a synthetic plan means executing.
 """
 from __future__ import annotations
 
+import importlib
+
 import pytest
 import torch
 
@@ -410,18 +412,15 @@ def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
 # ---------------------------------------------------------------------------
 
 
-def test_no_launch_geometry_is_reachable_from_the_top_level():
+def test_no_descriptor_builder_is_exported_and_there_is_no_expert_door():
     """The planner's own answers are HOW the op runs, not what the model is: the producer's descriptor rules and the envelope's
-    sentence live behind a marked door, never one shelf below the model types.
-    """
-    #: The set names what is BEHIND the door today; the RULE is what this row states
-    #: and it does not move when the set does: launch geometry is behind the marked
-    #: door, never at the top level.
-    quarantined = {"decode_descriptor", "prefill_descriptor", "requires_backward"}
-    import fsla.expert as expert
-
-    assert quarantined.isdisjoint(fsla.__all__)
-    assert quarantined.issubset(set(expert.__all__))
+    gradient predicate are the library's own, never one shelf below the model types, and no module of the package re-exports them."""
+    #: The set names what the top level does not export today; the RULE is what this row states
+    #: and it does not move when the set does: launch geometry is never at the top level.
+    internal = {"decode_descriptor", "prefill_descriptor", "requires_backward"}
+    assert internal.isdisjoint(fsla.__all__)
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("fsla.expert")
 
 
 def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out():
@@ -448,12 +447,10 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 
 def test_the_calls_carry_only_their_inputs_and_no_plan_object_exists():
     """A call is `op(inputs...)`: the pinned parameter lists of the prefill and the decode step are the surface, the descriptor and the workspace are
-    not exported, and no plan object is reachable from the layer, the expert door or the engine."""
+    not exported, and no plan object is reachable from the layer or the engine."""
     import inspect
 
     import fsla.engine as engine
-    import fsla.expert as expert
-    from fsla.ops.produce import prefill_descriptor
 
     op = inspect.signature(fsla.prefill).parameters
     assert list(op) == ["routes", "values", "masks", "state", "decay"]
@@ -462,14 +459,12 @@ def test_the_calls_carry_only_their_inputs_and_no_plan_object_exists():
     step = inspect.signature(fsla.decode_step_gated).parameters
     assert list(step) == ["routes", "values", "masks", "state", "decay"]
     assert step["decay"].kind is inspect.Parameter.KEYWORD_ONLY and step["decay"].default is None
-    assert list(inspect.signature(prefill_descriptor).parameters) == [
-        "topology", "d_v", "decay", "tokens", "batch_heads", "stateful", "device"]
     for gone in ("Descriptor", "descriptor", "workspace_bytes", "build_workspace", "prefill_descriptor", "decode_descriptor", "fsla_op"):
         assert not hasattr(fsla, gone) and gone not in fsla.__all__
     for kept in ("growth_pending", "admit_growth", "pool_headroom", "refill_pool"):
         assert kept in fsla.__all__
     for gone in ("PrefillPlan", "prefill_plan", "Carve", "SidePlan"):
-        assert not hasattr(expert, gone) and not hasattr(engine, gone) and gone not in fsla.__all__
+        assert not hasattr(engine, gone) and gone not in fsla.__all__
     for gone in ("prefill_plan", "segment_tokens", "state_bytes"):
         assert not hasattr(fsla.FSLA, gone)
 
@@ -511,8 +506,7 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 #: RETIRED at P67 D2-b, both rows of "The seam":
 #: `test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path`
 #: and `test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen`.
-#: Their subject is `fsla.expert.{Plan, derive_plan, execute}` -- the plan-as-DATA
-#: seam -- which the tiled consumer's deletion takes whole. The second is a real loss and is recorded as
+#: Their subject is the plan-as-DATA seam (`Plan`, `derive_plan`, `execute`), which the tiled consumer's deletion takes whole. The second is a real loss and is recorded as
 #: one: it was the adversarial handle a derive-then-immediately-use pipeline does
 #: not have, and the conformance family that used the same handle
 #: (`producer/stale-plan`) retired with it. What replaces the seam is that there is

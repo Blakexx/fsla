@@ -34,7 +34,7 @@ parameters carry. The three parts are composed from three functions and stay str
 EVERY CONTEXT OF DECODE'S CONTRACT IS A DECODE STEP, so the matcher tests no call kind. THERE IS NO DECODE PLAN. The op takes its data (`op(data...)`) and builds the descriptor itself: the descriptor is every device fact and every call fact,
 immutable and hashable, and everything derived from those facts (the widths and offsets above, the arm, the threads, the lattice, the layout, the grid) is computed by this one launch
 function right before the launch and never stored. The level widths and the write side's walk of each level are CALL FACTS because the caller's declaration decides them
-(`fsla.ops.produce.decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and
+(`fsla.ops.produce._decode_descriptor` states them: a width as its log2 -- a level's width is a power of two, `fsla/_state.py`'s `StateFormat` -- and
 the `write_listed_k` of the producer's rule over the declaration; `write_dense` is derived from the innermost level's); a width the contract does not hold is refused when the descriptor is made, naming the fact
 ([`../../hardware/registry.md`](../../hardware/registry.md#parts)). The state plane's leaf order is no fact of the call: it is the lattice of the call's level widths, which this function solves
 (`fsla.ops.decode.lattice_of` reads the same solve through the extension for the oracle and test seam); the

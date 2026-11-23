@@ -33,11 +33,11 @@ from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decode import _decode_step, fold_levels, lattice_of
 from fsla.ops.lattice import permutation
 from fsla.ops.paging import decode_pages
-from fsla.ops.produce import decode_descriptor
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.types import Topology, UnionRouting
 from fsla.values import Values
+from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import masks_of, state_pages
 
 pytestmark = [

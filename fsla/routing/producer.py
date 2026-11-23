@@ -111,8 +111,8 @@ class Routing:
             column rather than pinning it to 1, so no dead parameter is optimized.
         gain_bias_init: initialize the gain bias so an all-zero-logit gain starts at
             this value. ``None`` leaves it at zero (unit gain at zero logits).
-        gain_config: the research surface behind ``gain``, reachable from
-            :mod:`fsla.expert` and deliberately not part of the contract.
+        gain_config: the research surface behind ``gain``, importable
+            from :mod:`fsla.routing.side_gain` and deliberately not part of the contract.
         bias: a learned bias on the routing projection.
 
     Construction validates the whole declaration, so an unbuildable model fails here and never inside a forward.

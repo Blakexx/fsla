@@ -64,7 +64,7 @@ import torch
 from fsla.ops.decode import _decode_step, _write_atom_bitmap, decode_launch, lattice_of
 from fsla.ops.lattice import permutation, to_canonical
 from fsla.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
-from fsla.ops.produce import decode_descriptor
+from tests.descriptors import decode_descriptor
 
 pytestmark = [
     pytest.mark.cuda,

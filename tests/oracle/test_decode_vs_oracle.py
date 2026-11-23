@@ -56,11 +56,11 @@ import torch
 from fsla.ops.decode import _decode_step, decode_launch, lattice_of
 from fsla.ops.lattice import permutation, to_canonical, to_lattice
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_descriptor
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.types import LeafMassDecay
 from fsla.values import Values
+from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import (
     assert_planted_errors_fail,
     assert_slots_close,

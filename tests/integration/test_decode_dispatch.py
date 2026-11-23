@@ -242,8 +242,8 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     """
     from fsla.ops.decode import _decode_step, decode_launch
     from fsla.ops.paging import page_layout
-    from fsla.ops.produce import decode_descriptor
     from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    from tests.descriptors import decode_descriptor
     from tests.oracle.fixtures import step_bundles
 
     device = "cuda"

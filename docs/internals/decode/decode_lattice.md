@@ -28,7 +28,7 @@ Symbols, restated from the spec at first use here: `D` the number of routing
 levels; `B_l` level `l`'s width; `k = 2^kappa` the uniform per-level sub-box
 span; `m = prod_l m_l` the capacity multiplier, distributed innermost-first to
 the atom floor, capped by the level's own width and balanced over the rest
-(spec §2.5 as the atom-rectangle law generalizes it, `lattice_box` in `lattice.h`);
+(the law of [`../common/plan/lattice.md`](../common/plan/lattice.md), `lattice_box` in `lattice.h`);
 `s_l = k * m_l` an owner's span at level `l`; `g_l = B_l / s_l` the owner-grid
 extent; `BC = prod_l s_l` the leaves one owner holds; `atom` the 16-leaf page
 granule (`fsla::carry::kAtomLeaves`).
@@ -362,8 +362,8 @@ span `s_l` is read as a SINGLE 32-bit slice — both when a level's owner grid i
 built (§1) and when a unit's innermost run is resolved (§3) — so the span is a
 gate and never a slower fallback: the solver's admissibility
 (`lattice_admissible` in [`../common/plan/lattice.md`](../common/plan/lattice.md),
-`kLatticeMaxSpan`) accepts no box with a wider span, so the host refuses a topology
-the device could not walk before a launch, once, and negotiates nothing at one. A
+`kLatticeMaxSpan`) accepts no box with a wider span, so the solver settles on a box whose every span
+the device can walk, before a launch, once, and negotiates nothing at one. A
 `static_assert` in `decode.cu` ties `kLatticeMaxSpan` to `kDecodeMaxSpan`; the decode
 build stamp carries `kDecodeMaxSpan`, so a host whose solver outgrew the device's box
 fails a device-side check (`decode_api.md#build-stamp`,
@@ -380,8 +380,7 @@ constraint on it. The solver picks only a box that satisfies them (`lattice_box`
 
 - `k` and `m` are exact powers of two;
 - per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (K6: an
-  owner sits inside a level — `m_l` is spec §2.5 as the atom-rectangle law
-  generalizes it, innermost first to the atom floor, capped by the level's own
+  owner sits inside a level — `m_l` is distributed innermost first to the atom floor, capped by the level's own
   width and balanced over the rest, `lattice_box`);
 - `owners * BC == N` — the lattice PARTITIONS the leaf space exactly, with no
   remainder leaf and no double-covered one.
@@ -412,9 +411,8 @@ nothing. Python solves nothing: it reads the same solve through the extension.
 ## <a id="the-seam"></a>6. `fsla.ops.lattice` — the oracle and test seam, and nowhere else
 
 `permutation(widths, k, m)` builds `pi`, an `[N]` int64 tensor with
-`pi[canonical_leaf] = lattice_leaf` — spec §2.4's theorem that `pi` is a FIXED
-BIT PERMUTATION, computed here as the explicit mixed-radix formula (spec
-§2.3's forward map) rather than assumed, over the box the extension returns
+`pi[canonical_leaf] = lattice_leaf` — `pi` is a FIXED
+BIT PERMUTATION, computed here as the explicit mixed-radix formula rather than assumed, over the box the extension returns
 (`fsla_decode_lattice_box`). `to_lattice`/`to_canonical` are the
 one legal place a state plane crosses between the oracle's canonical leaf
 order and the lattice order the kernel is BORN in: `to_lattice` via
@@ -434,7 +432,7 @@ rather than a consequence: the leaves ONE OWNER holds, which is what the carry
 family's register budget bounds, and the ceiling the solver searches down from.
 It is stated as `BC` rather than as a capacity multiplier because `BC = k^D * m`
 grows with DEPTH — a ceiling on `m` bounds the box at one `D` only, and `m = 8`
-is a box of 128 at `D = 2` and 2048 at `D = 4`. The objective is spec §7.3's in
+is a box of 128 at `D = 2` and 2048 at `D = 4`. The objective, in
 its order: maximize `BC` under the cap, then the SHALLOWEST atom rectangle, then
 the largest `k` (`lattice_solve`). That reproduces the built arms (`(64,64)` and `(256,256)` both
 `(4, 8)`) and selects `k = 2` at `(16,16,16)`, whose one-level rectangle the

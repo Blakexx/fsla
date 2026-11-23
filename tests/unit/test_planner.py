@@ -167,7 +167,7 @@ def test_a_forced_grid_replaces_the_planned_one_at_every_count_the_device_could_
 
 def test_the_depth_is_one_number_the_launch_header_and_the_width_facts_agree_on():
     """Decode's depth is stated by `kDecodeMaxLevels` (the launch header, which sizes the per-level arrays of `DecodeArgs` and, through `decode.cuh`, the kernel's)
-    and by the call's `width_bits_k` facts (which `fsla.ops.produce.decode_descriptor` reads from the planner): adding a fact without raising the constant, or the
+    and by the call's `width_bits_k` facts (which `fsla.ops.produce._decode_descriptor` reads from the planner): adding a fact without raising the constant, or the
     reverse, fails here; a call of the deepest level plans, one level deeper is outside the contract."""
     from fsla.ops._ext import extension
 

@@ -112,8 +112,7 @@ and the facade calls the engine, never the reverse. The device clause is the rul
 owed descriptor's (`docs/internals/hardware/registry.md#the-owed-folder`): a prefill has ONE path to each refusal.
 
 The descriptor is the same statement from the other end. Its facts are read by `common/plan/` and by the checks of its own surface, and the engine handles the descriptor as an opaque value; the
-type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §5). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface` OR
-`fsla.expert`, at import time or inside a body: a deferred import in a function body
+type is `fsla.ops.descriptor.Descriptor` (`docs/api.md` §1). NO MODULE UNDER `fsla/engine/` IMPORTS `fsla.interface`, at import time or inside a body: a deferred import in a function body
 hides an inversion from the import graph without removing it, so the rule layer holds
 none.
 

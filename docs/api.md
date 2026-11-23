@@ -44,7 +44,7 @@ and not be exposed to the user, and have the public contract carry all inputs, w
 agreed: yes. A call carries ALL ITS INPUTS and nothing else: the rows, the values, the masks, the state and the decay dial, which is what changes the
 mathematics. Each call builds its own DESCRIPTOR -- the validated run-time context, every device fact and every call fact, checked against the
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
-operands' device (`fsla.ops.produce`'s memoized builders, §5). The WORKSPACE is internal, sized by the call's descriptor and passed between the
+operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
 call's steps: the prefill's holds the ring and the device plan
 ([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)) and its layout is owed ([`open-work.md`](open-work.md) A-g); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
@@ -76,8 +76,8 @@ See [`internals/state.md`](internals/state.md#the-slack-pool) and
 [`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
 
 There is no plan object. There is no configuration argument and no statistics argument: those are not model facts -- they are
-how the op RUNS. The descriptor and the workspace are internal to each call; the producer's descriptor rules are behind
-[`fsla.expert`](#5-the-expert-surface). The prefill kernel is not built, so the descriptor of a prefill the
+how the op RUNS. The descriptor and the workspace are internal to each call: it builds them from its operands through the producer's cached
+builders (`fsla.ops.produce`); the tests have a helper for it (`tests/descriptors.py`). The prefill kernel is not built, so the descriptor of a prefill the
 contract holds as OWED is refused when it is made, as `KernelNotBuilt` naming `prefill`
 ([`internals/hardware/registry.md`](internals/hardware/registry.md#the-owed-folder)).
 
@@ -111,9 +111,20 @@ No activation reaches the op: it computes on the factors and the masks the produ
 produced them, so there is no row for an activation here. What a producer supports is its own registry
 (`fsla/routing/activations.py`, the layer's configuration selecting one).
 
-Ask before calling: making the call's descriptor (`fsla.expert.prefill_descriptor`) IS the question, and the prefill asks it itself after validating its operands. A prefill is refused there as `KernelNotBuilt` naming
-`prefill` while no carry is built, operands that are not on a CUDA device are refused there naming the device, and a call outside the contract is
-refused naming the facts. A call that carries a gradient is refused by name before any of them (`BackwardNotImplemented`).
+A call outside the contract is refused by name when it is made, and the supported configurations are the generated table in the README. The call builds its descriptor after
+validating its operands: a prefill is refused there as `KernelNotBuilt` naming
+`prefill` while no carry is built, operands that are not on a CUDA device are refused there naming the device, and any other call outside the contract
+is refused naming the facts. A call that carries a gradient is refused by name before any of them (`BackwardNotImplemented`).
+
+**A walk is an action.** `read_listed_k` (the prefill's call) and `write_listed_k` (both kernels') state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a walk costs time and never the result.
+
+**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
+is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
+hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
+`descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
+and the workspace's builder (`fsla.ops.prefill`'s private builder) belong to the library's own code and tests, and are not on the top level. The
+state's BACKING is the state's own, chosen when it is made -- `fsla.state(backing="paged")`, the default, or `"dense"`, one dense plane, the bit-identity gate's -- never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
+clause it expects, and the descriptor of a call answers the same question before it.
 
 **The envelope is narrow, and that is stated rather than softened.** Shapes outside the
 matrix are refused, and there is NO TRAINING PATH through this surface until the native
@@ -520,39 +531,7 @@ global, so a boundary on a window boundary moves no pair: a segmented call is th
 The launch function is not written, so the question cannot be answered: a budgeted prefill is refused by name (`KernelNotBuilt`, kernel
 `prefill`) in the layer, before the producer or any descriptor.
 
-## 5. The expert surface
-
-`fsla.expert` holds everything BELOW the contract line — the dispatch's own answer,
-the pins over axes the op otherwise decides, and the fine-grained gain layout behind
-the layer's one public flag:
-
-```python
-from fsla.ops.produce import prefill_descriptor
-descriptor = prefill_descriptor(routes.topology, d_v=d_v, decay=False, tokens=T, batch_heads=B * H, stateful=False)
-```
-
-| name | what it is |
-|---|---|
-| `prefill_descriptor(topology, *, d_v, decay, tokens, batch_heads, stateful, device=None)` | the producer-owned prefill rule: the validated descriptor of a prefill call, which `prefill` builds for itself through the same memoized builder, its facts stated from the declaration (each level's padded width as its log2 and each side's walk of each level) and from the caller (`tokens`, `batch_heads`, `stateful`, and nothing else: the state's backing is the state's and the memory budget the layer's). A prefill is OWED, so it is refused as `KernelNotBuilt` naming `prefill` |
-| `decode_descriptor(topology, *, d_v, decay, batch_heads, device=None)` | the producer-owned decode rule: the validated descriptor of a decode call (`fsla.ops.descriptor.descriptor`'s form), its facts stated from the declaration -- each level's width (`width_bits_1` .. `width_bits_4`, the log2) and the write side's walk of each level (`write_listed_k`; the launch function derives whole-atom deposit from the innermost level's) and `batch_heads`, B times H -- which the decode step builds for itself from the bundles, through the same memoized builder, with no device read after its first call. There is no decode plan: everything derived from the facts is the planner's launch function's, computed right before the launch and never stored ([`internals/common/plan/decode_launch.md`](internals/common/plan/decode_launch.md)) |
-| `requires_backward` | the gradient-reachability predicate the envelope's first clause is built from |
-| `GainConfig` | the two-boolean gain layout behind the public `gain` flag |
-
-The contract for everything there is **stable construction, advisory contents**:
-build these objects and pass them; do not assert on their fields.
-
-**A walk is an action.** `read_listed_k` (the prefill's call) and `write_listed_k` (both kernels') state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a caller may state any valid walk, and a wrong one costs time and never the result.
-
-**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
-is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
-hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
-`descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
-and the workspace's builder (`fsla.ops.prefill`'s private builder) are importable from their modules for
-the library's own code and tests, and are not on the top level. The
-state's BACKING is the state's own, chosen when it is made -- `fsla.state(backing="paged")`, the default, or `"dense"`, one dense plane, the bit-identity gate's -- never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
-clause it expects, and the descriptor of a call answers the same question before it.
-
-## 6. What is deliberately not here
+## 5. What is deliberately not here
 
 - **No dict or JSON configuration surface.** Raw configuration belongs to consumers. The
   library type-checks structured objects and parses nothing.

@@ -87,8 +87,8 @@ construction). No address in either backing is computed from it: both are keyed 
 ## <a id="paged-address"></a>4. Paged and dense are ONE walk
 
 <a id="the-atom"></a><a id="katomshift"></a>The page granule is the **atom** — `kAtomLeaves = 16`
-consecutive leaves in LATTICE leaf order, spec §4.5's
-`page_states := MMA_K_QUANTUM`. Under the mixed-radix intra-box order an atom is 16
+consecutive leaves in LATTICE leaf order, the paged state's page size
+(`MMA_K_QUANTUM` in Python). Under the mixed-radix intra-box order an atom is 16
 consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
 every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
 level straddling it keeps an aligned contiguous sub-run, and the levels below are free
@@ -998,7 +998,7 @@ instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 
 ## The write term by whole atoms
 
 When the innermost level's WRITE side is not listed (every digit of it is walked, the producer's choice for a declaration whose activation has no exact
-zeros; the launch function's `write_dense`, derived from the descriptor's innermost `write_listed_k`, which the producer's rule `fsla.ops.produce.decode_descriptor` states from `Topology.activation_properties`) and the innermost
+zeros; the launch function's `write_dense`, derived from the descriptor's innermost `write_listed_k`, which the producer's rule `fsla.ops.produce._decode_descriptor` states from `Topology.activation_properties`) and the innermost
 run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
 takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
 (leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a

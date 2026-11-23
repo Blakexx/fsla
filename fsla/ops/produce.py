@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from fsla.engine.facts.operands import requires_backward
-from fsla.ops._ext import device_index, not_built
+from fsla.ops._ext import not_built
 from fsla.ops.descriptor import Descriptor, call_facts, descriptor
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.factors import RouteFactors
@@ -36,7 +36,7 @@ from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
 from fsla.values import Values
 
-__all__ = ["ProducerWeights", "activation_walks", "decode_descriptor", "hidden_contiguous", "level_facts", "prefill_descriptor",
+__all__ = ["ProducerWeights", "activation_walks", "hidden_contiguous", "level_facts",
            "produce_decode", "produce_prefill", "projection_dtype", "route_logits"]
 
 
@@ -214,31 +214,10 @@ def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int
     return facts
 
 
-def decode_descriptor(topology, *, d_v: int, decay: bool, batch_heads: int, device=None) -> Descriptor:
-    """THE PRODUCER-OWNED DECODE RULE: the step's validated descriptor on ``device`` (the current device for ``None``), the call's
-    facts stated from the declaration -- each level's write-side walk (``write_listed_k``: the planner's launch function
-    derives the whole-atom deposit from the innermost level's) and each level's width as its log2 -- and from the caller: ``batch_heads``,
-    B times H. A width or an extent outside the contract is refused when the descriptor is made, naming the fact. Memoized by the call
-    and the device: a dictionary lookup, no device read after the first."""
-    return _decode_descriptor(topology, int(d_v), bool(decay), int(batch_heads), device_index(device))
-
-
 @cache
 def _decode_descriptor(topology, d_v: int, decay: bool, batch_heads: int, device: int) -> Descriptor:
     return descriptor(kernel="decode", device=device, d_v=d_v, decay=int(decay), batch_heads=batch_heads,
                       **level_facts("decode", topology, tuple(topology.widths)))
-
-
-def prefill_descriptor(topology, *, d_v: int, decay: bool, tokens: int, batch_heads: int, stateful: bool, device=None) -> Descriptor:
-    """THE PRODUCER-OWNED PREFILL RULE: the prefill's validated descriptor on ``device`` (the current device for ``None``), the call's facts stated
-    from the declaration (each side's walk of each level, each level's padded width as its log2) and from the caller: ``tokens``, the call's length;
-    ``batch_heads``, B times H; ``stateful``, whether a state is handed in or out. The state's backing is the state's own (``fsla.state(backing=)``) and
-    the memory budget the layer's: neither is a fact of the op's call.
-
-    A call the contract holds only as OWED -- the prefill kernel is not built -- is refused here as :class:`fsla.ops._ext.KernelNotBuilt`
-    naming each kernel it waits on; a call in neither the contract nor an owed descriptor is refused naming the facts, as every call is.
-    Memoized by the call and the device."""
-    return _prefill_descriptor(topology, int(d_v), bool(decay), int(tokens), int(batch_heads), bool(stateful), device_index(device))
 
 
 @cache

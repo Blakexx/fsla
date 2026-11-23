@@ -112,7 +112,7 @@ def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
 @cache
 def lattice_of(widths: tuple[int, ...]) -> tuple[int, int]:
     """The ``(k, m)`` box the state plane's leaves are ordered by: the launch function's solve for the level widths, read from the
-    extension (`fsla_decode_lattice`, a pure function of the widths); the leaf order travels with the plane."""
+    extension (`fsla_decode_lattice`, a pure function of the widths): the leaf order is a function of the widths and is never passed."""
     k, m = extension().fsla_decode_lattice(list(widths))[:2]
     return int(k), int(m)
 
@@ -207,13 +207,12 @@ def check_descriptor(descriptor: Descriptor, routes, device: torch.device) -> No
     ``batch_heads`` is the bundle's B times H, and its device is the values'."""
     widths = tuple(routes.topology.widths)
     if descriptor.kernel != "decode":
-        raise ValueError(f"the descriptor is a {descriptor.kernel} call's; fsla.ops.produce.decode_descriptor builds a decode step's")
+        raise ValueError(f"the descriptor is a {descriptor.kernel} call's; a decode step's is built by the call from its bundles")
     if widths != decode_launch(descriptor).widths:
         raise ValueError(f"the descriptor is for widths {decode_launch(descriptor).widths}, the bundle's are {widths}")
     if descriptor["batch_heads"] != routes.batch * routes.heads:
         raise ValueError(f"the descriptor states batch_heads={descriptor['batch_heads']}; the bundle's B times H is "
-                         f"{routes.batch} * {routes.heads} = {routes.batch * routes.heads}: build the descriptor from this call "
-                         "(fsla.ops.produce.decode_descriptor)")
+                         f"{routes.batch} * {routes.heads} = {routes.batch * routes.heads}: build the descriptor from this call")
     if descriptor.device != device.index:
         raise ValueError(f"the descriptor was made for device {descriptor.device}; the values are on {device}")
 

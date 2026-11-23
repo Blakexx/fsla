@@ -36,7 +36,7 @@ import torch
 from fsla.ops._ext import extension
 from fsla.ops.decode import _decode_step
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_descriptor
+from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import assert_reordered_close, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex, _topology
 

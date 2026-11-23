@@ -56,7 +56,7 @@ def _descriptor(kernel: str, device: int, call: tuple[tuple[str, int], ...]) -> 
 def descriptor(*, kernel: str, device=None, **call) -> Descriptor:
     """THE VALIDATED DESCRIPTOR of a call of ``kernel`` on ``device`` (the current device when ``None``): the device's facts, read once by the
     planner, and the call's (every call fact of the kernel's registry: its extents, its value width and decay, each level's ``width_bits_k`` and its
-    walks, which :func:`fsla.ops.produce.decode_descriptor` and :func:`fsla.ops.produce.prefill_descriptor` state from a declaration). A context outside
+    walks, which the producer's cached builders (``fsla.ops.produce``) state from a declaration). A context outside
     the kernel's contract is refused here, before any launch, naming the facts; one the contract holds as OWED (its kernels are not built) is refused as
     :class:`~fsla.ops._ext.KernelNotBuilt` naming each kernel it waits on."""
     return _descriptor(kernel, device_index(device), tuple(sorted((name, int(value)) for name, value in call.items())))

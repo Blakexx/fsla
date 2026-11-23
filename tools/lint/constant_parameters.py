@@ -30,7 +30,7 @@ definition's docstring naming the parameter, is the declaration. It carries a RE
 which is the whole point: "reserved" without one is indistinguishable from dead.
 
 WHO COUNTS AS A CALLER. Every call under `fsla/`, `tools/` and `measure/`, and the tests' calls to the PUBLIC
-surface (the names `fsla` and `fsla.expert` export): a public option a test exercises is a feature under test, while
+surface (the names `fsla` exports): a public option a test exercises is a feature under test, while
 an internal knob only a test sets is a test hook in production code, which says so with `reserved:`. A constructor's
 parameters are keyed by its class, since a call names the class.
 
@@ -63,7 +63,7 @@ ROOTS = ("fsla", "tools", "measure", "bazel")
 #: only a test sets there is a test hook in production code.
 CALLER_ROOTS = ("tests",)
 #: the modules whose `__all__` is the public surface
-PUBLIC_MODULES = ("fsla/__init__.py", "fsla/expert.py")
+PUBLIC_MODULES = ("fsla/__init__.py",)
 
 #: The declaration that a knob is deliberately unexercised, with its reason beside it.
 MARKER = "reserved:"

@@ -180,7 +180,7 @@ def _widths_topology(widths, *, write=None):
 
 @pytest.fixture()
 def captured(monkeypatch):
-    """`decode_descriptor` with the planner replaced by a recorder of the call it states: the facts are the producer's, the check is the contract's."""
+    """`tests.descriptors.decode_descriptor` with the planner replaced by a recorder of the call it states: the facts are the producer's, the check is the contract's."""
     from fsla.ops import produce
 
     seen = []
@@ -197,7 +197,7 @@ def captured(monkeypatch):
 def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_the_depth(captured, widths, bits):
     """THE WIDTHS ARE CALL FACTS: `width_bits_k` is the log2 of level k's width, 0 for a level the call does not have; the depth is `levels`. A width
     below the floor (8) is stated as it is: the contract refuses it, naming `width_bits_k` (`tests/unit/test_planner.py`)."""
-    from fsla.ops.produce import decode_descriptor
+    from tests.descriptors import decode_descriptor
 
     decode_descriptor(_widths_topology(widths), d_v=48, decay=True, batch_heads=4, device=0)
     (call,) = captured
@@ -210,8 +210,8 @@ def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_produce
     """THE PRODUCER'S RULE: a level a side walks by lists (`read_listed_k` of the prefill, `write_listed_k` of both kernels, 1) is one whose activation has exact zeros -- an opaque level
     may have them; a softmax has none. A level beyond the depth is 0. The planner's launch function derives the whole-atom deposit from the innermost
     level's write flag."""
-    from fsla.ops.produce import decode_descriptor
     from fsla.routing.types import SoftmaxActivation
+    from tests.descriptors import decode_descriptor
 
     decode_descriptor(_widths_topology((16, 16)), d_v=64, decay=False, batch_heads=1, device=0)
     decode_descriptor(_widths_topology((16, 16), write=SoftmaxActivation()), d_v=64, decay=False, batch_heads=1, device=0)
@@ -223,7 +223,7 @@ def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_produce
 @pytest.mark.parametrize("widths, level, width", [((24, 16), 1, 24), ((16, 31), 2, 31)])
 def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_level(captured, widths, level, width):
     """A width the contract states by its log2 must be one: the refusal names the level and the fact, before the planner is asked."""
-    from fsla.ops.produce import decode_descriptor
+    from tests.descriptors import decode_descriptor
 
     with pytest.raises(ValueError, match=rf"level {level}'s width is {width}: a level's width is a power of two .*width_bits_{level}"):
         decode_descriptor(_widths_topology(widths), d_v=64, decay=False, batch_heads=1, device=0)
@@ -231,9 +231,9 @@ def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_le
 
 
 def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declarations_walks_and_padded_widths(captured):
-    """THE PREFILL'S DESCRIPTOR, `fsla.ops.produce.prefill_descriptor`: the kernel (`prefill`), the caller's extents and declarations, and from the declaration
+    """THE PREFILL'S DESCRIPTOR, `tests.descriptors.prefill_descriptor`: the kernel (`prefill`), the caller's extents and declarations, and from the declaration
     each level's PADDED width as its log2 and each side's walk; a declared budget of `None` is the fact 0."""
-    from fsla.ops.produce import prefill_descriptor
+    from tests.descriptors import prefill_descriptor
 
     prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, device=0)
     prefill_descriptor(_widths_topology((64, 64)), d_v=48, decay=True, tokens=1, batch_heads=1, stateful=False, device=0)

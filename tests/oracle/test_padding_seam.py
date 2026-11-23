@@ -36,8 +36,8 @@ from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.padding import pad_routes, pad_v
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_descriptor
 from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import assert_reordered_close, logical_state, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
 

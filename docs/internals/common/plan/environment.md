@@ -17,7 +17,7 @@ against `K`'s contract and refuses a descriptor read on another device than the 
 `plan_api.cuh` declares what `fsla_api.cpp` binds, each taking the kernel's name: `fsla_call_facts(kernel)` (the kernel's call fact names, comma-separated, in the order the values go),
 `fsla_descriptor(kernel, device, call)` (the descriptor's words) and `fsla_owed_kernels(kernel, device, call)` (the kernels a call inside an owed descriptor waits on). `fsla_decode_launch(descriptor, device)`, `fsla_decode_lattice(widths)` and `fsla_decode_lattice_box(widths, k, m)` are decode's
 ([`../../decode/decode_api.md`](../../decode/decode_api.md)). `fsla/ops/descriptor.py` is their Python face: `fsla.ops.descriptor.descriptor(kernel=, d_v=, levels=, decay=, batch_heads=, width_bits_1= .. width_bits_4=, ...)`
-(the call facts of `hardware/kernels/<kernel>/schema.json`; `fsla.ops.produce.decode_descriptor` and `prefill_descriptor` state them from a declaration) builds the validated, hashable `Descriptor`, which says which kernel it is of
+(the call facts of `hardware/kernels/<kernel>/schema.json`; `fsla.ops.produce._decode_descriptor` and `_prefill_descriptor` state them from a declaration) builds the validated, hashable `Descriptor`, which says which kernel it is of
 (cached by kernel, device and call; a context
 the kernel's contract holds only as OWED is refused as `KernelNotBuilt` naming its kernels, [`../../hardware/registry.md`](../../hardware/registry.md#the-owed-folder)). The calls build their descriptors themselves (`fsla.ops.produce`'s cached builders); none of these is on `fsla`'s top level.
 

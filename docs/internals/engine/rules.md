@@ -40,7 +40,7 @@ reads exactly whether each is there.
 
 What a rule folds is ENGINE VOCABULARY, which is what keeps the layer at the bottom of
 the import graph: no rule here names the descriptor's type: the engine handles a descriptor as an opaque value, so no module here names
-`fsla.expert` or `fsla.interface` ([`engine.md` §6](engine.md#refusals)). The
+`fsla.interface` ([`engine.md` §6](engine.md#refusals)). The
 alternative shape — a rule reaching up into the facade for the type of a value it was
 handed — survives an import-graph check only while the import hides in a function body.
 

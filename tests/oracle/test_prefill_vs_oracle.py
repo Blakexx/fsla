@@ -121,7 +121,7 @@ def test_the_intra_term_is_actually_present():
 def test_a_prefill_with_a_decay_is_outside_the_contract():
     """A DECAY IS DECODE'S: no descriptor, guaranteed or owed, holds a prefill that decays, so its call is refused when its descriptor is
     made -- as a call outside the contract, before any kernel could run."""
-    from fsla.ops.produce import prefill_descriptor
+    from tests.descriptors import prefill_descriptor
 
     routes, values, _masks = operands(by_name("flagship-alt-k4"))
     with pytest.raises(RuntimeError, match="outside FSLA's prefill contract"):

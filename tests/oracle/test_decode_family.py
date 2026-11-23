@@ -38,8 +38,8 @@ from fsla.ops.decode import _decode_step, lattice_of
 from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.paging import bytes_equal
-from fsla.ops.produce import decode_descriptor
 from fsla.routing.types import LeafMassDecay
+from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import (
     assert_slots_close,
     bundle_operands,

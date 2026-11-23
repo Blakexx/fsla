@@ -102,7 +102,7 @@ def test_prefill_has_no_consumer_only_kwargs_to_silently_ignore():
     arm -- one function, two arms, one of which had to actively reject what the
     other used. `prefill` structurally cannot have that failure mode: paging,
     scheduling and every other CUDA-consumer detail live behind
-    `fsla.expert.execute`'s own seam, reachable only from the CUDA path, and
+    the CUDA path's own seam, and
     `prefill`'s signature carries no CUDA-consumer-only parameter at all -- so
     passing one is a plain `TypeError` (unknown keyword) regardless of which arm
     the call would otherwise take, rather than a case the op has to notice and

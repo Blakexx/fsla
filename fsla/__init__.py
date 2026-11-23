@@ -28,8 +28,7 @@ API would force a break at the next one for a reason that is not an API reason.
 
 **What is deliberately NOT here.** Plans, schedules, launch geometry, numeric arms,
 allocator caps -- every one of them is how the op RUNS rather than what the model IS,
-and the op decides how it runs. They live in :mod:`fsla.expert`, which is a marked door
-and not part of the contract.
+and the op decides how it runs, inside the call.
 
 | Group | Names | Stability |
 |---|---|---|

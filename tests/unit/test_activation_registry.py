@@ -18,7 +18,6 @@ import pytest
 import torch
 
 import fsla
-import fsla.expert
 from fsla.engine.rules import envelope
 from fsla.routing.activations import (
     ACTIVATION_COLUMNS,
