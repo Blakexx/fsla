@@ -871,7 +871,7 @@ class Bench {
     std::printf("{\"lab\": \"unchecked\", \"variant\": \"%s\", \"reason\": \"%s\"}\n", variant.c_str(), reason);
   }
 
-  //: THE MMA a budgeted kernel issues (`common/hardware.json`'s kind, e.g. "hmma_bf16_f32", and its K: 16 or 8), so
+  //: THE MMA a budgeted kernel issues (`measure/rates.json`'s kind, e.g. "hmma_bf16_f32", and its K: 16 or 8), so
   //: `tools/lab.py run` prices its counts on every card: tensor, shared-memory and issue cycles an MMA and their max
   void mma(const std::string& kernel, const char* kind, int k) const {
     if (!expect_only) return;

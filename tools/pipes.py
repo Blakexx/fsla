@@ -3,7 +3,7 @@
 """THE PIPES A LAUNCH TAKES: one set of ncu counters for any kernel's launch and its pricing per card -- each pipe's
 cycles (tensor, the shared-memory pipe by kind of traffic, issue, the integer, FMA and transcendental pipes, the SM's
 global path: L2's lines and its atomic requests) at
-`common/hardware.json`'s rates, the largest binding; and, on the card it ran on, each pipe's busy share of the elapsed
+`measure/rates.json`'s rates, the largest binding; and, on the card it ran on, each pipe's busy share of the elapsed
 cycles, L2 sectors and the stall reasons. The lab (`tools/lab.py run`) reads it for every experiment kernel, the
 production capture (`tools/pipe_counters.py`) for a carry launch. Stdlib only. docs/internals/tools/pipes.md
 """
@@ -44,7 +44,7 @@ STALLS = ("long_scoreboard", "short_scoreboard", "mio_throttle", "math_pipe_thro
           "not_selected", "lg_throttle", "dispatch_stall", "branch_resolving", "no_instruction", "membar", "drain",
           "sleeping", "tex_throttle", "imc_miss", "misc")
 
-#: THE RATES PRICING READS, by their `hardware.json` names (`pipe_cycles`, `shared_cycles`, `global_cycles`)
+#: THE RATES PRICING READS, by their `measure/rates.json` names (`pipe_cycles`, `shared_cycles`, `global_cycles`)
 PRICED = ("schedulers", "issue", "wavefront", "shared.store", "shared.store_wavefront", "atomic", "atomic_wavefront",
           "shared.copy_bypass", "shared.copy_access", "shared.global_read", "shared.global_fill", "pipe.alu",
           "pipe.fma", "pipe.fmaheavy", "pipe.xu", "global.l2_line", "global.red_request")

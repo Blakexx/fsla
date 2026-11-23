@@ -12,7 +12,7 @@
 // issued. The sharing: 8 warps issue `ldmatrix.x4` as above while 8 stream global data in one form, then each alone;
 // the ldmatrix warps' cycles a wavefront and the stream's bytes a cycle, the pipe cycles the stream took from them:
 // `1 - alone / beside` of the ldmatrix warps' cycles over the stream's 128-byte units a cycle, a sample per repetition,
-// and what a 128 bytes from L2 adds to a load over an L1 hit -- the rates `common/hardware.json`'s `shared` prices
+// and what a 128 bytes from L2 adds to a load over an L1 hit -- the rates `measure/rates.json`'s rows
 // cite. TIMELINE: a warp's trip is 8 independent operations at its own region's addresses -- a form's loads folded
 // into one register, its atomics and stores fire and forget; a scattered form's 8 lines are set in registers before
 // the clock, so its trip issues 8 loads and their folds alone. Nothing waits on another warp. Live: a load's 4 words,
@@ -277,7 +277,7 @@ double share_form(const lab::Bench& b, const uint8_t* table, int* done_n, double
     b.record(stream, "bytes a cycle", bytes);
   }
   if (ROLE == 2 && GF == 3) {
-    //: the global path's price of a line from L2 with every SM streaming: `common/hardware.json`'s `global.l2_line`
+    //: the global path's price of a line from L2 with every SM streaming
     lab::Samples line;
     for (const double v : bytes.v) line.v.push_back(128.0 / v);
     const std::string row = "cycles a 128 B from L2: cp.async.cg alone, every SM streaming";
