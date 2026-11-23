@@ -50,7 +50,10 @@
 // readout's and 56 a drain's, and has no traced row: its stamped kernels spill); and that kernel with its drain warps ALSO
 // LISTING the window's readers from the read mask (`kScan`: a warp its four read digits, a lane its word of 32 tokens a
 // digit, a digit's live tokens' places compacted in order to shared memory; the lists are checked and not consumed --
-// the readout still takes its packet's -- so the row prices the listing alone)),
+// the readout still takes its packet's -- so the row prices the listing alone; with `kEarly` the mask's words are loaded
+// a window ahead, and with `kCounts` the live tokens before each word are handed with the mask, a byte a word, in place
+// of the scan of the lanes' counts -- both on the ready-offsets kernel at registers 176 / 104 / 56 (`kRoom`), beside that
+// kernel without a listing)),
 // and thirteen ISOLATION rows (`kAlone`): a
 // coarse kernel with the read side idle, the folds waiting on nobody. The state and every output row are checked
 // exactly in every row but the isolation rows, whose kernels are not the carry's.
@@ -177,8 +180,10 @@ constexpr uint32_t listed_token(uint32_t source, uint32_t entry) {
 constexpr int kPassLines = 128, kPassDigits = 192, kReadyTiles = 256, kPassWords = 264, kReadPasses = 4;
 //: after a block's records: its windows' READ MASK (`kScan`), a window 32 rows of 16 words -- row `l`'s word `b` is read
 //: digit `b`'s bits of the window's tokens `32 l` on -- and the places its drain warps listed from the last window's
+//: (and, for `kCounts`, a byte a word of the mask: the digit's live tokens of the window in the rows before it)
 constexpr int kReadHead = kCallWindows, kReadMaskAt = kReadHead + (kCallWindows * kReadPasses + 3) * kPassWords,
-              kReadScanOut = kReadMaskAt + kCallWindows * 512, kReadBlock = kReadScanOut + 128;
+              kReadCountAt = kReadMaskAt + kCallWindows * 512, kReadScanOut = kReadCountAt + kCallWindows * 128,
+              kReadBlock = kReadScanOut + 128;
 static_assert(kPassWords % 4 == 0 && kReadHead % 4 == 0 && kPassLines % 4 == 0 && kReadMaskAt % 4 == 0 && kReadBlock % 4 == 0);
 //: a list's entries in a window, 8 to 24 and a window's 256: lists `2 p` and `2 p + 1` are 16 more and less the same
 //: (layouts 3 and 4: every list 16 entries, a token on ALL FOUR digits of its group -- a group's 16 tokens)
@@ -270,7 +275,14 @@ enum Probe : int { kAlone = 1, kWide = 16, kSplit = 32, kFull = 64, kColumn = 12
                    kFar = 131072,
                    //: `kScan` (with `kListed | kReady | kFar`): the drain warps also list the window's readers from the read mask to
                    //: shared memory -- the lists checked, not consumed
-                   kScan = 262144 };
+                   kScan = 262144,
+                   //: `kCounts` (with `kScan`): the live tokens before each word of the mask come with it, a byte a word; no scan
+                   kCounts = 524288,
+                   //: `kEarly` (with `kScan`): a window's words of the mask are loaded a window ahead
+                   kEarly = 1048576,
+                   //: `kRoom` (with `kReady`, without `kFar`): registers 176 / 104 / 56, the split the pass-ahead kernel takes -- the
+                   //: tuned listing's kernel and its twin without a listing
+                   kRoom = 2097152 };
 //: A ROLE'S TIMELINE (the traced rows'): `TRACE` 0 stamps nothing; 1 the launch's two edges alone; 2 a phase's start
 //: in every role, and the edges; 3 every stamp: each wait's start and end, each arrival and each copy's issue too. A
 //: coarse row keeps, beside its phases' starts, the stamps of the groups in `DETAIL`
@@ -1090,20 +1102,29 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
   uint32_t ahead = block[0];
   //: THE LISTING (`SCAN`): the warp's four read digits' readers of window `w`, from the read mask -- a lane its word of 32
   //: tokens a digit; a digit's live tokens' places, in order, two bytes each, to shared memory
-  const auto list_readers = [&](int w) {
-    const uint4 words = reinterpret_cast<const uint4*>(block + kReadMaskAt + (w % kCallWindows) * 512)[4 * lane + mine];
-    uint32_t word[4] = {words.x, words.y, words.z, words.w};
+  //: the warp's words of window `w`'s read mask a lane, and (`kCounts`) each digit's live tokens before the lane's word
+  const auto mask_of = [&](int w) {
+    return reinterpret_cast<const uint4*>(block + kReadMaskAt + (w % kCallWindows) * 512)[4 * lane + mine];
+  };
+  const auto before_of = [&](int w) {
+    return (SCAN & kCounts) != 0 ? block[kReadCountAt + (w % kCallWindows) * 128 + 4 * lane + mine] : 0u;
+  };
+  const auto list_readers = [&](uint4 mask, uint32_t counts) {
+    uint32_t word[4] = {mask.x, mask.y, mask.z, mask.w};
 #pragma unroll
     for (int digit = 0; digit < 4; ++digit) {
-      //: the digit's live tokens in the lanes before this one: a scan of the lanes' counts
-      const uint32_t own = static_cast<uint32_t>(__popc(word[digit]));
-      uint32_t before = own;
+      //: the digit's live tokens in the lanes before this one: handed with the mask, or a scan of the lanes' counts
+      uint32_t before = counts >> (8 * digit) & 255u;
+      if constexpr ((SCAN & kCounts) == 0) {
+        const uint32_t own = static_cast<uint32_t>(__popc(word[digit]));
+        before = own;
 #pragma unroll
-      for (int step = 1; step < 32; step <<= 1) {
-        const uint32_t up = __shfl_up_sync(0xffffffffu, before, step);
-        if (lane >= step) before += up;
+        for (int step = 1; step < 32; step <<= 1) {
+          const uint32_t up = __shfl_up_sync(0xffffffffu, before, step);
+          if (lane >= step) before += up;
+        }
+        before -= own;
       }
-      before -= own;
       uint16_t* const list = reinterpret_cast<uint16_t*>(smem + kScanAt) + 16 * (4 * mine + digit);
 #pragma unroll 1
       while (__any_sync(0xffffffffu, word[digit] != 0u) != 0) {
@@ -1115,14 +1136,26 @@ __device__ __forceinline__ void drain_ready(uint8_t* smem, uint32_t base, long l
       }
     }
   };
+  [[maybe_unused]] uint4 early = mask_of(0);
+  [[maybe_unused]] uint32_t early_before = before_of(0);
   lab::WarpMark::start(times);
   uint32_t pass = 0;
 #pragma unroll 1
   for (int w = 0; w < windows; ++w) {
     const uint32_t total = (ahead & 255u) + (ahead >> 8 & 255u);
     ahead = block[(w + 1) % kCallWindows];
-    //: (the lists fenced as lists handed to the readout would be)
-    if constexpr (SCAN != 0) list_readers(w), lab::bulk_fence();
+    //: (the lists fenced as lists handed to the readout would be; `kEarly`: the next window's words loaded behind this one's)
+    if constexpr ((SCAN & kEarly) != 0) {
+      const uint4 mask = early;
+      const uint32_t counts = early_before;
+      early = mask_of(w + 1);
+      early_before = before_of(w + 1);
+      list_readers(mask, counts);
+      lab::bulk_fence();
+    } else if constexpr (SCAN != 0) {
+      list_readers(mask_of(w), before_of(w));
+      lab::bulk_fence();
+    }
 #pragma unroll 1
     for (uint32_t p = 0; __all_sync(0xffffffffu, p < total) != 0; ++p, ++pass) {
 #pragma unroll
@@ -1204,14 +1237,14 @@ __global__ void __launch_bounds__(kThreads, 1)
       fold_role<TRACE, DETAIL, PROBE>(smem, base, times, state, values, table, trace, windows);
     }
   } else if (tid < kDrainAt) {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) ? 104 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 104 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 112 : kReadRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
     else if constexpr ((PROBE & kListed) != 0) read_listed<TRACE, DETAIL, PROBE & kReady, PROBE & kOneBlock>(smem, base, times, dense, readers, trace, windows);
     else read_role<TRACE, DETAIL>(smem, base, times, dense, trace, windows);
   } else {
-    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) ? 56 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
+    lab::regs_down<(PROBE & kAlone) != 0 ? kAloneRestRegs : (PROBE & (kReady | kFar)) == (kReady | kFar) || (PROBE & kRoom) != 0 ? 56 : (PROBE & (kWide | kSplit | kColumn | kAhead)) != 0 ? 48 : kDrainRegs>();
     if constexpr ((PROBE & kAlone) != 0) lab::WarpMark::start(times), lab::WarpMark::stop(times);
-    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar, PROBE & kScan>(smem, base, times, out, readers, trace, windows);
+    else if constexpr ((PROBE & kReady) != 0) drain_ready<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar, PROBE & (kScan | kCounts | kEarly)>(smem, base, times, out, readers, trace, windows);
     else if constexpr ((PROBE & kListed) != 0) drain_listed<TRACE, DETAIL, PROBE & kOneBlock, PROBE & kFar>(smem, base, times, out, readers, trace, windows);
     else drain_role<TRACE, DETAIL>(smem, base, times, out, trace, windows);
   }
@@ -1476,6 +1509,17 @@ inline Buffers buffers(const lab::Bench& b) {
             const uint32_t place = scan_place(static_cast<uint32_t>(blk), static_cast<uint32_t>(w), digit, n);
             packets[static_cast<size_t>(blk) * kReadBlock + kReadMaskAt + w * 512 + (place / 32) * 16 + digit] |= 1u << (place % 32);
           }
+    //: and each word's count of its digit's live tokens in the rows before it, a byte
+    for (int blk = 0; blk < b.sms; ++blk)
+      for (int w = 0; w < kCallWindows; ++w)
+        for (int digit = 0; digit < kLists; ++digit) {
+          uint32_t before = 0;
+          for (int row = 0; row < 32; ++row) {
+            const size_t at = static_cast<size_t>(blk) * kReadBlock;
+            reinterpret_cast<uint8_t*>(packets.data() + at + kReadCountAt + w * 128)[row * 16 + digit] = static_cast<uint8_t>(before);
+            before += static_cast<uint32_t>(__builtin_popcount(packets[at + kReadMaskAt + w * 512 + row * 16 + digit]));
+          }
+        }
     uint32_t* dev = nullptr;
     LAB_CHECK(cudaMalloc(&dev, packets.size() * 4));
     LAB_CHECK(cudaMemcpy(dev, packets.data(), packets.size() * 4, cudaMemcpyHostToDevice));
@@ -1512,6 +1556,7 @@ void run(lab::Bench& b, const Buffers& held) {
                            + (PROBE & kListed && READ == 1 ? ", a half in two padded passes" : "")
                            + (PROBE & kFar ? ", the drain's lines loaded a pass ahead" : "")
                            + (PROBE & kScan ? ", its drain warps also listing the window's readers from the mask" : "")
+                           + (PROBE & kRoom ? ", registers 176 / 104 / 56" : "") + (PROBE & kEarly ? ", the mask loaded a window ahead" : "") + (PROBE & kCounts ? ", the live tokens before each word handed with it" : "")
                            + (PROBE & kOneBlock ? ", every CTA on one block's reader packets" : "")
                            + (PROBE & kAlone ? ", the read side idle" : "") + (PROBE & kSplit ? ", registers 176 / 112 / 48" : "")
                            + (TRACE & 2 ? (TRACE & 1 ? ", every warp's timeline stamped" : ", every warp's phases stamped")
@@ -1602,7 +1647,7 @@ void run(lab::Bench& b, const Buffers& held) {
     }
   }
   if constexpr ((PROBE & kOneBlock) != 0) b.unchecked(name, "every CTA reads block 0's reader packets: its outputs are that block's readers'");
-  else if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread | kAhead | kListed | kReady | kFar | kScan)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
+  else if constexpr ((PROBE & ~(kWide | kSplit | kFull | kColumn | kCleared | kCounted | kLooped | kTabled | kSpread | kAhead | kListed | kReady | kFar | kScan | kCounts | kEarly | kRoom)) != 0) b.unchecked(name, "an isolation row: its kernel is not the carry's");
   else b.check(name, wrong_state == 0 && wrong_out == 0 && wrong_scan == 0,
           std::to_string(wrong_state) + " of " + std::to_string(got_state.size()) + " state values and "
               + std::to_string(wrong_out) + " of " + std::to_string(2 * words) + " output values differ"
@@ -1684,7 +1729,8 @@ int main(int argc, char** argv) {
                            {0, 0, kWide | kFull | kListed | kOneBlock}, {0, 0, kWide | kFull | kListed | kReady | kOneBlock},
                            {0, 0, kWide | kFull | kListed | kFar}, {3, 0, kWide | kFull | kListed | kFar},
                            {2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, kWide | kFull}, {2, kSplitRead | kWaitPanelFreed | kWaitTilesReady, kWide | kFull | kListed | kFar},
-                           {0, 0, kWide | kFull | kListed | kReady | kFar}, {0, 0, kWide | kFull | kListed | kReady | kFar | kScan}};
+                           {0, 0, kWide | kFull | kListed | kReady | kFar}, {0, 0, kWide | kFull | kListed | kReady | kFar | kScan},
+                           {0, 0, kWide | kFull | kListed | kReady | kRoom}, {0, 0, kWide | kFull | kListed | kReady | kRoom | kScan | kEarly | kCounts}};
   for (const Row& row : kRows) {
     const std::string k = lab::kernel("carry_token::window", {row.trace, row.detail, row.probe});
     //: the fold's 32 steps, one straight block, and the readout's 32: a window's two passes
@@ -1822,5 +1868,10 @@ int main(int argc, char** argv) {
   //: THE DRAIN WARPS ALSO LISTING THE WINDOW'S READERS FROM THE MASK: what the listing costs the window where the CTA does it
   run<0, 0, 3, kWide | kFull | kListed | kReady | kFar | kScan>(b, held);
   run<0, 0, 3, kWide | kFull | kListed | kReady | kFar | kScan, 1>(b, held);
+  //: THE LISTING TUNED: the mask loaded a window ahead and the counts before each word handed with it, on the ready-offsets
+  //: kernel at 176 / 104 / 56 and beside that kernel without a listing (with the offsets a pass ahead as well, or with the
+  //: lanes' scan, a drain's registers spill: not built)
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kRoom>(b, held);
+  run<0, 0, 3, kWide | kFull | kListed | kReady | kRoom | kScan | kEarly | kCounts>(b, held);
   return 0;
 }
