@@ -32,7 +32,11 @@ def _carve(widths: list[int], write: list[int], read: list[int], tokens: int = 6
 
 def _out(run) -> dict:
     assert run.returncode == 0, run.stderr
-    return json.loads(run.stdout)
+    out = json.loads(run.stdout)
+    if out["carved"]:
+        # a fold is 256 leaves with a pair, 128 without
+        assert out["fold_lists"] * out["fold_columns"] * out["fold_outer"] == (256 if out["pair_level"] >= 0 else 128)
+    return out
 
 
 KEYS = ("pair_level", "split_level", "fold_lists", "fold_columns", "boxes_per_head", "ctas_per_head", "units_per_head", "unit_ctas")
@@ -95,21 +99,48 @@ def test_the_pair_falls_to_the_read_list_level_when_its_column_level_has_one_box
 
 def test_a_depth_3_cell_of_64_x_64_x_16():
     # write 0,1,0: A = 1 (first listed), B = 0 (first whole): box levels 0 and 1, box bits 4,4,0. Write: only level 1 listed, so its list level is 1, column 0.
-    # Read 1,1,0: both box levels listed, so list level 0, column level 1. Pair: the read column level 1 has 2^(6-4) = 4 boxes: pair 1, two boxes a CTA.
-    # The write side lists level 1, so the split is level 1 (also the pair): 16 x 16. Boxes 4 x 4 x 16 = 256, CTAs 128. Units: level 1's 4 boxes halved = 2,
-    # unit CTAs 64.
+    # Read 1,1,0: both box levels listed, so list level 0, column level 1 (listed): rule 1 is refused. Rule 2 FIRES: level 2 is outside the box, read whole, with
+    # 2^(4-0) = 16 boxes: pair 2. The write side lists level 1, so the split is level 1, not the pair: fold 8 x 16, outer 2 (8 x 16 x 2 = 256 leaves).
+    # Boxes 4 x 4 x 16 = 256, CTAs 128. Units: level 1's 4 boxes (the pair is not write-listed) = 4, unit CTAs 32.
     out = _out(_carve([6, 6, 4], [0, 1, 0], [1, 1, 0]))
     assert out["box_bits"] == [4, 4, 0] and (out["write_list_level"], out["read_list_level"]) == (1, 0)
-    assert tuple(out[k] for k in KEYS) == (1, 1, 16, 16, 256, 128, 2, 64)
+    assert tuple(out[k] for k in KEYS) == (2, 1, 8, 16, 256, 128, 4, 32) and out["fold_outer"] == 2
 
 
 def test_a_depth_4_cell_of_16_x_16_x_16_x_16():
     # write 0,0,1,1: A = 2, B = 0: box levels 0 and 2, box bits 4,0,4,0. Write lists level 2 only: its list level 2, column 0. Read 1,0,0,0: level 0 listed, level 2
-    # whole: read list level 0, column level 2. Both box levels have 1 box (2^(4-4)): no pair. Split: the write list level 2, walked by lists; no pair: 8 x 16.
-    # Boxes 1 x 16 x 1 x 16 = 256, CTAs 256. Units: write-listed levels 2 (1 box) and 3 (16 boxes) = 16, unit CTAs 16.
+    # whole: read list level 0, column level 2, which has 1 box (2^(4-4)): rule 1 is refused. Rule 2 FIRES: level 1 is outside the box, read whole, 16 boxes: pair 1.
+    # Split: the write list level 2, walked by lists: fold 8 x 16, outer 2. Boxes 1 x 16 x 1 x 16 = 256, CTAs 128. Units: write-listed levels 2 (1 box) and 3 (16 boxes)
+    # = 16, unit CTAs 8.
     out = _out(_carve([4, 4, 4, 4], [0, 0, 1, 1], [1, 0, 0, 0]))
     assert out["box_bits"] == [4, 0, 4, 0] and (out["write_list_level"], out["read_list_level"]) == (2, 0)
-    assert tuple(out[k] for k in KEYS) == (-1, 2, 8, 16, 256, 256, 16, 16)
+    assert tuple(out[k] for k in KEYS) == (1, 2, 8, 16, 256, 128, 16, 8) and out["fold_outer"] == 2
+
+
+def test_the_pair_is_the_read_list_level_when_it_is_whole_and_its_column_level_has_one_box():
+    # 256 x 16 digits, write 1,0 / read 0,0: box levels 0 and 1, box bits 4,4. Read both whole: list level 0 (256 wide: 16 boxes), column level 1 (16 wide: 1 box).
+    # Rule 1 is refused (one box); rule 2 FIRES on the read list level, whole: pair 0, a box level, so fold_outer is 1. Write lists level 0, walked: split 0; the pair is
+    # the write list level: 32 / 2 = 16 lists x 16 columns. Boxes 16, CTAs 8, units: level 0's 16 boxes halved = 8, unit CTAs 1.
+    out = _out(_carve([8, 4], [1, 0], [0, 0]))
+    assert tuple(out[k] for k in KEYS) == (0, 0, 16, 16, 16, 8, 8, 1) and out["fold_outer"] == 1
+
+
+def test_the_pair_is_the_column_level_when_every_level_is_read_listed_and_the_column_has_boxes():
+    # 256 x 256, write 0,0 / read 1,1: box bits 4,4. Read both listed: list level 0, column level 1. No level is read whole: rules 1 and 2 are refused. Rule 3 FIRES
+    # on its first clause: the column level 1 has 16 boxes: pair 1. Write both whole: list level 0, not walked, so the split is the pair, 1: fold 16 x 16 (the column
+    # level halves 32). Boxes 256, CTAs 128, units 1 (no write-listed level), unit CTAs 128.
+    out = _out(_carve([8, 8], [0, 0], [1, 1]))
+    assert tuple(out[k] for k in KEYS) == (1, 1, 16, 16, 256, 128, 1, 128) and out["fold_outer"] == 1
+
+
+def test_the_pair_is_a_level_outside_the_box_when_every_level_is_read_listed_and_the_box_levels_have_one_box():
+    # 16 x 16 x 64 digits, write 1,0,0 / read 1,1,1: box levels 0 and 1, box bits 4,4,0, one box each. Read all listed: list level 0, column level 1; no whole level
+    # (rules 1 and 2 refused), the column level and the list level have one box (rule 3's first two clauses refused). Rule 3 FIRES on its last clause: the lowest other
+    # level with 2 or more boxes, level 2 (2^(6-0) = 64 boxes): pair 2. Write lists level 0, walked: split 0, fold 8 x 16, outer 2. Boxes 64, CTAs 32, units:
+    # level 0's 1 box = 1, unit CTAs 32.
+    out = _out(_carve([4, 4, 6], [1, 0, 0], [1, 1, 1]))
+    assert out["box_bits"] == [4, 4, 0]
+    assert tuple(out[k] for k in KEYS) == (2, 0, 8, 16, 64, 32, 1, 32) and out["fold_outer"] == 2
 
 
 def test_a_window_is_the_hopper_builds_and_a_call_is_cut_into_its_windows():

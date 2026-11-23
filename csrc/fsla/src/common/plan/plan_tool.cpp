@@ -89,6 +89,7 @@ void print_carve(const fsla::plan::Descriptor& device, const Named& call,
   line("boxes_per_cta", n(c.boxes_per_cta));
   line("fold_lists", n(c.fold_lists));
   line("fold_columns", n(c.fold_columns));
+  line("fold_outer", n(c.fold_outer));
   line("boxes_per_head", n(c.boxes_per_head));
   line("ctas_per_head", n(c.ctas_per_head));
   line("units_per_head", n(c.units_per_head));

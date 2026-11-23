@@ -10,6 +10,7 @@
 #include <string>
 
 #include "plan/facts.h"
+#include "plan/levels.h"
 #include "plan/rules.h"
 
 namespace fsla::plan {
@@ -105,34 +106,6 @@ constexpr DecodeReach decode_reach(const Descriptor& d) {
 //: the arm of a point: the same walk, which over a point visits one leaf; a range, or a point no arm serves, aborts
 constexpr DecodeArm decode_arm(const Descriptor& d) { return decode_reach(d).one(); }
 
-//: the call's width fact of level `l` (0-based): the log2 of that level's width
-constexpr Interval decode_width_bits(const Descriptor& d, int l) {
-  switch (l) {
-    case 0:
-      return Reader::width_bits_1(d);
-    case 1:
-      return Reader::width_bits_2(d);
-    case 2:
-      return Reader::width_bits_3(d);
-    default:
-      return Reader::width_bits_4(d);
-  }
-}
-
-//: the call's write-side sparse flag of level `l` (0-based): 1 when that level has exact zeros
-constexpr Interval decode_write_listed(const Descriptor& d, int l) {
-  switch (l) {
-    case 0:
-      return Reader::write_listed_1(d);
-    case 1:
-      return Reader::write_listed_2(d);
-    case 2:
-      return Reader::write_listed_3(d);
-    default:
-      return Reader::write_listed_4(d);
-  }
-}
-
 //: exact values only: a range aborts
 constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
   bool exact = Reader::cc(d).point() && Reader::regs_per_sm(d).point()
@@ -140,11 +113,11 @@ constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
                && Reader::d_v(d).point() && Reader::levels(d).point() && Reader::prefill(d).point()
                && Reader::prefill(d).lo == 0;
   for (int l = 0; l < kDecodeMaxLevels; ++l) {
-    exact = exact && decode_width_bits(d, l).point() && decode_write_listed(d, l).point();
+    exact = exact && level_width_bits(d, l).point() && level_write_listed(d, l).point();
   }
   if (!exact) std::abort();
   const bool innermost_dense =
-      decode_write_listed(d, static_cast<int>(Reader::levels(d).lo) - 1).lo == 0;
+      level_write_listed(d, static_cast<int>(Reader::levels(d).lo) - 1).lo == 0;
   DecodeArgs args{static_cast<int>(Reader::cc(d).lo),
                   static_cast<int>(Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
                   static_cast<int>(Reader::smem_per_cta_optin(d).lo),
@@ -155,7 +128,7 @@ constexpr DecodeArgs decode_args(const Descriptor& d, const DecodeArm& arm) {
                   static_cast<int>(innermost_dense)};
   int offset = 0;
   for (int l = 0; l < arm.levels; ++l) {
-    const auto bits = decode_width_bits(d, l).lo;
+    const auto bits = level_width_bits(d, l).lo;
     args.widths[l] = bits > 0 ? 1 << bits : 0;
     args.row_offsets[l] = offset;
     offset += args.widths[l];

@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "plan/facts.h"
+#include "plan/levels.h"
 #include "plan/rules.h"
 
 namespace fsla::plan {
@@ -27,7 +28,7 @@ inline constexpr int kHopperCc = 900;
 //: every level index is 0-based; -1 is none. `box_bits`, `read_list_bits` and `write_list_bits` are a level's bits in a box and each side's
 //: list bits of them (the column bits are `box_bits - list_bits`); `read_list_level` and `write_list_level` are each side's list level
 //: (a one-level call: level 0); `pair_level` is the level a CTA's two boxes neighbour along; `split_level` the level its two folds split along;
-//: a fold's extents are along the write side's list level and column level; the counts are a batch-head's; `window` and `windows` are the
+//: a fold's extents are along the write side's list level and column level, and `fold_outer` along a pair level outside the box; the counts are a batch-head's; `window` and `windows` are the
 //: window's tokens and the call's count of them
 struct PrefillCarve {
   int levels;
@@ -42,6 +43,7 @@ struct PrefillCarve {
   int boxes_per_cta;
   int fold_lists;
   int fold_columns;
+  int fold_outer;
   std::int64_t boxes_per_head;
   std::int64_t ctas_per_head;
   std::int64_t units_per_head;
@@ -50,55 +52,16 @@ struct PrefillCarve {
   std::int64_t windows;
 };
 
-constexpr Interval prefill_width_bits(const Descriptor& d, int l) {
-  switch (l) {
-    case 0:
-      return Reader::width_bits_1(d);
-    case 1:
-      return Reader::width_bits_2(d);
-    case 2:
-      return Reader::width_bits_3(d);
-    default:
-      return Reader::width_bits_4(d);
-  }
-}
-
-constexpr Interval prefill_read_listed(const Descriptor& d, int l) {
-  switch (l) {
-    case 0:
-      return Reader::read_listed_1(d);
-    case 1:
-      return Reader::read_listed_2(d);
-    case 2:
-      return Reader::read_listed_3(d);
-    default:
-      return Reader::read_listed_4(d);
-  }
-}
-
-constexpr Interval prefill_write_listed(const Descriptor& d, int l) {
-  switch (l) {
-    case 0:
-      return Reader::write_listed_1(d);
-    case 1:
-      return Reader::write_listed_2(d);
-    case 2:
-      return Reader::write_listed_3(d);
-    default:
-      return Reader::write_listed_4(d);
-  }
-}
-
 //: the exact facts the carve reads, each a point and in its range; a range aborts
 constexpr void prefill_exact(const Descriptor& d) {
   bool exact = Reader::cc(d).point() && Reader::tokens(d).point() && Reader::levels(d).point();
   exact = exact && Reader::levels(d).lo >= 1 && Reader::levels(d).lo <= kPrefillMaxLevels;
   exact = exact && Reader::tokens(d).lo >= 1 && Reader::cc(d).lo == kHopperCc;
   for (int l = 0; l < kPrefillMaxLevels; ++l) {
-    exact = exact && prefill_width_bits(d, l).point() && prefill_read_listed(d, l).point()
-            && prefill_write_listed(d, l).point();
-    exact = exact && prefill_read_listed(d, l).lo >= 0 && prefill_read_listed(d, l).lo <= 1
-            && prefill_write_listed(d, l).lo >= 0 && prefill_write_listed(d, l).lo <= 1;
+    exact = exact && level_width_bits(d, l).point() && level_read_listed(d, l).point()
+            && level_write_listed(d, l).point();
+    exact = exact && level_read_listed(d, l).lo >= 0 && level_read_listed(d, l).lo <= 1
+            && level_write_listed(d, l).lo >= 0 && level_write_listed(d, l).lo <= 1;
   }
   if (!exact) std::abort();
 }
@@ -115,7 +78,7 @@ constexpr PrefillBoxLevels prefill_box_levels(const Descriptor& d) {
   const int last = levels - 1;
   int listed = -1, whole = -1;
   for (int l = levels - 1; l >= 0; --l) {
-    if (prefill_write_listed(d, l).lo == 1) {
+    if (level_write_listed(d, l).lo == 1) {
       listed = l;
     } else {
       whole = l;
@@ -136,7 +99,7 @@ constexpr bool prefill_carves(const Descriptor& d) {
   const PrefillBoxLevels box = prefill_box_levels(d);
   bool wide = true;
   for (int l = 0; l < kPrefillMaxLevels; ++l) {
-    wide = wide && prefill_width_bits(d, l).lo >= prefill_box_bits(box, l);
+    wide = wide && level_width_bits(d, l).lo >= prefill_box_bits(box, l);
   }
   return wide;
 }
@@ -156,29 +119,48 @@ constexpr PrefillCarve prefill_carve(const Descriptor& d) {
   c.levels = static_cast<int>(Reader::levels(d).lo);
   const PrefillBoxLevels box = prefill_box_levels(d);
   for (int l = 0; l < c.levels; ++l) {
-    c.width_bits[l] = static_cast<int>(prefill_width_bits(d, l).lo);
+    c.width_bits[l] = static_cast<int>(level_width_bits(d, l).lo);
     c.box_bits[l] = prefill_box_bits(box, l);
   }
   const auto boxes_along = [&](int l) {
     return std::int64_t{1} << (c.width_bits[l] - c.box_bits[l]);
   };
 
-  c.read_list_level = prefill_list_level(prefill_read_listed, d, box);
-  c.write_list_level = prefill_list_level(prefill_write_listed, d, box);
+  c.read_list_level = prefill_list_level(level_read_listed, d, box);
+  c.write_list_level = prefill_list_level(level_write_listed, d, box);
   c.read_list_bits[c.read_list_level] = kBoxHalfBits;
   c.write_list_bits[c.write_list_level] = kBoxHalfBits;
   const int read_column = c.read_list_level == box.lo ? box.hi : box.lo;
   const int write_column = c.write_list_level == box.lo ? box.hi : box.lo;
 
+  //: the pair, the first that holds: the read side's column level where it walks it whole with 2 or more boxes; the lowest other level it walks whole with
+  //: 2 or more; else, where no whole level has 2, its column level, its list level, then the lowest other level with 2 or more
+  const auto read_whole = [&](int l) { return level_read_listed(d, l).lo == 0; };
+  const auto lowest_other = [&](bool whole_only, int skip) {
+    for (int l = 0; l < c.levels; ++l) {
+      const bool usable = l != skip && l != read_column && boxes_along(l) >= 2;
+      if (usable && (!whole_only || read_whole(l))) return l;
+    }
+    return -1;
+  };
   c.pair_level = -1;
-  if (boxes_along(read_column) >= 2) {
+  if (read_whole(read_column) && boxes_along(read_column) >= 2) {
     c.pair_level = read_column;
-  } else if (boxes_along(c.read_list_level) >= 2) {
-    c.pair_level = c.read_list_level;
+  } else {
+    c.pair_level = lowest_other(true, -1);
+  }
+  if (c.pair_level < 0) {
+    if (boxes_along(read_column) >= 2) {
+      c.pair_level = read_column;
+    } else if (boxes_along(c.read_list_level) >= 2) {
+      c.pair_level = c.read_list_level;
+    } else {
+      c.pair_level = lowest_other(false, c.read_list_level);
+    }
   }
   c.boxes_per_cta = c.pair_level >= 0 ? 2 : 1;
 
-  const bool lists_walked = prefill_write_listed(d, c.write_list_level).lo == 1;
+  const bool lists_walked = level_write_listed(d, c.write_list_level).lo == 1;
   c.split_level = lists_walked || c.pair_level < 0 ? c.write_list_level : c.pair_level;
   //: where the write side's lists and columns are one level's bits, the pair and the split take its lists (the high bits)
   const bool pair_lists = c.pair_level == c.write_list_level;
@@ -187,12 +169,14 @@ constexpr PrefillCarve prefill_carve(const Descriptor& d) {
   const bool split_columns = !split_lists && c.split_level == write_column;
   c.fold_lists = (pair_lists ? 32 : 16) / (split_lists ? 2 : 1);
   c.fold_columns = (pair_columns ? 32 : 16) / (split_columns ? 2 : 1);
+  const bool pair_outside = c.pair_level >= 0 && c.box_bits[c.pair_level] == 0;
+  c.fold_outer = pair_outside && c.split_level != c.pair_level ? 2 : 1;
 
   c.boxes_per_head = 1;
   c.units_per_head = 1;
   for (int l = 0; l < c.levels; ++l) {
     c.boxes_per_head *= boxes_along(l);
-    if (prefill_write_listed(d, l).lo != 1) continue;
+    if (level_write_listed(d, l).lo != 1) continue;
     c.units_per_head *= l == c.pair_level ? boxes_along(l) / 2 : boxes_along(l);
   }
   c.ctas_per_head = c.boxes_per_head / c.boxes_per_cta;
