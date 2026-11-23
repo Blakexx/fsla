@@ -8,6 +8,7 @@
 
 #include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
+#include "plan/lattice.h"
 #include "plan/planner.h"
 #include "plan/prefill/contract.h"
 #include "plan/prefill_launch.h"
@@ -103,6 +104,59 @@ void print_carve(const fsla::plan::PrefillDescriptor& device, const Named& call,
   line("windows", n(c.windows), true);
 }
 
+//: the numbers `values[0 .. levels)` as a comma list
+template <typename T>
+std::string list_of(const T* values, int levels) {
+  std::string out;
+  for (int l = 0; l < levels; ++l) out += (l ? "," : "") + std::to_string(values[l]);
+  return out;
+}
+
+void print_box(int k, long long m, long long bc, long long owners, const std::string& spans,
+               const std::string& grids) {
+  std::printf("lattice: k=%d m=%lld bc=%lld owners=%lld spans=%s grids=%s\n", k, m, bc, owners,
+              spans.c_str(), grids.c_str());
+}
+
+//: THE LATTICE of level widths `text` (a comma list): the box the search picks, and the law's constants
+void print_lattice(const std::string& text) {
+  using namespace fsla::plan;
+  int widths[kDecodeMaxLevels] = {};
+  int count = 0;
+  std::size_t at = 0;
+  while (at < text.size()) {
+    std::size_t end = text.find(',', at);
+    if (end == std::string::npos) end = text.size();
+    if (count == kDecodeMaxLevels) {
+      refuse("--lattice takes at most " + std::to_string(kDecodeMaxLevels) + " widths");
+    }
+    widths[count++] = std::stoi(text.substr(at, end - at));
+    at = end + 1;
+  }
+  if (count == 0) refuse("--lattice takes the level widths, a comma list");
+  const auto box = lattice_solve<kDecodeMaxLevels>(widths, count);
+  print_box(box.k, box.m, box.bc, box.owners, list_of(box.s, count), list_of(box.g, count));
+  std::printf("constants: atom_leaves=%d cap_bc=%d max_span=%d max_span_k=%d\n", kLatticeAtomLeaves,
+              kLatticeCapBc, kLatticeMaxSpan, kLatticeMaxSpanK);
+}
+
+//: THE LAUNCH'S LAYOUT: the lattice's box, the unit's bits, the tables' sizes and the step's derived sizes
+void print_layout(const fsla::plan::DecodeLaunch& launch) {
+  const auto& layout = launch.layout;
+  const int levels = launch.arm.levels;
+  print_box(layout.lat_k, layout.lat_m, 1LL << layout.lat_local_bits,
+            layout.leaves >> layout.lat_local_bits, list_of(layout.lat_s, levels),
+            list_of(layout.lat_g, levels));
+  std::printf("unit: local_bits=%d inner_bits=%d outer_bits=%d\n", layout.lat_local_bits,
+              layout.lat_inner_bits, layout.lat_outer_bits);
+  std::printf("tables: mask_total=%d olist_total=%d dlist_total=%d write_atoms=%d\n",
+              layout.mask_total, layout.olist_total, layout.dlist_total, layout.write_atoms);
+  std::printf("step: leaves=%lld total_rows=%d unit_ceiling=%lld smem_bytes=%lld fits=%d\n",
+              static_cast<long long>(layout.leaves), layout.total_rows,
+              static_cast<long long>(layout.unit_ceiling),
+              static_cast<long long>(layout.smem_bytes), layout.fits);
+}
+
 //: THE DECODE KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch's arguments, and the grid when `--grid` names its inputs
 void print_decode(const Named& device_facts, const Named& call_facts, const std::string& model,
                   const std::string& grid_text, std::vector<std::string>& keep) {
@@ -126,6 +180,7 @@ void print_decode(const Named& device_facts, const Named& call_facts, const std:
   }
   std::printf("levels: widths=%s row_offsets=%s write_dense=%d\n", widths.c_str(), offsets.c_str(),
               args.write_dense);
+  print_layout(launch);
 
   if (!grid_text.empty()) {
     const Named grid = parse(grid_text, keep);
@@ -138,10 +193,12 @@ void print_decode(const Named& device_facts, const Named& call_facts, const std:
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string kernel, device_text, call_text, model, grid_text, carve_text;
+  std::string kernel, device_text, call_text, model, grid_text, carve_text, lattice_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
-    if (flag == "--kernel") {
+    if (flag == "--lattice") {
+      lattice_text = argv[i + 1];
+    } else if (flag == "--kernel") {
       kernel = argv[i + 1];
     } else if (flag == "--device") {
       device_text = argv[i + 1];
@@ -157,10 +214,19 @@ int main(int argc, char** argv) {
       refuse("unknown argument " + flag);
     }
   }
-  if (argc % 2 == 0 || kernel.empty() || device_text.empty() || call_text.empty()) {
+  const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
+  if (argc % 2 == 0 || (lattice_text.empty() && !launch_given)) {
     refuse(
         "usage: plan_tool --kernel decode|prefill --device name=v,... --call name=v,... [--model text] "
-        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve)");
+        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve) | plan_tool --lattice w1,w2,... "
+        "(the lattice of level widths, no device)");
+  }
+  if (!lattice_text.empty()) {
+    if (!kernel.empty() || !device_text.empty() || !call_text.empty()) {
+      refuse("--lattice stands alone");
+    }
+    print_lattice(lattice_text);
+    return 0;
   }
 
   std::vector<std::string> keep;

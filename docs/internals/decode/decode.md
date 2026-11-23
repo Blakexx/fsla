@@ -92,8 +92,8 @@ consecutive leaves in LATTICE leaf order, spec §4.5's
 consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
 every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
 level straddling it keeps an aligned contiguous sub-run, and the levels below are free
-(`fsla/ops/lattice.py`). One condition survives, `16 | BC` (an atom lies inside one
-owner), checked at [`fill_lattice`](decode_lattice.md#the-refusals) where a page table is
+(`lattice_atom_rectangle`, [`../common/plan/lattice.md`](../common/plan/lattice.md)). One condition survives, `16 | BC` (an atom lies inside one
+owner), refused by the launch function (`decode_paged_refusal`, [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)) where a page table is
 present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
 membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
 fixed across every config forever, which is exactly why the paged address addresses
@@ -367,7 +367,7 @@ clock's cost is its reads.
 `decode.cuh`'s `kMaxLevels` reads it: the launch function's per-level widths and the kernel's per-level arrays are
 the same size by construction. The contract's width facts (`width_bits_1` .. `width_bits_4`) name the same levels, which
 `tests/unit/test_planner.py` ties to the constant. The page granule and an owner's shape come from
-the box (`fsla/ops/lattice.py`, where the lattice's addressing constants and `box_shape` live),
+the box (`csrc/fsla/src/common/plan/lattice.h`, where the lattice's constants and its law live),
 so the two families write and read ONE plane in ONE order; what decode adds is a RUNTIME carrier,
 the lattice's fields as scalars under the lattice's own names (§9).
 
@@ -395,7 +395,7 @@ capacity.
 
 ## <a id="decode-threads"></a><a id="kdecodethreads"></a>7. The plan's threads — the width IS the arm
 
-The step launches ONE CTA an SM of the threads its card's registers hold at `kDecodeRegsPerThread` (128) each --
+The step launches ONE CTA an SM of the threads its card's registers hold at `kDecodeRegsPerThread` (128) each (`decode_threads`, the one function the launch and the compiled plan share) --
 `DecodePlan<B>::kThreads`, 512 (16 warps) on every tabulated card's 64K registers -- and one wave of them: the host takes the declared residency off the kernel's own launch bound and sizes
 the grid from it ([§21b](#the-split-policy)). The registers are the whole-atom walk's: a warp
 holds a quarter of an atom's leaves a lane group in flight ([`#whole-atoms`](#whole-atoms)),
@@ -429,7 +429,7 @@ as the `(owner, fixed run offsets, innermost digit)` decomposition the `(k, m)` 
 ([`decode_lattice.md`](decode_lattice.md), and `lat_*` fields on this same struct).
 
 <a id="decodeparams-note-l174"></a><a id="gsuf"></a><a id="near-line-129"></a><a id="near-line-132"></a>The box's
-fields are runtime scalars under `fsla/ops/lattice.py`'s names: `lat_s[l] = k * m_l` an owner's span, `lat_g[l] = B_l /
+fields are runtime scalars under the lattice's own names, the launch layout's (`DecodeLayout`): `lat_s[l] = k * m_l` an owner's span, `lat_g[l] = B_l /
 lat_s[l]` its owner-grid extent, `lat_gsuf` the grid's suffix products, and `lat_run_shift[l] = log2 prod_{l' > l}
 s_l'` the run offset's place in the owner-local index, re-based on the innermost run for the unit index. Every span is
 a power of two, so every suffix product is a SHIFT and no device division exists on this path. `mask_off[l]` /
@@ -809,12 +809,12 @@ rather than as a plausible zero is what a gate wants.
 
 ## <a id="smem-refusal"></a>35. The staged-amplitude SMEM budget is a declared capacity
 
-The host entry queries `cudaDevAttrMaxSharedMemoryPerBlock` and `STD_TORCH_CHECK`s
-`decode_step_smem_bytes(...)` against it, naming `sum_l width_l` in the message. That
+The launch function sizes the step's shared memory (`decode_smem_bytes`, `DecodeLayout::smem_bytes`) and holds it against the descriptor's per-block budget (`smem_per_cta_optin`); the host entry's launch refuses a step over it
+(`decode_smem_refusal`), naming `sum_l width_l` in the message. That
 function's total is the staged amplitude rows, the dial row, the token value, the
-cross-warp fold buffer and BOTH factor-table blocks (the digit masks, the owner liveness
-bitmasks and the two lists they compact into —
-`2 * mask_total + 4 * omask_total + 4 * olist_total + dlist_total` words,
+cross-warp fold buffer and BOTH factor-table blocks (the digit masks, the owner
+lists compacted from them and the write side's digit lists —
+`2 * mask_total + 4 * olist_total + dlist_total` words,
 [`decode_lattice.md`](decode_lattice.md)):
 everything a step's prologue puts in shared memory, all of it. It is **refused loudly
 rather than taken as a slower path** — there is no spill-to-global arm for any of it, and
@@ -901,7 +901,7 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="kdecodemaxspan"></a>`kDecodeMaxSpan`, the lattice's one capacity:
   [`decode_lattice.md#capacities`](decode_lattice.md#capacities)
 - <a id="fill-lattice"></a>`fill_lattice`: [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)
-- <a id="floor-inner"></a>`floor_inner`, the innermost-first capacity:
+- <a id="floor-inner"></a>the innermost-first capacity (`lattice_box`):
   [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)
 - <a id="decode-arm-0"></a>the declared arm list: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
 - <a id="fsladecodearms"></a>`fsla_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)

@@ -146,13 +146,15 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "Tensor[] read_mask, Tensor[] write_mask, Tensor? dials, Tensor v, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, "
-      "int lattice_k, int lattice_m, int ctas, float eps, int[] descriptor, Tensor(i!)? page_table=None, "
+      "int ctas, float eps, int[] descriptor, Tensor(i!)? page_table=None, "
       "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
   m.def("fsla_call_facts(str kernel) -> str");
   m.def("fsla_descriptor(str kernel, int device, int[] call) -> int[]");
   m.def("fsla_owed_kernels(str kernel, int device, int[] call) -> str");
   m.def("fsla_decode_build_stamp() -> int");
   m.def("fsla_decode_launch(int[] descriptor, int device) -> int[]");
+  m.def("fsla_decode_lattice(int[] widths) -> int[]");
+  m.def("fsla_decode_lattice_box(int[] widths, int k, int m) -> int[]");
   m.def("fsla_decode_arms() -> int[][]");
   m.def("fsla_decode_ledger_bind(Tensor? ledger) -> ()");
   m.def("fsla_decode_ledger_warps() -> int");
@@ -179,6 +181,8 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("fsla_descriptor", TORCH_BOX(&fsla::plan::fsla_descriptor));
   m.impl("fsla_owed_kernels", TORCH_BOX(&fsla::plan::fsla_owed_kernels));
   m.impl("fsla_decode_launch", TORCH_BOX(&fsla::decode::fsla_decode_launch));
+  m.impl("fsla_decode_lattice", TORCH_BOX(&fsla::decode::fsla_decode_lattice));
+  m.impl("fsla_decode_lattice_box", TORCH_BOX(&fsla::decode::fsla_decode_lattice_box));
 
   m.impl("csrc_build_stamp", TORCH_BOX(&fsla::csrc_build_stamp));
   m.impl("sm_clock_ghz", TORCH_BOX(&fsla::sm_clock_ghz));

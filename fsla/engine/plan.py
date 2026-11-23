@@ -55,7 +55,7 @@ class DecodeOperands:
     """The decode step's data. The bundle's own ``[B, 1, H, width_l]`` unit-max coefficient rows (u8) and their fp32
     ``[B, 1, H]`` maxima, per side; the masks' per-level words, DIGIT-packed int32 ``[B, H, ceil(width_l / 32)]`` per
     side (the step computes with ``r * m``; :mod:`fsla.routing.masks`); the dials; the value ``[B, 1, H, d_v]`` bf16
-    against the token's largest channel and its fp32 ``[B, 1, H]`` scale; the state plane, its leaf order and the page table."""
+    against the token's largest channel and its fp32 ``[B, 1, H]`` scale; the state plane and the page table."""
 
     read: tuple[torch.Tensor, ...]
     write: tuple[torch.Tensor, ...]
@@ -67,9 +67,6 @@ class DecodeOperands:
     v: torch.Tensor
     v_scale: torch.Tensor
     state_plane: torch.Tensor
-    #: The `(k, m)` BOX the state plane's leaves are ordered by: the leaf order travels with the plane
-    #: (`fsla.ops.lattice`), an attribute of the state operand and not a value of any plan.
-    state_lattice: tuple[int, int]
     page_table: torch.Tensor | None
 
 

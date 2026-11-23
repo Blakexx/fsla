@@ -62,6 +62,8 @@ has the planner check them against the contract and the device the call runs on,
 grid. `v` must be the arm's value width: the seam pads the caller's `d_v` by the launch function's padding and slices `y` back.
 `fsla_decode_launch(descriptor, device)` returns that launch for Python (`fsla.ops.decode.decode_launch`).
 
+<a id="fsla-decode-lattice"></a>`fsla_decode_lattice(widths)` returns the lattice the launch function solves for level widths, `[k, m, BC, owners, spans.., grids..]`, and `fsla_decode_lattice_box(widths, k, m)` the box of a given `(k, m)` on them (refused in the law's words when none fits), both pure functions of the widths with no device ([`../common/plan/lattice.md`](../common/plan/lattice.md)); `fsla.ops.decode.lattice_of` and `fsla.ops.lattice.permutation` read them for the oracle and test seam. Widths are held to the decode path's level-width capacity.
+
 **A SUBSET BINARY IS NOT SHIPPABLE** and its record says so: it carries fewer instantiations than the
 declaration by construction, so an iteration build is never a wheel ([`build.md#iteration`](../../build.md#iteration)).
 
@@ -98,9 +100,8 @@ the descriptor's innermost `write_listed_k` is 0, which `fsla.ops.produce.decode
 caller's RAW
 `[B, 1, H, *]` views — `read`, `write` and their scales, `v` — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own
-`[B, 1, H, d_v]` shape carries it. `lattice_k`/`lattice_m` name the `(k, m)` box
-(`decode_lattice.md#the-refusals`) the caller's state plane and routing levels are
-already written in — the leaf order travels with the state plane rather than being assumed (the op derives it from the state's format and passes it as an attribute of the state operand). Its
+`[B, 1, H, d_v]` shape carries it. The `(k, m)` box the caller's state plane and routing levels are
+already written in (`decode_lattice.md#the-refusals`) is the launch function's solve of the level widths, so the entry takes no lattice argument: the leaf order is a function of the widths, never assumed and never passed. Its
 argument checks and workspace contracts are documented with the definition, in
 [`decode.md`](decode.md#instantiation-matrix).
 

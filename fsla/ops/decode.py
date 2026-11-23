@@ -39,7 +39,7 @@ from fsla.ops._ext import extension
 from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decay import leaf_rate_dials
 from fsla.ops.descriptor import Descriptor
-from fsla.ops.lattice import derive_lattice, permutation
+from fsla.ops.lattice import permutation
 from fsla.ops.padding import pad_v, slice_y
 from fsla.ops.paging import MMA_K_QUANTUM, page_layout
 from fsla.routing.masks import DECODE
@@ -111,9 +111,10 @@ def decode_launch(descriptor: Descriptor) -> DecodeLaunchFacts:
 
 @cache
 def lattice_of(widths: tuple[int, ...]) -> tuple[int, int]:
-    """The ``(k, m)`` box the state plane's leaves are ordered by, derived from the state's format
-    (:func:`fsla.ops.lattice.derive_lattice`, the one authority); the leaf order travels with the plane."""
-    return derive_lattice(widths)
+    """The ``(k, m)`` box the state plane's leaves are ordered by: the launch function's solve for the level widths, read from the
+    extension (`fsla_decode_lattice`, a pure function of the widths); the leaf order travels with the plane."""
+    k, m = extension().fsla_decode_lattice(list(widths))[:2]
+    return int(k), int(m)
 
 
 @dataclass(slots=True)
@@ -329,8 +330,6 @@ def step(launch: DecodeLaunch, *, ctas: int | None = None, eps: float = READOUT_
         growth_ctr=scratch.growth_ctr,
         done=scratch.done,
         atom_bits=scratch.atom_bits,
-        lattice_k=op.state_lattice[0],
-        lattice_m=op.state_lattice[1],
         ctas=-1 if ctas is None else ctas,
         eps=eps,
         descriptor=list(launch.descriptor.words),
@@ -399,7 +398,6 @@ def _decode_step(
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
     check_descriptor(descriptor, routes, values.v.device)
-    widths = tuple(routes.topology.widths)
     logical_d_v = values.d_v
     launch = decode_launch(descriptor)
     v = pad_v(values.v, launch.d_v)
@@ -412,6 +410,6 @@ def _decode_step(
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
             read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, descriptor, v.device), v=v,
-            v_scale=values.scale, state_plane=plane, state_lattice=lattice_of(widths), page_table=page_table),
+            v_scale=values.scale, state_plane=plane, page_table=page_table),
         workspace=DecodeWorkspace(scratch=workspace, pool=pool)), ctas=ctas)
     return slice_y(y, logical_d_v), state, workspace

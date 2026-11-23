@@ -66,13 +66,12 @@ def state_plane(values, descriptor, decay, carried_plane, page_table):
         return bodies.step_plane(values.v, descriptor, decay, carried_plane, page_table)
 
 
-def build_launch(descriptor, routes, values, masks, decay, state, plane, page_table, held, pool):
+def build_launch(descriptor, routes, values, masks, decay, plane, page_table, held, pool):
     """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the descriptor, the
     operands and the workspace (:class:`fsla.engine.plan.DecodeLaunch`).
 
     The decay arm's dials are derived here: a per-HEAD constant, the one operand the step kernel does not fold
-    (docs/internals/decode/decode_fold.md). The state plane's leaf order is derived from the state's format
-    (:func:`fsla.ops.decode.lattice_of`): the state does not carry it.
+    (docs/internals/decode/decode_fold.md).
     """
     with span("build_launch"):
         return DecodeLaunch(
@@ -81,8 +80,7 @@ def build_launch(descriptor, routes, values, masks, decay, state, plane, page_ta
                 read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
                 write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
                 dials=bodies.leaf_rate_dials_for(decay, descriptor, values.device), v=values.v, v_scale=values.scale,
-                state_plane=plane, state_lattice=bodies.lattice_of(tuple(state.format.B)),
-                page_table=page_table),
+                state_plane=plane, page_table=page_table),
             workspace=DecodeWorkspace(scratch=held, pool=pool))
 
 
@@ -160,7 +158,7 @@ def decode_step_gated(routes, values, masks, state, *, decay=None):
     held = scratch(state, descriptor, BH, device)
     carried_plane, page_table, pool = backing(state, routes)
     plane = state_plane(values, descriptor, decay, carried_plane, page_table)
-    launch = build_launch(descriptor, routes, values, masks, decay, state, plane, page_table, held, pool)
+    launch = build_launch(descriptor, routes, values, masks, decay, plane, page_table, held, pool)
     return step(launch), state
 
 

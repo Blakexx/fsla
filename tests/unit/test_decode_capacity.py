@@ -64,21 +64,21 @@ def test_the_binary_under_test_is_this_tree():
     ENUMERATION SHAPE (``kKinds * kMaxTerms``), ``sizeof(DecodeParams)``,
     ``sizeof(Unit<4>)`` and ``kDecodeMaxSpan`` — facts a path check, a hash check and an
     import check are all blind to. The SPAN ceiling is the half with teeth here: it is the
-    same number ``fsla.ops.lattice`` refuses candidate boxes against, so a host that
+    same number the launch function's lattice solver caps an owner span at (a width-256 level is held to it: only the span limit stops the box growing, the leaf ceiling would allow 128), so a host that
     outgrew the device's box fails here. The shape field is what moves the stamp when the
     walk's index space is redefined without either struct changing size.
     """
     from fsla.ops._ext import extension
-    from fsla.ops.lattice import _MAX_SPAN
+    solver_span = extension().fsla_decode_lattice([256])[4]
 
     stamp = extension().fsla_decode_build_stamp()
     assert stamp > 0, "the decode build stamp is not a device-side fact"
     high, remainder = divmod(stamp, 1000003)
     shape, params_bytes = divmod(high, 4096)
     unit_bytes, max_span = divmod(remainder, 101)
-    assert max_span == _MAX_SPAN, (
-        f"the binary's kDecodeMaxSpan is {max_span} and the host solver refuses "
-        f"candidates above {_MAX_SPAN}; one of the two is stale")
+    assert max_span == solver_span, (
+        f"the binary's kDecodeMaxSpan is {max_span} and the launch function's solver caps a span at "
+        f"{solver_span}; one of the two is stale")
     assert 0 < params_bytes < 4096 and 0 < unit_bytes < 4096, (
         f"the stamp does not decode to plausible struct sizes ({params_bytes}, "
         f"{unit_bytes} bytes); the loaded binary is not this tree's")

@@ -6,7 +6,7 @@ change and no oracle arithmetic change.
 
 **TWO CONTRACTS, KEPT SEPARATE (CONSTITUTION §R13).** The API accepts any shape and
 pads; the kernel boundary accepts only its own strict shape and refuses the rest
-(`test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths`).
+(`test_the_lattice_box_is_a_second_kernel_boundary_that_refuses_unpadded_widths`).
 
 **PREFILL (no kernel on this line, C_CLEAN_SLATE):** `naive_fsla` is already
 dimension-generic (it derives `N`/strides from whatever `Topology` it is handed and
@@ -30,8 +30,9 @@ import math
 import pytest
 import torch
 
+from fsla.ops._ext import extension
 from fsla.ops.decode import _decode_step, decode_launch, lattice_of
-from fsla.ops.lattice import box_shape, to_canonical, to_lattice
+from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.padding import pad_routes, pad_v
 from fsla.ops.paging import bytes_equal
@@ -110,12 +111,12 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 # ---------------------------------------------------------------------------
 
 
-def test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths():
-    """`box_shape` (this file's own lattice-capacity gate, unrelated to and
+def test_the_lattice_box_is_a_second_kernel_boundary_that_refuses_unpadded_widths():
+    """The lattice box (the extension's own capacity gate, unrelated to and
     independent of the descriptor above) refuses the same unpadded shape too --
     a second, independently-arrived-at boundary agreeing with the first."""
-    with pytest.raises(ValueError):
-        box_shape((31, 45), k=4, m=8)
+    with pytest.raises(RuntimeError):
+        extension().fsla_decode_lattice_box([31, 45], 4, 8)
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,8 @@ _LAUNCHLESS = {
     "intra_footprint": "a host derivation over the widths; no device work",
     "fsla_decode_arms": "reads the built arm set out of compile-time constants",
     "fsla_decode_launch": "a host derivation over a descriptor, which was made against the contract (the device's read); no device work",
+    "fsla_decode_lattice": "a host derivation over level widths (the launch function's lattice solve); no device work",
+    "fsla_decode_lattice_box": "a host derivation over level widths and a (k, m); no device work",
     "fsla_descriptor": "reads the device's facts once and checks them against a kernel's contract (common/plan/environment.cu); no device work",
     "fsla_owed_kernels": "reads the device's facts once and names the kernels an owed call waits on (common/plan/environment.cu); no device work",
     "fsla_call_facts": "names a kernel's call facts; no device work",

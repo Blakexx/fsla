@@ -44,7 +44,7 @@ reaches into the module itself.
 | the addressing block | `carry_geometry`, `carry_sub_boxes` |
 | the producer's solves | `entmax_union_forward`, `entmax_union_backward`, `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the planner's descriptor | `fsla_call_facts`, `fsla_descriptor`, `fsla_owed_kernels` |
-| the T=1 decode path | `fsla_decode_forward`, `fsla_decode_launch`, `fsla_decode_build_stamp`, `fsla_decode_arms`, `fsla_decode_ledger_bind`, `fsla_decode_ledger_warps`, `fsla_decode_capacity`, `fsla_decode_producer_width_mirror` |
+| the T=1 decode path | `fsla_decode_forward`, `fsla_decode_launch`, `fsla_decode_lattice`, `fsla_decode_lattice_box`, `fsla_decode_build_stamp`, `fsla_decode_arms`, `fsla_decode_ledger_bind`, `fsla_decode_ledger_warps`, `fsla_decode_capacity`, `fsla_decode_producer_width_mirror` |
 | the VMM owner, by handle | `vmm_probe`, `vmm_create`, `vmm_release`, `vmm_base`, `vmm_grow`, `vmm_rollback_to`, `vmm_reset`, `vmm_close`, `vmm_facts` |
 
 Every operator that launches a kernel opens with `check_arch_table()`, the closed-world refusal of an architecture the

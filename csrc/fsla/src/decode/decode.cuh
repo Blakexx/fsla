@@ -24,15 +24,12 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: THE WALK'S REGISTERS A THREAD, the planner's (common/plan/decode_launch.h): the one definition both the compiled CTA width and the launch's read
-using ::fsla::plan::kDecodeRegsPerThread;
-
-//: THE STEP'S PLAN at build `B`: ONE CTA an SM, of the threads the card's registers hold at `kDecodeRegsPerThread`.
+//: THE STEP'S PLAN at build `B`: ONE CTA an SM, of the threads the build's registers hold (`plan::decode_threads`, the launch function's own).
 //: -- see docs/internals/decode/decode.md#declared-residency
 template <::denseref::arch::Build B>
 struct DecodePlan {
   static constexpr int kThreads =
-      ::denseref::arch::traits_of(B).caps.regs_per_sm / kDecodeRegsPerThread;
+      ::fsla::plan::decode_threads(::denseref::arch::traits_of(B).caps.regs_per_sm);
   static constexpr int kWarps = kThreads / 32;
   static constexpr int kBlocksPerSm = ::fsla::plan::kDecodeBlocksPerSm;
   static_assert(kThreads % 32 == 0 && kThreads <= 1024,
@@ -90,7 +87,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
-  //: THE (k, m) BOX, the lattice's fields as runtime scalars under `fsla/ops/lattice.py`'s -- see docs/internals/decode/decode.md#decodeparams-note-l174
+  //: THE (k, m) BOX, the lattice's fields as runtime scalars, the launch layout's own (`plan::DecodeLayout`, `common/plan/decode_launch.h`) -- see docs/internals/decode/decode.md#decodeparams-note-l174
   int lat_k;
   int lat_s[kMaxLevels];
   int lat_g[kMaxLevels];
@@ -173,9 +170,6 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // The step's entry points. `decode.cu` owns the step and the host entry;
 // `fsla_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
-
-size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
-                              int olist_total, int dlist_total);
 
 namespace detail {
 //: THE STEP'S WARPS at a card's build, for the host (`DecodePlan`).

@@ -99,7 +99,7 @@ from tests.oracle.tolerances import DECODE_STATE, DECODE_Y  # noqa: E402
 #: keying REQUIRES (`AtomKeying.__post_init__`); the depth axis is what varies, because
 #: the walk's per-word digit decomposition is the part depth reaches. K53: every row is
 #: admission-lawful under the width-16 floor, so a walk unit is exactly one atom in each
-#: (`box_shape`'s innermost span is 16 at every depth here, not narrower).
+#: (the lattice box's innermost span is 16 at every depth here, not narrower).
 _ARMS = (
     ((64, 64), 128),
     ((16, 16, 16, 16), 128),

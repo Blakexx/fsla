@@ -30,8 +30,8 @@ import pytest
 import torch
 
 from fsla.ops.constants import READOUT_EPS
-from fsla.ops.decode import _decode_step, fold_levels
-from fsla.ops.lattice import derive_lattice, permutation
+from fsla.ops.decode import _decode_step, fold_levels, lattice_of
+from fsla.ops.lattice import permutation
 from fsla.ops.paging import decode_pages
 from fsla.ops.produce import decode_descriptor
 from fsla.routing import quant
@@ -59,7 +59,7 @@ def _single_leaf_state(BH: int, widths, s0: int, device, seed: int):
     ``e``/``m`` the values a READ-ONLY load reconstructs (the hi plane at its group exponent, the fp32 mass) -- the
     reference must be built from what the kernel reads, not from the fp32 draw that never reaches it whole."""
     gen = torch.Generator(device=device).manual_seed(seed)
-    pi = permutation(widths, *derive_lattice(widths), device=device)
+    pi = permutation(widths, *lattice_of(widths), device=device)
     state = torch.zeros(BH, math.prod(widths), _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
     state[:, int(pi[s0])] = row

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "plan/decode/facts.h"
+#include "plan/lattice.h"
 #include "plan/levels.h"
 #include "plan/rules.h"
 
@@ -49,9 +50,44 @@ struct DecodeArgs {
   int write_dense;
 };
 
+//: THE LAUNCH'S LAYOUT, a function of the call's facts and the device's: the lattice box `(lat_k, lat_m)` of the level widths, every
+//: field the step's parameters carry of it (named as `DecodeParams` names them), the tables' word layout, `write_atoms`, `owner_holds_atom`,
+//: the `leaves`, `total_rows`, `unit_ceiling` (the units a head supplies the grid), the step's `smem_bytes` and whether it `fits` the
+//: budget; every array is 0 beyond the call's levels -- see docs/internals/common/plan/decode_launch.md
+struct DecodeLayout {
+  int lat_k;
+  int lat_m;
+  int lat_s[kDecodeMaxLevels];
+  int lat_g[kDecodeMaxLevels];
+  int lat_gsuf[kDecodeMaxLevels];
+  int lat_sbits[kDecodeMaxLevels];
+  int lat_run_shift[kDecodeMaxLevels];
+  int lat_local_bits;
+  int lat_inner_bits;
+  int lat_outer_bits;
+  int lat_oshift[kDecodeMaxLevels];
+  int mask_off[kDecodeMaxLevels];
+  int mask_words[kDecodeMaxLevels];
+  int mask_total;
+  int olist_off[kDecodeMaxLevels];
+  int olist_total;
+  int dlist_off[kDecodeMaxLevels];
+  int dlist_total;
+  int atoms_per_unit_shift;
+  int lat_units_per_atom_shift;
+  int write_atoms;
+  int owner_holds_atom;
+  std::int64_t leaves;
+  int total_rows;
+  std::int64_t unit_ceiling;
+  std::int64_t smem_bytes;
+  int fits;
+};
+
 struct DecodeLaunch {
   DecodeArm arm;
   DecodeArgs args;
+  DecodeLayout layout;
 };
 
 inline constexpr std::size_t kMaxDecodeArms = 64;
@@ -59,6 +95,15 @@ inline constexpr std::size_t kMaxDecodeArms = 64;
 //: THE WALK'S REGISTERS A THREAD: a warp holds a quarter of an atom's leaves a lane group in flight.
 //: -- see docs/internals/decode/decode.md#decode-threads
 inline constexpr int kDecodeRegsPerThread = 128;
+
+//: THE CTA'S THREADS from a register file of `regs_per_sm`: the one function of the device's fact (`decode_args`) and of a build's
+//: (`DecodePlan<B>::kThreads`)
+constexpr int decode_threads(std::int64_t regs_per_sm) {
+  return static_cast<int>(regs_per_sm / kDecodeRegsPerThread);
+}
+
+//: the digit sets the terms are built from (W, R, R&W, R&~W): each takes a level's owner grid of list words in the step's shared memory
+inline constexpr int kDecodeListKinds = 4;
 
 //: THE SMALLEST UNIT SHARE worth a CTA's prologue (its fold and factor tables): the grid's supply bound.
 //: -- see docs/internals/decode/decode.md#the-split-policy
@@ -115,7 +160,7 @@ constexpr DecodeArgs decode_args(const DecodeDescriptor& d, const DecodeArm& arm
   const bool innermost_dense =
       level_write_listed(d, static_cast<int>(decode::Reader::levels(d).lo) - 1).lo == 0;
   DecodeArgs args{static_cast<int>(decode::Reader::cc(d).lo),
-                  static_cast<int>(decode::Reader::regs_per_sm(d).lo / kDecodeRegsPerThread),
+                  decode_threads(decode::Reader::regs_per_sm(d).lo),
                   static_cast<int>(decode::Reader::smem_per_cta_optin(d).lo),
                   arm.d_v - static_cast<int>(decode::Reader::d_v(d).lo),
                   static_cast<int>(decode::Reader::sm_count(d).lo),
@@ -145,9 +190,103 @@ constexpr int decode_grid(const DecodeArgs& args, std::int64_t unit_ceiling, std
   return static_cast<int>(grid > 1 ? grid : 1);
 }
 
+//: THE STEP'S SHARED MEMORY in bytes: the staged amplitudes, the value, each warp's fold row and the tables, 4-byte words
+constexpr std::int64_t decode_smem_bytes(int warps, int total_rows, int d_v, bool decay,
+                                         int mask_total, int olist_total, int dlist_total) {
+  const std::int64_t amps = std::int64_t{total_rows} * (decay ? 3 : 2);
+  const std::int64_t fold = std::int64_t{warps} * (d_v + 4);
+  const std::int64_t tables = 2 * std::int64_t{mask_total}
+                              + kDecodeListKinds * std::int64_t{olist_total}
+                              + std::int64_t{dlist_total};
+  return (amps + d_v + fold + tables) * std::int64_t{sizeof(float)};
+}
+
+//: THE LAUNCH'S LAYOUT from the arm and its arguments: the lattice's box of the level widths (`lattice.h`) laid out as the step's parameters
+//: carry it
+constexpr DecodeLayout decode_layout(const DecodeArm& arm, const DecodeArgs& args) {
+  const int levels = arm.levels;
+  const auto box = lattice_solve<kDecodeMaxLevels>(args.widths, levels);
+  DecodeLayout out{};
+  out.lat_k = box.k;
+  out.lat_m = static_cast<int>(box.m);
+
+  int run_shift = 0;
+  int gsuf = 1;
+  int rows = 0;
+  std::int64_t leaves = 1;
+  for (int l = 0; l < levels; ++l) {
+    out.lat_s[l] = static_cast<int>(box.s[l]);
+    out.lat_g[l] = static_cast<int>(box.g[l]);
+    out.lat_sbits[l] = lattice_log2(box.s[l]);
+    out.lat_local_bits += out.lat_sbits[l];
+    leaves *= args.widths[l];
+    rows += args.widths[l];
+  }
+
+  for (int l = levels - 1; l >= 0; --l) {
+    out.lat_gsuf[l] = gsuf;
+    out.lat_run_shift[l] = run_shift;
+    gsuf *= out.lat_g[l];
+    run_shift += out.lat_sbits[l];
+  }
+
+  out.lat_inner_bits = out.lat_sbits[levels - 1];
+  out.lat_outer_bits = out.lat_local_bits - out.lat_inner_bits;
+  for (int l = 0; l < levels; ++l) {
+    out.lat_oshift[l] = l < levels - 1 ? out.lat_run_shift[l] - out.lat_inner_bits : 0;
+  }
+
+  out.atoms_per_unit_shift =
+      out.lat_inner_bits > kLatticeAtomShift ? out.lat_inner_bits - kLatticeAtomShift : 0;
+  out.lat_units_per_atom_shift =
+      out.lat_inner_bits < kLatticeAtomShift ? kLatticeAtomShift - out.lat_inner_bits : 0;
+
+  for (int l = 0; l < levels; ++l) {
+    out.mask_off[l] = out.mask_total;
+    out.mask_words[l] = (args.widths[l] + 31) / 32;
+    out.mask_total += out.mask_words[l];
+    out.olist_off[l] = out.olist_total;
+    out.olist_total += out.lat_g[l];
+    out.dlist_off[l] = out.dlist_total;
+    if (l < levels - 1) out.dlist_total += args.widths[l];
+  }
+
+  out.write_atoms = (args.write_dense != 0 && out.lat_inner_bits >= kLatticeAtomShift) ? 1 : 0;
+  out.owner_holds_atom = out.lat_local_bits >= kLatticeAtomShift ? 1 : 0;
+  out.leaves = leaves;
+  out.total_rows = rows;
+  out.unit_ceiling = leaves / out.lat_s[levels - 1];
+  out.smem_bytes = decode_smem_bytes(args.threads / 32, rows, arm.d_v, arm.decay != 0,
+                                     out.mask_total, out.olist_total, out.dlist_total);
+  out.fits = out.smem_bytes <= args.smem_budget ? 1 : 0;
+  return out;
+}
+
+//: the refusal of a step whose shared memory is over the budget
+inline std::string decode_smem_refusal(const DecodeLaunch& launch) {
+  std::string out = "the decode step's staged operands need ";
+  out += std::to_string(launch.layout.smem_bytes);
+  out += " B of shared memory against a per-block budget of ";
+  out += std::to_string(launch.args.smem_budget);
+  out += " B; sum_l width_l = " + std::to_string(launch.layout.total_rows);
+  out += ". This is a declared capacity, refused loudly rather than taken as a slower path.";
+  return out;
+}
+
+//: the refusal of a paged backing under an owner that holds less than one atom
+inline std::string decode_paged_refusal(const DecodeLayout& layout) {
+  std::string out = "a paged decode needs one walk unit's leaves to hold a whole number of ";
+  out += std::to_string(kLatticeAtomLeaves);
+  out += "-leaf atoms, and this (k, m) gives an owner only ";
+  out += std::to_string(1 << layout.lat_local_bits);
+  out += " (the innermost span must cover an atom)";
+  return out;
+}
+
 constexpr DecodeLaunch decode_launch(const DecodeDescriptor& d) {
   const DecodeArm arm = decode_arm(d);
-  return {arm, decode_args(d, arm)};
+  const DecodeArgs args = decode_args(d, arm);
+  return {arm, args, decode_layout(arm, args)};
 }
 
 //: whether a launch's arguments are the descriptor's own: its device facts, the arm's padding and each level's width
@@ -155,7 +294,7 @@ constexpr bool decode_args_reflect(const DecodeDescriptor& d, const DecodeLaunch
   const DecodeArgs& a = launch.args;
   bool ok = a.cc == decode::Reader::cc(d).lo && a.sms == decode::Reader::sm_count(d).lo
             && a.smem_budget == decode::Reader::smem_per_cta_optin(d).lo
-            && a.threads == decode::Reader::regs_per_sm(d).lo / kDecodeRegsPerThread
+            && a.threads == decode_threads(decode::Reader::regs_per_sm(d).lo)
             && a.pad == launch.arm.d_v - decode::Reader::d_v(d).lo && a.pad >= 0;
   for (int l = 0; l < launch.arm.levels; ++l) {
     const std::int64_t bits = level_width_bits(d, l).lo;

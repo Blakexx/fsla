@@ -624,16 +624,6 @@ decode_step_kernel(DecodeParams p) {
 
 }  // namespace detail
 
-size_t decode_step_smem_bytes(int warps, int total_rows, int d_v, bool decay, int mask_total,
-                              int olist_total, int dlist_total) {
-  const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
-  const size_t fold = static_cast<size_t>(warps) * (d_v + 4);
-  const size_t tables = 2 * static_cast<size_t>(mask_total)
-                        + kKinds * static_cast<size_t>(olist_total)
-                        + static_cast<size_t>(dlist_total);
-  return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
-}
-
 //: THE DECODE ARM SET, defined over the generated selection header: the key `(d_v, levels, decay)` -- see docs/internals/common/arm_switch.md#arm-set
 FSLA_DEFINE_ARM_SET(DecodeArmSet, DECODE);
 
@@ -666,15 +656,8 @@ constexpr size_t kDefaultDynamicSmem = 48 * 1024;
 void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, const DecodeParams& p) {
   const plan::DecodeArm& arm = launch.arm;
   const plan::DecodeArgs& args = launch.args;
-  const size_t smem =
-      decode_step_smem_bytes(detail::step_warps(card), p.total_rows, arm.d_v, arm.decay != 0,
-                             p.mask_total, p.olist_total, p.dlist_total);
-  STD_TORCH_CHECK(static_cast<int64_t>(smem) <= args.smem_budget,
-                  "the decode step's staged operands need ", smem,
-                  " B of shared memory against a per-block budget of ", args.smem_budget,
-                  " B; sum_l width_l = ", p.total_rows,
-                  ". This is a declared capacity, refused loudly rather than taken as a "
-                  "slower path.");
+  const size_t smem = static_cast<size_t>(launch.layout.smem_bytes);
+  if (!launch.layout.fits) STD_TORCH_CHECK(false, plan::decode_smem_refusal(launch));
   auto stream = current_stream();
   //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three -- see docs/internals/decode/decode.md#launch
   auto enqueue = [&](auto DV, auto LEVELS, auto DECAY) {
@@ -750,14 +733,6 @@ Span scalar_span_of(const Tensor& t, int64_t B, int64_t H, const char* name) {
   return Span{t.data_ptr(), t.stride(0), t.stride(2), 0};
 }
 
-int ilog2_exact(int64_t x, const char* what) {
-  STD_TORCH_CHECK(x >= 1, what, " must be positive, got ", x);
-  int e = 0;
-  while ((int64_t{1} << e) < x) ++e;
-  STD_TORCH_CHECK((int64_t{1} << e) == x, what, " must be a power of two, got ", x);
-  return e;
-}
-
 //: THE STEP'S WARPS at `card`'s build, for the host.
 int step_warps(const Card& card) {
   int warps = 0;
@@ -765,83 +740,30 @@ int step_warps(const Card& card) {
   return warps;
 }
 
-//: THE (k, m) BOX, FILLED AND REFUSED HERE. The derivation is `fsla/ops/lattice.py`'s -- see docs/internals/decode/decode.md#fill-lattice
-void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
-  const int kappa = ilog2_exact(k, "the lattice span k");
-  const int j = ilog2_exact(m, "the lattice capacity m");
-  STD_TORCH_CHECK(k <= kDecodeMaxSpan, "the lattice span k = ", k, " exceeds the decode path's ",
-                  kDecodeMaxSpan);
-  p.lat_k = static_cast<int>(k);
-
-  const int D = p.D;
-  //: the lattice's section 2.5 as the atom-rectangle law generalizes it: the -- see docs/internals/decode/decode.md#floor-inner
-  const int floor_inner = kAtomShift > kappa ? kAtomShift - kappa : 0;
-  int ceil_inner = 0;
-  while ((p.lat_k << (ceil_inner + 1)) <= p.level_width[D - 1]
-         && p.level_width[D - 1] % (p.lat_k << (ceil_inner + 1)) == 0)
-    ++ceil_inner;
-  const int share = j / D + ((j % D) ? 1 : 0);
-  int a_inner = share > floor_inner ? share : floor_inner;
-  if (a_inner > ceil_inner) a_inner = ceil_inner;
-  if (a_inner > j) a_inner = j;
-  const int j_outer = j - a_inner;
-
-  int64_t bc = 1;
-  int64_t owners = 1;
-  int local_bits = 0;
-  for (int l = 0; l < D; ++l) {
-    const int a = (l == D - 1 || D == 1)
-                      ? a_inner
-                      : j_outer / (D - 1) + ((l >= (D - 1) - (j_outer % (D - 1))) ? 1 : 0);
-    p.lat_s[l] = p.lat_k << a;
-    STD_TORCH_CHECK(p.lat_s[l] <= kDecodeMaxSpan, "level ", l, "'s owner span k*m_l = ", p.lat_s[l],
-                    " exceeds the decode path's ", kDecodeMaxSpan);
-    STD_TORCH_CHECK(p.level_width[l] % p.lat_s[l] == 0, "level ", l, " of width ", p.level_width[l],
-                    " is not a whole number of owner spans k*m_l = ", p.lat_s[l],
-                    " (an owner sits inside a level)");
-    p.lat_g[l] = p.level_width[l] / p.lat_s[l];
-    bc *= p.lat_s[l];
-    owners *= p.lat_g[l];
-    local_bits += kappa + a;
+//: THE LAYOUT INTO THE PARAMS: the launch's layout (`plan::DecodeLayout`) copied field for field; nothing is derived here -- see docs/internals/decode/decode.md#fill-lattice
+void fill_lattice(DecodeParams& p, const plan::DecodeLayout& layout) {
+  p.lat_k = layout.lat_k;
+  for (int l = 0; l < kMaxLevels; ++l) {
+    p.lat_s[l] = layout.lat_s[l];
+    p.lat_g[l] = layout.lat_g[l];
+    p.lat_gsuf[l] = layout.lat_gsuf[l];
+    p.lat_sbits[l] = layout.lat_sbits[l];
+    p.lat_run_shift[l] = layout.lat_run_shift[l];
+    p.lat_oshift[l] = layout.lat_oshift[l];
+    p.mask_off[l] = layout.mask_off[l];
+    p.mask_words[l] = layout.mask_words[l];
+    p.olist_off[l] = layout.olist_off[l];
+    p.dlist_off[l] = layout.dlist_off[l];
   }
-  STD_TORCH_CHECK(owners * bc == N, "the lattice partitions ", owners * bc, " leaves against ", N);
-  p.lat_local_bits = local_bits;
-
-  //: `lattice run_shift`: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the -- see docs/internals/decode/decode.md#gsuf
-  int gsuf = 1;
-  int run_shift = 0;
-  for (int l = D - 1; l >= 0; --l) {
-    p.lat_gsuf[l] = gsuf;
-    p.lat_run_shift[l] = run_shift;
-    gsuf *= p.lat_g[l];
-    run_shift += ilog2_exact(p.lat_s[l], "the level's owner span");
-  }
-
-  //: THE UNIT, and the atom it is reconciled with. -- see docs/internals/decode/decode.md#fill-lattice-note-l960
-  p.lat_inner_bits = ilog2_exact(p.lat_s[D - 1], "the innermost level's owner span");
-  p.lat_outer_bits = local_bits - p.lat_inner_bits;
-  for (int l = 0; l < D; ++l) {
-    p.lat_oshift[l] = l < D - 1 ? p.lat_run_shift[l] - p.lat_inner_bits : 0;
-  }
-  p.atoms_per_unit_shift = p.lat_inner_bits > kAtomShift ? p.lat_inner_bits - kAtomShift : 0;
-  p.lat_units_per_atom_shift = p.lat_inner_bits < kAtomShift ? kAtomShift - p.lat_inner_bits : 0;
-
-  int mask_total = 0;
-  int olist_total = 0;
-  int dlist_total = 0;
-  for (int l = 0; l < D; ++l) {
-    p.lat_sbits[l] = ilog2_exact(p.lat_s[l], "the level's owner span");
-    p.mask_off[l] = mask_total;
-    p.mask_words[l] = ceil_div_int(p.level_width[l], 32);
-    mask_total += p.mask_words[l];
-    p.olist_off[l] = olist_total;
-    olist_total += p.lat_g[l];
-    p.dlist_off[l] = dlist_total;
-    if (l < D - 1) dlist_total += p.level_width[l];
-  }
-  p.mask_total = mask_total;
-  p.olist_total = olist_total;
-  p.dlist_total = dlist_total;
+  p.lat_local_bits = layout.lat_local_bits;
+  p.lat_inner_bits = layout.lat_inner_bits;
+  p.lat_outer_bits = layout.lat_outer_bits;
+  p.mask_total = layout.mask_total;
+  p.olist_total = layout.olist_total;
+  p.dlist_total = layout.dlist_total;
+  p.atoms_per_unit_shift = layout.atoms_per_unit_shift;
+  p.lat_units_per_atom_shift = layout.lat_units_per_atom_shift;
+  p.write_atoms = layout.write_atoms;
 }
 
 //: The per-level geometry every decode entry validates the same way, filled into `p` and -- see docs/internals/decode/decode.md#filllevels
@@ -863,6 +785,11 @@ int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
 }
 
 }  // namespace detail
+
+static_assert(plan::kLatticeAtomLeaves == kAtomLeaves && plan::kLatticeAtomShift == kAtomShift
+                  && plan::kLatticeMaxSpan == kDecodeMaxSpan && plan::kDecodeListKinds == kKinds,
+              "the launch's lattice law and the kernel state its shared constants once each: "
+              "the atom's leaves, the owner span limit and the lists a level takes");
 
 int64_t fsla_decode_capacity() { return kDecodeMaxLevelWidth; }
 
@@ -892,10 +819,10 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
                            std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state,
                            Tensor yacc, Tensor queue, Tensor growth, Tensor growth_any,
-                           Tensor growth_ctr, Tensor done, Tensor atom_bits, int64_t lattice_k,
-                           int64_t lattice_m, int64_t ctas, double eps,
-                           std::vector<int64_t> descriptor, std::optional<Tensor> page_table,
-                           std::optional<Tensor> pool_slots, std::optional<Tensor> pool_cursor) {
+                           Tensor growth_ctr, Tensor done, Tensor atom_bits, int64_t ctas,
+                           double eps, std::vector<int64_t> descriptor,
+                           std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
+                           std::optional<Tensor> pool_cursor) {
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
@@ -921,7 +848,6 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   const std::vector<int64_t> level_widths(launch.args.widths, launch.args.widths + D);
   const std::vector<int64_t> level_row_offsets(launch.args.row_offsets,
                                                launch.args.row_offsets + D);
-  const bool write_dense = launch.args.write_dense != 0;
 
   STD_TORCH_CHECK(state.is_cuda() && state.scalar_type() == Dtype::Byte && state.is_contiguous(),
                   "state is the int8 state format's pages, a contiguous CUDA uint8 tensor; got ",
@@ -959,7 +885,7 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   DecodeParams p{};
   p.D = D;
   const int total_rows = detail::fill_levels(p, write, level_widths, B, H, N);
-  detail::fill_lattice(p, lattice_k, lattice_m, N);
+  detail::fill_lattice(p, launch.layout);
   //: THE COEFFICIENT ROWS: u8 at every level. -- see docs/internals/decode/decode.md#coefficient-rows
   STD_TORCH_CHECK(
       read_scale.size() == static_cast<size_t>(D) && write_scale.size() == static_cast<size_t>(D),
@@ -990,8 +916,6 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     p.read_mask[l] = read_mask[l].mutable_data_ptr<int32_t>();
     p.write_mask[l] = write_mask[l].mutable_data_ptr<int32_t>();
   }
-  //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
-  p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;
   //: THE VALUE: bf16 against the token's largest channel, the fp32 token scale.
   STD_TORCH_CHECK(v.scalar_type() == Dtype::BFloat16, "v is bf16, got ", v.scalar_type());
   p.v = detail::span_of(v, B, H, d_v, "v");
@@ -1023,10 +947,9 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       "atom_bits must be [BH, N / ", kAtomLeaves, "] bool, got ", shape(atom_bits.sizes()));
 
   //: THE ATOM'S PLACE IN THE LATTICE, required of a PAGED backing only, and now -- see docs/internals/decode/decode.md#torch-check
-  STD_TORCH_CHECK(page_ptr == nullptr || p.lat_local_bits >= kAtomShift,
-                  "a paged decode needs one walk unit's leaves to hold a whole number of ",
-                  kAtomLeaves, "-leaf atoms, and this (k, m) gives an owner only ",
-                  (1 << p.lat_local_bits), " (the innermost span must cover an atom)");
+  if (page_ptr != nullptr && !launch.layout.owner_holds_atom) {
+    STD_TORCH_CHECK(false, plan::decode_paged_refusal(launch.layout));
+  }
 
   const bool decay = dials.has_value();
   STD_TORCH_CHECK(decay == (launch.arm.decay != 0), "the call's dials are ",
@@ -1076,7 +999,7 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.BH = BH;
   p.H = H;
   //: the step's grid: the card's (a unit a run of the innermost level's span), or a gate's forced count
-  p.ctas = plan::decode_grid(launch.args, N / p.lat_s[D - 1], BH, ctas);
+  p.ctas = plan::decode_grid(launch.args, launch.layout.unit_ceiling, BH, ctas);
   p.total_rows = total_rows;
   p.eps = static_cast<float>(eps);
   p.ledger = g_phase_ledger;
@@ -1098,6 +1021,47 @@ std::vector<int64_t> fsla_decode_launch(std::vector<int64_t> descriptor, int64_t
   std::vector<int64_t> out = {arm.d_v, arm.levels, arm.decay, launch.args.pad};
   out.insert(out.end(), launch.args.widths, launch.args.widths + plan::kDecodeMaxLevels);
   return out;
+}
+
+namespace detail {
+
+//: the level widths of a lattice call, each held to the decode path's capacity, as the law's `int` array
+int lattice_levels(const std::vector<int64_t>& widths, int out[kMaxLevels]) {
+  const int levels = static_cast<int>(widths.size());
+  STD_TORCH_CHECK(levels >= 1 && levels <= kMaxLevels, "a lattice has 1 to ", kMaxLevels,
+                  " levels, got ", levels);
+  for (int l = 0; l < levels; ++l) {
+    STD_TORCH_CHECK(widths[l] >= 1 && widths[l] <= kDecodeMaxLevelWidth, "level ", l, " of width ",
+                    widths[l], " is outside 1 to the decode path's ", kDecodeMaxLevelWidth);
+    out[l] = static_cast<int>(widths[l]);
+  }
+  return levels;
+}
+
+//: `[k, m, BC, owners, s_0 .. s_{D-1}, g_0 .. g_{D-1}]` of a box
+std::vector<int64_t> lattice_words(const plan::LatticeBox<kMaxLevels>& box) {
+  std::vector<int64_t> out = {box.k, box.m, box.bc, box.owners};
+  out.insert(out.end(), box.s, box.s + box.levels);
+  out.insert(out.end(), box.g, box.g + box.levels);
+  return out;
+}
+
+}  // namespace detail
+
+//: THE LATTICE the launch function solves for level widths, for the host: no device, a pure function of the widths
+std::vector<int64_t> fsla_decode_lattice(std::vector<int64_t> widths) {
+  int w[kMaxLevels] = {};
+  const int levels = detail::lattice_levels(widths, w);
+  return detail::lattice_words(plan::lattice_solve<kMaxLevels>(w, levels));
+}
+
+//: THE BOX of `(k, m)` on level widths, for the host: the law's box, refused in its words when none fits
+std::vector<int64_t> fsla_decode_lattice_box(std::vector<int64_t> widths, int64_t k, int64_t m) {
+  int w[kMaxLevels] = {};
+  const int levels = detail::lattice_levels(widths, w);
+  const auto box = plan::lattice_box<kMaxLevels>(w, levels, static_cast<int>(k), m);
+  if (box.refusal != plan::BoxRefusal::kNone) STD_TORCH_CHECK(false, plan::lattice_refusal(box, w));
+  return detail::lattice_words(box);
 }
 
 }  // namespace decode

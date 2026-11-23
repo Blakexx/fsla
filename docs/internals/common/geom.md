@@ -388,13 +388,13 @@ THE PAGE ATOM IS NOT HELD ON THE OWNER SPANS in the tall law. The lattice order 
 owner-major and then the owner-local mixed radix, so a page is sixteen consecutive local
 indices and always lies inside one owner whatever the innermost span is; what changes when
 the innermost span is 8 is that a page holds two digits of the next level out, a rectangle
-`atom_rectangle` already describes, and nothing in the tall form reads a page as sixteen
+`lattice_atom_rectangle` (`common/plan/lattice.h`) already describes, and nothing in the tall form reads a page as sixteen
 consecutive canonical leaves. The warp-level atom floor stays off for the same reason as before:
 the shipped body's `## innermost-invariant` is its ldmatrix operand law, and the tall form's
 operands come through the transfer and the digit lists. ONE CONSEQUENCE IS OWED: the paged plane
-the decode family reads is laid out by `fsla.ops.lattice` in the `(k, m)` form at
-`LATTICE_CAP_BC = 128`, and the two families write and read one plane, so the lattice
-module learns the tall owner law when the int8 carry ships.
+the decode family reads is laid out by the lattice law (`common/plan/lattice.h`) in the `(k, m)` form at
+`kLatticeCapBc = 128`, and the two families write and read one plane, so the lattice
+law learns the tall owner law when the int8 carry ships.
 
 The shipped kernel keeps the quarter-share box until the int8 body ships; until then the
 tall set is reachable through the binding at `bc = TALL_BOX_LEAVES` and is what

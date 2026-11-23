@@ -52,8 +52,8 @@ of its own either.
 `backing` is `FSLAState._decode_entry`: the plane, table and slack pool the state already
 has, over the residency it already has — it admits nothing itself. `build_launch` derives the decay arm's `dials`: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
-already holds; its `descriptor` is the one `descriptor_of` built, and the state plane's leaf order is derived from the state's format here
-(`fsla.ops.decode.lattice_of`).
+already holds; its `descriptor` is the one `descriptor_of` built, and the state plane's leaf order is the lattice of the descriptor's level widths, solved by the launch function
+([`decode_launch.md`](../common/plan/decode_launch.md); `fsla.ops.decode.lattice_of` reads the same solve for the oracle and test seam).
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the descriptor's arm,
 the plane's extent against the backing, the page table's against `[BH, N/16]`. They are
@@ -89,7 +89,7 @@ there at someone's first `graph.replay()`.
 THERE IS NO DECODE PLAN. The decode op builds the validated `Descriptor` itself (`descriptor_of`, over `fsla.ops.produce._decode_descriptor`: every device fact and every call fact, immutable, hashable; the
 key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
 `plan::decode_launch` ([`decode_launch.md`](../common/plan/decode_launch.md)) reads; the per-level dial row offsets are the launch function's output (the widths' prefix sums); the `(k, m)`
-lattice the state plane is written in (`state_lattice`, [`decode_lattice.md`](../decode/decode_lattice.md)) is the state plane's own leaf order, an attribute of the state operand;
+lattice the state plane is written in ([`decode_lattice.md`](../decode/decode_lattice.md)) is the launch function's output, a function of the widths;
 `eps` is data and `ctas` a private keyword of the internal `step`. None of that is a derived axis. `BC` is deliberately NOT a
 fact: owner-blocked AMORTIZATION is a property of how a tiled consumer shares a
 `[BC, cols]` block's cost across many tokens, and with one token there is nothing to
