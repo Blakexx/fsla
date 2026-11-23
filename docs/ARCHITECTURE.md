@@ -274,8 +274,8 @@ consumes them blindly and the gather lays them out as is best): for a block of 1
 window's live tokens' value lines -- a token once a group of digits it is live in (RULED 2026-11-19) -- with each
 membership's place, its byte and its token's index. The read side has no packet: a carry CTA lists its own readers
 from the read mask, whose format carries the counts the listing needs. A carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
-pass runs in its own CTAs beside the carry's, in one grid, the stream a ring (RULED 2026-11-15); the hand-off between
-the two is not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
+pass runs in its own CTAs beside the carry's, in one grid, the stream a ring read by a unit of 16 carry CTAs (RULED 2026-11-15 and
+2026-11-23); the card's split between the two and a unit's start are not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
 [`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). Sparsity is declared, never detected: the masks are
 an input operand the pass uses blindly. No gather kernel is built on this line. Where the factor products and the tile
 unions come from, and the masks' format on the surface, are open ([`open-work.md`](open-work.md), row A-e).
@@ -285,7 +285,7 @@ unions come from, and the masks' format on the surface, are open ([`open-work.md
 One CTA a box and batch-head, one CTA an SM; the box's fp32 state lives in the CTA for the whole call. Per window: the
 READOUT of the state as of the window's start by the window's readers, each token's partial sums added in fp32 into
 `num` and, as the v+1 channel, `den` (carry CTAs join only there, R22; on hopper a carry CTA also reads the ring its
-gather CTAs write, a hand-off not designed -- [`architecture/hopper-carry.md`](architecture/hopper-carry.md)); then the FOLD of the window's writes into the state.
+gather CTAs write, its hand-off designed in outline -- [`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)); then the FOLD of the window's writes into the state.
 No carry kernel is built on this line: its hopper form is the design its kernel is built from
 ([`architecture/hopper-carry.md`](architecture/hopper-carry.md); section 9's forms;
 [`open-work.md`](open-work.md)).

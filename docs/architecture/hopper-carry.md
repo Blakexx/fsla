@@ -59,8 +59,9 @@ form. What the carry is handed, a (CTA, window):
   2026-11-23: "i think its fine to say just use our mask packing code or it will break").
   MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) to (k)): a readout from lists is exact, an
   entry loaded three passes ahead and its row two so that no load waits on another; the listing on the drain warps,
-  its mask a window ahead and the counts handed with it, is 2.1% of the window at one CTA and 11.4% at 132 CTAs
-  beside a kernel whose drain is stalled on its packet's offsets there. NOT MEASURED: the lists consumed (the lab's
+  its mask a window ahead and the counts handed with it, is 2.1% of the window at one CTA and 11.4% at 132 CTAs,
+  each beside its twin without a listing; the twin itself is 9.2% dearer at 132 CTAs than at one, and the two are not
+  parted. NOT MEASURED: the lists consumed (the lab's
   readout took a packet's, and its drain its packet's offsets); a digit of more than 16 readers a window; a reader's
   byte on its digit loaded.
 - NOT BUILT: the gather that writes the fold's packets ([`hopper-gather.md`](hopper-gather.md)); the lab's host played
