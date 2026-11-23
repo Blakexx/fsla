@@ -55,7 +55,10 @@
 // where it is on all four, no clear: a thread's two entries expanded, the fence and the barrier, 4 steps one commit
 // group, the wait, the barrier -- under `kCleared` opening with the clear, its fence and the warpgroup's barrier, and under
 // `kCounted` a group's steps one straight block of one or two, chosen by its count, a byte of the header; under `kLooped` a
-// loop a group on that count, its test a warp vote, a step's tile and start the window's next. THE PER-COLUMN kernel reads its box's width word once, before the first window, and runs
+// loop a group on that count, its test a warp vote, a step's tile and start the window's next. Under `kTabled` an entry's
+// dense line is two chained global loads at the window's start (its token's index from the packet's header, then the
+// token's row); under `kAhead` those loads follow the entries' expansion, before the fence and the barrier, for the
+// window after, and the two lines stay live through the steps. THE PER-COLUMN kernel reads its box's width word once, before the first window, and runs
 // one of the two trips whole. The readout's trip is a pass: the waits on its two tile groups, a
 // thread's 16 bytes expanded to two lines of each group's tile (the bytes loaded two passes before), the fence, the
 // warpgroup's barrier, 16 steps in one commit group, the bytes of the pass after next issued under them, the wait, the groups
@@ -65,7 +68,8 @@
 // words and, through the image, its two entries' dense lines' 8, and in its fill an entry's word and products; the
 // readout's 64 sums (a chunk of 8 digits) and two passes' bytes and reader indices, 20 words; a drain's 16. The grouped fold
 // holds a pass's tile starts in 2 words (1 where a window is 4 steps) and its kernel is 176 registers a fold thread, 112 the
-// readout's and 48 a drain's.
+// readout's and 48 a drain's; so is a `kAhead` kernel's (the per-list fold spills at 168 with the next window's two
+// lines held through its steps).
 // see docs/internals/tools/lab.md#carry-token
 #include <chrono>
 
