@@ -1,7 +1,7 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
 // THE PREFILL'S CARVE (docs/internals/common/plan/cta_carve.md): from a call's level widths and each side's weights alone, the groups of the weights, how the levels share the leaves one CTA owns,
-// the folds' split and the write and read sides' sets. Pure, constexpr, total, integers and fixed arrays alone: the kernels of the prefill call this same function.
+// the folds' split and the write and read sides' sets. Pure, constexpr, total, integers and fixed arrays alone: nothing in it is beyond a kernel's reach.
 #pragma once
 
 #include <cstdint>

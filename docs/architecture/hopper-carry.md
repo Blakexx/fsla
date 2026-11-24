@@ -84,8 +84,8 @@ a ring is possible ... so gather basically just becomes write side only"). A blo
 packets -- is A RING of a few windows (RULED 2026-11-15), written by gather CTAs beside the carry's in one grid and read
 by the unit's 16 CTAs, which are all of its readers; the gather advances when the slowest of them has ("isnt it
 basically just a ring and the ctas need to signal when the ring can continue"). No barrier crosses CTAs without a
-cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the ring and the device plan:
-its size is the descriptor's, the same for every pattern of listed and whole levels.
+cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the ring: its size is the
+descriptor's, the same whatever the masks' weights are, which the host never reads.
 
 NOT DESIGNED PAST THAT, and designed with the gather: the split of a card's multiprocessors between gather CTAs and
 units; how a unit's 16 CTAs start together on persistent CTAs; what the ring's waits cost where a unit's CTAs drift

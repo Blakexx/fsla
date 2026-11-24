@@ -337,9 +337,9 @@ stream's bytes: a token on k digits of a group is k times fewer value lines than
 digit stream scale with density (Blake, 2026-11-22: "grouping is largely for saving hbm traffic when
 dense"). How a layout is EXECUTED is the kernel's: tensor steps of the shape that fits it, from narrow steps up to 64
 columns and never wider. A layout wider than a step -- 8 or 16 digits -- is several 64-column steps whose A operand
-names the one run of value lines, so the layout's width is data the gather writes a window and no step shape follows
-from it. A step's shape pins its accumulator's registers, so the shape is chosen where no step is in flight: a box's
-word of the device plan, read before its window loop.
+names the one run of value lines, so the layout's width is the call's, from the side's weight on the level (R10), and no step shape follows
+from it. A step's shape pins its accumulator's registers, so the shape is chosen where no step is in flight: once a
+call, from the masks' weights (R20), before any window loop.
 A group issues the number of steps its data needs, read from the packet: a loop on that count whose test is a warp vote
 (Blake, 2026-11-22: "So voted loop achieved the goal with a small performance cost? Fine").
 MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns

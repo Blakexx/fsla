@@ -45,7 +45,7 @@ agreed: yes. A call carries ALL ITS INPUTS and nothing else: the rows, the value
 mathematics. Each call builds its own DESCRIPTOR -- the validated run-time context, every device fact and every call fact, checked against the
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
-call's steps: the prefill's holds the ring and the device plan
+call's steps: the prefill's holds the ring
 ([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)) and its layout is owed ([`open-work.md`](open-work.md) A-g); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 

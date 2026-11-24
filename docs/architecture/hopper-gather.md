@@ -33,7 +33,7 @@ distribute load"): a coefficient is one carry CTA's, and that CTA forms it.
 - A BOX'S ROWS ON ITS OTHER LEVEL are not the pass's: the carry loads them by the token's index (RULED 2026-11-23).
 - THE READ SIDE IS NOT THE PASS'S: a carry CTA lists its own readers from the read mask
   ([`hopper-carry.md`](hopper-carry.md#the-packets)).
-- A WINDOW'S COUNT of a block's packets is the device plan's
+- A WINDOW'S COUNT of a block's packets is the call's own data, decided inside the call
   ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)).
 - WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13); the pass reads no data to decide a walk.
 - NOT THE FORM, each measured: a list a digit with its value runs, and coefficient runs in the step's format laid here
