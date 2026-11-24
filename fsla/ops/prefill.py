@@ -30,9 +30,8 @@ def prefill(launch, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
 
 def _build_workspace(descriptor: Descriptor) -> torch.Tensor:
     """THE WORKSPACE of a prefill call, laid out by the prefill launch function (``common/plan/``): one CUDA uint8 buffer of
-    the size the layout states, whose first region is the DEVICE PLAN -- the decisions of the call, each box's counts and the step-shape
-    word -- written from the masks. It is internal to the call. It REFUSES BY NAME (:class:`~fsla.ops._ext.KernelNotBuilt`, kernel ``prefill``):
-    the device plan needs the carve, which the prefill launch function derives and which is not written yet (docs/open-work.md rows A-f and A-g)."""
+    the size the layout states: the gather's ring of value streams. It is internal to the call. It REFUSES BY NAME (:class:`~fsla.ops._ext.KernelNotBuilt`, kernel ``prefill``):
+    the ring is not designed (docs/open-work.md rows A-f and A-g)."""
     not_built("prefill")
 
 
