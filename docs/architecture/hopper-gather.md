@@ -138,4 +138,5 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 
 ## Blackwell
 
-NOT STATED. No blackwell gather is designed and no blackwell card measured.
+NOT STATED, for the gather and for the mask-preparation pass alike: neither has a blackwell design and no blackwell
+card is measured.

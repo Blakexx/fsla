@@ -247,8 +247,9 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 
 ## 6. The kernels
 
-Six kernel families, in one call's order: the producer writes the bundle; the mask-preparation pass reads its masks once
-and writes the words and counts the gather and the carry read (section 6.2); the gather pass writes the carry its
+Five kernel families and one pass, in one call's order: the producer writes the bundle; the mask-preparation pass (its own
+kernel or a role in the gather's launch: NOT DECIDED, section 6.2) reads its masks once and writes the words and counts the
+gather and the carry read; the gather pass writes the carry its
 packets from them (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
