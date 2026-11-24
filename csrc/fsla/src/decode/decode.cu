@@ -27,7 +27,8 @@
 #include <cuda_bf16.h>
 
 #include <algorithm>
-#include <atomic>
+#include <map>
+#include <mutex>
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
@@ -713,15 +714,17 @@ void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, cons
         STD_TORCH_CHECK(words <= kStep, plan::decode_smem_refusal(launch, kStep));
         const int smem = static_cast<int>(Smem::template reserved_to<detail::StepWords>(words));
 
-        //: the kernel's ceiling is the layout's bytes, raised once a device; a launch reserves `smem` of it -- see docs/internals/common/smem_layout.md#reserve
-        static std::atomic<std::uint64_t> raised{0};
-        STD_TORCH_CHECK(card.device < 64, "device ", card.device, " is past the 64 tracked");
-        const std::uint64_t mine = std::uint64_t{1} << card.device;
-        if ((raised.load(std::memory_order_relaxed) & mine) == 0) {
-          constexpr int kCeiling = static_cast<int>(Smem::bytes);
-          FSLA_CUDA_CHECK(
-              cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kCeiling));
-          raised.fetch_or(mine, std::memory_order_relaxed);
+        //: the kernel's ceiling is the layout's bytes, settled once a device; a launch reserves `smem` of it -- see docs/internals/common/smem_layout.md#reserve
+        static std::mutex mu;
+        static std::map<int, int> ceilings;
+        {
+          const std::lock_guard<std::mutex> hold(mu);
+          if (ceilings.find(card.device) == ceilings.end()) {
+            constexpr int kMost = static_cast<int>(Smem::bytes);
+            FSLA_CUDA_CHECK(
+                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kMost));
+            ceilings.emplace(card.device, kMost);
+          }
         }
         kernel<<<dim3(p.ctas), args.threads, smem, stream>>>(p);
       }
