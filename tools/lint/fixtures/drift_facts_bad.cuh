@@ -1,4 +1,4 @@
-// A DELIBERATELY NON-COMPLIANT fixture for tools/lint/drift_guards.py's facts-in-the-template rules.
+// A DELIBERATELY NON-COMPLIANT fixture for tools/lint/facts_in_template.py's rules.
 // Every construct here is one they must report. Not compiled.
 #pragma once
 

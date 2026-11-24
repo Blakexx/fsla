@@ -1,4 +1,4 @@
-// The compliant twin of drift_facts_bad.cuh, for tools/lint/drift_guards.py. Not compiled.
+// The compliant twin of drift_facts_bad.cuh, for tools/lint/facts_in_template.py. Not compiled.
 #pragma once
 
 namespace fixture {

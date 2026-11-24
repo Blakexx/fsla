@@ -87,7 +87,10 @@ service everything from. That, including how many CTAs"), and the budget "can ju
 across the ranges the descriptors state ("Fail to compile means it couldnt adapt right? Ideally all the layouts adapt
 to the template parameters which the descriptor gives the ranges of valid values for"): a build that fails names a
 card the layout cannot serve. The rule is general and not shared memory's alone ("it's not just about smem, this is a
-general thing"). The host decides none of it: a launch reads its grid, its threads and its bytes off the same
+general thing"), and it is a rule of WHERE A DECISION'S INPUTS EXIST: "it's not really about facts vs decisions. Its about
+dependency availability. Smem lZyout depends on runtime arguments so it needs to be in the kenrel. Things that don't
+can be in the template in theory" -- what the card and the call's shape decide may be a template parameter the matcher
+picks; what run-time values decide is a case of the kernel's switch, compiled like the rest of the case. The host decides none of it: a launch reads its grid, its threads and its bytes off the same
 functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)). NOT YET SO for decode
 (R12); what the tree still writes by hand is the backlog of the lints that refuse it (`tools/lint/facts_in_template.py`).
 
