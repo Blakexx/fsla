@@ -81,7 +81,7 @@ union_forward_kernel(const LogitT* __restrict__ read_logits,
   for (int it = 0; it < ITERS; ++it) {
     const int local = it * LOGICAL_PER_BLOCK + logical;
     const int token = word * WORD_TOKENS + local;
-    //: Skipping a row past the end is EXACTLY equivalent, not merely close: -- see docs/internals/entmax/entmax.md#continue
+    //: A ROW PAST THE END has no token: it is skipped -- see docs/internals/entmax/entmax.md#continue
     if (local >= WORD_TOKENS || token >= tokens) continue;
 
     // ---- PHASE A: load striped (coalesced), fold, RETIRE both logit tiles ----

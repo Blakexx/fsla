@@ -405,7 +405,7 @@ survive into the rest of the kernel.
 
 <a id="threshold"></a>PHASES B AND C ARE ONE HEADER FUNCTION, `threshold<LW, IPT, ALPHA15>`: the union forward calls
 it on the midpoint row and the independent forward (`factor.cu`) on its logit row -- one statement of the sorted
-threshold, taking the row's member bits and their count (a row with no member has `row_max` 0 and sentinel -1).
+threshold, taking the row's member bits and their count.
 
 <a id="near-line-161"></a>
 <a id="near-line-165"></a>**PHASE B — row max/min, sentinel-pad, sort descending.** `midpoint` is shifted by
