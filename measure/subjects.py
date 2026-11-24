@@ -105,9 +105,9 @@ def prefill_op(fx) -> Launch:
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
     """``(routes, values, masks)``: the cell's draw over ``tokens`` in the format the kernels read, the
-    masks the draw's own nonzero digits (the producer knows what it gives)."""
+    masks the library's own from the bundle's rows (``fsla.masks_and_density``)."""
     from fsla.routing.factors import RouteFactors
-    from fsla.routing.masks import PREFILL, Masks, pack_tokens
+    from fsla.routing.masks import masks_and_density
     from fsla.routing.types import OpaqueRouting, Topology
     from fsla.values import Values
 
@@ -117,8 +117,7 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     write = [x[:, tokens] for x in drawn.write]
     write[0] = write[0] * drawn.gain[:, tokens, :, None].float()
     routes = RouteFactors.from_levels(topology, read, write)
-    masks = Masks(PREFILL, tuple(pack_tokens(level != 0) for level in read),
-                  tuple(pack_tokens(level != 0) for level in write))
+    masks, _density = masks_and_density(routes)
     values = Values.from_projection(drawn.v[:, tokens])
     return routes, values, masks
 
