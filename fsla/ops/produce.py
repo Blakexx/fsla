@@ -194,7 +194,7 @@ def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
 
 def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int]:
     """The facts a call of ``kernel`` states per level: each width as its log2 (a level's width is a power of two,
-    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`) as far as the kernel's call facts name it (decode's ``{side}_listed_k``, 1 where the side
+    ``fsla._state.StateFormat``'s law), the write side's walk of each level (:func:`activation_walks`) where the kernel's call facts name it (decode's ``write_listed_k``, 1 where it
     walks the level by its lists; the prefill's facts are the widths and ``levels`` alone, its weights are the masks' and no fact of the call) and ``levels``;
     a level beyond the call's depth is 0. The kernel's own call facts name how many levels its contract holds."""
     for level, width in enumerate(widths):
@@ -203,14 +203,13 @@ def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int
                              f"width_bits_{level + 1}, its log2)")
     names = call_facts(kernel)
     depth = sum(name.startswith("width_bits_") for name in names)
-    walks = dict(zip(("read", "write"), activation_walks(topology)))
+    write_walk = activation_walks(topology)[1]
     facts = {"levels": len(widths)}
     for level in range(depth):
         have = level < len(widths)
         facts[f"width_bits_{level + 1}"] = widths[level].bit_length() - 1 if have else 0
-        for side, walked in walks.items():
-            if f"{side}_listed_{level + 1}" in names:
-                facts[f"{side}_listed_{level + 1}"] = int(walked[level]) if have else 0
+        if f"write_listed_{level + 1}" in names:
+            facts[f"write_listed_{level + 1}"] = int(write_walk[level]) if have else 0
     return facts
 
 

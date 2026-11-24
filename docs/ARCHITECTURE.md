@@ -193,7 +193,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 
 **The carry's work is partitioned by ONE descriptor, the carve**
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the masks' weights: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
-a BOX — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
+a CARVE — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
 (their live digits a window, listed in the packets the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
@@ -202,10 +202,11 @@ read overlaps every write -- an exact-zero pair, with its exact-zero gradient, c
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
 every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
 (on hopper where they are equal too, the image then laid along the fold's own lists: MEASURED 1.3% over the divergent cell's window, [`carry_window`](lab/carry_window.md); a readout on the fold's own registers is not built). Every kernel that
-depends on the geometry takes the carve — the gather pass groups its stream by the box's list levels, the
-carry addresses by it — and validates the one it is handed; none decides a carve. The rule derives it from
-launch-static facts (the rows' shapes and the bundle's declared flags), never from a routing statistic, so the
-planner can change and every kernel keeps working for whatever it returns.
+depends on the geometry derives the carve with the one rule (`cta_carve.h`) from the level widths and the masks'
+weights -- the gather pass groups its stream by it, the carry addresses by it -- so the kernels of a call agree by
+construction and none states a rule of its own. The weight is the one measured statistic a kernel keys on
+(CONSTITUTION R9): it chooses a layout among exact forms once a call and never a result, and the rule can change with
+every kernel still working for whatever it returns.
 
 | grain | what it is | who owns it |
 |---|---|---|

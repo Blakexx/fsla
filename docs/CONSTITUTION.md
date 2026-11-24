@@ -316,10 +316,11 @@ mathematics. thats the exact spec we want"). No operator takes a plan object: it
 (Blake, 2026-11-23: "have each internal call handle its descriptor stuff and not be exposed to the user, and have the public contract carry all
 inputs, workpsace is something we build inside just to pass around"). The plan's host half is the descriptor, which each call builds from its inputs: the validated context of the call, every device fact and
 every call fact, reusable and hashable; a call fact that states a choice names an action as above (a side of a level
-walked by its lists), and everything derived from the facts -- the carve, the window, the grid, the segment -- is computed
-by the family's one launch function right before the launch and stored nowhere. The plan's device half is the DEVICE
-PLAN, the first region of the workspace: decisions made during the call from its own data (a box's counts, its
-step-shape word), which never change the result -- forcing any of them on the same data matches the oracle. Each call builds
+walked by its lists), and everything derived from the facts -- the window, the grid, the segment -- is computed
+by the family's one launch function right before the launch and stored nowhere. The plan's device half is what a
+kernel decides during the call from the call's own data -- on the prefill the groups, the CTA's carve and the fold's
+split, from the masks' weights (R20) -- which never changes the result: forcing any of it on the same data matches the
+oracle. Each call builds
 its workspace itself, beside its descriptor, and its caller is trusted with the inputs it hands, the masks among them;
 the layer takes only model inputs.
 NOT YET SO: decode is on this surface, and so is the prefill's op; what a prefill launches is owed -- its launch function

@@ -88,9 +88,7 @@ two layers are separated at all.
 
 The carry's CTA owns a CARVE of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
 side's lists and the readout over the read side's. The prefill's launch function in `common/plan/` has two halves
-(`docs/open-work.md` row A-f): the host's, from the call's descriptor facts -- the level widths, never an operand and never a weight -- the leaves of a batch-head, the CTA's leaves (512 at most) and the CTAs a head; and the carve, a function of the level widths and each side's weights alone (the weights are counted by the producer and carried in the mask format), which the prefill's kernels call. That is the standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared
-flags, the binary's arms) and never of a routing statistic, because the routing distribution moves step to step and a layout chosen from it
-would make the state's shape depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).
+(`docs/open-work.md` row A-f): the host's, from the call's descriptor facts -- the level widths, never an operand and never a weight -- the leaves of a batch-head, the CTA's leaves (512 at most) and the CTAs a head; and the carve, a function of the level widths and each side's weights alone (the weights are counted by the producer and carried in the mask format), which the prefill's kernels call. The host's half is a function of launch-static facts (shapes, the binary's arms) and never of a routing statistic: what the host sizes before the launch -- the grid, the ring, shared memory -- cannot depend on the data. The carve is the one layout a measured statistic chooses (CONSTITUTION R9): the weights pick among exact forms once a call, inside the kernels, and never change a result.
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 
