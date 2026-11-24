@@ -245,7 +245,6 @@ __device__ __forceinline__ float threshold(float (&z)[IPT], uint32_t valid, int 
   typename WarpScanP::TempStorage scan_store;
   typename WarpRedF::TempStorage red_store;
   typename WarpRedU::TempStorage redu_store;
-  const bool has_valid = valid_count > 0;
 
   float local_max = -INFINITY, local_min = INFINITY;
 #pragma unroll
@@ -257,12 +256,11 @@ __device__ __forceinline__ float threshold(float (&z)[IPT], uint32_t valid, int 
   }
   float row_max = WarpRedF(red_store).Reduce(local_max, Max());
   row_max = __shfl_sync(lmask, row_max, 0, LW);
-  row_max = has_valid ? row_max : 0.0f;
   float row_min = WarpRedF(red_store).Reduce(local_min, Min());
   row_min = __shfl_sync(lmask, row_min, 0, LW);
 
   //: A finite row-relative sentinel keeps padded lanes strictly below every real -- see docs/internals/entmax/entmax.md#near-line-161
-  const float sentinel = has_valid ? (row_min - row_max) - 1.0f : -1.0f;
+  const float sentinel = (row_min - row_max) - 1.0f;
   float keys[IPT];
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {

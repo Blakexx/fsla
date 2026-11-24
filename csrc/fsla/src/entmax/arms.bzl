@@ -5,7 +5,8 @@ items a thread), `alpha15` (the four kernels that have an alpha: 1 for alpha 1.5
 states (0 fp32, 1 bf16; the contracts hold bf16 alone), which `ENTMAX_SPELLINGS` spells as the type in the kernel's name.
 
 Each instantiation keeps what its SASS shows on sm_90a today, a cap and never more: the findings of the two checker rules the gate applies to every function,
-which every instantiation of the solves predates (docs/internals/tools/sass_gate.md#declarations); fixed at the family's Hopper rewrite. A row below is
+which the solves' instantiations predate (docs/internals/tools/sass_gate.md#declarations), fixed at the family's Hopper rewrite -- but for the factor
+backward's, whose reason is its own (`_REASON`), and the softmax backward, which has none. A row below is
 `[lane, items, alpha15, logit, value, load_in_trip, loop_convergence]` (without `alpha15` for the softmax kernels), one arm each; an arm with no row is clean of both rules.
 """
 

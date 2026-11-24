@@ -394,9 +394,10 @@ The same expression, and the same reason, appears in the backward kernel.
 
 ## <a id="forward-phases"></a>9. The forward kernel, phase by phase
 
-<a id="continue"></a>A row past the end is skipped by `continue`, and that is exactly equivalent rather
-than merely close: such a row yields `has_valid = 0` → `tau = 0` → `support = false`
-→ every store masked off.
+<a id="continue"></a>A row past the end is skipped by `continue`: it has no token, and nothing reads what
+it would store. A row that is solved always has members -- both solves pass the level's
+width as the member count, and a level is at least two digits wide -- so `threshold`
+carries no case for a row without one.
 
 **PHASE A — load striped (coalesced), fold, RETIRE both logit tiles.** Both logit
 reads happen once; `midpoint = (r + w)/2` and `delta = r - w` (§6) are all that
@@ -435,7 +436,7 @@ with `k = rank + 1`.
 <a id="packedkey"></a>**ONE reduction selects the greatest valid `k` AND carries its `tau`** (`packed_key`): the column
 goes in the high 32 bits of a `unsigned long long`, which makes an integer `Max`
 pick it, and lane rank ranges are disjoint so a tie is impossible. `best_col = -1`
-maps to key 0, so an all-empty row yields `tau = 0`.
+maps to key 0, so a row with no candidate (every comparison false) yields `tau = 0`.
 
 **PHASE D — values, in place over `midpoint`.** `read` is emitted HERE, while
 `delta` is still the logit difference and before phase E overwrites it. That
