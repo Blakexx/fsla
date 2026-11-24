@@ -60,6 +60,13 @@ tree_test(
 )
 
 tree_test(
+    name = "facts_in_template_fixtures",
+    size = "small",
+    cmd = ["python3", "tools/lint/facts_in_template.py", "--test-fixtures"],
+    data = [":tracked"],
+)
+
+tree_test(
     name = "graph_only_fixtures",
     size = "small",
     cmd = ["python3", "tools/lint/graph_only.py", "--test-fixtures"],
@@ -147,6 +154,7 @@ test_suite(
         ":clang_tidy_device_fixtures",
         ":constant_parameters_fixtures",
         ":drift_guards_fixtures",
+        ":facts_in_template_fixtures",
         ":graph_only_fixtures",
         ":host_warnings_fixtures",
         ":r9_enforcement_fixtures",
@@ -197,6 +205,7 @@ tool_test(
     "constant_parameters",
     "coverage",
     "drift_guards",
+    "facts_in_template",
     "graph_only",
     "lint_standards",
     "portable_claude",

@@ -56,6 +56,7 @@ LINTS = {
     "vulture": ["bash", "tools/lint/run_vulture.sh"],
     "constant_parameters": [sys.executable, "tools/lint/constant_parameters.py"],
     "drift_guards": [sys.executable, "tools/lint/drift_guards.py"],
+    "facts_in_template": [sys.executable, "tools/lint/facts_in_template.py"],
     "r9_enforcement": [sys.executable, "tools/lint/r9_enforcement.py"],
     "burst_tier": [sys.executable, "tools/lint/burst_tier.py"],
     "coverage": [sys.executable, "tools/lint/coverage.py"],

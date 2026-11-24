@@ -38,5 +38,5 @@ are the SM, and that a tile's offset is the bytes before it.
 ## What is NOT built
 
 `csrc/fsla/src/entmax/factor.cu`'s forward kernel lays its slots out here. `csrc/fsla/src/decode/decode.cu` declares its
-shared memory by hand and its launch function sizes it on the host. No lint refuses a hand declaration or a literal
-size yet.
+shared memory by hand and its launch function sizes it on the host: its declarations are the backlog of the lint that
+refuses one (`tools/lint/facts_in_template.py`, [`../tools/lint.md`](../tools/lint.md#facts-in-the-template)).

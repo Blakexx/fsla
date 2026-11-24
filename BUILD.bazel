@@ -435,6 +435,14 @@ tree_test(
 )
 
 tree_test(
+    name = "ratchet_facts_in_template",
+    size = "small",
+    cmd = ["python3", "tools/lint/ratchet.py", "facts_in_template"],
+    data = [":tree"],
+    git = True,
+)
+
+tree_test(
     name = "ratchet_r9_enforcement",
     size = "small",
     cmd = ["python3", "tools/lint/ratchet.py", "r9_enforcement"],
@@ -517,6 +525,7 @@ test_suite(
         ":ratchet_constant_parameters",
         ":ratchet_coverage",
         ":ratchet_drift_guards",
+        ":ratchet_facts_in_template",
         ":ratchet_r9_enforcement",
         ":ratchet_rules_owed",
         ":ratchet_vulture",

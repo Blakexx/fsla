@@ -162,6 +162,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `fsla` exports), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
+| `facts_in_template.py` | 81 over 3 rules (2026-11-24) | the rules' findings in kernels and planner headers: [the facts-in-the-template rules](#facts-in-the-template) |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
 | `rules_table.py --owed` | 63 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
 | `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels -- are the backlog it prints ([`coverage.md`](coverage.md)) |
@@ -204,6 +205,38 @@ a case-set marker, and this one asks whether it is a `uniform_switch` at all —
 the form the constitution now requires. They find the same site from two directions,
 which is the corroboration that both are connected; reconciling them into one rule waits
 on the fix, so that the flip can decide which message a finding carries.
+
+<a id="facts-in-the-template"></a>
+### The facts-in-the-template rules
+
+Three rules of their own lint, `facts_in_template.py` (ratchet target `//:ratchet_facts_in_template`, fixtures target
+`//tools/lint:facts_in_template_fixtures`, baseline `tools/lint/baselines/facts_in_template.json`), enforce [`CONSTITUTION.md#r8`](../../CONSTITUTION.md#r8)'s "FACTS IN THE TEMPLATE, DECISIONS IN THE
+KERNEL": the card's facts reach a kernel as constants of its build, every quantity the card decides is derived from them
+at compile time, and a kernel's shared memory is declared only through `SmemLayout`, whose sizes are expressions and
+never numbers ([`../common/smem_layout.md`](../common/smem_layout.md)). Their scope is `csrc/fsla/src/**/*.cu` and `*.cuh`
+and the planner's headers `csrc/fsla/src/common/plan/*.h` (the planner is where the window and a CTA's leaves are
+written, and a rule's own definition is no unexplained number either); not `measure/lab/` (an experiment is where a form is
+tried before it is a kernel), not the host tools `plan_tool.cpp` and `arms_gen.cpp`. Comments are blanked before any
+match, `//` and `/* */`. Each has its fixture pair `drift_facts_bad.cuh` / `drift_facts_ok.cuh` and its tests in
+`tests/unit/test_drift_facts_rules.py`; each has a `gate` row of `docs/rules.json` at site `CONSTITUTION#r8`.
+
+- `shared_memory_through_the_layout`: the token `__shared__` on a line, in any file of the scope but
+  `common/smem_layout.cuh`, is a finding, one a line. It misses a declaration spelled by a macro or an alias.
+- `layout_sizes_are_expressions`: in `Fixed<Tag, T, COUNT>` and `Share<Tag, T, LEAST, WEIGHT>` (the name followed by `<`,
+  the arguments split at the top level of `<>`, `()`, `[]`, `{}`, across lines), a `COUNT` or `LEAST` that is a bare integer
+  literal (decimal or hex, `u`/`l` suffixes) is a finding; a `WEIGHT` is a ratio and may be one; `smem_layout.cuh` is exempt
+  (its `smem_proof` namespace states literals as its fixture). It misses a number behind a name, a cast or parentheses,
+  and a tile through an alias.
+- `card_quantities_are_derived`: a one-line `[inline] [static] constexpr <integer type> <name> = <bare integer literal>;`
+  at namespace or class scope is a finding unless the comment lines directly above it contain `FIXED` in capitals and a
+  reason (`//: FIXED by the format: a mask word is 32 tokens`). Scope is brace depth: each `{` is classified by the text
+  since the last `;`, `{` or `}`, and a brace is a scope only when that text names `namespace`, `struct`, `class`,
+  `union` or `extern "C"` and holds no parenthesis. It misses function-scope constants, literals inside expressions,
+  other types (`bool`, `float`, `unsigned int`, an alias), a split declaration and several declarators on a line; a
+  trailing comment does not state the reason.
+
+Their findings on the tree of 2026-11-24 are in the baseline, none edited away: 15 of the first rule (`decode/decode.cu`
+14, `entmax/factor.cu` 1), 0 of the second (no tile outside `smem_layout.cuh` exists yet) and 66 of the third.
 
 ## <a id="standards"></a>The standards lint, in detail
 

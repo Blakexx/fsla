@@ -1,0 +1,479 @@
+{
+ "lint": "facts_in_template",
+ "findings": [
+  {
+   "path": "csrc/fsla/src/common/arch_caps.cuh",
+   "message": "kArch is the number 900: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "3d7efa7b3db89ac1",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/atoms/copy.cuh",
+   "message": "kStageBytes is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "dfbd00223cc295fb",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/atoms/math.cuh",
+   "message": "kBf16MagnitudeMask is the number 0x7FFF7FFFu: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "72bfe6d165866053",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/atoms/warp.cuh",
+   "message": "kBallotLanes is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "56ee181e0b30dee1",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kAtomLeaves is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "79c621b3277d3ece",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kAtomLeavesBits is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "3855279a12008a49",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kBlockLeavesBits is the number 5: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "ae98d439bd3dbb16",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kClusterCtas is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "e045ea0772b46491",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kCtaChannels is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "3f585daa4300d3a4",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kGeomMaxLevels is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "54c4409aa178d05a",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kGeomMaxSubBoxes is the number 13: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "f7ca984dc3e3db86",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kTallDenseSpanBitsMax is the number 7: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "3217edcf9ab1516a",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kTallStateFileDenominator is the number 2: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "a03b77eed2c2303a",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "kTallStateFileNumerator is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "5c55cf1310eb3eb2",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/geom.cuh",
+   "message": "warps_per_sm is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "5c0a1dcf550bfc4b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kCarveMaxLevels is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "226354cf80cf02c4",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kCarveMaxWidthBits is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "2f5ec92c1ee3b4cf",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kCtaLeafBits is the number 9: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "b5be8e25348ac73e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kGroupSizes is the number 7: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "21c8a6d41464883e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kLeastDensity is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "1b7b2d0f39803308",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/cta_carve.h",
+   "message": "kWholeDensity is the number 256: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "a36ca3a3fe52976b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kDecodeBlocksPerSm is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "cdc8bc56f7d83c5c",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kDecodeListKinds is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "facb4627557d8b44",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kDecodeMaxLevels is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "1b6a9cacb61a8678",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kDecodeRegsPerThread is the number 128: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "ff9134d0d31e6797",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kDecodeUnitsPerCta is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "25f4d84738cef6d3",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/decode_launch.h",
+   "message": "kMaxDecodeArms is the number 64: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "986cf9b8934a4390",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxAlpha15 is the number 15: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "618655739c85d791",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxAlpha20 is the number 20: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "67e4df18596eb3f6",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxBf16 is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "636fc8c2d538ca47",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxFp32 is the number 0: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "1bf2e1e8a182516c",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxMaxLevels is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "366abd5b62a20755",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxMaxWidth is the number 256: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "0e751fdad25e91f5",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxNoAlpha is the number 0: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "1d7d7b0e21ae6c92",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kEntmaxWarpLanes is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "9887a25f150f261b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/entmax_launch.h",
+   "message": "kMaxEntmaxArms is the number 64: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "a7dd0d8082fe57ce",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/lattice.h",
+   "message": "kLatticeAtomLeaves is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "0d5d52df1c2d4d4a",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/lattice.h",
+   "message": "kLatticeAtomShift is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "ea1fc8b89ba43873",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/lattice.h",
+   "message": "kLatticeCapBc is the number 128: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "b9f42934f5d5db34",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/lattice.h",
+   "message": "kLatticeMaxSpan is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "25bac1dd5ef4ab4f",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/lattice.h",
+   "message": "kLatticeMaxSpanK is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "41c53e0470e1f71e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/levels.h",
+   "message": "kHopperCc is the number 900: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "a6b2988873166fd6",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/plan/levels.h",
+   "message": "kHopperWindow is the number 1024: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "cc862254f0c71d3f",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/smem_layout.cuh",
+   "message": "weight is the number 0: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "e1b727055424a905",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/state_page.cuh",
+   "message": "kHi is the number 0: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "cafba23745eb3ad7",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/common/state_page.cuh",
+   "message": "kRows is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "a014589cd118a790",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "276c2ee19e123346",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "362955f5027b6345",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "4f0fb4398be7df81",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "698691dbe1de53ab",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "6f3a9206d6f479b2",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "8206bffbbb1a284b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "8d282dcccc2fc5b0",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "b10f09624733775b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "b4c29000b660ab30",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "bd20865aaaf69762",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "cb80f43d91d23bd2",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "ed57951e40660f74",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "f0a5cb6d9a15f14b",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cu",
+   "message": "shared memory declared outside SmemLayout (common/smem_layout.cuh): declare a tile",
+   "line_sha256": "fabbb20ad67e225e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kDecodeMaxLevelWidth is the number 256: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "724b21c7916b5e5f",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kProducerMaxBranchWidth is the number 256: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "c8b76cc0dfd3a729",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kQueueDecided is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "2a31be3acef57e48",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kQueueFollower is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "c43942545eaff2e0",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kQueueNeedy is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "2f4b87ce11fd3b6d",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kQueueOwner is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "6b11f9e9fcb324c7",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kQueueReady is the number 2: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "9f951cefafc1fc5e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kUnitBlockWarps is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "466a3d1297c38416",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode.cuh",
+   "message": "kUnitBlockWarpsBits is the number 3: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "be889495456b7753",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
+   "message": "kFieldWidthMax is the number 10: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "726d802f04c4d1e5",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
+   "message": "kKindR is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "5d6eef12f20bdc6e",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
+   "message": "kKindRW is the number 2: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "e3b80d909746bb1f",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
+   "message": "kKindRmW is the number 3: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "0be9c2f13fd5b128",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/decode/decode_lattice.cuh",
+   "message": "kKindW is the number 0: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "61889e83362ec187",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/entmax/entmax.cuh",
+   "message": "BLOCK_WARPS is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "d9e592fff5216d76",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/entmax/entmax.cuh",
+   "message": "WARP_SIZE is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "72d9e51e3d3b78af",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/entmax/entmax.cuh",
+   "message": "WORD_TOKENS is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "dbe79ce7e7ed53e8",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/entmax/entmax.cuh",
+   "message": "kForwardRegs is the number 64: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "4782c5d0644b2d19",
+   "count": 1
+  },
+  {
+   "path": "csrc/fsla/src/mask_prepare/mask_prepare_kernel.cuh",
+   "message": "kThreads is the number 1024: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
+   "line_sha256": "5ef1c4bb050deb1a",
+   "count": 1
+  }
+ ]
+}

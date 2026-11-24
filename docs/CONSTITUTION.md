@@ -89,7 +89,7 @@ to the template parameters which the descriptor gives the ranges of valid values
 card the layout cannot serve. The rule is general and not shared memory's alone ("it's not just about smem, this is a
 general thing"). The host decides none of it: a launch reads its grid, its threads and its bytes off the same
 functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)). NOT YET SO for decode
-(R12), and the lints that refuse the hand-written forms are not built.
+(R12); what the tree still writes by hand is the backlog of the lints that refuse it (`tools/lint/facts_in_template.py`).
 
 ONE ENTRY A KERNEL, BLIND TO ITS IMPLEMENTATION. A kernel's caller sees one interface: the entry finds the device's card
 from its tensors' device and selects the family's schedule and the atoms' instructions behind it; the caller passes no

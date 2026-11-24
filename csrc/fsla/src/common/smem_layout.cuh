@@ -32,6 +32,7 @@ struct Share {
 template <class Bt, int CTAS, class... Tiles>
 struct SmemLayout {
   static constexpr int kTiles = static_cast<int>(sizeof...(Tiles));
+  //: FIXED by the widest load a tile is read with: a tile starts on a 16-byte boundary
   static constexpr std::int64_t kAlign = 16;
 
   //: one CTA's budget: the SM's shared memory over the CTAs that share it, less what the card keeps of each CTA's
