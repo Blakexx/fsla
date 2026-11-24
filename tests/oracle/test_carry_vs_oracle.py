@@ -44,7 +44,7 @@ def _entry(spec, routes):
 
 def run(spec):
     """``(routes, values, num, den)``: one carry launch over the cell, from its bundle."""
-    routes, values, _masks = bundle_of(spec, realize(spec))
+    routes, values, _masks, _density = bundle_of(spec, realize(spec))
     num, den = carry_ops.carry(routes, values)[:2]
     torch.cuda.synchronize()
     return routes, values, num, den

@@ -89,12 +89,11 @@ def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `fsla.prefill` over the cell's bundle, stateless -- the validation, the
     carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
-    from fsla import density_of_masks, prefill
+    from fsla import prefill
     from measure.cells import realize
 
     spec = fx["cell"]
-    routes, values, masks = bundle_of(spec, realize(spec))
-    density = density_of_masks(routes, masks)
+    routes, values, masks, density = bundle_of(spec, realize(spec))
 
     def run():
         return prefill(routes, values, masks, density)
@@ -104,8 +103,8 @@ def prefill_op(fx) -> Launch:
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
-    """``(routes, values, masks)``: the cell's draw over ``tokens`` in the format the kernels read, the
-    masks the library's own from the bundle's rows (``fsla.masks_and_density``)."""
+    """``(routes, values, masks, density)``: the cell's draw over ``tokens`` in the format the kernels read, the
+    masks and the density the library's own from the bundle's rows (``fsla.masks_and_density``)."""
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import masks_and_density
     from fsla.routing.types import OpaqueRouting, Topology
@@ -117,9 +116,9 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     write = [x[:, tokens] for x in drawn.write]
     write[0] = write[0] * drawn.gain[:, tokens, :, None].float()
     routes = RouteFactors.from_levels(topology, read, write)
-    masks, _density = masks_and_density(routes)
+    masks, density = masks_and_density(routes)
     values = Values.from_projection(drawn.v[:, tokens])
-    return routes, values, masks
+    return routes, values, masks, density
 
 
 # ------------------------------------------------------------------ layer cells

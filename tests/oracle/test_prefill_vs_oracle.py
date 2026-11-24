@@ -35,14 +35,14 @@ IDS = [c.name for c in CELLS]
 
 
 def operands(spec, tokens: slice = slice(None)):
-    """``(routes, values, masks)``: the cell's draw over ``tokens`` in the format the kernels read."""
+    """``(routes, values, masks, density)``: the cell's draw over ``tokens`` in the format the kernels read."""
     return bundle_of(spec, realize(spec), tokens)
 
 
 def call(operands_, state=None):
-    """The op over one call's operands (``routes, values, masks``)."""
-    routes, values, masks = operands_
-    return fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks), state=state)
+    """The op over one call's operands (``routes, values, masks, density``)."""
+    routes, values, masks, density = operands_
+    return fsla.prefill(routes, values, masks, density, state=state)
 
 
 def oracle(routes, values, entry=None):
@@ -55,7 +55,7 @@ def oracle(routes, values, entry=None):
 @pytest.mark.requires_kernel("prefill")
 def test_the_op_matches_the_fp64_oracle(spec):
     """``y`` of a stateless call, every token and channel, against the recurrence's readout and its envelope."""
-    routes, values, _masks = operands_ = operands(spec)
+    routes, values, _masks, _density = operands_ = operands(spec)
     y, state = call(operands_)
     assert state is None
     want = oracle(routes, values)
@@ -67,7 +67,7 @@ def test_the_op_matches_the_fp64_oracle(spec):
 def test_the_op_hands_back_the_fp64_state(spec):
     """A stateful call binds the state and hands back the recurrence's final state, leaf by leaf in canonical order
     (`FSLAState.materialize`), against the oracle's and its envelope."""
-    routes, values, _masks = operands_ = operands(spec)
+    routes, values, _masks, _density = operands_ = operands(spec)
     state = fsla.state()
     call(operands_, state=state)
     want = oracle(routes, values)
@@ -83,7 +83,7 @@ def test_a_chained_call_equals_one_long_call():
     half = spec.tokens // 2
     state = fsla.state()
     ys = [call(operands(spec, part), state=state)[0] for part in (slice(0, half), slice(half, spec.tokens))]
-    routes, values, _masks = operands(spec)
+    routes, values, _masks, _density = operands(spec)
     want = oracle(routes, values)
     assert_slots_close(torch.cat(ys, dim=1), want.y, output=PREFILL_READOUT, envelope=want.y_envelope,
                        what="chained y")
@@ -95,7 +95,7 @@ def test_a_chained_call_equals_one_long_call():
 def test_the_per_slot_rule_fails_what_a_global_max_passes():
     """The rule the cells are graded in can fail (docs/testing.md): a small slot moved by a hundredth of the readout's
     largest magnitude passes a global max-relative test at 2% and fails per slot."""
-    routes, values, _masks = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
     want = oracle(routes, values)
     planted = want.y.clone()
     i = int(torch.argmin(want.y.abs().flatten()))
@@ -109,7 +109,7 @@ def test_the_per_slot_rule_fails_what_a_global_max_passes():
 def test_the_intra_term_is_actually_present():
     """NON-VACUITY: the inter term alone fails the op's gate on a multi-window cell, so a call that dropped the intra
     (or the carry) could not pass. Runs no kernel."""
-    routes, values, _masks = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
     read, write = routes.dequantized()
     num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.dequantized().double(), routes.topology.widths, window_of())
     want = oracle(routes, values)
@@ -123,7 +123,7 @@ def test_a_prefill_with_a_decay_is_outside_the_contract():
     made -- as a call outside the contract, before any kernel could run."""
     from tests.descriptors import prefill_descriptor
 
-    routes, values, _masks = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
     with pytest.raises(RuntimeError, match="outside FSLA's prefill contract"):
         prefill_descriptor(routes.topology, d_v=values.d_v, decay=True, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
                            stateful=False, device=routes.device)

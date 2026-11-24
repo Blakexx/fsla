@@ -140,7 +140,7 @@ def carry_reference(record: dict, **_params) -> dict:
     from tests.oracle.test_carry_vs_oracle import ref
 
     spec = build_cell(record)
-    routes, values, _masks = bundle_of(spec, realize(spec))
+    routes, values, _masks, _density = bundle_of(spec, realize(spec))
     return {"num": ref(spec, routes, values)[0], "num_envelope": ref(spec, routes, values, magnitudes=True)[0]}
 
 

@@ -33,8 +33,8 @@ def operands(spec, tokens: slice = slice(None)):
 
 def run(operands_, state):
     """The op over one call's operands, against ``state`` (whose backing is its own)."""
-    routes, values, masks = operands_
-    return fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks), state=state)
+    routes, values, masks, density = operands_
+    return fsla.prefill(routes, values, masks, density, state=state)
 
 
 def calls(spec, parts, backing="paged"):

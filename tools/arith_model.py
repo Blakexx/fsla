@@ -231,7 +231,7 @@ def model(name: str, window: int, head: int, shape: tuple[int, int], along: int,
     from measure.subjects import bundle_of
 
     spec = by_name(name)
-    routes, values, _masks = bundle_of(spec, realize(spec))
+    routes, values, _masks, _density = bundle_of(spec, realize(spec))
     if routes.group != 1:
         raise SystemExit(f"{name}: a grouped bundle is not modelled")
     read, write = routes.dequantized()
