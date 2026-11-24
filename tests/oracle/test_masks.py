@@ -15,7 +15,7 @@ from conftest import build_layer
 from fsla.ops.naive import naive_fsla
 from fsla.ops.produce import activation_walks, produce_decode, produce_prefill
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
-from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, TiedRouting, Topology
 
 _TOPOLOGY = Topology(levels=tuple(
     IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in (4, 6)))
@@ -71,23 +71,25 @@ def test_the_solve_stream_view_is_free():
 # --------------------------------------------------------------- the producer emits the consumer's layout
 
 
-def _layer_and_x(T):
-    layer = build_layer(hidden_size=32, num_heads=2, d_v=32, widths=(16, 16))
+def _layer_and_x(T, routing=None):
+    layer = build_layer(hidden_size=32, num_heads=2, d_v=32, widths=(16, 16), routing=routing)
     return layer, torch.randn(2, T, 32, dtype=torch.float64)
 
 
 @pytest.mark.parametrize("consumer", (PREFILL, DECODE))
 def test_each_producer_returns_the_masks_in_its_consumers_layout(consumer):
+    """The softmax layer's prefill masks are absent on every level-side (dense); its decode masks are made for every one."""
     T = 1 if consumer == DECODE else 70
     layer, x = _layer_and_x(T)
     produce = produce_decode if consumer == DECODE else produce_prefill
     routes, _values, masks, *_ = produce(x, layer.routing, layer._weights(x))
     assert masks.consumer == consumer
     masks.check(routes)
+    assert (masks.tensors() == ()) == (consumer == PREFILL)
     for side in ("read", "write"):
         for level in range(routes.topology.D):
             rows = routes.rows(level, side)
-            bits = masks.bits(side, level, T, rows.shape[-1])
+            bits = masks.live(routes, side, level)
             assert bool((bits >= (rows != 0)).all()), "a mask covers every nonzero row digit"
 
 
@@ -106,7 +108,7 @@ def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name(
 
 
 def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():
-    layer, x = _layer_and_x(40)
+    layer, x = _layer_and_x(40, routing=TiedRouting(width=16, op=EntmaxActivation(1.5)))
     routes, _values, masks, _density = layer._produce(x)
     everything_dead = Masks(PREFILL, tuple(torch.zeros_like(m) for m in masks.read), masks.write)
     everything_dead.check(routes)

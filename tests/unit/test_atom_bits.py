@@ -11,8 +11,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fsla.engine.facts.planes import ATOM_LEAVES, ATOM_READ, ATOM_WRITTEN, atom_bits, written_atoms
+from fsla.engine.facts.planes import ATOM_LEAVES, ATOM_READ, ATOM_WRITTEN, _atom_spans, atom_bits, written_atoms
+from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_tokens
+from fsla.routing.types import OpaqueRouting, Topology
 
 #: (B_l per level, L): a padded one-level, a two-level and a three-level topology, an L that is not a whole number of
 #: words, and a level whose run splits an atom.
@@ -30,6 +32,12 @@ def _draw(widths, L, heads, *, logical=None, seed=0):
         live[..., 0] |= ~live.any(dim=-1)
         out.append(live)
     return tuple(out)
+
+
+def _routes(read_bits, write_bits):
+    """A bundle whose rows are the drawn bits as 0 / 1, on opaque levels of the bits' own widths (the padded width the fold reads is the topology's)."""
+    topology = Topology(levels=tuple(OpaqueRouting(width=b.shape[-1]) for b in read_bits))
+    return RouteFactors.from_levels(topology, [b.float() for b in read_bits], [b.float() for b in write_bits])
 
 
 def _brute(bits, widths):
@@ -59,7 +67,7 @@ def test_the_atom_byte_is_the_brute_force_set_of_atoms_the_live_leaves_reach(wid
     read_bits = _draw(widths, L, heads * groups, seed=1)
     write_bits = _draw(widths, L, heads, seed=2)
     masks = Masks(PREFILL, tuple(pack_tokens(b) for b in read_bits), tuple(pack_tokens(b) for b in write_bits))
-    got = atom_bits(masks, widths, L)
+    got = atom_bits(masks, _routes(read_bits, write_bits))
     read = _brute(read_bits, widths).reshape(1, heads, groups, -1).any(dim=2)
     write = _brute(write_bits, widths)
     want = (read.to(torch.uint8) * ATOM_READ | write.to(torch.uint8) * ATOM_WRITTEN).reshape(heads, -1)
@@ -73,7 +81,7 @@ def test_pad_digits_are_dead_by_construction():
     widths, L = (16, 16), 32
     bits = _draw(widths, L, 1, logical=(16, 6), seed=3)
     masks = Masks(PREFILL, tuple(pack_tokens(b) for b in bits), tuple(pack_tokens(b) for b in bits))
-    got = atom_bits(masks, widths, L)
+    got = atom_bits(masks, _routes(bits, bits))
     want = _brute(tuple(torch.nn.functional.pad(b, (0, 16 - b.shape[-1])) for b in bits), widths)
     assert torch.equal(written_atoms(got), want.reshape(1, -1))
 
@@ -82,11 +90,24 @@ def test_the_fold_reads_the_prefill_layout_and_refuses_the_decode_one_by_name():
     widths = (16, 16)
     packed = tuple(torch.zeros((1, 1, 1), dtype=torch.int32) for _ in widths)
     with pytest.raises(ValueError, match="layout masks"):
-        atom_bits(Masks(DECODE, packed, packed), widths, 1)
+        atom_bits(Masks(DECODE, packed, packed), None)
 
 
 def test_a_topology_with_fewer_leaves_than_an_atom_is_refused():
-    bits = _draw((8,), 32, 1)
-    masks = Masks(PREFILL, (pack_tokens(bits[0]),), (pack_tokens(bits[0]),))
     with pytest.raises(ValueError, match="page atom"):
-        atom_bits(masks, (8,), 32)
+        _atom_spans((8,))
+
+
+def test_an_absent_entry_folds_as_an_all_live_mask():
+    """A dense level-side (its entry absent) reaches every atom its run does when every bit is set."""
+    widths, L = (16, 16), 40
+    read_bits, write_bits = _draw(widths, L, 2, seed=4), _draw(widths, L, 2, seed=5)
+    routes = _routes(read_bits, write_bits)
+    ones = tuple(pack_tokens(torch.ones_like(b)) for b in read_bits)
+    packed_write = tuple(pack_tokens(b) for b in write_bits)
+    absent = atom_bits(Masks(PREFILL, (None, None), packed_write), routes)
+    filled = atom_bits(Masks(PREFILL, ones, packed_write), routes)
+    assert torch.equal(absent, filled)
+    partly = atom_bits(Masks(PREFILL, (ones[0], None), (None, packed_write[1])), routes)
+    every = atom_bits(Masks(PREFILL, ones, (pack_tokens(torch.ones_like(write_bits[0])), packed_write[1])), routes)
+    assert torch.equal(partly, every)

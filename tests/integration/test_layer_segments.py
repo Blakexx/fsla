@@ -49,10 +49,10 @@ def _bundles(tokens: int, heads: int = 2):
 
 
 def _cut_masks(masks, span: slice):
-    """One stretch of a call's masks: the token-packed words of the stretch, whole 32-token words (a window is)."""
+    """One stretch of a call's masks: the token-packed words of the stretch, whole 32-token words (a window is); an absent (dense) entry stays absent."""
     first, last = span.start // 32, -(-span.stop // 32)
-    return fsla.Masks(masks.consumer, tuple(m[:, :, first:last] for m in masks.read),
-                      tuple(m[:, :, first:last] for m in masks.write))
+    return fsla.Masks(masks.consumer, tuple(None if m is None else m[:, :, first:last] for m in masks.read),
+                      tuple(None if m is None else m[:, :, first:last] for m in masks.write))
 
 
 def _cut(bundle, span: slice):

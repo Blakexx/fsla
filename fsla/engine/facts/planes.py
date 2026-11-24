@@ -81,17 +81,17 @@ def _side_atoms(level_masks, widths: tuple[int, ...], spans: tuple[int, ...]) ->
     return clause.any(dim=1)
 
 
-def atom_bits(masks, padded_widths: tuple[int, ...], tokens: int) -> torch.Tensor:
+def atom_bits(masks, routes) -> torch.Tensor:
     """`[B H_w, N/16]` uint8: the EXACT activity byte, `ATOM_READ | ATOM_WRITTEN`, a write head's (its state's), folded
-    from the PREFILL-layout masks and nothing else: READ by any of its ``g = H / H_w`` query heads (the read side's heads
+    from the PREFILL-layout masks and the bundle's extents, an absent entry being dense (all live): READ by any of its ``g = H / H_w`` query heads (the read side's heads
     run ``g`` to a write head), WRITTEN by its write side. It is what `plan_exact` allocates on and what a residency
     check reads."""
     if masks.consumer != PREFILL:
         raise ValueError(f"the atom fold reads the {PREFILL!r}-layout masks, got {masks.consumer!r}")
-    widths = tuple(padded_widths)
+    widths = tuple(routes.topology.padded_widths)
     spans = _atom_spans(widths)
     read, write = (
-        _side_atoms(tuple(masks.bits(side, level, tokens, width) for level, width in enumerate(widths)), widths, spans)
+        _side_atoms(tuple(masks.live(routes, side, level) for level in range(len(widths))), widths, spans)
         for side in ("read", "write"))
     B, H, atoms = read.shape
     heads = write.shape[1]

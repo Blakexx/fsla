@@ -8,7 +8,8 @@ That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 :class:`~fsla.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
 the internal format -- a :class:`~fsla.values.Values` bundle -- ``masks`` is the DATA beside the rows, like attention's
-mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero),
+mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero;
+a level-side's mask may be ABSENT, ``None``, and ABSENT MEANS DENSE: every digit of every token live),
 ``density`` is how full each level is (a uint8 ``[2, D]``, 255 for every digit live), the
 ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial: the data changes the mathematics.
 The call carries only its inputs: it builds its own validated descriptor from the bundles, the dial, the state and the operands' device,
@@ -60,7 +61,11 @@ def prefill(
     ``routes``: a :class:`~fsla.routing.factors.RouteFactors`; ``values``: a :class:`~fsla.values.Values` with
     the same ``[B, T, H]``; ``masks``: the PREFILL-layout :class:`~fsla.routing.masks.Masks` the producer emitted beside
     them (validated for shape and dtype, never values; a bit of 0 is YOUR GUARANTEE that the entry's row is zero, a bit of 1 guarantees
-    nothing); ``density``: a ``torch.uint8`` tensor ``[2, D]`` on the rows' device, row 0 the read side and row 1 the write side, an entry a
+    nothing). A level-side's entry is its mask tensor or ABSENT (``None``), and ABSENT MEANS DENSE: every digit of every token is live
+    on that level-side. A level-side whose activation cannot make exact zeros (softmax today) gets NO mask from the library's producer
+    and helpers and the density byte 255; a level-side that can make zeros (entmax, an opaque level) always gets its mask, however dense its
+    data turns out; an absent entry's density byte is 255 (its supplier's duty, unchecked: the dense flag is the byte), and the call reads nothing back to the host;
+``density``: a ``torch.uint8`` tensor ``[2, D]`` on the rows' device, row 0 the read side and row 1 the write side, an entry a
     level -- a byte ``b`` for the share ``b / 255`` of the level's digits a token is live on, 255 every digit and 0 none
     (:func:`fsla.masks_and_density` and :func:`fsla.density_of_masks` build it). The call checks its type, shape, dtype and device
     and NOTHING about its values (every byte is a valid density); it is carried with the call's other inputs to where the prefill's kernels will read it, to choose how the work is laid out. The GPU

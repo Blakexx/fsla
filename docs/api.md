@@ -418,7 +418,7 @@ bits (which groups they skip, how they lay the work out) is an implementation de
 the masks are a suggestion the kernels may take. The oracle keeps computing rows times bits; for masks that keep the guarantee that is the rows alone.
 
 ```python
-fsla.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
+fsla.Masks(consumer, read, write)   # one int32 tensor a level a side (prefill: or None, dense); consumer = "prefill" | "decode"
 ```
 
 The producer emits them in the layout of the consumer it is made for (`produce_prefill` the prefill's, `produce_decode` the decode step's), so no
@@ -429,8 +429,14 @@ conversion stands between the producer and the op, and each op documents the lay
 | `"prefill"` (`prefill`, `FSLA.forward`) | int32 `[B, H, ceil(T / 32), width_l]` (`H_w` on the write side), TOKEN-packed: the entmax kernels' `support_words` as they are | bit `t % 32` of word `t // 32` = token `t` live at that digit; the solve's stream axis is `B * H` with `H` inner, so its `[B * H, ...]` words are this shape as a view |
 | `"decode"` (`decode_step_gated`) | int32 `[B, H, ceil(width_l / 32)]`, DIGIT-packed, one token | bit `d % 32` of word `d // 32` = digit `d` live |
 
-Bits past `T` (prefill) or past `width_l` (decode) are zero. A level whose activation has no exact zeros carries an
-all-live mask. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
+Bits past `T` (prefill) or past `width_l` (decode) are zero. **THE DENSE FLAG IS THE DENSITY BYTE 255** (CONSTITUTION R9): a level-side whose byte is 255 is computed with every digit live and its mask is never
+read, so in the prefill layout its entry in the bundle may be ABSENT (`None`). An absent entry's byte is 255: that is its supplier's duty, as a mask's
+guarantee is, and the call does not check it (it validates no value of the masks or the density, and reads nothing back to the host). The library's
+producer and helpers leave a level-side's mask absent, and state its byte 255, exactly where its declared activation cannot make exact zeros (softmax
+today; `fsla.routing.types.activation_walks`), from the declaration and never from the data (the owner, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks"); a level-side that
+can make zeros (entmax, and an opaque level) always gets its mask, however dense its data turns out, and where its count rounds to 255 it is computed
+densely too, which is exact (the owner: "It's fine if we mark something as dense when it's possible it's like 99.99 due to rounding or whatever ... the non zero flag is also data, and in this case there is no mask to disagree with"). The kernels are not built. The oracle multiplies nothing for an absent entry. DECODE is unchanged: its masks are
+made for every level-side, an all-live one where the activation has no exact zeros, and a decode bundle with an absent entry is refused by name. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
 (u8 `[B, T, H, width_l]` rows and fp32 `[B, T, H]` scales, bf16 `[B, T, H_w, d_v]` values with their fp32 scale).
 
 **The density is the prefill's own input, beside the masks** (the owner, 2026-11-24: "I almost think weights should be outside the masks? They
@@ -460,8 +466,8 @@ the batch and the side's heads, `b = (2 * 255 * live + total) // (2 * total)`, n
 dead exactly 0. The prefill's kernels, which are not built, will read a byte `b` as the integer `b + 1` in 256ths of the level (so every byte is a valid
 density, and the kernels need no clamp, no rounding and no NaN case): the carve clamps an integer outside 1..256 into the range
 ([`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md)). The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
-solve, and the layer hands it to `prefill`; the masks are always made, for every activation, so that the producer's choice does not depend on what
-a consumer needs ("To decouple our mask production decision from the consumer logic on if it needs it").
+solve, and the layer hands it to `prefill`. A prefill level-side whose activation cannot make exact zeros has no mask (its entry is absent, dense) and the byte 255, which the
+helpers write from the declaration without reading any data; `density_of_masks` gives 255 for an absent entry and counts the set bits of a present one. A level-side that can make zeros always has its mask, and the decode's masks are always made, for every activation.
 
 ## 3. The decay-source slot
 

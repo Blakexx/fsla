@@ -34,16 +34,16 @@ up to its last digit and no further (a partial quantum zero-fills the rest).
 Every level's rows are u8 against the row max (`AMP_LEVELS` = 255), on either side, and a zero digit is an exact
 zero: there is no floor under a row ([`docs/CONSTITUTION.md` R23](../../CONSTITUTION.md#r23)). A DENSE level is one
 whose activation has no exact zeros (softmax, not entmax); it differs from a sparse
-one only in that its support is not worded -- no pass reads or writes its rows, and its bits are its
-width mask over the live tokens. A dead row (scale 0) is zero everywhere, including where a consumer divides the row by
+one only in that its support is not worded -- no pass reads or writes its rows -- and, in the prefill layout, it has no mask: its
+entry is absent (`None`), and absent means dense, every digit of every token live (decode's masks are made for every level, a dense one all-live). A dead row (scale 0) is zero everywhere, including where a consumer divides the row by
 its own sum (the decay's shares).
 
 ## <a id="atom-bits"></a>The atom byte
 
-`planes.atom_bits(masks, padded_widths, tokens)` folds the op's MASKS (ruled 2026-11-13, 2026-11-22; [`api.md` §2.6](../../api.md)):
+`planes.atom_bits(masks, routes)` folds the op's MASKS (ruled 2026-11-13, 2026-11-22; [`api.md` §2.6](../../api.md)):
 the producer emits a bit per side, level, digit and token beside the rows, token-packed (bit `t % 32` of word `t // 32` at a
-digit, `[B, H, ceil(L / 32), w_l]` a level). There is no row test, no dense flag and no static width mask: a level whose
-activation has no exact zeros has an all-live mask like any other, and a digit past a level's width is the pad, dead. A mask
+digit, `[B, H, ceil(L / 32), w_l]` a level). There is no row test and no static width mask; the dense flag is the density byte 255 (`docs/api.md` section 2.6), at which a mask is never read and may be absent: a level-side whose
+activation cannot make exact zeros has no mask (its entry is `None`, its byte 255) and the fold reads its bits as all live (`Masks.live`), and a digit past a level's width is the pad, dead. A mask
 that does not cover a row's nonzero digits changes the result; that is the supplier's job, and the oracle states it (`r * m`; for the prefill a zero bit is the caller's
 guarantee that the row is zero, `docs/api.md` section 2.6).
 

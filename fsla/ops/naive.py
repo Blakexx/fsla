@@ -146,7 +146,7 @@ def naive_fsla(
     (:class:`~fsla.routing.masks.Masks`, either layout), and the oracle computes with ``r * m`` -- every level times its
     bits, in fp64, before anything else reads it (the leaf products, the decay clock's shares). A digit under a zero
     bit contributes nothing and its coefficient's gradient is exactly zero; the masks are saved by the backward and
-    carry no gradient. ``None`` is every bit set. For masks that keep the caller's guarantee (a zero bit over a zero
+    carry no gradient. ``None`` is every bit set, and so is an ABSENT entry of the prefill's masks (a dense level-side: it multiplies nothing). For masks that keep the caller's guarantee (a zero bit over a zero
     row, as the library's helpers build them) ``r * m`` is the rows alone. The prefill's density is no argument of the
     oracle: it changes no defined result. The oracle takes NO plan: a plan changes at most rounding, and the
     oracle is the result the data fixes.
@@ -182,9 +182,11 @@ def naive_fsla(
     read64 = tuple(level.to(torch.float64) for level in read_levels)
     write64 = tuple(level.to(torch.float64) for level in write_levels)
     if masks is not None:
-        read64 = tuple(level * masks.bits("read", index, T, level.shape[-1]).to(torch.float64)
+        read64 = tuple(level if masks.level("read", index) is None else
+                       level * masks.bits("read", index, T, level.shape[-1]).to(torch.float64)
                        for index, level in enumerate(read64))
-        write64 = tuple(level * masks.bits("write", index, T, level.shape[-1]).to(torch.float64)
+        write64 = tuple(level if masks.level("write", index) is None else
+                        level * masks.bits("write", index, T, level.shape[-1]).to(torch.float64)
                         for index, level in enumerate(write64))
     validate_levels("read_levels", read64)
     validate_levels("write_levels", write64)

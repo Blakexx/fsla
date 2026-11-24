@@ -10,16 +10,29 @@ from __future__ import annotations
 
 import pytest
 import torch
+from conftest import build_layer
 
 import fsla
 from fsla.ops.naive import naive_fsla
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import PREFILL, Masks, density_of_masks, masks_and_density, pack_tokens
-from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.routing.types import EntmaxActivation, IndependentRouting, OpaqueRouting, SoftmaxActivation, TiedRouting, Topology
 from fsla.values import Values
 
 
 def _topology(widths):
+    """Opaque levels: every level-side may make zeros, so every level-side has its mask."""
+    return Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
+
+
+def _mixed_topology():
+    """Level 0 softmax read, entmax write; level 1 entmax read, softmax write; level 2 opaque: absent are read 0 and write 1."""
+    return Topology(levels=(IndependentRouting(width=4, read=SoftmaxActivation(), write=EntmaxActivation(1.5)),
+                            IndependentRouting(width=8, read=EntmaxActivation(2.0), write=SoftmaxActivation()),
+                            OpaqueRouting(width=4)))
+
+
+def _softmax_topology(widths):
     return Topology(levels=tuple(IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in widths))
 
 
@@ -32,9 +45,9 @@ def _levels(gen, B, T, H, widths, keep):
     return out
 
 
-def _bundle(widths, B, T, H, H_w, keep, seed=5):
+def _bundle(widths, B, T, H, H_w, keep, seed=5, topology=None):
     gen = torch.Generator().manual_seed(seed)
-    routes = RouteFactors.from_levels(_topology(widths), _levels(gen, B, T, H, widths, keep), _levels(gen, B, T, H_w, widths, keep))
+    routes = RouteFactors.from_levels(_topology(widths) if topology is None else topology,_levels(gen, B, T, H, widths, keep), _levels(gen, B, T, H_w, widths, keep))
     return routes, gen
 
 
@@ -191,3 +204,89 @@ def test_the_reference_result_does_not_change_with_the_density():
     results = [naive_fsla(v, read, write, routes.topology, None, masks=masks)[0] for masks in (sparse, full, None)]
     torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
     torch.testing.assert_close(results[0], results[2], rtol=0, atol=0)
+
+
+# --------------------------------------------------------------- the dense flag is the mask's absence
+
+
+def _absent(masks):
+    return tuple(tuple(m is None for m in side) for side in (masks.read, masks.write))
+
+
+def test_a_softmax_side_has_no_mask_and_the_byte_255_where_an_entmax_side_and_an_opaque_level_keep_their_masks():
+    """Which level-sides have no mask is decided from the declaration: the rows are drawn sparse everywhere, so a softmax side's
+    absence is not the data's doing, and the other sides' bytes are the integer rule's."""
+    topology = _mixed_topology()
+    routes, _ = _bundle((4, 8, 4), 2, 45, 2, 2, keep=0.4, topology=topology)
+    masks, density = masks_and_density(routes)
+    assert _absent(masks) == ((True, False, False), (False, True, False))
+    masks.check(routes)
+    want = _brute_density(routes)
+    want[0, 0] = 255
+    want[1, 1] = 255
+    torch.testing.assert_close(density, want, rtol=0, atol=0)
+    torch.testing.assert_close(density_of_masks(routes, masks), want, rtol=0, atol=0)
+    assert int(want[0, 1]) < 255, "the present sides are counted from their bits"
+    for side, level in ((0, 0), (1, 1)):
+        side_name = ("read", "write")[side]
+        live = masks.live(routes, side_name, level)
+        assert live.dtype is torch.bool and tuple(live.shape) == tuple(routes.rows(level, side_name).shape) and bool(live.all())
+        with pytest.raises(ValueError, match="is absent"):
+            masks.bits(side_name, level, routes.tokens, routes.rows(level, side_name).shape[-1])
+    assert len(masks.tensors()) == 4
+
+
+def test_an_all_softmax_bundle_has_every_prefill_entry_absent_and_every_byte_255():
+    routes, _ = _bundle((4, 8), 1, 40, 2, 2, keep=0.3, topology=_softmax_topology((4, 8)))
+    masks, density = masks_and_density(routes)
+    assert masks.read == (None, None) and masks.write == (None, None) and masks.tensors() == ()
+    assert torch.equal(density, torch.full((2, 2), 255, dtype=torch.uint8))
+    assert torch.equal(density_of_masks(routes, masks), density)
+    masks.check(routes)
+
+
+def test_the_oracle_with_an_absent_entry_equals_the_oracle_with_an_all_ones_mask_there_exactly():
+    topology = _mixed_topology()
+    routes, gen = _bundle((4, 8, 4), 1, 37, 2, 2, keep=0.6, topology=topology)
+    v = torch.randn(1, 37, 2, 3, generator=gen, dtype=torch.float64)
+    masks, _ = masks_and_density(routes)
+
+    def ones(side, level):
+        return pack_tokens(torch.ones_like(routes.rows(level, side), dtype=torch.bool))
+
+    filled = Masks(PREFILL, tuple(ones("read", i) if m is None else m for i, m in enumerate(masks.read)),
+                   tuple(ones("write", i) if m is None else m for i, m in enumerate(masks.write)))
+    read, write = routes.dequantized()
+    absent_result = naive_fsla(v, read, write, topology, None, masks=masks)[0]
+    filled_result = naive_fsla(v, read, write, topology, None, masks=filled)[0]
+    torch.testing.assert_close(absent_result, filled_result, rtol=0, atol=0)
+
+
+def test_a_decode_bundle_with_an_absent_entry_is_refused_by_its_words():
+    routes, _ = _bundle((4, 8), 1, 1, 1, 1, keep=1.0)
+    masks, _ = masks_and_density(routes)
+    with pytest.raises(ValueError, match=r"Masks.write\[1\] is absent in a 'decode'-layout bundle"):
+        Masks("decode", masks.read, (masks.write[0], None))
+
+
+def test_the_call_accepts_a_bundle_with_absent_entries_and_reads_no_density_value():
+    """The call validates the absent entries' bundle and meets the built envelope's refusal, whatever bytes the density holds."""
+    routes, gen = _bundle((4, 8, 4), 1, 40, 2, 2, keep=0.5, topology=_mixed_topology())
+    values = Values.from_projection(torch.randn(1, 40, 2, 8, generator=gen))
+    masks, density = masks_and_density(routes)
+    assert any(entry is None for entry in (*masks.read, *masks.write))
+    for given in (density, torch.zeros_like(density)):
+        with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+            fsla.prefill(routes, values, masks, given)
+
+
+def test_the_prefill_producer_makes_a_mask_for_a_side_that_can_make_zeros_and_none_for_one_that_cannot():
+    """A tied entmax level has its mask on both sides, even where its rows come out dense; an independent level whose read is
+    softmax and write entmax has its write mask only; the density byte of an absent entry is 255."""
+    mixed = [IndependentRouting(width=16, read=SoftmaxActivation(), write=EntmaxActivation(1.5)), TiedRouting(width=16, op=EntmaxActivation(1.5))]
+    layer = build_layer(hidden_size=32, num_heads=2, d_v=32, widths=(16, 16), routing=mixed)
+    routes, _values, masks, density = layer._produce(torch.randn(2, 40, 32, dtype=torch.float64))
+    masks.check(routes)
+    assert masks.read[0] is None and masks.write[0] is not None and masks.read[1] is not None and masks.write[1] is not None
+    assert int(density[0, 0]) == 255
+    assert torch.equal(density, density_of_masks(routes, masks))

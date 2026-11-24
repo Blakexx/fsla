@@ -12,7 +12,7 @@ and everything else is linear attention's own contract.
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
--- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero),
+-- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero; a level-side's mask may be absent, ``None``, which means dense),
 ``density`` is how full each level is (a uint8 ``[2, D]``, 255 for every digit live, built by ``fsla.masks_and_density`` or ``fsla.density_of_masks``; it chooses how the work is laid out and changes no result),
 the ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial. The call carries only its inputs: it builds its own descriptor
 and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``, whose growth verdict the

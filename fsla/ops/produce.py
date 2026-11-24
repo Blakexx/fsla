@@ -33,7 +33,7 @@ from fsla.routing.masks import DECODE, PREFILL, Masks, density_of_masks, pack_di
 from fsla.routing.producer import Routing
 from fsla.routing.projection import _packed_router_logits
 from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
-from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT
+from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, activation_walks
 from fsla.values import Values
 
 __all__ = ["ProducerWeights", "activation_walks", "hidden_contiguous", "level_facts",
@@ -69,7 +69,8 @@ def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
 
 def produce_prefill(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks, torch.Tensor]:
     """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks, density)``, the operands the prefill takes, the masks token-packed (:data:`fsla.routing.masks.PREFILL`)
-    and the density ``[2, D]`` of those masks (:func:`fsla.routing.masks.density_of_masks`, after the solve):
+    and the density ``[2, D]`` of those masks (:func:`fsla.routing.masks.density_of_masks`, after the solve; a level-side whose activation
+    cannot make exact zeros has NO mask -- its entry is ``None``, dense -- and the byte 255):
     the fused kernel's on CUDA with no gradient -- not built on this line (:func:`fsla.ops._ext.not_built`) -- the composition's otherwise."""
     routes, values, masks = _produce(x, routing, weights, PREFILL)
     return routes, values, masks, density_of_masks(routes, masks)
@@ -156,15 +157,19 @@ def _public(levels: tuple[torch.Tensor, ...], *, B: int, H: int) -> tuple[torch.
 def _masks(routing: Routing, consumer: str, read_levels, write_levels, support, *, B: int, H: int) -> Masks:
     """THE MASKS the producer emits, in the layout of ``consumer``: a bit where the producer's own level is
     nonzero (the producer knows what it gives). For the prefill, a level the CUDA solve wrote support words for takes
-    them as the kernel wrote them (:func:`_solve_words`); the host composition packs the floating level."""
+    them as the kernel wrote them (:func:`_solve_words`); the host composition packs the floating level. A prefill level-side whose
+    declared activation cannot make exact zeros gets no mask (``None``: dense); the decode's masks are made for every level-side."""
     def packed(level: torch.Tensor) -> torch.Tensor:
         return pack_tokens(level != 0) if consumer == PREFILL else pack_digits(level != 0)
 
-    resolved = routing.resolved
+    resolved, walks = routing.resolved, activation_walks(routing.topology)
     sides = []
     for side, levels in enumerate((read_levels, write_levels)):
         out = []
         for index, level in enumerate(levels):
+            if consumer == PREFILL and not walks[side][index]:
+                out.append(None)
+                continue
             words = None if support is None or consumer != PREFILL else _solve_words(
                 resolved, index, side, support, B=B, H=H)
             out.append(packed(level) if words is None else words)
@@ -183,15 +188,6 @@ def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: i
     if not resolved.support_side_flags[index] & (READ_SUPPORT if side == 0 else WRITE_SUPPORT):
         return None
     return support.view(B, H, support.shape[1], -1)[..., offset:offset + width]
-
-
-@cache
-def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
-    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side WALKS BY ITS LISTS (the rest are walked digit by digit) -- the
-    levels whose activation has exact zeros (an opaque level, which may have zeros, included). An action chosen once from the
-    declaration's activation metadata and stated by :func:`level_facts` as decode's ``write_listed_k`` facts; no consumer asks the activations again."""
-    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
-                 for side in ("read", "write"))
 
 
 def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int]:

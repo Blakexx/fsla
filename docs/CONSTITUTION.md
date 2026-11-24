@@ -105,7 +105,12 @@ declared never detected was cause I couldn't think of a good way to do it. This 
 should be outside the masks ... They need not be coupled, and are independent variables really"; "just density is fine
 initially"). It chooses a LAYOUT among forms that are all exact, through `uniform_switch`, once a call ("switching
 uniformly to precomputed things defined for those patterns"). It changes no result while the masks keep their
-guarantee (R24), and nothing else measured keys a path.
+guarantee (R24), and nothing else measured keys a path. A BYTE OF 255 IS THE DENSE FLAG: that level-side is computed with
+every digit live and its mask is never read (Blake, 2026-11-24: "a flag that says \"this is all dense\" that we can read
+to skip loading those masks for the OR, and also to skip producing those masks"; "It's fine if we mark something as
+dense when it's possible it's like 99.99 due to rounding"). Where a level-side's declared activation cannot make exact
+zeros the library makes it no mask (Blake, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks"; [`api.md`](api.md)
+section 2.6).
 
 A structure branch fails loud at every layer, through one primitive: every CTA-uniform structure branch in device code
 is a `uniform_switch<Set>(value, body)` (`common/structure_switch.cuh`), whose contract is the four layers -- a

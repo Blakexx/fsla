@@ -99,7 +99,7 @@ if fsla.growth_pending(state):                  # a head whose state needed one 
 
 The masks' layouts: **prefill**, int32 `[B, H, ceil(T / 32), width_l]` per level and side, token-packed (bit `t % 32` of
 word `t // 32` is token `t`'s liveness of that digit); **decode**, int32 `[B, H, ceil(width_l / 32)]`, digit-packed
-(bit `d % 32` of word `d // 32` is digit `d`). A level whose activation has no exact zeros carries an all-live mask.
+(bit `d % 32` of word `d // 32` is digit `d`). In the prefill layout a level-side whose activation cannot make exact zeros (softmax) has no mask: its entry is absent (`None`), and absent means dense, every digit of every token live; decode's masks are always made.
 `fsla.naive_fsla` is the oracle, shipped in the wheel so a suspected numerical problem can be checked on your own
 shapes with no checkout. The contract in full is [`docs/api.md`](docs/api.md).
 

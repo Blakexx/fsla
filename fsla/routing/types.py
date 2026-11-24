@@ -7,6 +7,7 @@ configuration vocabulary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 from math import prod
 from typing import Any, TypeAlias
 
@@ -720,3 +721,12 @@ class LeafMassDecay:
 # ``kind: None | LeafMassDecay``. ``FactorizedMassDecay`` was removed and must not be
 # reintroduced here.
 DecayConfig: TypeAlias = None | LeafMassDecay
+
+
+@cache
+def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side WALKS BY ITS LISTS (the rest are walked digit by digit) -- the
+    levels whose activation has exact zeros (an opaque level, which may have zeros, included). An action chosen once from the
+    declaration's activation metadata and stated by :func:`level_facts` as decode's ``write_listed_k`` facts; no consumer asks the activations again."""
+    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
+                 for side in ("read", "write"))

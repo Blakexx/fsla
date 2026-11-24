@@ -103,6 +103,12 @@ def validate_context(ctx: PrefillContext) -> None:
 
     It runs before the call's first step, so nothing here can refuse a call whose
     operands a launch has already consumed.
+
+    THE MASKS' RULE: THE DENSE FLAG IS THE DENSITY BYTE 255 -- a level-side at 255 is computed with every digit live and its mask is
+    never read -- so a ``Masks`` bundle's entry for such a (side, level) may be ABSENT (``None``). An absent entry's byte is 255: its
+    supplier's duty, as a mask's guarantee is. The library's producer and helpers leave the mask absent and state the 255 where the
+    level-side's activation cannot make exact zeros (softmax); a level-side that can make zeros (entmax, an opaque level) always gets
+    its mask. The call validates no value of the masks or the density and reads nothing back to the host.
     """
     from fsla._state import FSLAState
     from fsla.routing.factors import RouteFactors

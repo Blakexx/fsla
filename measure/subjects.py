@@ -196,7 +196,7 @@ def decode_step(fx) -> Launch:
     #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
     with torch.no_grad():
         masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
-    bits = planes.atom_bits(masks, routes.topology.padded_widths, routes.tokens)
+    bits = planes.atom_bits(masks, routes)
     seeded: dict = {}
 
     def reset():
