@@ -22,6 +22,13 @@ namespace fsla {
 namespace mask_prepare {
 namespace detail {
 
+//: the card `device`'s window in mask words (`plan::window_of_cc`); a card with none is refused by name
+int window_words_of(int device) {
+  const int words = plan::window_of_cc(card_of(device).cc) / 32;
+  STD_TORCH_CHECK(words > 0, "mask_prepare has no window for this card");
+  return words;
+}
+
 //: an operand the kernel reads as a contiguous array of `dtype` on the call's device
 void check_operand(const Tensor& t, Dtype dtype, int device, const char* name) {
   STD_TORCH_CHECK(t.is_cuda() && t.get_device_index() == device, name, " is on the density's card");
@@ -57,8 +64,7 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   Args args{};
   args.levels = static_cast<int>(density.size(1));
   args.words = static_cast<int>(masks[0].size(2));
-  const int window_words = plan::window_of_cc(card_of(device).cc) / 32;
-  STD_TORCH_CHECK(window_words > 0, "mask_prepare has no window for this card");
+  const int window_words = window_words_of(device);
   args.windows = (args.words + window_words - 1) / window_words;
   std::int64_t heads[kSides] = {};
   std::int64_t widest = 0;
@@ -113,8 +119,7 @@ int64_t mask_prepare_bytes(const std::vector<int64_t>& width_bits,
                            const std::vector<int64_t>& heads, int64_t words, int64_t device) {
   STD_TORCH_CHECK(width_bits.size() == detail::kSides && heads.size() == detail::kSides,
                   "mask_prepare_bytes takes the 8 level-sides' width bits and batch-heads");
-  const int window_words = plan::window_of_cc(card_of(static_cast<int>(device)).cc) / 32;
-  STD_TORCH_CHECK(window_words > 0, "mask_prepare has no window for this card");
+  const int window_words = detail::window_words_of(static_cast<int>(device));
   int bits[detail::kSides];
   std::int64_t each[detail::kSides];
   for (int s = 0; s < detail::kSides; ++s) {

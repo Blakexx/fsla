@@ -32,10 +32,11 @@ PREDICTED_FOR = "0fb5eb86"
 PREDICTED = {1: (2.9, 3.9), 4: (2.6, 3.2), 16: (2.5, 2.9), 32: (2.4, 3.0), 64: (2.4, 3.0), 128: (2.4, 3.0), 256: (2.4, 3.0)}
 #: THE ROWS THE RUN MISSED, which the reading is of
 MISSED = {1, 4}
-READING = """WHAT THE MISSES SAY. The ranges at groups of 1 and 4 digits priced the pass by the mask bytes a thread has in flight,
-counting the mask's read traffic alone. What the table above fits is the multiprocessor's TOTAL memory traffic, the
-stored counts and words included: every row's bytes a token over its cycles a token is one rate, the column on the
-right. At one digit the stored counts are half as many bytes again as the mask read, and no lookahead removes them."""
+READING = """WHAT THE MISSES SAY, AND WHAT IS NOT SHOWN. The ranges at groups of 1 and 4 digits priced the pass by the mask bytes a
+thread has in flight, counting the mask's read traffic alone: the rows say that price is wrong. What FITS the table
+above is the multiprocessor's total memory traffic, the stored counts and words included: every row's bytes a token
+over its cycles a token is one rate, the column on the right. It is a fit and no more. No counter was read and no
+form without the stores was run, so that the stores are what the two rows wait on is LIKELY, NOT SHOWN."""
 
 
 def name(group: int) -> str:

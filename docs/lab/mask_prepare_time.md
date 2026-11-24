@@ -51,9 +51,10 @@ which no kernel had measured, as the row at 16 digits, a thread's mask traffic b
 - a group of 128: predicted 2.4 to 3, measured 2.67 -- HELD.
 - a group of 256: predicted 2.4 to 3, measured 2.55 -- HELD.
 
-WHAT THE MISSES SAY. The ranges at groups of 1 and 4 digits priced the pass by the mask bytes a thread has in flight,
-counting the mask's read traffic alone. What the table above fits is the multiprocessor's TOTAL memory traffic, the
-stored counts and words included: every row's bytes a token over its cycles a token is one rate, the column on the
-right. At one digit the stored counts are half as many bytes again as the mask read, and no lookahead removes them.
+WHAT THE MISSES SAY, AND WHAT IS NOT SHOWN. The ranges at groups of 1 and 4 digits priced the pass by the mask bytes a
+thread has in flight, counting the mask's read traffic alone: the rows say that price is wrong. What FITS the table
+above is the multiprocessor's total memory traffic, the stored counts and words included: every row's bytes a token
+over its cycles a token is one rate, the column on the right. It is a fit and no more. No counter was read and no
+form without the stores was run, so that the stores are what the two rows wait on is LIKELY, NOT SHOWN.
 
 Record: `measure/lab/results/mask_prepare_time/sm_90a.json`; the lab kernel's: `measure/lab/results/mask_prep/sm_90a.json`.
