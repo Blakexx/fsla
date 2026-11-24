@@ -79,6 +79,17 @@ constant the product or the declaration decides from its plan; no kernel hard-co
 hardware fixes it (an MMA shape, the warp size), as the declaration's closed-world bound (refused by name past it), or
 as an encoding.
 
+FACTS IN THE TEMPLATE, DECISIONS IN THE KERNEL (Blake, 2026-11-24). The card's facts reach a kernel as constants of its
+build, and the kernel derives from them, at compile time, every quantity the card decides: "all smem layout decisions
+are made in the kernel, using the template facts or runtime facts that are able to be uniformly switched on". The
+card's shared memory an SM is the fact a kernel's shared memory is serviced from ("it should be smem per sm, and we
+service everything from. That, including how many CTAs"), and the budget "can just be the whole card". A layout ADAPTS
+across the ranges the descriptors state ("Fail to compile means it couldnt adapt right? Ideally all the layouts adapt
+to the template parameters which the descriptor gives the ranges of valid values for"): a build that fails names a
+card the layout cannot serve. The rule is general and not shared memory's alone ("it's not just about smem, this is a
+general thing"). The host decides none of it: a launch reads its grid, its threads and its bytes off the same
+functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)).
+
 ONE ENTRY A KERNEL, BLIND TO ITS IMPLEMENTATION. A kernel's caller sees one interface: the entry finds the device's card
 from its tensors' device and selects the family's schedule and the atoms' instructions behind it; the caller passes no
 hardware fact. HARDWARE FACTS LIVE IN THE KERNEL PATH: Python reads one only for a purpose the C++ path cannot serve (the

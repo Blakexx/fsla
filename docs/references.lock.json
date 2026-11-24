@@ -115,6 +115,7 @@
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "1522787068fb", "reviewed": true, "sha256": "", "target": "docs/internals/DELETIONS.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "c5a1a00b59fb", "reviewed": true, "sha256": "", "target": "docs/internals/common/plan/cta_carve.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "a3bc7fc4d3fe", "reviewed": true, "sha256": "", "target": "docs/internals/common/plan/prefill_launch.md"},
+  {"doc": "docs/CONSTITUTION.md", "pinned_at": "302c5190a965", "reviewed": true, "sha256": "", "target": "docs/internals/common/smem_layout.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "b6538263bc46", "reviewed": true, "sha256": "aee19e97a861b8f5", "target": "docs/internals/tools/arith_model.md#f16"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "d8dd0936f7c2", "reviewed": true, "sha256": "", "target": "docs/lab/carry_token.md"},
   {"doc": "docs/CONSTITUTION.md", "pinned_at": "fc28afecc2aa", "reviewed": true, "sha256": "", "target": "docs/lab/carry_window.md"},
