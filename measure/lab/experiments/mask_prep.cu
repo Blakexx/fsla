@@ -6,14 +6,15 @@
 // group's 32 words in order with a running count: a word's stores are the group's word (where a group is more than
 // a digit: at one digit the word is the mask's own, and only the count is written) and the count before it; after
 // the last word, the window's total. A group of 1, 4 or 16 digits, a kernel each; a mask of 4 to 5 live digits a
-// token and one of 32. Each is timed IN CACHE -- the grid over 528 windows at every group size (17 MB of mask), its
-// CTAs sharing them where a CTA's round is more than 4, a call's rounds the same windows -- and ONCE-READ, a round
-// fresh windows a CTA. Every word, count and total of the first round is checked against the host's.
+// token and one of 32. Each is timed IN CACHE -- the grid over 4 windows a CTA's worth at every group size (528 on
+// 132 CTAs, 512 at groups of 16: 17 MB of mask), its CTAs sharing them where a CTA's round is more than 4, a call's
+// rounds the same windows -- and ONCE-READ, a round fresh windows a CTA. Every word, count and total of the first round is checked against the host's.
 // TIMELINE: no MMA. A thread holds two words' loads at fixed registers: a pass of the walk finishes one word -- its
 // stores and its popcount -- and issues the load two words on into the registers it left, then does the same for
 // the other; the window's last two words are finished after the walk, with nothing to issue. A load is kept as it
-// arrived (a group's lines are ORed when its word is finished), so nothing reads a
-// load in the pass that issued it. Live: a group's lines of two words (2, 8 or 32 registers) and the count.
+// arrived (a group's lines are ORed when its word is finished), so the source reads no load in the pass that issued
+// it; at a group of one digit the toolkit moves the next word's popcount into that pass (declared: `LOAD_IN_TRIP`).
+// Live: a group's lines of two words (2, 8 or 32 registers) and the count.
 // see docs/internals/tools/lab.md#mask-prep
 #include "lab.cuh"
 
