@@ -34,6 +34,19 @@ WHAT IT SHOWS.
 - A GROUP OF 4, ONCE-READ AGAINST IN CACHE: 3.6 times.
 - A GROUP OF 16, ONCE-READ AGAINST IN CACHE: 2.4 times.
 
+AGAINST THE PREDICTIONS WRITTEN BEFORE THE RUN (4 held, 2 missed; the two masks' figures each):
+- a group of 1, once-read: predicted 4.9 to 5.3, measured 4.93 and 4.92 -- HELD.
+- a group of 4, once-read: predicted 3.3 to 3.6, measured 3.46 and 3.44 -- HELD.
+- a group of 16, once-read: predicted 2.5 to 2.7, measured 2.60 and 2.60 -- HELD.
+- a group of 1, in cache: predicted 0.78 to 1.3, measured 1.01 and 1.00 -- HELD.
+- a group of 4, in cache: predicted 0.25 to 0.6, measured 0.96 and 0.94 -- MISSED.
+- a group of 16, in cache: predicted 0.08 to 0.35, measured 1.10 and 1.10 -- MISSED.
+
+WHAT THE MISSES SAY, AND WHAT IS OPEN. The in-cache ranges priced the pass by the instructions it issues, at a rate
+read off one row; a row outside its range says the pass in cache is not bound by issue there. What does bound it is
+OPEN: the cache's read rate fits (the pass reads 32 bytes of mask a token at every group size), and so do the shared
+stores of the rows below, and no run of this experiment separates them.
+
 WHAT THE IN-CACHE ROWS ARE AND ARE NOT. They run the grid over one working set at every group size: 4 windows a CTA's
 worth, so at groups of 4 and 16 digits, where a CTA's round is 16 and 64 windows, several CTAs own the same windows
 and store the same words, counts and totals to the same places. The outputs are the same whichever CTA writes them;

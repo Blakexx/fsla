@@ -27,6 +27,17 @@ GROUPS = (
 )
 CACHED = ", the mask in cache, the grid over 4 windows a CTA's worth"
 FRESH = ", the mask once-read"
+#: THE PREDICTIONS WRITTEN BEFORE THE RECORD'S RUN, a range a (group, how), the same for both masks: once-read from the
+#: run before it (the kernel's traffic unchanged); in cache from the compiled walk's instructions a token at the one
+#: rate that run gave, 2.9 warp-instructions a cycle an SM
+PREDICTED = {
+    (1, FRESH): (4.9, 5.3),
+    (4, FRESH): (3.3, 3.6),
+    (16, FRESH): (2.5, 2.7),
+    (1, CACHED): (0.78, 1.3),
+    (4, CACHED): (0.25, 0.6),
+    (16, CACHED): (0.08, 0.35),
+}
 
 
 def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
@@ -70,6 +81,16 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         f"- A GROUP OF {size}, ONCE-READ AGAINST IN CACHE: {at(0, g, FRESH) / at(0, g, CACHED):.1f} times."
         for size, g in GROUPS
     ]
+    verdicts = []
+    for (size, how), (low, high) in PREDICTED.items():
+        g = next(words for n, words in GROUPS if n == size)
+        got = [at(cell, g, how) for cell in range(len(CELLS))]
+        held = all(low <= x <= high for x in got)
+        verdicts.append(
+            f"- a group of {size}, {'once-read' if how == FRESH else 'in cache'}: predicted {low:g} to {high:g}, measured "
+            f"{got[0]:.2f} and {got[1]:.2f} -- {'HELD' if held else 'MISSED'}."
+        )
+    missed = [v for v in verdicts if v.endswith("MISSED.")]
     text = f"""MEASURED ({card(d['device'], instance)}, driver {d['driver']}; {d['date'][:10]}, the experiment at
 {d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every word, count and total of each kernel's first
 round exact; the median). {UNIT[0].upper()}{UNIT[1:]} for one side's sparse level:
@@ -78,6 +99,14 @@ round exact; the median). {UNIT[0].upper()}{UNIT[1:]} for one side's sparse leve
 
 WHAT IT SHOWS.
 {chr(10).join(lines)}
+
+AGAINST THE PREDICTIONS WRITTEN BEFORE THE RUN ({len(verdicts) - len(missed)} held, {len(missed)} missed; the two masks' figures each):
+{chr(10).join(verdicts)}
+
+WHAT THE MISSES SAY, AND WHAT IS OPEN. The in-cache ranges priced the pass by the instructions it issues, at a rate
+read off one row; a row outside its range says the pass in cache is not bound by issue there. What does bound it is
+OPEN: the cache's read rate fits (the pass reads 32 bytes of mask a token at every group size), and so do the shared
+stores of the rows below, and no run of this experiment separates them.
 
 WHAT THE IN-CACHE ROWS ARE AND ARE NOT. They run the grid over one working set at every group size: 4 windows a CTA's
 worth, so at groups of 4 and 16 digits, where a CTA's round is 16 and 64 windows, several CTAs own the same windows
