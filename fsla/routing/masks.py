@@ -134,21 +134,24 @@ class Masks:
         return unpack_tokens(mask, tokens) if self.consumer == PREFILL else unpack_digits(mask, width)
 
 
-def _live_share(live: torch.Tensor) -> torch.Tensor:
-    """The share of a level's ``(token, digit)`` pairs that are live: bool ``[B, T, H, width]`` -> fp64 scalar, exact."""
-    return live.sum(dtype=torch.int64).to(torch.float64) / live.numel()
+def _live_byte(live: torch.Tensor) -> torch.Tensor:
+    """The share of a level's ``(token, digit)`` pairs that are live as a byte: bool ``[B, T, H, width]`` -> int64 scalar
+    ``(2 * 255 * live + total) // (2 * total)``, the share times 255 rounded to the nearest, a half up, in integers."""
+    total = live.numel()
+    return (2 * 255 * live.sum(dtype=torch.int64) + total) // (2 * total)
 
 
 def _density(read_live, write_live) -> torch.Tensor:
-    """``[2, D]`` fp32 on the levels' device: row 0 the read side's shares, row 1 the write side's, an entry a level."""
-    return torch.stack([torch.stack([_live_share(live) for live in side]) for side in (read_live, write_live)]).to(torch.float32)
+    """``[2, D]`` uint8 on the levels' device: row 0 the read side's bytes, row 1 the write side's, an entry a level."""
+    return torch.stack([torch.stack([_live_byte(live) for live in side]) for side in (read_live, write_live)]).to(torch.uint8)
 
 
 def masks_and_density(routes: RouteFactors) -> tuple[Masks, torch.Tensor]:
     """THE PREFILL'S MASKS AND DENSITY from a bundle's rows: a digit is live where its row is not zero. Returns the
-    :data:`PREFILL`-layout :class:`Masks` and ``density`` ``[2, D]`` fp32 on the rows' device -- row 0 the read side, row 1 the
-    write side, an entry a level: the share of the level's ``(token, digit)`` pairs, over the batch and the side's heads, that are
-    live (1.0 where every digit is, 0.0 where none is). The masks built this way keep the guarantee a mask of the
+    :data:`PREFILL`-layout :class:`Masks` and ``density`` ``[2, D]`` uint8 on the rows' device -- row 0 the read side, row 1 the
+    write side, an entry a level: a byte ``b`` for the share ``b / 255`` of the level's ``(token, digit)`` pairs, over the batch and
+    the side's heads, that are live (255 where every digit is, 0 where none is). With ``live`` those pairs and ``total`` all of
+    them, ``b = (2 * 255 * live + total) // (2 * total)``: the nearest byte, a half up, in integer arithmetic. The masks built this way keep the guarantee a mask of the
     prefill gives (docs/api.md section 2.6). Torch operations on the rows' device; no host read."""
     live = tuple(tuple(routes.rows(level, side) != 0 for level in range(routes.topology.D)) for side in ("read", "write"))
     masks = Masks(PREFILL, *(tuple(pack_tokens(level) for level in side) for side in live))
@@ -156,9 +159,10 @@ def masks_and_density(routes: RouteFactors) -> tuple[Masks, torch.Tensor]:
 
 
 def density_of_masks(routes: RouteFactors, masks: Masks) -> torch.Tensor:
-    """THE DENSITY of :data:`PREFILL` masks a caller already has: ``[2, D]`` fp32 on the masks' device, row 0 the read side, row 1
-    the write side, an entry a level -- the share of the level's ``(token, digit)`` pairs, over the batch and the side's heads,
-    whose bit is set (1.0 where every bit is, 0.0 where none is). It takes the BUNDLE, not a token count: the bundle carries the
+    """THE DENSITY of :data:`PREFILL` masks a caller already has: ``[2, D]`` uint8 on the masks' device, row 0 the read side, row 1
+    the write side, an entry a level -- a byte ``b`` for the share ``b / 255`` of the level's ``(token, digit)`` pairs, over the batch
+    and the side's heads, whose bit is set (255 where every bit is, 0 where none is), rounded as :func:`masks_and_density` rounds it:
+    ``b = (2 * 255 * live + total) // (2 * total)``. It takes the BUNDLE, not a token count: the bundle carries the
     token count and the shapes the masks are checked against (:meth:`Masks.check` runs first), so a count that disagrees with
     the masks cannot be handed over. Torch operations on the masks' device; no host read."""
     if masks.consumer != PREFILL:

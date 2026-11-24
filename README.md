@@ -45,7 +45,7 @@ H100, not of the library.
 
 Two levels. **The layer** declares its levels and does everything. **The op** takes what a producer made: factors,
 values and masks, and a static plan. Masks are data in each consumer's layout: decode computes with the product
-`r * m`, and the prefill takes its mask as the caller's guarantee that a row is zero where its bit is 0, beside its own `density` input,
+`r * m`, and the prefill takes its mask as the caller's guarantee that a row is zero where its bit is 0, beside its own `density` input (a uint8 `[2, D]`, a byte `b` the share `b / 255` of a level's digits live, 255 every digit),
 which the library's helpers build
 ([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans are frozen static
 objects chosen from the declaration, never a runtime configuration. The op is agnostic to activations: no activation

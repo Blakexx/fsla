@@ -38,7 +38,7 @@ decode_step_gated(routes: RouteFactors, values: Values, masks: Masks, state, *,
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
 `masks` is the data beside the rows, like attention's mask (§2.6): decode's op computes with `r * m`, and the prefill's masks are the caller's
-guarantee about the rows. `density` is the prefill's own input (§2.6): a floating `[2, D]` tensor, how full each level is, which chooses how the work
+guarantee about the rows. `density` is the prefill's own input (§2.6): a `torch.uint8` `[2, D]` tensor, how full each level is (255 is every digit live), which chooses how the work
 is laid out; decode takes none ("decode doesn't need it, once again it has its own design", the owner, 2026-11-24).
 `decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`.
 
@@ -440,9 +440,10 @@ all-live mask. The rows, scales and values need no conversion: the producer alre
 **The density is the prefill's own input, beside the masks** (the owner, 2026-11-24: "I almost think weights should be outside the masks? They
 need not be coupled, and are independent variables really. Someone may want to give crazy weights as some experiment. No reason we need to stop
 them" -- "It's also more clear what the contract is if the weights are their own variable vs hidden in the masks"; the name: "just density is fine
-initially"). It is one floating tensor `[2, D]` on the rows' device: row 0 the read side, row 1 the write side, an entry a level -- the share of the
-level's digits a token is live on, up to 1.0. The call checks its type, shape (`[2, D]` for the bundle's depth), floating dtype and device, and
-NOTHING about its values: a caller may pass anything. It is carried with the call's other inputs to where the prefill's kernels will read it. Today
+initially"). It is one `torch.uint8` tensor `[2, D]` on the rows' device: row 0 the read side, row 1 the write side, an entry a level. A byte `b` means the
+share `b / 255` of the level's (token, digit) pairs that are live: 255 is every digit live on every token and 0 is none (the owner, 2026-11-24: "Why can't
+s byte just express 255/255?" -- "Ok to switch to 255"). The call checks its type, shape (`[2, D]` for the bundle's depth), uint8 dtype (a float
+tensor is refused, by name) and device, and NOTHING about its values: every byte is a valid density, so there is no value to refuse. It is carried with the call's other inputs to where the prefill's kernels will read it. Today
 the GPU prefill is refused by name as not built and the reference path does not use it: as a fact of the contract, the density changes no defined
 result. It chooses how the work is laid out, and it changes no result while the masks keep their guarantee.
 
@@ -455,10 +456,14 @@ masks, density = fsla.masks_and_density(routes)     # from the rows: a digit is 
 density = fsla.density_of_masks(routes, masks)      # the density of PREFILL masks a caller already has
 ```
 
-`masks_and_density` returns the PREFILL-layout `Masks` and the `[2, D]` fp32 density; `density_of_masks` returns the same density of the set bits, over all
+`masks_and_density` returns the PREFILL-layout `Masks` and the `[2, D]` uint8 density; `density_of_masks` returns the same density of the set bits, over all
 `(token, digit)` pairs of each level (over the batch and the side's heads). It takes the bundle rather than a token count: the bundle carries the
-token count and the shapes the masks are checked against, so a count that disagrees with the masks cannot be handed over. A level all live gives
-exactly 1.0 and a level all dead exactly 0.0. The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
+token count and the shapes the masks are checked against, so a count that disagrees with the masks cannot be handed over. The helpers round
+to the nearest byte, a half up, in integer arithmetic (the library's rule): with `live` the set bits and `total` the level's (token, digit) pairs over
+the batch and the side's heads, `b = (2 * 255 * live + total) // (2 * total)`, no float entering. A level all live gives exactly 255 and a level all
+dead exactly 0. The prefill's kernels, which are not built, will read a byte `b` as the integer `b + 1` in 256ths of the level (so every byte is a valid
+density, and the kernels need no clamp, no rounding and no NaN case): the carve's own clamp of an integer outside 1..256 stays as it is
+([`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md)). The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
 solve, and the layer hands it to `prefill`; the masks are always made, for every activation, so that the producer's choice does not depend on what
 a consumer needs ("To decouple our mask production decision from the consumer logic on if it needs it").
 

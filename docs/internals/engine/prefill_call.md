@@ -2,7 +2,7 @@
 
 `fsla/engine/prefill_call.py`: one SEGMENT of a prefill -- its routes and values -- into its readout,
 against the state the call is handed. `fsla.prefill` validates the context in the caller's grad mode
-(`validate_context`: what a kernel would fault or misread on -- the bundles' types, and the form of the masks and of the `density` -- and never a value of either: a mask is its supplier's guarantee, and a density may be anything, since it chooses a layout and no result;
+(`validate_context`: what a kernel would fault or misread on -- the bundles' types, and the form of the masks and of the `density` -- and never a value of either: a mask is its supplier's guarantee, and a density's values are never refused, since every byte is a valid density and it chooses a layout and no result (its dtype is `torch.uint8`);
 the density rides the context into `PrefillOperands` for the kernels, which are not built), builds the call's descriptor from its inputs (`descriptor_of`: the bundles' extents and declaration, whether a decay and a state are handed, the operands'
 device, through `fsla.ops.produce`'s memoized builder; its device refusal and its owed-kernel refusal are made there), then runs `run_prefill` inside an autograd node whose
 backward refuses. `run_prefill` builds the workspace the steps pass between them (`fsla.ops.prefill`'s private builder; its layout is owed, `docs/open-work.md` row A-g). The layer (`fsla.FSLA`) calls the op once a segment; the segment

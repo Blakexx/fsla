@@ -148,16 +148,16 @@ def validate_context(ctx: PrefillContext) -> None:
 
 
 def _check_density(density, routes) -> None:
-    """The density's type, shape, floating dtype and device against the rows, and nothing about its values: a caller may pass any."""
+    """The density's type, shape, uint8 dtype and device against the rows, and nothing about its values: every byte is a valid density."""
     D = routes.topology.D
     if not isinstance(density, torch.Tensor):
-        raise TypeError(f"prefill's `density` is a floating torch.Tensor [2, D], got {type(density).__name__}; build it with "
+        raise TypeError(f"prefill's `density` is a uint8 torch.Tensor [2, D], got {type(density).__name__}; build it with "
                         "fsla.masks_and_density or fsla.density_of_masks (docs/api.md section 2.6)")
     if tuple(density.shape) != (2, D):
         raise ValueError(f"prefill's `density` is [2, D] with D={D} (row 0 the read side, row 1 the write side, an entry a level), "
                          f"got {tuple(density.shape)}")
-    if not density.is_floating_point():
-        raise ValueError(f"prefill's `density` is a floating tensor, got {density.dtype}")
+    if density.dtype is not torch.uint8:
+        raise ValueError(f"prefill's `density` is a uint8 tensor (a byte b is the share b / 255; 255 is every digit live), got {density.dtype}")
     if density.device != routes.device:
         raise ValueError(f"prefill's `density` is on {density.device} but the rows are on {routes.device}")
 
