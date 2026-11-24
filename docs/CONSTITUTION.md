@@ -99,11 +99,13 @@ gated by forcing it; a tuned cutoff that changes results is not. So is a bound t
 certifies (a declared precision met per block on published values, the reference modelling the same rule): Blake, "it's
 still branching on a threshold either way, in the kind that we allow, which is a user-supplied threshold". A
 data-dependent path whose criterion cannot be restated as such a bound stays out.
-THE ONE MEASURED STATISTIC A KERNEL KEYS ON is a side's sparsity on a level: live digit-token pairs over all pairs,
-counted by the producer as it writes the masks and carried in the mask format (Blake, 2026-11-24: "The reason I said
-declared never detected was cause I couldn't think of a good way to do it. This seems like a good one."). It chooses a
-LAYOUT among forms that are all exact, through `uniform_switch`, once a call ("switching uniformly to precomputed things
-defined for those patterns"). It never changes a result, and nothing else measured keys a path.
+THE ONE MEASURED STATISTIC A KERNEL KEYS ON is the DENSITY a caller hands the prefill beside the masks: a side's share
+of live digit-token pairs on a level, which the library's helpers measure (Blake, 2026-11-24: "The reason I said
+declared never detected was cause I couldn't think of a good way to do it. This seems like a good one."; "weights
+should be outside the masks ... They need not be coupled, and are independent variables really"; "just density is fine
+initially"). It chooses a LAYOUT among forms that are all exact, through `uniform_switch`, once a call ("switching
+uniformly to precomputed things defined for those patterns"). It changes no result while the masks keep their
+guarantee (R24), and nothing else measured keys a path.
 
 A structure branch fails loud at every layer, through one primitive: every CTA-uniform structure branch in device code
 is a `uniform_switch<Set>(value, body)` (`common/structure_switch.cuh`), whose contract is the four layers -- a
@@ -119,7 +121,7 @@ verdict to one cell: every design states its cost in each regime, every stage is
 distribution, and a mechanism that wins one regime by losing another is a finding to rule on, not a win. Dense is the
 worst case and a test of the kernel, never a regime to concede.
 EVERY PATTERN IS PROVIDED; ONE REGIME IS PROMISED (Blake, 2026-11-23: "it can just be something we provide, and we dont
-promise it will work amazingly always, because its not the ideal regime"). Each side has a WEIGHT on each level, its sparsity there (R9), and from it a
+promise it will work amazingly always, because its not the ideal regime"). Each side has a DENSITY on each level (R9), and from it a
 GROUP SIZE (Blake, 2026-11-24: "multiply the sparsity by the actual level digits and round that to our allows range"):
 1, 4, 16, 32, 64, 128 or 256 digits. A level walked whole is one group. A token is in a set where it is live in that
 set's group on every level; the digits of a group it is not live on carry zeros. The kernels read group sizes and
@@ -222,8 +224,8 @@ card; the milestone carries the drift guards (lints, docs).
 A CTA OWNS ITS CARVE, on hopper 512 leaves, a power-of-two extent a level (Blake, 2026-11-24: "The cta actually owns 512
 leaves, not 256, with the exception of scaling down, and we are just partioning them during fold due to register limits.
 During readout we don't partition, it's just one by one warpgroup"). THE CARVE IS APPORTIONED across the levels by the
-two sides' weights (R10; "like the US Congress apportionment ... each one gets at least one assignment, and then after you
-assign based on weight"): every level starts at one digit; each doubling goes to the level whose summed weight, over one
+two sides' densities (R10; "like the US Congress apportionment ... each one gets at least one assignment, and then after you
+assign based on weight"): every level starts at one digit; each doubling goes to the level whose summed density, over one
 more than the doublings it holds, is highest; a tie goes to the level the read side is denser on ("we wanted to bias for
 the read dense side cause it's better"); no level goes past its own width. Two fold warpgroups each hold half of it, split
 along one level between them and by values across their warps; one readout warpgroup accumulates from the state both
@@ -235,7 +237,7 @@ otherwise write dense"). A group and the carve nest on every level and a group m
 is the multiple rule, which we can guarantee via padding"): the CTAs inside one combination of the write side's groups
 read one value stream. A smaller carve is the last resort under shared memory ("A box need not be 256 leaves we will scale
 them down if we are forced to"). What a split along another level would share, and what uneven halves cost, are not
-measured. The rule is one function the kernels call on the masks' weights
+measured. The rule is one function the kernels call on the call's densities
 ([`cta_carve.md`](internals/common/plan/cta_carve.md), [`prefill_launch.md`](internals/common/plan/prefill_launch.md); the grid's split, the
 ring and the kernels are owed: [`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its carve at entry and
 exit, so its read-side warps' union and its write-side warps' union are the same leaves; the CTA's carve is the SM's at one
@@ -304,9 +306,11 @@ The op and every kernel under it execute a PLAN their caller supplies (Blake, 20
 walk of each level -- by its lists, or every digit -- the list groups, the window and the segment, the drain's width
 and its scale's form. A plan field names an ACTION. It never names a property of the data -- dense, sparse, an
 activation, a count of live digits -- and the op's inputs carry none: they carry shapes, dtypes, scales and counts.
-A level's sparse MASK is not a plan field but an OPERAND, data as its rows are (Blake, 2026-11-13): the op uses it
-blindly and reads no row to find what is live; a mask that does not cover its rows' nonzero digits changes the
-result, and that is its supplier's to get right.
+A level's sparse MASK is not a plan field but an OPERAND, data as its rows are (Blake, 2026-11-13): the op
+reads no row to find what is live. On the prefill a bit of 0 is its supplier's guarantee that the entry's row is zero,
+and a 1 guarantees nothing (Blake, 2026-11-24: "if it's zero you are guaranting to use this value is zero. If it's not
+zero, you will get a wrong answer. If it's 1, it can be anything"); decode's op multiplies its rows by its mask's bits
+until decode has its own design.
 The producer knows what it gives, its sparsity too, and owns the rules that turn that into a plan; the layer calls
 them, and any other caller supplies whatever valid plan it wants. The op refuses a plan the data's shape cannot
 take and derives nothing from how the data was made. A plan is never wrong for the data in a way that changes the
@@ -319,7 +323,7 @@ every call fact, reusable and hashable; a call fact that states a choice names a
 walked by its lists), and everything derived from the facts -- the window, the grid, the segment -- is computed
 by the family's one launch function right before the launch and stored nowhere. The plan's device half is what a
 kernel decides during the call from the call's own data -- on the prefill the groups, the CTA's carve and the fold's
-split, from the masks' weights (R20) -- which never changes the result: forcing any of it on the same data matches the
+split, from the call's densities (R20) -- which never changes the result: forcing any of it on the same data matches the
 oracle. Each call builds
 its workspace itself, beside its descriptor, and its caller is trusted with the inputs it hands, the masks among them;
 the layer takes only model inputs.
@@ -337,9 +341,9 @@ stream's bytes: a token on k digits of a group is k times fewer value lines than
 digit stream scale with density (Blake, 2026-11-22: "grouping is largely for saving hbm traffic when
 dense"). How a layout is EXECUTED is the kernel's: tensor steps of the shape that fits it, from narrow steps up to 64
 columns and never wider. A layout wider than a step -- 8 or 16 digits -- is several 64-column steps whose A operand
-names the one run of value lines, so the layout's width is the call's, from the side's weight on the level (R10), and no step shape follows
+names the one run of value lines, so the layout's width is the call's, from the side's density on the level (R10), and no step shape follows
 from it. A step's shape pins its accumulator's registers, so the shape is chosen where no step is in flight: once a
-call, from the masks' weights (R20), before any window loop.
+call, from the call's densities (R20), before any window loop.
 A group issues the number of steps its data needs, read from the packet: a loop on that count whose test is a warp vote
 (Blake, 2026-11-22: "So voted loop achieved the goal with a small performance cost? Fine").
 MEASURED: a step's own time is 32, 64 and 128 cycles at 64, 128 and 256 columns

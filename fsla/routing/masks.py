@@ -1,8 +1,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE MASKS: the op's DATA operand beside the rows, like attention's mask -- a bit per side, per level, per digit, per
-token, true where the digit is live. The op computes with ``r * m`` (the rows times their bits); a bit is data and is
-never tested against the rows (docs/api.md section 2.6).
+token. For the PREFILL a bit of 0 is the caller's GUARANTEE that the entry's row is zero and a bit of 1 guarantees nothing; for
+DECODE the op computes with ``r * m`` (the rows times their bits). A bit is data and is never tested against the rows
+(docs/api.md section 2.6). The prefill's DENSITY, ``[2, D]``, is its own input beside the masks: :func:`masks_and_density` builds both from a
+bundle's rows and :func:`density_of_masks` the density of masks a caller already has.
 
 Two layouts, each the CONSUMER's native one, chosen by the producer called
 (:func:`fsla.ops.produce.produce_prefill`, :func:`fsla.ops.produce.produce_decode`), with no conversion between the producer and the op:
@@ -17,10 +19,15 @@ Two layouts, each the CONSUMER's native one, chosen by the producer called
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
-__all__ = ["DECODE", "PREFILL", "Masks", "pack_digits", "pack_tokens", "unpack_digits", "unpack_tokens"]
+if TYPE_CHECKING:
+    from fsla.routing.factors import RouteFactors
+
+__all__ = ["DECODE", "PREFILL", "Masks", "density_of_masks", "masks_and_density", "pack_digits", "pack_tokens",
+           "unpack_digits", "unpack_tokens"]
 
 PREFILL, DECODE = "prefill", "decode"
 WORD_BITS = 32
@@ -125,3 +132,38 @@ class Masks:
         """``side``'s level as bool ``[B, T, H, width]``: the bits unpacked, for the references."""
         mask = self.level(side, level)
         return unpack_tokens(mask, tokens) if self.consumer == PREFILL else unpack_digits(mask, width)
+
+
+def _live_share(live: torch.Tensor) -> torch.Tensor:
+    """The share of a level's ``(token, digit)`` pairs that are live: bool ``[B, T, H, width]`` -> fp64 scalar, exact."""
+    return live.sum(dtype=torch.int64).to(torch.float64) / live.numel()
+
+
+def _density(read_live, write_live) -> torch.Tensor:
+    """``[2, D]`` fp32 on the levels' device: row 0 the read side's shares, row 1 the write side's, an entry a level."""
+    return torch.stack([torch.stack([_live_share(live) for live in side]) for side in (read_live, write_live)]).to(torch.float32)
+
+
+def masks_and_density(routes: RouteFactors) -> tuple[Masks, torch.Tensor]:
+    """THE PREFILL'S MASKS AND DENSITY from a bundle's rows: a digit is live where its row is not zero. Returns the
+    :data:`PREFILL`-layout :class:`Masks` and ``density`` ``[2, D]`` fp32 on the rows' device -- row 0 the read side, row 1 the
+    write side, an entry a level: the share of the level's ``(token, digit)`` pairs, over the batch and the side's heads, that are
+    live (1.0 where every digit is, 0.0 where none is). The masks built this way keep the guarantee a mask of the
+    prefill gives (docs/api.md section 2.6). Torch operations on the rows' device; no host read."""
+    live = tuple(tuple(routes.rows(level, side) != 0 for level in range(routes.topology.D)) for side in ("read", "write"))
+    masks = Masks(PREFILL, *(tuple(pack_tokens(level) for level in side) for side in live))
+    return masks, _density(*live)
+
+
+def density_of_masks(routes: RouteFactors, masks: Masks) -> torch.Tensor:
+    """THE DENSITY of :data:`PREFILL` masks a caller already has: ``[2, D]`` fp32 on the masks' device, row 0 the read side, row 1
+    the write side, an entry a level -- the share of the level's ``(token, digit)`` pairs, over the batch and the side's heads,
+    whose bit is set (1.0 where every bit is, 0.0 where none is). It takes the BUNDLE, not a token count: the bundle carries the
+    token count and the shapes the masks are checked against (:meth:`Masks.check` runs first), so a count that disagrees with
+    the masks cannot be handed over. Torch operations on the masks' device; no host read."""
+    if masks.consumer != PREFILL:
+        raise ValueError(f"the density is the prefill's: the masks are {masks.consumer!r}-layout, not {PREFILL!r}")
+    masks.check(routes)
+    live = tuple(tuple(masks.bits(side, level, routes.tokens, routes.rows(level, side).shape[-1])
+                       for level in range(routes.topology.D)) for side in ("read", "write"))
+    return _density(*live)

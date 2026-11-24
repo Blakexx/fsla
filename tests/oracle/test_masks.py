@@ -81,7 +81,7 @@ def test_each_producer_returns_the_masks_in_its_consumers_layout(consumer):
     T = 1 if consumer == DECODE else 70
     layer, x = _layer_and_x(T)
     produce = produce_decode if consumer == DECODE else produce_prefill
-    routes, _values, masks = produce(x, layer.routing, layer._weights(x))
+    routes, _values, masks, *_ = produce(x, layer.routing, layer._weights(x))
     assert masks.consumer == consumer
     masks.check(routes)
     for side in ("read", "write"):
@@ -95,7 +95,7 @@ def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name(
     """`num_heads` is `route_W`'s leading extent, `hidden` is `x`'s last and `route_W`'s middle, `d_v` is `v_W`'s rows over the heads."""
     layer, x = _layer_and_x(4)
     weights = layer._weights(x)
-    routes, values, _masks = produce_prefill(x, layer.routing, weights)
+    routes, values, *_ = produce_prefill(x, layer.routing, weights)
     assert (routes.heads, values.d_v) == (2, 32)
     with pytest.raises(ValueError, match=r"x must be \[B, T, hidden\] with hidden = route_W's 32"):
         produce_prefill(x[..., :16], layer.routing, weights)
@@ -107,7 +107,7 @@ def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name(
 
 def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():
     layer, x = _layer_and_x(40)
-    routes, _values, masks = layer._produce(x)
+    routes, _values, masks, _density = layer._produce(x)
     everything_dead = Masks(PREFILL, tuple(torch.zeros_like(m) for m in masks.read), masks.write)
     everything_dead.check(routes)
     short = Masks(PREFILL, (masks.read[0][:, :, :1], *masks.read[1:]), masks.write)
@@ -149,7 +149,7 @@ def _draw(T, consumer):
     return v, read, write, bits, masks
 
 
-@pytest.mark.parametrize(("consumer", "T"), [(PREFILL, 37), (DECODE, 1)])
+@pytest.mark.parametrize(("consumer", "T"), [(DECODE, 1)])
 def test_the_oracle_computes_r_times_m_and_a_masked_coefficients_gradient_is_zero(consumer, T):
     """PLANTED: nonzero rows under zero bits. The forward and every gradient equal the oracle run on the rows pre-multiplied
     by their bits (an independent bool expansion, not the masks' own reader); a masked coefficient's gradient is exactly

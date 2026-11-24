@@ -14,19 +14,18 @@ then the fold of the window's writes into the state.
 ## The call's shape
 
 - A CTA OWNS A CARVE OF 512 LEAVES ([`CONSTITUTION.md` R20](../CONSTITUTION.md#r20)), in registers for the call: a
-  power-of-two extent a level, APPORTIONED across the levels by the two sides' weights
+  power-of-two extent a level, APPORTIONED across the levels by the two sides' densities
   ([`cta_carve.md`](../internals/common/plan/cta_carve.md)). The measured cell -- the write side grouping 4 digits of one
   level and walking the other whole, the read side the reverse -- comes out 32 x 16, the 32 along the level the read side
   walks whole. Its two fold warpgroups hold half each, 16 x 16, split along a level the write side walks by groups smaller
   than the level first, otherwise one it walks whole; the readout warpgroup takes the carve whole. A fold's half of the
   carve is called a BOX below.
-- A SIDE'S WEIGHT on a level is its sparsity there -- live digit-token pairs over all pairs -- counted by the producer
-  as it writes the masks and carried in the mask format; ITS GROUP SIZE is the weight times the level's digits, rounded
-  to 1, 4, 16, 32, 64, 128 or 256 (R10). The kernels read the weights, derive the groups, the carve and the split with
-  that one rule, and switch once a call to the code compiled for the pattern (`uniform_switch`; R9). The host reads no
-  weight: its half of the launch is the grid's counts and the window
+- A SIDE'S DENSITY on a level is its share of live digit-token pairs there, the prefill call's own input beside the
+  masks (the library's helpers measure it); ITS GROUP SIZE is the density times the level's digits, rounded to 1, 4, 16,
+  32, 64, 128 or 256 (R10). The kernels read the densities, derive the groups, the carve and the split with
+  that one rule, and switch once a call to the code compiled for the pattern (`uniform_switch`; R9). The host reads no density: its half of the launch is the grid's counts and the window
   ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md); R24; [`open-work.md`](../open-work.md) row A-f).
-  NOT BUILT: the masks carrying the weights, and the kernels.
+  NOT BUILT: the kernels.
 - ONE CTA A MULTIPROCESSOR (R15), a CTA a (carve, batch-head). Where a call has more CTAs than the card has
   multiprocessors they run in waves, each CTA its carve's whole segment; carry CTAs meet each other only at the output's
   adds (R22). A carry CTA also takes its packets from the gather's CTAs: [the hand-off](#the-hand-off).
@@ -85,7 +84,7 @@ packets -- is A RING of a few windows (RULED 2026-11-15), written by gather CTAs
 by the unit's 16 CTAs, which are all of its readers; the gather advances when the slowest of them has ("isnt it
 basically just a ring and the ctas need to signal when the ring can continue"). No barrier crosses CTAs without a
 cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the ring: its size is the
-descriptor's, the same whatever the masks' weights are, which the host never reads.
+descriptor's, the same whatever the densities are, which the host never reads.
 
 NOT DESIGNED PAST THAT, and designed with the gather: the split of a card's multiprocessors between gather CTAs and
 units; how a unit's 16 CTAs start together on persistent CTAs; what the ring's waits cost where a unit's CTAs drift
@@ -109,7 +108,7 @@ tiles, two panels.
 
 A STEP IS NEVER WIDER THAN 64 COLUMNS (R25). THE SKELETON'S fold is the group of four digits alone: a token's value
 lines once, its row the coefficients of the group's digits it is live on and zeros, a step 16 tokens by 64 columns,
-and a group's steps a loop on the packet's count whose test is a warp vote. The group a step lays out is its level's, from the side's weight
+and a group's steps a loop on the packet's count whose test is a warp vote. The group a step lays out is its level's, from the side's density
 ([the call's shape](#the-calls-shape)); the step shapes that execute a group are the climb's.
 
 ## A window

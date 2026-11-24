@@ -58,11 +58,13 @@ def _context(routes, values):
     """The call's context: the bundle's own bits as the PREFILL-layout masks (validation reads the masks' shapes) (a non-bundle is the type
     refusal's, which speaks before the masks are read)."""
     from fsla.engine.prefill_call import PrefillContext
+    from fsla.routing.masks import density_of_masks
     from tests.oracle.fixtures import masks_of
 
     if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
-        return PrefillContext(routes=routes, values=values, masks=None)
-    return PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL))
+        return PrefillContext(routes=routes, values=values, masks=None, density=None)
+    masks = masks_of(routes, PREFILL)
+    return PrefillContext(routes=routes, values=values, masks=masks, density=density_of_masks(routes, masks))
 
 
 def _admitted(routes, v) -> None:
@@ -453,7 +455,8 @@ def test_the_calls_carry_only_their_inputs_and_no_plan_object_exists():
     import fsla.engine as engine
 
     op = inspect.signature(fsla.prefill).parameters
-    assert list(op) == ["routes", "values", "masks", "state", "decay"]
+    assert list(op) == ["routes", "values", "masks", "density", "state", "decay"]
+    assert op["density"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD and op["density"].default is inspect.Parameter.empty
     assert all(op[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("state", "decay"))
     assert op["state"].default is None and op["decay"].default is None
     step = inspect.signature(fsla.decode_step_gated).parameters

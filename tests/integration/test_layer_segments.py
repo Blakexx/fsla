@@ -72,7 +72,7 @@ def _cut(bundle, span: slice):
 def test_the_op_matches_the_fp64_oracle_per_slot():
     routes, values, masks = _bundles(2 * window_of())
     with torch.no_grad():
-        y, state = fsla.prefill(routes, values, masks)
+        y, state = fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks))
     assert state is None and tuple(y.shape) == (1, 2 * window_of(), 2, 64)
     _, write = routes.dequantized()
     ref = oracle_run(values.dequantized().double(), tuple(r.double() for r in routes.dequantized()[0]), tuple(w.double() for w in write), routes.topology)
@@ -86,12 +86,12 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
     one state are the whole call to fp32 ULPs, in either backing."""
     routes, values, masks = _bundles(4 * window_of())
     with torch.no_grad():
-        whole, _ = fsla.prefill(routes, values, masks)
+        whole, _ = fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks))
         state = fsla.state(backing="paged" if paging else "dense")
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
             cut_routes, cut_values, cut_masks = _cut(routes, span), _cut(values, span), _cut_masks(masks, span)
-            y, state = fsla.prefill(cut_routes, cut_values, cut_masks, state=state)
+            y, state = fsla.prefill(cut_routes, cut_values, cut_masks, fsla.density_of_masks(cut_routes, cut_masks), state=state)
             parts.append(y)
     assert state.paged is paging
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)

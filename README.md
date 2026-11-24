@@ -44,8 +44,9 @@ H100, not of the library.
 ## What the interface looks like
 
 Two levels. **The layer** declares its levels and does everything. **The op** takes what a producer made: factors,
-values and masks, and a static plan. Masks are data in each consumer's layout, and the op computes with the product
-`r * m`; sparsity is declared by the producer, never detected by the kernel
+values and masks, and a static plan. Masks are data in each consumer's layout: decode computes with the product
+`r * m`, and the prefill takes its mask as the caller's guarantee that a row is zero where its bit is 0, beside its own `density` input,
+which the library's helpers build
 ([`docs/api.md` §2.6](docs/api.md#26-the-masks-are-data-in-each-consumers-native-layout)). Plans are frozen static
 objects chosen from the declaration, never a runtime configuration. The op is agnostic to activations: no activation
 reaches it. The producer implements a set of them and a layer's configuration selects one. Anything outside the built
@@ -86,9 +87,9 @@ weights = ProducerWeights(
     v_W=torch.randn(H * d_v, hidden, device="cuda", dtype=torch.bfloat16))
 
 # prefill: the masks come in the prefill layout (refused by name until the carry is built, as in the layer)
-routes, values, masks = produce_prefill(x, routing, weights)       # H, hidden and d_v are read off the weights and x
+routes, values, masks, density = produce_prefill(x, routing, weights)  # H, hidden and d_v are read off the weights and x
 state = fsla.state()
-y, state = fsla.prefill(routes, values, masks, state=state)
+y, state = fsla.prefill(routes, values, masks, density, state=state)
 
 # decode: the decode producer and the masks in the decode layout
 routes, values, masks = produce_decode(x_token, routing, weights)  # x_token: [B, 1, hidden]

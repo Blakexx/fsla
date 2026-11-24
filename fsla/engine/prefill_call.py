@@ -33,6 +33,7 @@ class PrefillContext:
     routes: Any
     values: Any
     masks: Any
+    density: Any
     decay: Any = None
     state: Any = None
     state_in: torch.Tensor | None = None
@@ -61,7 +62,7 @@ def backing(arena, state_in, want_state, routes, d_v):
         return None, (planes.state_plane(routes, d_v=d_v, zeros=True) if state_in is None else state_in)
 
 
-def launch(descriptor, workspace, routes, values, masks, decay, state_in, page_table, state_out):
+def launch(descriptor, workspace, routes, values, masks, density, decay, state_in, page_table, state_out):
     """The carry at its bytes and the intra into the same planes: ``num [BH, T, d_v]`` and
     ``den [BH, T]``, fp32, each over the reader factor (`fsla.ops.prefill.prefill`), over the launch's three named
     parts -- the descriptor, the operands and the workspace (:class:`fsla.engine.plan.PrefillLaunch`)."""
@@ -70,7 +71,7 @@ def launch(descriptor, workspace, routes, values, masks, decay, state_in, page_t
     with span("launch"):
         bundle = PrefillLaunch(
             descriptor=descriptor,
-            operands=PrefillOperands(routes=routes, values=values, masks=masks, decay=decay,
+            operands=PrefillOperands(routes=routes, values=values, masks=masks, density=density, decay=decay,
                                      state_in=state_in, page_table=page_table, state_out=state_out),
             workspace=PrefillWorkspace(buffer=workspace))
         return prefill_ops.prefill(bundle)
@@ -97,7 +98,7 @@ def descriptor_of(ctx: PrefillContext):
 
 
 def validate_context(ctx: PrefillContext) -> None:
-    """THE FAST-FAIL, in ONE call: the operand-type, mask and gradient refusals of a prefill call (the descriptor's refusals -- the device's and
+    """THE FAST-FAIL, in ONE call: the operand-type, mask, density and gradient refusals of a prefill call (the descriptor's refusals -- the device's and
     the unbuilt kernel's -- are :func:`descriptor_of`'s, which the call runs after this).
 
     It runs before the call's first step, so nothing here can refuse a call whose
@@ -142,7 +143,23 @@ def validate_context(ctx: PrefillContext) -> None:
     if ctx.masks.consumer != PREFILL:
         raise ValueError(f"prefill takes the {PREFILL!r}-layout masks, got {ctx.masks.consumer!r}")
     ctx.masks.check(routes)
+    _check_density(ctx.density, routes)
     refuse_backward(routes, values, decay)
+
+
+def _check_density(density, routes) -> None:
+    """The density's type, shape, floating dtype and device against the rows, and nothing about its values: a caller may pass any."""
+    D = routes.topology.D
+    if not isinstance(density, torch.Tensor):
+        raise TypeError(f"prefill's `density` is a floating torch.Tensor [2, D], got {type(density).__name__}; build it with "
+                        "fsla.masks_and_density or fsla.density_of_masks (docs/api.md section 2.6)")
+    if tuple(density.shape) != (2, D):
+        raise ValueError(f"prefill's `density` is [2, D] with D={D} (row 0 the read side, row 1 the write side, an entry a level), "
+                         f"got {tuple(density.shape)}")
+    if not density.is_floating_point():
+        raise ValueError(f"prefill's `density` is a floating tensor, got {density.dtype}")
+    if density.device != routes.device:
+        raise ValueError(f"prefill's `density` is on {density.device} but the rows are on {routes.device}")
 
 
 def run_prefill(ctx: PrefillContext, descriptor) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -156,6 +173,6 @@ def run_prefill(ctx: PrefillContext, descriptor) -> tuple[torch.Tensor, torch.Te
 
     page_table, state_out = backing(ctx.arena, ctx.state_in, ctx.want_state, ctx.routes, ctx.values.d_v)
     workspace = prefill_ops._build_workspace(descriptor)
-    num, den = launch(descriptor, workspace, ctx.routes, ctx.values, ctx.masks, ctx.decay, ctx.state_in,
+    num, den = launch(descriptor, workspace, ctx.routes, ctx.values, ctx.masks, ctx.density, ctx.decay, ctx.state_in,
                       page_table, state_out)
     return post(num, den, ctx.routes), state_out

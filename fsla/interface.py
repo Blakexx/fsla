@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op.
 
-    prefill(routes, values, masks, *, state=None, decay=None) -> (y, state)
+    prefill(routes, values, masks, density, *, state=None, decay=None) -> (y, state)
 
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 :class:`~fsla.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
 the internal format -- a :class:`~fsla.values.Values` bundle -- ``masks`` is the DATA beside the rows, like attention's
-mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; the op computes with ``r * m``), the
+mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero),
+``density`` is how full each level is (``[2, D]``), the
 ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial: the data changes the mathematics.
 The call carries only its inputs: it builds its own validated descriptor from the bundles, the dial, the state and the operands' device,
 and the workspace it passes around inside (docs/api.md section 1).
@@ -49,6 +50,7 @@ def prefill(
     routes: RouteFactors,
     values: Values,
     masks: Masks,
+    density: torch.Tensor,
     *,
     state: FSLAState | None = None,
     decay: DecayConfig = None,
@@ -57,7 +59,13 @@ def prefill(
 
     ``routes``: a :class:`~fsla.routing.factors.RouteFactors`; ``values``: a :class:`~fsla.values.Values` with
     the same ``[B, T, H]``; ``masks``: the PREFILL-layout :class:`~fsla.routing.masks.Masks` the producer emitted beside
-    them (validated for shape and dtype, never values). ``state``: ``None`` for a stateless
+    them (validated for shape and dtype, never values; a bit of 0 is YOUR GUARANTEE that the entry's row is zero, a bit of 1 guarantees
+    nothing); ``density``: a floating tensor ``[2, D]`` on the rows' device, row 0 the read side and row 1 the write side, an entry a
+    level -- the share of the level's digits a token is live on, up to 1.0 (:func:`fsla.masks_and_density` and
+    :func:`fsla.density_of_masks` build it). The call checks its type, shape, dtype and device and NOTHING about its
+    values: it is carried with the call's other inputs to where the prefill's kernels will read it, to choose how the work is laid out. The GPU
+    prefill is not built (it is refused by name) and the reference path does not use the density: as a fact of the contract, the density
+    changes no defined result. ``state``: ``None`` for a stateless
     call, or a :class:`~fsla.FSLAState` from :func:`fsla.state` -- an unbound one binds from this call, a bound
     one is continued; ``decay``: the recurrence dial, or ``None``. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object,
     mutated in place (``None`` when the call was stateless).
@@ -68,7 +76,8 @@ def prefill(
     """
     from fsla.engine.prefill_call import PrefillContext, descriptor_of, validate_context
 
-    ctx = PrefillContext(routes=routes, values=values, masks=masks, decay=decay, state=state, want_state=state is not None)
+    ctx = PrefillContext(routes=routes, values=values, masks=masks, density=density, decay=decay, state=state,
+                         want_state=state is not None)
     #: in the CALLER's grad mode: inside the node's forward autograd has turned it off, and the gradient
     #: clause would never speak.
     validate_context(ctx)
@@ -92,7 +101,7 @@ class _PrefillNode(torch.autograd.Function):
     @staticmethod
     def run(ctx, descriptor):
         box = {}
-        y = _PrefillNode.apply(ctx, descriptor, box, *operands_of(ctx.routes, ctx.values, ctx.decay))
+        y = _PrefillNode.apply(ctx, descriptor, box, *operands_of(ctx.routes, ctx.values, ctx.decay), ctx.density)
         return y, box.get("state_out")
 
     @staticmethod

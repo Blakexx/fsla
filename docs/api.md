@@ -20,7 +20,8 @@ or, without the layer, from levels you computed yourself -- the format's own uti
 
 ```python
 factors = fsla.RouteFactors.from_levels(topology, read_levels, write_levels)
-y, _ = fsla.prefill(factors, fsla.Values.from_projection(v), masks)
+masks, density = fsla.masks_and_density(factors)          # the masks the rows' nonzero digits make, and their density
+y, _ = fsla.prefill(factors, fsla.Values.from_projection(v), masks, density)
 ```
 
 ---
@@ -28,7 +29,7 @@ y, _ = fsla.prefill(factors, fsla.Values.from_projection(v), masks)
 ## 1. The op
 
 ```python
-prefill(routes: RouteFactors, values: Values, masks: Masks, *,
+prefill(routes: RouteFactors, values: Values, masks: Masks, density: Tensor, *,
         state=None, decay: LeafMassDecay | None = None) -> (y, state)
 decode_step_gated(routes: RouteFactors, values: Values, masks: Masks, state, *,
                   decay: LeafMassDecay | None = None) -> (y, state)
@@ -36,12 +37,14 @@ decode_step_gated(routes: RouteFactors, values: Values, masks: Masks, state, *,
 
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
 internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
-`masks` is the data beside the rows, like attention's mask (§2.6): the op computes with `r * m`.
+`masks` is the data beside the rows, like attention's mask (§2.6): decode's op computes with `r * m`, and the prefill's masks are the caller's
+guarantee about the rows. `density` is the prefill's own input (§2.6): a floating `[2, D]` tensor, how full each level is, which chooses how the work
+is laid out; decode takes none ("decode doesn't need it, once again it has its own design", the owner, 2026-11-24).
 `decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`.
 
 The owner's ruling (2026-11-23): "is it better to just have a decode and prefill producer, have each internal call handle its descriptor stuff
 and not be exposed to the user, and have the public contract carry all inputs, workpsace is something we build inside just to pass around?" --
-agreed: yes. A call carries ALL ITS INPUTS and nothing else: the rows, the values, the masks, the state and the decay dial, which is what changes the
+agreed: yes. A call carries ALL ITS INPUTS and nothing else: the rows, the values, the masks, the prefill's density, the state and the decay dial, which is what changes the
 mathematics. Each call builds its own DESCRIPTOR -- the validated run-time context, every device fact and every call fact, checked against the
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
@@ -116,7 +119,7 @@ validating its operands: a prefill is refused there as `KernelNotBuilt` naming
 `prefill` while no carry is built, operands that are not on a CUDA device are refused there naming the device, and any other call outside the contract
 is refused naming the facts. A call that carries a gradient is refused by name before any of them (`BackwardNotImplemented`).
 
-**A walk is an action.** `write_listed_k` (decode's call) states whether the write side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses it from the declaration (a side whose activation has exact zeros is walked by its lists); a walk costs time and never the result. The prefill's call states no walk and no weight: each side's per-level weights are counted by the producer and carried in the mask format, and the prefill's kernels derive their groups and the CTA's carve from them ([`internals/common/plan/prefill_launch.md`](internals/common/plan/prefill_launch.md)).
+**A walk is an action.** `write_listed_k` (decode's call) states whether the write side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses it from the declaration (a side whose activation has exact zeros is walked by its lists); a walk costs time and never the result. The prefill's call states no walk and no density fact: each side's per-level densities are the call's own input (§2.6), and the prefill's kernels derive their groups and the CTA's carve from them ([`internals/common/plan/prefill_launch.md`](internals/common/plan/prefill_launch.md)).
 
 **There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
 is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
@@ -403,11 +406,20 @@ is a choice a level's author is making, so it is stated here rather than buried.
 
 ### 2.6 The masks are data, in each consumer's native layout
 
-A mask is a bit per side, per level, per digit, per token -- true where the digit is live (ruled 2026-11-13) -- and it
-is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22): the op computes with `r * m`, the product under the
-mask. The masks are validated for shape, dtype and device, never for their values, and used blindly: a bit under a
-nonzero row drops that digit's term, a bit over a zero row adds nothing, and the oracle (`fsla.naive_fsla(..., masks=)`)
-is the result the data fixes. The backward saves the masks and they carry no gradient: a masked coefficient's gradient is zero.
+A mask is a bit per side, per level, per digit, per token (ruled 2026-11-13) and it
+is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22). The masks are validated for shape, dtype and device, never for
+their values. What a bit says depends on the consumer.
+
+**DECODE computes with `r * m`**, the product under the mask (unchanged): a bit under a nonzero row drops that digit's term, a bit over a
+zero row adds nothing, and the oracle (`fsla.naive_fsla(..., masks=)`) is the result the data fixes. The backward saves the masks and they
+carry no gradient: a masked coefficient's gradient is zero.
+
+**The PREFILL's published math is over the rows and the values**, and its mask is a guarantee from the caller (the owner, 2026-11-24:
+"if it's zero you are guaranting to use this value is zero. If it's not zero, you will get a wrong answer. If it's 1, it can be anything"):
+A mask bit of 0 is your guarantee that the entry's row is zero. If it is not, the result may be wrong. A bit of 1 guarantees nothing: the
+row can be anything, zero included. Masks built by the library's helpers from the rows always keep the guarantee. How the kernels use the
+bits (which groups they skip, how they lay the work out) is an implementation detail and is not exposed ("groups are not exposed at all"):
+the masks are a suggestion the kernels may take. The oracle keeps computing rows times bits; for masks that keep the guarantee that is the rows alone.
 
 ```python
 fsla.Masks(consumer, read, write)   # one int32 tensor a level a side; consumer = "prefill" | "decode"
@@ -424,6 +436,31 @@ conversion stands between the producer and the op, and each op documents the lay
 Bits past `T` (prefill) or past `width_l` (decode) are zero. A level whose activation has no exact zeros carries an
 all-live mask. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
 (u8 `[B, T, H, width_l]` rows and fp32 `[B, T, H]` scales, bf16 `[B, T, H_w, d_v]` values with their fp32 scale).
+
+**The density is the prefill's own input, beside the masks** (the owner, 2026-11-24: "I almost think weights should be outside the masks? They
+need not be coupled, and are independent variables really. Someone may want to give crazy weights as some experiment. No reason we need to stop
+them" -- "It's also more clear what the contract is if the weights are their own variable vs hidden in the masks"; the name: "just density is fine
+initially"). It is one floating tensor `[2, D]` on the rows' device: row 0 the read side, row 1 the write side, an entry a level -- the share of the
+level's digits a token is live on, up to 1.0. The call checks its type, shape (`[2, D]` for the bundle's depth), floating dtype and device, and
+NOTHING about its values: a caller may pass anything. It is carried with the call's other inputs to where the prefill's kernels will read it. Today
+the GPU prefill is refused by name as not built and the reference path does not use it: as a fact of the contract, the density changes no defined
+result. It chooses how the work is laid out, and it changes no result while the masks keep their guarantee.
+
+The op computes nothing for a caller ("the op call signature shouldn't change or compute anything for them. They need to use our library helps to
+build what they want from their data that they have"); the library's helpers build what a caller has not got, on the operands' device with torch
+operations and no host read:
+
+```python
+masks, density = fsla.masks_and_density(routes)     # from the rows: a digit is live where its row is not zero
+density = fsla.density_of_masks(routes, masks)      # the density of PREFILL masks a caller already has
+```
+
+`masks_and_density` returns the PREFILL-layout `Masks` and the `[2, D]` fp32 density; `density_of_masks` returns the same density of the set bits, over all
+`(token, digit)` pairs of each level (over the batch and the side's heads). It takes the bundle rather than a token count: the bundle carries the
+token count and the shapes the masks are checked against, so a count that disagrees with the masks cannot be handed over. A level all live gives
+exactly 1.0 and a level all dead exactly 0.0. The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
+solve, and the layer hands it to `prefill`; the masks are always made, for every activation, so that the producer's choice does not depend on what
+a consumer needs ("To decouple our mask production decision from the consumer logic on if it needs it").
 
 ## 3. The decay-source slot
 

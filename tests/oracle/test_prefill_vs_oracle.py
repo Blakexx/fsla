@@ -42,7 +42,7 @@ def operands(spec, tokens: slice = slice(None)):
 def call(operands_, state=None):
     """The op over one call's operands (``routes, values, masks``)."""
     routes, values, masks = operands_
-    return fsla.prefill(routes, values, masks, state=state)
+    return fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks), state=state)
 
 
 def oracle(routes, values, entry=None):

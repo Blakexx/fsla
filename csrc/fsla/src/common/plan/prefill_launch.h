@@ -1,6 +1,6 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE PREFILL LAUNCH FUNCTION'S HOST HALF (docs/internals/common/plan/prefill_launch.md): what the host knows of a call from its descriptor; the weights are the carve's (`plan/cta_carve.h`), never the host's.
+// THE PREFILL LAUNCH FUNCTION'S HOST HALF (docs/internals/common/plan/prefill_launch.md): what the host knows of a call from its descriptor; the densities are the carve's (`plan/cta_carve.h`), never the host's.
 #pragma once
 
 #include <cstdint>

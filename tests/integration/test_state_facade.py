@@ -52,15 +52,16 @@ def test_a_raw_tensor_is_not_a_state():
     descriptor, where the unbuilt kernels are refused by name.
     """
     from fsla.engine.prefill_call import PrefillContext, validate_context
-    from fsla.routing.masks import PREFILL
+    from fsla.routing.masks import PREFILL, density_of_masks
     from fsla.values import Values
     from tests.oracle.fixtures import masks_of
 
     producer, (x, v) = _producer(), _inputs()
     routes = producer(x)
     values = Values.from_projection(v)
+    masks = masks_of(routes, PREFILL)
     with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
-        validate_context(PrefillContext(routes=routes, values=values, masks=masks_of(routes, PREFILL),
+        validate_context(PrefillContext(routes=routes, values=values, masks=masks, density=density_of_masks(routes, masks),
                                         state=torch.zeros(1), want_state=True))
 
 

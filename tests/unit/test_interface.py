@@ -78,30 +78,30 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     B, T, H, d_v, hidden, w = 1, 8, 1, 32, 8, 16
     layer = build_layer(hidden_size=hidden, num_heads=H, widths=(w,), d_v=d_v, routing=_dense_routing()).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
-    routes, _values, masks = layer._produce(x)
+    routes, _values, masks, density = layer._produce(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
-    return v, routes, masks
+    return v, routes, masks, density
 
 
 def test_a_grad_bearing_prefill_is_refused_loudly():
     """The prefill has no reverse pass until the native backward is rebuilt, so a call that carries a gradient
     must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
     The same bundle without a gradient is refused by the envelope's device clause, the CPU operands' (the descriptor's device clause)."""
-    v, routes, masks = _tiny_routing(requires_grad=True)
+    v, routes, masks, density = _tiny_routing(requires_grad=True)
     values = Values.from_projection(v)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
-        fsla.prefill(routes, values, masks)
+        fsla.prefill(routes, values, masks, density)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        fsla.prefill(routes, values, masks)
+        fsla.prefill(routes, values, masks, density)
 
 
 def test_prefill_has_no_consumer_only_kwargs_to_silently_ignore():
     """`prefill`'s signature carries no CUDA-consumer-only parameter (paging, scheduling): passing one is a plain
     `TypeError`, an unknown keyword, not a case the op has to notice and refuse."""
-    v, routes, masks = _tiny_routing(requires_grad=True)
+    v, routes, masks, density = _tiny_routing(requires_grad=True)
     with pytest.raises(TypeError):
-        fsla.prefill(routes, v, masks, paging=object())
+        fsla.prefill(routes, v, masks, density, paging=object())
 
 
 def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
@@ -114,7 +114,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     an every-input-requires-grad call is ADMITTED past the gradient clause, because
     the predicate is gradient REACHABILITY and not the `requires_grad` flag.
     """
-    v, routes, _masks = _tiny_routing(requires_grad=True)
+    v, routes, _masks, _density = _tiny_routing(requires_grad=True)
     with torch.no_grad():
         assert requires_backward(v, *routes.tensors()) is False
         #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
@@ -123,7 +123,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
-    v, routes, _masks = _tiny_routing(requires_grad=False)
+    v, routes, _masks, _density = _tiny_routing(requires_grad=False)
     with torch.no_grad():
         assert "CUDA kernel" in envelope(routes.device)
 

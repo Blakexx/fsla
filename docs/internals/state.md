@@ -23,8 +23,8 @@ made mechanical.
 
 ```python
 s = fsla.state()                        # unbound
-y, s = fsla.prefill(routes, values, masks, state=s) # bound to this call's shape; s is mutated
-y, _ = fsla.prefill(routes, values, masks)  # stateless: (y, None)
+y, s = fsla.prefill(routes, values, masks, density, state=s) # bound to this call's shape; s is mutated
+y, _ = fsla.prefill(routes, values, masks, density)  # stateless: (y, None)
 ```
 
 `fsla.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in

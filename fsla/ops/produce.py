@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PRODUCER: one call from a stretch of tokens to the bundle -- the routes and the values, in the internal format.
 
-    routes, values, masks = produce_prefill(x, routing, weights)     # or produce_decode: the decode step's layout
+    routes, values, masks, density = produce_prefill(x, routing, weights)     # or produce_decode: the decode step's layout, no density
 
 The layer declares WHAT it routes (:class:`fsla.routing.producer.Routing`) and owns the weights; these two are the one primitive per
 consumer that computes the bundle from them, and the masks beside it in the layout of that consumer (:mod:`fsla.routing.masks`). The heads, the
@@ -29,7 +29,7 @@ from fsla.ops._ext import not_built
 from fsla.ops.descriptor import Descriptor, call_facts, descriptor
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.factors import RouteFactors
-from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens
+from fsla.routing.masks import DECODE, PREFILL, Masks, density_of_masks, pack_digits, pack_tokens
 from fsla.routing.producer import Routing
 from fsla.routing.projection import _packed_router_logits
 from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
@@ -67,10 +67,12 @@ def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
     return route_W.transpose(1, 2).contiguous().transpose(1, 2)
 
 
-def produce_prefill(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
-    """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks)``, the operands the prefill takes, the masks token-packed (:data:`fsla.routing.masks.PREFILL`):
+def produce_prefill(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks, torch.Tensor]:
+    """``x [B, T, hidden]`` -> ``(RouteFactors, Values, Masks, density)``, the operands the prefill takes, the masks token-packed (:data:`fsla.routing.masks.PREFILL`)
+    and the density ``[2, D]`` of those masks (:func:`fsla.routing.masks.density_of_masks`, after the solve):
     the fused kernel's on CUDA with no gradient -- not built on this line (:func:`fsla.ops._ext.not_built`) -- the composition's otherwise."""
-    return _produce(x, routing, weights, PREFILL)
+    routes, values, masks = _produce(x, routing, weights, PREFILL)
+    return routes, values, masks, density_of_masks(routes, masks)
 
 
 def produce_decode(x: torch.Tensor, routing: Routing, weights: ProducerWeights) -> tuple[RouteFactors, Values, Masks]:
@@ -195,7 +197,7 @@ def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
 def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int]:
     """The facts a call of ``kernel`` states per level: each width as its log2 (a level's width is a power of two,
     ``fsla._state.StateFormat``'s law), the write side's walk of each level (:func:`activation_walks`) where the kernel's call facts name it (decode's ``write_listed_k``, 1 where it
-    walks the level by its lists; the prefill's facts are the widths and ``levels`` alone, its weights are the masks' and no fact of the call) and ``levels``;
+    walks the level by its lists; the prefill's facts are the widths and ``levels`` alone, its densities are the call's own input and no fact of it) and ``levels``;
     a level beyond the call's depth is 0. The kernel's own call facts name how many levels its contract holds."""
     for level, width in enumerate(widths):
         if width < 1 or width & (width - 1):

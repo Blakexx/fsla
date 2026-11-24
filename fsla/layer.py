@@ -291,8 +291,8 @@ class FSLA(nn.Module):
         return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
     def _produce(self, x: torch.Tensor):
-        """One stretch of tokens into the format: ``(routes, values, masks)``, from one producer call, the masks in the
-        prefill's layout."""
+        """One stretch of tokens into the format: ``(routes, values, masks, density)``, from one producer call, the masks in the
+        prefill's layout and the density of those masks."""
         return produce_prefill(x, self.routing, self._weights(x))
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
@@ -313,9 +313,9 @@ class FSLA(nn.Module):
         prefill is refused by name here, the one place the layer would have segmented."""
         if self.memory_budget is not None:
             not_built("prefill")
-        routes, values, masks = self._produce(x)
+        routes, values, masks, density = self._produce(x)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
-        return prefill(routes, values, masks, state=state, decay=decay)
+        return prefill(routes, values, masks, density, state=state, decay=decay)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

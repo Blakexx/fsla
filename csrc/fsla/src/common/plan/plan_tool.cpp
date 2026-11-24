@@ -77,8 +77,8 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   };
   line("levels", n(c.levels));
   line("width_bits", list(c.width_bits));
-  line("write_weight", list(c.write_weight));
-  line("read_weight", list(c.read_weight));
+  line("write_density", list(c.write_density));
+  line("read_density", list(c.read_density));
   line("write_group_bits", list(c.write_group_bits));
   line("read_group_bits", list(c.read_group_bits));
   line("carve_bits", list(c.carve_bits));
@@ -219,7 +219,7 @@ std::vector<std::int64_t> parse_widths(const std::string& text) {
   return out;
 }
 
-//: THE CARVE of one call: the levels' width bits and each side's weights (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
+//: THE CARVE of one call: the levels' width bits and each side's densities (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
 void print_cta_carve(const std::string& widths_text, const std::string& write_text,
                      const std::string& read_text) {
   using namespace fsla::plan;
@@ -232,23 +232,23 @@ void print_cta_carve(const std::string& widths_text, const std::string& write_te
     return v;
   };
   const auto width = bits(widths_text, "--cta-carve");
-  const auto write = bits(write_text, "--write-weight");
-  const auto read = bits(read_text, "--read-weight");
+  const auto write = bits(write_text, "--write-density");
+  const auto read = bits(read_text, "--read-density");
   if (write.size() != width.size() || read.size() != width.size()) {
-    refuse("--cta-carve, --write-weight and --read-weight take one number a level");
+    refuse("--cta-carve, --write-density and --read-density take one number a level");
   }
 
   const int levels = static_cast<int>(width.size());
   int w[kCarveMaxLevels] = {};
-  int weight_write[kCarveMaxLevels] = {};
-  int weight_read[kCarveMaxLevels] = {};
+  int density_write[kCarveMaxLevels] = {};
+  int density_read[kCarveMaxLevels] = {};
   for (int l = 0; l < levels; ++l) {
     w[l] = static_cast<int>(width[l]);
-    weight_write[l] = static_cast<int>(write[l]);
-    weight_read[l] = static_cast<int>(read[l]);
+    density_write[l] = static_cast<int>(write[l]);
+    density_read[l] = static_cast<int>(read[l]);
   }
-  //: the carve is total (a weight is clamped into 1..256); the CTAs a head are the launch's, `units_per_head` their quotient by the carve's unit CTAs
-  const PrefillCarve c = prefill_carve(levels, w, weight_write, weight_read);
+  //: the carve is total (a density is clamped into 1..256); the CTAs a head are the launch's, `units_per_head` their quotient by the carve's unit CTAs
+  const PrefillCarve c = prefill_carve(levels, w, density_write, density_read);
   const PrefillLaunch p = prefill_launch_of(c.width_bits, c.levels);
   std::printf("{");
   print_carve_fields(c, ", ");
@@ -314,17 +314,17 @@ void print_entmax_kernel(const std::string& kernel, const Named& device_facts,
 
 int main(int argc, char** argv) {
   std::string kernel, device_text, call_text, model, grid_text, launch_text, lattice_text,
-      widths_text, cta_carve_text, write_weight_text, read_weight_text;
+      widths_text, cta_carve_text, write_density_text, read_density_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--lattice") {
       lattice_text = argv[i + 1];
     } else if (flag == "--cta-carve") {
       cta_carve_text = argv[i + 1];
-    } else if (flag == "--write-weight") {
-      write_weight_text = argv[i + 1];
-    } else if (flag == "--read-weight") {
-      read_weight_text = argv[i + 1];
+    } else if (flag == "--write-density") {
+      write_density_text = argv[i + 1];
+    } else if (flag == "--read-density") {
+      read_density_text = argv[i + 1];
     } else if (flag == "--kernel") {
       kernel = argv[i + 1];
     } else if (flag == "--device") {
@@ -349,7 +349,7 @@ int main(int argc, char** argv) {
         "usage: plan_tool --kernel decode|prefill|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
         "[--grid ...] (decode) | [--launch json] (prefill: the descriptor, or the launch's host half) | [--widths w,...] (an entmax kernel: the launch's "
         "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device) | "
-        "plan_tool --cta-carve width_bits,... --write-weight w,... --read-weight w,... (the carve of a call's widths and weights, no device)");
+        "plan_tool --cta-carve width_bits,... --write-density w,... --read-density w,... (the carve of a call's widths and densities, no device)");
   }
   if (!cta_carve_text.empty()) {
     if (!lattice_text.empty() || !kernel.empty() || !device_text.empty() || !call_text.empty()) {
@@ -368,10 +368,10 @@ int main(int argc, char** argv) {
       return out;
     };
     const auto widths = calls(cta_carve_text);
-    const auto writes = calls(write_weight_text);
-    const auto reads = calls(read_weight_text);
+    const auto writes = calls(write_density_text);
+    const auto reads = calls(read_density_text);
     if (writes.size() != widths.size() || reads.size() != widths.size()) {
-      refuse("--cta-carve, --write-weight and --read-weight take the same number of calls");
+      refuse("--cta-carve, --write-density and --read-density take the same number of calls");
     }
     for (std::size_t i = 0; i < widths.size(); ++i) print_cta_carve(widths[i], writes[i], reads[i]);
     return 0;

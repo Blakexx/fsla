@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE PREFILL'S CARVE (`csrc/fsla/src/common/plan/cta_carve.h`, docs/internals/common/plan/cta_carve.md): `plan_tool --cta-carve` prints the carve of a call's levels from their width bits and each side's
-weights alone, with no descriptor and no device. Each case below is worked by the rules by hand; the tool's answer is the case's. The carve sizes alone, over every weight pattern, are `tests/unit/test_cta_carve.py`'s; the
+densities alone, with no descriptor and no device. Each case below is worked by the rules by hand; the tool's answer is the case's. The carve sizes alone, over every density pattern, are `tests/unit/test_cta_carve.py`'s; the
 launch's host half is `tests/unit/test_prefill_launch.py`'s."""
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
 
 
 def _carve(widths: list[int], write: list[int], read: list[int]):
-    """The tool's run on levels of the given width bits and each side's weights a level."""
+    """The tool's run on levels of the given width bits and each side's densities a level."""
     join = lambda v: ",".join(map(str, v))  # noqa: E731
-    return subprocess.run([str(TOOL), "--cta-carve", join(widths), "--write-weight", join(write), "--read-weight", join(read)],
+    return subprocess.run([str(TOOL), "--cta-carve", join(widths), "--write-density", join(write), "--read-density", join(read)],
                           capture_output=True, text=True, timeout=60)
 
 
@@ -48,7 +48,7 @@ def _case(widths, write, read, carve, write_groups, read_groups, split, fold, fo
                                       ctas_per_head=counts[0], unit_ctas=counts[1], units_per_head=counts[2]))
 
 
-# Each case is worked by hand in the page (docs/internals/common/plan/cta_carve.md). A level is write weight / read weight; widths in bits.
+# Each case is worked by hand in the page (docs/internals/common/plan/cta_carve.md). A level is write density / read density; widths in bits.
 CASES = [
     _case([8, 8], [5, 256], [256, 1], [32, 16], [4, 256], [256, 1], 0, [16, 16], (64, 4), (32, 16), (128, 16, 8)),
     _case([8, 8], [1, 256], [256, 1], [32, 16], [1, 256], [256, 1], 0, [16, 16], (16, 16), (32, 16), (128, 16, 8)),
@@ -67,16 +67,16 @@ CASES = [
 
 @pytest.mark.parametrize("widths, write, read, want", CASES, ids=[f"case{n}" for n in range(len(CASES))])
 def test_the_carve_of_the_owners_cases(widths, write, read, want):
-    # The groups are each side's allowed size nearest to weight x width / 256 digits (a tie to the smaller); the apportionment gives each level at least one digit and
-    # shares the nine doublings by weight (the sum of its two weights over its holdings plus one), a tie to the larger read weight, then the lower level; the folds split along the first level not written
+    # The groups are each side's allowed size nearest to density x width / 256 digits (a tie to the smaller); the apportionment gives each level at least one digit and
+    # shares the nine doublings by weight (the sum of its two densities over its holdings plus one), a tie to the larger read density, then the lower level; the folds split along the first level not written
     # whole that holds two digits; a set is the product of the side's group clipped to the fold (write) or the CTA (read); the counts follow from the carve and the write groups.
     got = _fields(_out(_carve(widths, write, read)))
     assert got == want
 
 
-@pytest.mark.parametrize("weight, group", [(1, 1), (2, 1), (3, 4), (5, 4), (10, 4), (11, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
-def test_a_weight_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_to_the_smaller(weight, group):
-    out = _out(_carve([8], [weight], [weight]))
+@pytest.mark.parametrize("density, group", [(1, 1), (2, 1), (3, 4), (5, 4), (10, 4), (11, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
+def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_to_the_smaller(density, group):
+    out = _out(_carve([8], [density], [density]))
     assert out["write_group_bits"] == out["read_group_bits"] == [group.bit_length() - 1]
 
 
@@ -98,12 +98,12 @@ def test_a_cta_of_one_leaf_has_one_fold_and_no_split_level():
     assert (out["cta_leaves"], out["split_level"], out["folds"], out["fold_leaves"]) == (1, -1, 1, 1)
 
 
-@pytest.mark.parametrize("weights, clamped", [([0, 0], [1, 1]), ([300, 300], [256, 256]), ([0, 300], [1, 256]), ([-7, 1000], [1, 256])])
-def test_the_carve_is_total_a_weight_outside_1_to_256_is_clamped_into_it(weights, clamped):
-    # case 0's levels with a weight of 0 or 300 give the result of 1 and 256: the carve has no failure path
+@pytest.mark.parametrize("densities, clamped", [([0, 0], [1, 1]), ([300, 300], [256, 256]), ([0, 300], [1, 256]), ([-7, 1000], [1, 256])])
+def test_the_carve_is_total_a_density_outside_1_to_256_is_clamped_into_it(densities, clamped):
+    # case 0's levels with a density of 0 or 300 give the result of 1 and 256: the carve has no failure path
     for side in range(2):
-        write, read = ([*weights], [256, 1]) if side == 0 else ([5, 256], [*weights])
+        write, read = ([*densities], [256, 1]) if side == 0 else ([5, 256], [*densities])
         want = ([*clamped], [256, 1]) if side == 0 else ([5, 256], [*clamped])
         got, ref = _out(_carve([8, 8], write, read)), _out(_carve([8, 8], *want))
         assert got == ref
-        assert got["write_weight"] == want[0] and got["read_weight"] == want[1]
+        assert got["write_density"] == want[0] and got["read_density"] == want[1]

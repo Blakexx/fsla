@@ -44,7 +44,8 @@ its own sum (the decay's shares).
 the producer emits a bit per side, level, digit and token beside the rows, token-packed (bit `t % 32` of word `t // 32` at a
 digit, `[B, H, ceil(L / 32), w_l]` a level). There is no row test, no dense flag and no static width mask: a level whose
 activation has no exact zeros has an all-live mask like any other, and a digit past a level's width is the pad, dead. A mask
-that does not cover a row's nonzero digits changes the result; that is the supplier's job, and the oracle states it (`r * m`).
+that does not cover a row's nonzero digits changes the result; that is the supplier's job, and the oracle states it (`r * m`; for the prefill a zero bit is the caller's
+guarantee that the row is zero, `docs/api.md` section 2.6).
 
 An atom is an aligned rectangle in digit space (canonical order is the radix over the levels, the last minor), so per head
 

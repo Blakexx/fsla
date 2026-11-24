@@ -327,7 +327,7 @@ def test_the_owed_descriptors_are_the_prefills_calls_and_none_of_them_is_in_any_
     assert {c.descriptor for c, _ in owed} == {f"hopper_prefill_d{lv}" for lv in (1, 2, 3, 4)}
     assert all(kernels == ("prefill",) and c.kernel == "prefill" for c, kernels in owed)
     assert all(c.facts["stateful"] == (0, 1) and c.facts["tokens"][0] == 1 for c, _ in owed)
-    assert not any(name.startswith(("read_listed_", "write_listed_", "read_weight_", "write_weight_")) for c, _ in owed for name in c.facts)
+    assert not any(name.startswith(("read_listed_", "write_listed_", "read_density_", "write_density_")) for c, _ in owed for name in c.facts)
     assert registry.contexts("prefill") == [] and registry.owed("decode") == []
     assert not registry.descriptors(kernel="prefill") and not registry.descriptors(kernel="prefill", folder=registry.DEV)
     assert not any(name.startswith("hopper_prefill") for name in registry.descriptors(kernel="decode"))

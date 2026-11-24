@@ -89,14 +89,15 @@ def prefill_op(fx) -> Launch:
     """THE PREFILL AS THE OP RUNS IT: `fsla.prefill` over the cell's bundle, stateless -- the validation, the
     carry, the intra, the glue between them and the readout. A cell the envelope refuses
     raises its refusing clause at the first call."""
-    from fsla import prefill
+    from fsla import density_of_masks, prefill
     from measure.cells import realize
 
     spec = fx["cell"]
     routes, values, masks = bundle_of(spec, realize(spec))
+    density = density_of_masks(routes, masks)
 
     def run():
-        return prefill(routes, values, masks)
+        return prefill(routes, values, masks, density)
 
     run()
     return Launch(name=f"prefill|{spec.name}", call=run)
@@ -174,10 +175,10 @@ def layer_op(fx) -> Launch:
     spec, layer = fx["cell"], fx["layer"]
     _one_segment(spec, layer)
     with torch.no_grad():
-        routes, values, masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())
+        routes, values, masks, density = layer._produce(fx["x"][:, :spec.tokens].contiguous())
 
     def run():
-        return prefill(routes, values, masks)[0]
+        return prefill(routes, values, masks, density)[0]
 
     run()
     return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)

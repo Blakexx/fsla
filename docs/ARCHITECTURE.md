@@ -192,7 +192,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 ## 4. The carve, and the grains
 
 **The carry's work is partitioned by ONE descriptor, the carve**
-([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the masks' weights: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
+([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the call's densities: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
 a CARVE — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
 (their live digits a window, listed in the packets the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
@@ -202,9 +202,8 @@ read overlaps every write -- an exact-zero pair, with its exact-zero gradient, c
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
 every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
 (on hopper where they are equal too, the image then laid along the fold's own lists: MEASURED 1.3% over the divergent cell's window, [`carry_window`](lab/carry_window.md); a readout on the fold's own registers is not built). Every kernel that
-depends on the geometry derives the carve with the one rule (`cta_carve.h`) from the level widths and the masks'
-weights -- the gather pass groups its stream by it, the carry addresses by it -- so the kernels of a call agree by
-construction and none states a rule of its own. The weight is the one measured statistic a kernel keys on
+depends on the geometry derives the carve with the one rule (`cta_carve.h`) from the level widths and the call's densities -- the gather pass groups its stream by it, the carry addresses by it -- so the kernels of a call agree by
+construction and none states a rule of its own. The density is the one measured statistic a kernel keys on
 (CONSTITUTION R9): it chooses a layout among exact forms once a call and never a result, and the rule can change with
 every kernel still working for whatever it returns.
 
@@ -277,8 +276,8 @@ membership's place, its byte and its token's index. The read side has no packet:
 from the read mask, whose format carries the counts the listing needs. A carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
 pass runs in its own CTAs beside the carry's, in one grid, the stream a ring read by a unit of 16 carry CTAs (RULED 2026-11-15 and
 2026-11-23); the card's split between the two and a unit's start are not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
-[`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). Sparsity is declared, never detected: the masks are
-an input operand the pass uses blindly. No gather kernel is built on this line. Where the factor products and the tile
+[`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). A mask bit of 0 is the caller's guarantee that the entry's row is zero and a 1 guarantees nothing: the pass reads no
+row to decide what to skip. No gather kernel is built on this line. Where the factor products and the tile
 unions come from, and the masks' format on the surface, are open ([`open-work.md`](open-work.md), row A-e).
 
 ### 6.3 The carry — the inter-window term

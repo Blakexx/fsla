@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE CTA'S CARVE (`csrc/fsla/src/common/plan/cta_carve.h`, docs/internals/common/plan/cta_carve.md): `plan_tool --cta-carve` prints the carve of a call's levels from their width bits
-and each side's weights, with no GPU. The hand-worked cases are worked in their comments; the properties run over the calls of depth 1 to 4.
+and each side's densities, with no GPU. The hand-worked cases are worked in their comments; the properties run over the calls of depth 1 to 4.
 
 Run: ``bazel test //tests:cpu --test_filter=test_cta_carve``."""
 from __future__ import annotations
@@ -25,11 +25,11 @@ SPARSE = 1  # a side walks the level by its lists
 
 
 def _run(calls: list[tuple[list[int], list[int], list[int]]]) -> list[dict]:
-    """The tool's answers to calls of (width bits, write weights, read weights) a level, one process for each thousand of them (an argument has a length limit)."""
+    """The tool's answers to calls of (width bits, write densities, read densities) a level, one process for each thousand of them (an argument has a length limit)."""
     if len(calls) > 1000:
         return [out for at in range(0, len(calls), 1000) for out in _run(calls[at:at + 1000])]
     arg = lambda pick: ";".join(",".join(map(str, pick(c))) for c in calls)  # noqa: E731
-    run = subprocess.run([str(TOOL), "--cta-carve", arg(lambda c: c[0]), "--write-weight", arg(lambda c: c[1]), "--read-weight", arg(lambda c: c[2])],
+    run = subprocess.run([str(TOOL), "--cta-carve", arg(lambda c: c[0]), "--write-density", arg(lambda c: c[1]), "--read-density", arg(lambda c: c[2])],
                          capture_output=True, text=True, timeout=600)
     assert run.returncode == 0, run.stderr
     out = [json.loads(line) for line in run.stdout.splitlines()]
@@ -55,8 +55,8 @@ def _join(*levels):
 
 
 def test_a_writes_sparse_and_reads_whole_b_writes_whole_and_reads_sparse_carve_32_x_16():
-    # a level's weight is its write weight plus its read weight (each in 256ths): A 1 + 256, B 256 + 1, both 257; priority weight / (c + 1) is equal at every pair of equal holdings, and the larger READ weight
-    # (A's 256) takes the doubling, so A, B, A, B ... and the ninth is A's: 32 x 16. The groups follow from the weights (write: A 1 digit, B 256; read: A 256, B 1): the fold warpgroups split along A
+    # a level's weight is its write density plus its read density (each in 256ths): A 1 + 256, B 256 + 1, both 257; priority weight / (c + 1) is equal at every pair of equal holdings, and the larger READ density
+    # (A's 256) takes the doubling, so A, B, A, B ... and the ninth is A's: 32 x 16. The groups follow from the densities (write: A 1 digit, B 256; read: A 256, B 1): the fold warpgroups split along A
     # (its write group, 1, is under its width), 16 x 16 digits each; a token on the write side spans A's 1 x B's 16 = 16 leaves of a fold, so a fold holds 16 sets; the read side spans A's 32 x B's 1 = 32
     # leaves of the carve, 16 sets. 8 CTAs along A and 16 along B: 128 a head; B's whole write group spans 16 CTAs, so 16 CTAs read one value stream: 8 units.
     out = _one(*_join(A, B))
@@ -75,18 +75,18 @@ def test_a_writes_sparse_and_reads_whole_b_writes_whole_and_reads_sparse_carve_3
     (_join(([8], [5], [WHOLE]), B), [32, 16]),
 ])
 def test_the_coordinators_cases(groups, sizes):
-    # A sparse / whole against B whole / sparse weigh alike (257 each): equal priority at every step, so the larger read weight takes the doubling; B sparse / whole against A whole / sparse puts
-    # the read tie-break on B. Whole / whole twice ties in both and the lower level takes the ninth doubling. A weight of 5 (a measured sparsity of about 5 digits of 256) outweighs 1 by 4 and changes no size here.
+    # A sparse / whole against B whole / sparse weigh alike (257 each): equal priority at every step, so the larger read density takes the doubling; B sparse / whole against A whole / sparse puts
+    # the read tie-break on B. Whole / whole twice ties in both and the lower level takes the ninth doubling. A density of 5 (a measured sparsity of about 5 digits of 256) outweighs 1 by 4 and changes no size here.
     assert _sizes(_one(*groups)) == sizes
 
 
-def test_a_read_weight_decides_a_tie_and_the_lower_level_a_tie_of_both():
+def test_a_read_density_decides_a_tie_and_the_lower_level_a_tie_of_both():
     assert _sizes(_one(*_join(([8], [WHOLE], [SPARSE]), ([8], [SPARSE], [WHOLE])))) == [16, 32]
     assert _sizes(_one(*_join(C, C))) == [32, 16]
 
 
 @pytest.mark.parametrize("write", [1, 5])
-def test_c_and_d_of_small_weights_take_no_leaf_from_a_and_b(write):
+def test_c_and_d_of_small_densities_take_no_leaf_from_a_and_b(write):
     # C and D weigh write + 1 over 256 at the most 6 against A's and B's 257 at (c + 1) = 9: A and B take what they can, C and D stay at one digit.
     c = ([8], [write], [SPARSE])
     out = _one(*_join(A, B, c, c))

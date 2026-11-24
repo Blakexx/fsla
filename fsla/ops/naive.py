@@ -146,7 +146,9 @@ def naive_fsla(
     (:class:`~fsla.routing.masks.Masks`, either layout), and the oracle computes with ``r * m`` -- every level times its
     bits, in fp64, before anything else reads it (the leaf products, the decay clock's shares). A digit under a zero
     bit contributes nothing and its coefficient's gradient is exactly zero; the masks are saved by the backward and
-    carry no gradient. ``None`` is every bit set. The oracle takes NO plan: a plan changes at most rounding, and the
+    carry no gradient. ``None`` is every bit set. For masks that keep the caller's guarantee (a zero bit over a zero
+    row, as the library's helpers build them) ``r * m`` is the rows alone. The prefill's density is no argument of the
+    oracle: it changes no defined result. The oracle takes NO plan: a plan changes at most rounding, and the
     oracle is the result the data fixes.
 
     Returns ``(y, final_state)`` with ``y: [B,T,H,d_v]`` and, if

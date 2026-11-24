@@ -21,11 +21,12 @@ import torch
 
 @dataclass(frozen=True, slots=True)
 class PrefillOperands:
-    """The prefill's data: the bundle, the values, the masks, the decay, and the state's entry plane, page table and the plane it stores into."""
+    """The prefill's data: the bundle, the values, the masks, the density, the decay, and the state's entry plane, page table and the plane it stores into."""
 
     routes: object
     values: object
     masks: object
+    density: torch.Tensor
     decay: object
     state_in: torch.Tensor | None
     page_table: torch.Tensor | None

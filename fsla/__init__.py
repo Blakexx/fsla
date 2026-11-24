@@ -8,11 +8,12 @@ decides which sub-states each token reads and writes. That reduction IS this API
 user who knows linear attention meets exactly ONE new concept here, the feature map,
 and everything else is linear attention's own contract.
 
-    y, state = fsla.prefill(routes, values, masks, state=state, decay=decay)
+    y, state = fsla.prefill(routes, values, masks, density, state=state, decay=decay)
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
--- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; the op computes with ``r * m``),
+-- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero),
+``density`` is how full each level is (``[2, D]``, built by ``fsla.masks_and_density`` or ``fsla.density_of_masks``; it chooses how the work is laid out and changes no result),
 the ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial. The call carries only its inputs: it builds its own descriptor
 and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``, whose growth verdict the
 caller owns (``fsla.growth_pending``, ``fsla.admit_growth``; ``fsla.pool_headroom`` and ``fsla.refill_pool`` at leisure). The layer DECLARES its routing -- the levels, each carrying its own
@@ -34,7 +35,7 @@ and the op decides how it runs, inside the call.
 |---|---|---|
 | op | `prefill`, `decode_step_gated` | STABLE, semver-major to break |
 | decode growth | `growth_pending`, `admit_growth`, `pool_headroom`, `refill_pool` | STABLE |
-| feature map | `RouteFactors`, `Masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
+| feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `FSLA`, `LayerContinuation` | STABLE |
@@ -55,7 +56,7 @@ from fsla.layer import FSLA, LayerContinuation
 from fsla.ops.naive import naive_fsla
 from fsla.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from fsla.routing.factors import RouteFactors
-from fsla.routing.masks import Masks
+from fsla.routing.masks import Masks, density_of_masks, masks_and_density
 from fsla.routing.producer import (
     Routing,
     dense_routing,
@@ -89,6 +90,8 @@ __all__ = [
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Masks",
+    "masks_and_density",
+    "density_of_masks",
     "Values",
     "Routing",
     "dense_routing",
