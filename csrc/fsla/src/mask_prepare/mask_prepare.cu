@@ -96,13 +96,16 @@ __device__ __forceinline__ std::uint32_t word_of(const Raw<U>& raw) {
 
 //: A WORD FINISHED -- see docs/internals/mask_prepare/mask_prepare.md#finish
 template <int U, int LANES>
-__device__ __forceinline__ void finish(const Raw<U>& raw, std::uint32_t keep, std::uint32_t* word,
-                                       std::uint16_t* count, std::uint32_t& before) {
+__device__ __forceinline__ void finish(const Raw<U>& raw, std::uint32_t keep, bool store,
+                                       std::uint32_t* word, std::uint16_t* count,
+                                       std::uint32_t& before) {
   std::uint32_t w = word_of<U>(raw) & keep;
 #pragma unroll
   for (int d = 1; d < LANES; d <<= 1) w |= __shfl_xor_sync(0xffffffffu, w, d);
-  if constexpr (U * LANES > 1) word[0] = w;
-  count[0] = static_cast<std::uint16_t>(before);
+  if (store) {
+    if constexpr (U * LANES > 1) word[0] = w;
+    count[0] = static_cast<std::uint16_t>(before);
+  }
   before += static_cast<std::uint32_t>(__popc(w));
 }
 
@@ -115,9 +118,10 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   const std::int64_t unit = std::int64_t{cta} * kThreads + threadIdx.x;
   if ((std::int64_t{cta} * kThreads) >> ub >= windows) return;
 
-  //: a thread past the level-side's last window walks its first: it stores what that window's own thread stores
+  //: a thread past the level-side's last window walks its first and stores nothing; of a group's lanes the first stores
   const std::int64_t at_window = (unit >> ub) < windows ? unit >> ub : 0;
   const int u = static_cast<int>(unit) & ((1 << ub) - 1), group = u >> (GB - kUnitBits);
+  const bool store = (unit >> ub) < windows && (u & (kLanes - 1)) == 0;
   const int window = static_cast<int>(at_window % a.windows);
   const std::int64_t first_word = (at_window / a.windows) * a.words + std::int64_t{window} * kWords;
   const int have = a.words - window * kWords < kWords ? a.words - window * kWords : kWords;
@@ -145,14 +149,14 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
     for (int i = 0; i < kHeld; ++i) {
       //: a word finished, and the load `kHeld` words on issued into the registers it left; a word past the mask's last reads as zero
       const std::uint32_t keep = j + i < have ? ~0u : 0u;
-      finish<kUnit, kLanes>(held[i], keep, word + i * groups, count + i * groups, before);
+      finish<kUnit, kLanes>(held[i], keep, store, word + i * groups, count + i * groups, before);
       load<kUnit>(held[i], j + i + kHeld < have ? row + (i + kHeld) * stride : at);
     }
     row += kHeld * stride;
     word += kHeld * groups;
     count += kHeld * groups;
   }
-  totals[group] = static_cast<std::uint16_t>(before);
+  if (store) totals[group] = static_cast<std::uint16_t>(before);
 }
 
 //: ONE GRID OVER THE CALL'S MASKED LEVEL-SIDES -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
@@ -179,6 +183,13 @@ std::int64_t ctas_of(std::int64_t heads, std::int64_t windows, int width_bits) {
   return ((heads * windows << width_bits) + kThreads - 1) / kThreads;
 }
 
+//: an operand the kernel reads as a contiguous array of `dtype` on the call's device
+void check_operand(const Tensor& t, Dtype dtype, int device, const char* name) {
+  STD_TORCH_CHECK(t.is_cuda() && t.get_device_index() == device, name, " is on the density's card");
+  STD_TORCH_CHECK(t.scalar_type() == dtype, name, " has the wrong dtype, got ", t.scalar_type());
+  STD_TORCH_CHECK(t.is_contiguous(), name, " is contiguous");
+}
+
 template <class Bt>
 void launch_at(const Args& args, const Tensor& density, Tensor& workspace) {
   auto stream = current_stream();
@@ -199,6 +210,10 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   STD_TORCH_CHECK(
       density.dim() == 2 && density.size(0) == 2 && density.size(1) <= plan::kCarveMaxLevels,
       "mask_prepare's density is uint8 [2, D], D at most 4");
+  STD_TORCH_CHECK(density.is_cuda(), "mask_prepare's density is on a card");
+  const int device = density.get_device_index();
+  check_operand(density, Dtype::Byte, device, "mask_prepare's density");
+  check_operand(workspace, Dtype::Byte, device, "mask_prepare's workspace");
 
   Args args{};
   args.levels = static_cast<int>(density.size(1));
@@ -209,6 +224,7 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   for (std::size_t i = 0; i < masks.size(); ++i) {
     const Tensor& mask = masks[i];
     const int s = static_cast<int>(slots[i]);
+    check_operand(mask, Dtype::Int, device, "a mask");
     STD_TORCH_CHECK(
         s >= 0 && s < kSides && s % plan::kCarveMaxLevels < args.levels && args.mask[s] == nullptr,
         "mask_prepare's slots are distinct level-sides of the density's depth");
@@ -239,7 +255,6 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   STD_TORCH_CHECK(ctas <= INT32_MAX, "mask_prepare's grid is at most 2^31 - 1 CTAs");
   args.first_cta[kSides] = static_cast<int>(ctas);
 
-  const int device = density.get_device_index();
   const plan::Named call = {{"width", widest}, {"levels", args.levels}};
   plan::descriptor_of<plan::mask_prepare::Kernel>(device, call);
   const DeviceGuard guard(device);

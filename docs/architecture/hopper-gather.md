@@ -76,8 +76,8 @@ distribute load"): a coefficient is one carry CTA's, and that CTA forms it.
 - THE READ SIDE IS NOT THE GATHER'S: a carry CTA lists its own readers from the prepared read-side words and counts
   ([`hopper-carry.md`](hopper-carry.md#the-packets)).
 - A WINDOW'S COUNT of a block's packets is the call's own data, decided inside the call
-  ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)); whether a window's total a group is stored beside the prepared
-  counts is NOT DECIDED.
+  ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)); a window's total a group is stored beside the prepared
+  counts ([the pass](#the-mask-preparation-pass)).
 - WHAT SAYS WHERE A TOKEN GOES is the prepared write-side words and counts (2026-11-24): the count before the token's
   word plus the popcount of the word's lower bits; the gather reads no mask and no data to decide a walk.
 - NOT THE FORM, each measured: a list a digit with its value runs, and coefficient runs in the step's format laid here
@@ -138,7 +138,6 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
 3. The split of a card's multiprocessors between gather CTAs and the carry's units, and a unit's start.
 4. What the ring does on a card whose cache does not hold it: the token list cost the carry the same read before or
    not while its boxes read it together; a ring's waits and a denser cell's bytes are not measured.
-5. The mask-preparation pass's open points, listed in [its section](#the-mask-preparation-pass).
 
 ## Blackwell
 

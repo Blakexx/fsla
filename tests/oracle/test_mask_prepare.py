@@ -144,3 +144,23 @@ def test_the_ops_byte_count_is_the_references_layout():
     widths, heads = [2] * reference.SIDES, [0] * reference.SIDES
     widths[0], heads[0], widths[5], heads[5] = 64, 6, 16, 4
     assert extension().mask_prepare_bytes([w.bit_length() - 1 for w in widths], heads, 32) == reference.layout(widths, heads, 1)[1]
+
+
+@pytest.mark.parametrize(
+    ("spoil", "words"),
+    [
+        (lambda mask: mask.float(), "wrong dtype"),
+        (lambda mask: mask.repeat(1, 1, 1, 2)[..., ::2], "is contiguous"),
+        (lambda mask: mask.cpu(), "density's card"),
+    ],
+    ids=["a float mask", "a strided mask", "a host mask"],
+)
+def test_an_operand_the_kernel_cannot_read_is_refused_by_name(spoil, words):
+    """The op reads a mask as a contiguous int32 array on the density's card and refuses any other, naming what is wrong."""
+    from fsla.ops._ext import extension
+
+    mask = live_mask(1, 1024, 1, 16, 0.25, seed=0)
+    density = density_of({0: byte_for(4, 16)}, 1)
+    workspace = torch.zeros(reference.bytes_of(bundle({0: mask}, {}, 1)), dtype=torch.uint8, device="cuda")
+    with pytest.raises(RuntimeError, match=words):
+        extension().mask_prepare([spoil(mask)], [0], density, workspace)

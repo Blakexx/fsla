@@ -30,18 +30,16 @@ group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width /
 - a thread a (window, group) at groups of 1, 4 and 16 digits: its unit is the group, 1, 4 or 16 digits, `Raw<U>` holding them as loaded (a word at one digit, 16-byte lines from 4);
 - a thread a (window, 16 digits) at groups of 32 to 256: its unit is 16 digits and the group's `1 << (GB - 4)` lanes (2 to 16, adjacent threads of a warp) OR their words by warp shuffle, in `finish`.
 
-A thread walks its window's 32 words in order, TWO WORDS' LOADS HELD: the first two words' loads are issued before either is read, and each trip finishes a word and issues the load two words on into the registers that word left, so
-two loads are in flight through the walk (`#pragma unroll 1` over word pairs). Per word it stores, at its group's place in the block, the group's word (where the group is more than one digit), the count of the group's live tokens of the window before the
+A thread walks its window's 32 words in order with ITS LOADS HELD AHEAD: `kHeld` words' loads are issued before any is read -- 4 at one digit a thread, 2 at more -- and each trip finishes `kHeld` words, issuing as it finishes one the load `kHeld` words on into the registers that word left, so
+`kHeld` loads are in flight through the walk (`#pragma unroll 1` over the trips). With two words held at one digit a thread the assembler gate found a load read in the trip that issued it; with four it finds none. Per word it stores, at its group's place in the block, the group's word (where the group is more than one digit), the count of the group's live tokens of the window before the
 word (`before`) and adds the word's popcount; at the end it stores the window's total.
 
 - A word past the mask's last (the window is the mask's last and ragged, `have < 32`) is read as zero: its load re-reads the thread's first word (an address inside the mask) and the word's `keep` is zero, so there is no branch and no read past the mask.
-- A thread past the level-side's last window (the last CTA of the level-side) walks the first window instead, so EVERY LANE OF A GROUP STORES THE VALUES ITS WINDOW'S OWN THREAD STORES, at the same addresses: the walk has no branch on who the thread is.
-- The group's lanes all store the same word, count and total; the stores are idempotent.
+- ONE THREAD WRITES EACH ADDRESS (`store`). A thread past the level-side's last window (in the level-side's last CTA) walks the first window instead and stores nothing, and of a group's lanes only the first stores. Every lane still loads and shuffles, so a warp's shuffles are whole.
 
 ## <a id="finish"></a>A word finished
 
-`finish<U, LANES>` takes the thread's loaded digits of a word: `word_of` ORs the unit's digits' words, the `keep` mask zeroes a word past the mask's last, the lanes OR across the warp by `__shfl_xor_sync`
-(`LANES` is 1 up to a group of 16 digits), the group's word is stored (not at a group of one digit, where the word is the mask's own), the count stored is `before`, and `before` grows by the word's popcount.
+`finish<U, LANES>` is the one place a word's stores are made. Two things in it are constraints and not choices: the shuffle runs on every lane, storing or not (a lane that sat out would leave `__shfl_xor_sync`'s full mask naming a lane that is not there), and the stores are under `store`, so that no two threads write one address (KERNEL_STANDARDS, the sanitizer lane: a benign race is a race).
 
 ## What is NOT measured
 

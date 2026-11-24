@@ -158,8 +158,8 @@ its real signature, shared-memory tenants and barriers, the composition correct 
 time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
 1. The prefill launch function (its carve, units and window are built: [`internals/common/plan/prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the carve, the folds' split, the units, the window, the grid, the packets'
-   capacities and the ring's size, from the descriptor's facts alone, and the workspace's layout (where the prepared
-   words and counts sit in it is NOT DECIDED).
+   capacities and the ring's size, from the descriptor's facts alone, and the workspace's layout (the prepared
+   words and counts' place in it is built: [`internals/common/plan/mask_prepare_layout.md`](../internals/common/plan/mask_prepare_layout.md)).
 2. The mask-preparation pass ([`hopper-gather.md`](hopper-gather.md#the-mask-preparation-pass)).
 3. The gather from the prepared write-side words and counts ("gather first isnt it simple and an easy confimration of
    risk"): fold packets through the ring ([`hopper-gather.md`](hopper-gather.md)), and what of
