@@ -688,6 +688,9 @@ void fsla_decode_ledger_bind(const std::optional<Tensor>& ledger) {
   g_phase_ledger_ctas = ledger->size(0);
 }
 
+//: FIXED by the driver: the dynamic shared memory a launch may take without opting in
+constexpr std::int64_t kDefaultDynamicSmem = 48 * 1024;
+
 void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, const DecodeParams& p) {
   const plan::DecodeArm& arm = launch.arm;
   const plan::DecodeArgs& args = launch.args;
@@ -704,15 +707,17 @@ void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, cons
                         DecodePlan<kB>::kThreads);
         auto kernel =
             &detail::decode_step_kernel<::denseref::arch::BuildTag<kB>, kDv, kLevels, kDecay>;
-        //: the step's shared memory is the kernel's layout on this card; the call's rows and tables go in what it leaves
+        //: the step's shared memory is the kernel's layout on this card; the launch reserves it up to the call's last word -- see docs/internals/decode/decode.md#smem
         using Smem = detail::DecodeSmem<::denseref::arch::BuildTag<kB>, kDv>;
         constexpr std::int64_t kStep = Smem::template count<detail::StepWords>;
-        STD_TORCH_CHECK(launch.layout.step_words <= kStep,
-                        plan::decode_smem_refusal(launch, kStep));
-        constexpr int kShared = static_cast<int>(Smem::bytes);
-        FSLA_CUDA_CHECK(
-            cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kShared));
-        kernel<<<dim3(p.ctas), args.threads, kShared, stream>>>(p);
+        const std::int64_t words = launch.layout.step_words;
+        STD_TORCH_CHECK(words <= kStep, plan::decode_smem_refusal(launch, kStep));
+        const std::int64_t smem = Smem::template reserved_to<detail::StepWords>(words);
+        if (smem > kDefaultDynamicSmem) {
+          FSLA_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                               static_cast<int>(smem)));
+        }
+        kernel<<<dim3(p.ctas), args.threads, static_cast<size_t>(smem), stream>>>(p);
       }
     });
   };

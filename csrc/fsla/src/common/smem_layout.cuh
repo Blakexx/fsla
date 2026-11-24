@@ -141,6 +141,16 @@ struct SmemLayout {
     return at;
   }
 
+  //: the bytes a launch reserves for a call that uses `used` elements of the tile named `Tag`, the last with a share: what a call does not reserve stays the SM's cache -- see docs/internals/common/smem_layout.md#reserve
+  template <class Tag>
+  static constexpr std::int64_t reserved_to(std::int64_t used) {
+    constexpr std::int64_t each[kTiles] = {reserved_bytes<Tiles>...};
+    static_assert(offset<Tag>() + each[place<Tag>()] == bytes,
+                  "SmemLayout: only the last tile with a share is reserved in part");
+    const std::int64_t held = used * static_cast<std::int64_t>(sizeof(type<Tag>));
+    return offset<Tag>() + ((held + kAlign - 1) & ~(kAlign - 1));
+  }
+
   //: what the launch reserves of the CTA's shared memory
   __device__ __forceinline__ static unsigned char* base() {
     extern __shared__ __align__(16) unsigned char fsla_shared_memory[];
@@ -208,6 +218,7 @@ static_assert(L::budget == 65536 && S::budget == 32256, "a lone CTA reserves the
 static_assert(2 * (Proof<Large, 2>::budget + 1024) == 66560, "two CTAs' budgets fill the SM");
 static_assert(S::own_bytes == 400 && S::offset<Ring>() == 0, "a fixed tile is its own object");
 static_assert(S::offset<Panel>() == S::tile_bytes<RingTile>, "shares follow shares");
+static_assert(S::reserved_to<Panel>(9) == S::offset<Panel>() + 32, "a call reserves what it uses");
 
 }  // namespace smem_proof
 

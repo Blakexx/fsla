@@ -5,8 +5,8 @@ facts that are able to be uniformly switched on"; the card's shared memory an SM
 from ("it should be smem per sm, and we service everything from. That, including how many CTAs"), and the budget "can
 just be the whole card". FACTS IN THE TEMPLATE, DECISIONS IN THE KERNEL: the card's facts reach a kernel as constants
 of its build (`Bt::traits.caps`, generated from the registry's device parts), each branch of a kernel declares its
-shared memory once through `SmemLayout`, and the host decides nothing about it: the launch reserves `bytes`, read off
-the same type.
+shared memory once through `SmemLayout`, and the host decides nothing about it: the launch reserves what the same type states (`bytes`, or `reserved_to`
+where the last tile is addressed at run time).
 
 ## <a id="layout"></a>A layout
 
@@ -27,6 +27,14 @@ object.
   covers both (`own_bytes` and `bytes`).
 - <a id="rest"></a>`Rest<Tag, T>`: all the budget leaves, one part of it, with no least: a tile whose elements a call
   addresses at run time, the call's need checked against `count<Tag>` at the seam.
+- <a id="reserve"></a>A LAUNCH RESERVES WHAT THE CALL USES (`reserved_to<Tag>(used)`): where the last tile with a share is
+  addressed at run time, the launch reserves the layout up to the call's last element, not the whole tile (any other
+  tile named there does not compile). THE LAYOUT IS STILL THE CARD'S: the tile's capacity and every offset are
+  compiled, and only how far the launch reserves follows the call. Why: decode's step reserving its whole layout,
+  nearly all of an SM's shared memory, ran at 1.02 to 1.04 of the time of the step that reserved its call's need, at
+  two levels of 256 digits on an H100; reserving up to the call's last word it ran at 0.99 to 1.01 (two libraries, each
+  in its own process, interleaved, 24 November 2026). On that card the first-level cache and the shared memory are one
+  memory, so that the cache is what the larger reservation took is LIKELY; no counter was read, so it is NOT SHOWN.
 - <a id="share"></a>`Share<Tag, T, LEAST, WEIGHT>`: at least `LEAST` elements, and `WEIGHT` parts of what the budget
   leaves once every tile's least is placed (dealt in whole 16-byte steps). A share is how a layout ADAPTS: the same
   source gives a deeper ring on a card with more shared memory and a shallower one on a card with less. Code reads
