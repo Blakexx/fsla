@@ -214,7 +214,7 @@ values': both bf16, the router GEMM's bf16 output and the stored form ([`factor.
 
 ## <a id="smem-slot-alias"></a>6. HAZARD — the support-word staging aliases the sort scratch
 
-The `__shared__` slot is sized `max(SORT_BYTES, STAGE_BYTES)` per PHYSICAL warp and
+The forward's slot (`forward_slot_bytes`; a tile of `ForwardSmem`, the kernel's shared-memory layout, [`../common/smem_layout.md`](../common/smem_layout.md)) is sized the larger of the sort's bytes and the stage's per PHYSICAL warp and
 serves both purposes in sequence. **No barrier is needed before the staging write**,
 and that is what gets the whole kernel down to ONE `__syncthreads`: each physical
 warp writes only into ITS OWN slot, and its own sorts are already retired
@@ -224,11 +224,11 @@ Introducing a shared slot, widening one warp's write past its slot, or letting a
 warp read another's slot before the barrier all reintroduce a race the compiler will
 not flag.
 
-`SLOT` is `RAW_SLOT` rounded up to 16 B so warp `w`'s slot stays 16 B aligned:
+`SLOT` is that size rounded up to 16 B so warp `w`'s slot stays 16 B aligned:
 `WarpMergeSort::TempStorage` is `4 + 4*W_PAD` bytes, i.e. NOT a multiple of its own
 alignment.
 
-<a id="sort-bytes"></a><a id="kslotbytes"></a>`SORT_BYTES` is `RowSort<LW, IPT>::kSlotBytes` (§6.1), shared bytes
+<a id="sort-bytes"></a><a id="kslotbytes"></a>The sort's bytes are `RowSort<LW, IPT>::kSlotBytes` (§6.1), shared bytes
 per PHYSICAL warp, which is **zero** for the register network. At `W_PAD <= 128` the slot is therefore the
 staging alone and the alias is vacuous; at `W_PAD = 256` it is the arrangement above,
 unchanged.

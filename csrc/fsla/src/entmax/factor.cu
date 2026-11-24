@@ -17,6 +17,7 @@
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
+#include "common/smem_layout.cuh"
 #include "common/arm_switch.cuh"
 #include "entmax.cuh"
 #include "factor.cuh"
@@ -38,22 +39,34 @@ namespace detail {
 // ---------------------------------------------------------------------------
 // FORWARD -- the threshold-after-sort solve
 // ---------------------------------------------------------------------------
+//: THE FORWARD'S SLOT, a warp's: the sort's bytes or the stage's, whichever is more -- see docs/internals/entmax/factor.md#sort-bytes
+template <int LW, int IPT>
+constexpr int forward_slot_bytes() {
+  const int sort = RowSort<LW, IPT>::kSlotBytes;
+  const int stage = LW * IPT * static_cast<int>(sizeof(uint32_t));
+  return ((sort > stage ? sort : stage) + 15) & ~15;
+}
+
+struct ForwardSlots;
+
+//: THE FORWARD'S SHARED MEMORY: a slot a warp, on a card whose SM its `kMinBlocks` CTAs share
+template <class Bt, int LW, int IPT>
+using ForwardSmem =
+    SmemLayout<Bt, EntmaxPlan<Bt::build>::kMinBlocks,
+               Fixed<ForwardSlots, char, BLOCK_WARPS * forward_slot_bytes<LW, IPT>()>>;
+
 template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void
 factor_forward_kernel(const LogitT* __restrict__ logits, OutT* __restrict__ values,
                       OutT* __restrict__ values_second, int32_t* __restrict__ support_words,
                       int tokens, int heads, LevelTable table, Strides sz, Strides sv, Strides sv2,
                       Strides ssup) {
-  constexpr int W_PAD = LW * IPT;
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
 
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias -- see docs/internals/entmax/factor.md#sort-bytes
-  constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
-  constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
-  constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
-  constexpr int SLOT = (RAW_SLOT + 15) & ~15;
-  __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
+  constexpr int SLOT = forward_slot_bytes<LW, IPT>();
+  char* const smem = ForwardSmem<Bt, LW, IPT>::template get<ForwardSlots>();
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
@@ -449,7 +462,8 @@ void launch_factor_forward_at(const Tensor& logits, Tensor& values,
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
-  factor_forward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
+  const auto kernel = factor_forward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT>;
+  kernel<<<grid, BLOCK_THREADS, ForwardSmem<Bt, LW, IPT>::bytes, stream>>>(
       (const LogitT*)logits.data_ptr(), (OutT*)values.data_ptr(), ptr_or_null<OutT>(values_second),
       support.mutable_data_ptr<int32_t>(), tokens, heads, table, five_logits(logits, heads),
       five(values), five_or_zero(values_second), five(support));

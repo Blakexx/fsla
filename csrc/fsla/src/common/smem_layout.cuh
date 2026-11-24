@@ -1,5 +1,5 @@
 // THE SHARED-MEMORY LAYOUT (docs/internals/common/smem_layout.md): a kernel's shared memory declared once, as named tiles
-// sized from the card's budget at compile time. No kernel states a size of its own or declares shared memory itself.
+// sized from the card's budget at compile time, so that a kernel states no size of its own.
 #pragma once
 
 #include <cstdint>
@@ -34,10 +34,10 @@ struct SmemLayout {
   static constexpr int kTiles = static_cast<int>(sizeof...(Tiles));
   static constexpr std::int64_t kAlign = 16;
 
-  //: one CTA's budget: the SM's shared memory over the CTAs that share it, and no more than a CTA may reserve
-  static constexpr std::int64_t per_cta = Bt::traits.caps.smem_per_sm / CTAS;
-  static constexpr std::int64_t budget =
-      per_cta < Bt::traits.caps.smem_per_cta_optin ? per_cta : Bt::traits.caps.smem_per_cta_optin;
+  //: one CTA's budget: the SM's shared memory over the CTAs that share it, less what the card keeps of each CTA's
+  static constexpr std::int64_t kept =
+      Bt::traits.caps.smem_per_sm - Bt::traits.caps.smem_per_cta_optin;
+  static constexpr std::int64_t budget = Bt::traits.caps.smem_per_sm / CTAS - kept;
 
   template <class Tile>
   static constexpr std::int64_t element = static_cast<std::int64_t>(sizeof(typename Tile::type));
@@ -55,7 +55,7 @@ struct SmemLayout {
 
   template <class Tile>
   static constexpr std::int64_t extra_bytes =
-      Tile::weight == 0 ? 0 : (spare * Tile::weight / weights) & ~(kAlign - 1);
+      Tile::weight == 0 ? 0 : (spare * Tile::weight / (weights == 0 ? 1 : weights)) & ~(kAlign - 1);
 
   template <class Tile>
   static constexpr std::int64_t tile_bytes = least_bytes<Tile> + extra_bytes<Tile>;
@@ -66,31 +66,49 @@ struct SmemLayout {
   //: the bytes the launch reserves
   static constexpr std::int64_t bytes = (std::int64_t{0} + ... + tile_bytes<Tiles>);
 
-  //: the place of the tile named `Tag` among the tiles; a name no tile has, or two have, does not compile
+  //: the place of the tile named `Tag` among the tiles, -1 where no tile or more than one has the name
   template <class Tag>
   static constexpr int index() {
-    int at = -1, i = 0, found = 0;
-    ((std::is_same_v<Tag, typename Tiles::tag> ? (at = i, ++found) : 0, ++i), ...);
+    constexpr bool named[kTiles] = {std::is_same_v<Tag, typename Tiles::tag>...};
+    int at = -1, found = 0;
+    for (int i = 0; i < kTiles; ++i) {
+      if (named[i]) {
+        at = i;
+        ++found;
+      }
+    }
     return found == 1 ? at : -1;
   }
 
+  //: `index`, where exactly one tile has the name: any other name does not compile
   template <class Tag>
-  using type = std::tuple_element_t<index<Tag>(), std::tuple<typename Tiles::type...>>;
+  static constexpr int place() {
+    static_assert(index<Tag>() >= 0, "SmemLayout: exactly one tile has this name");
+    return index<Tag>();
+  }
+
+  template <class Tag>
+  using type = std::tuple_element_t<place<Tag>(), std::tuple<typename Tiles::type...>>;
 
   //: the elements the tile named `Tag` holds on this card
   template <class Tag>
-  static constexpr std::int64_t count =
-      (std::int64_t{0} + ... + (std::is_same_v<Tag, typename Tiles::tag> ? tile_count<Tiles> : 0));
+  static constexpr std::int64_t counted() {
+    constexpr std::int64_t each[kTiles] = {tile_count<Tiles>...};
+    return each[place<Tag>()];
+  }
+
+  template <class Tag>
+  static constexpr std::int64_t count = counted<Tag>();
 
   template <class Tag>
   static constexpr std::int64_t offset() {
     constexpr std::int64_t each[kTiles] = {tile_bytes<Tiles>...};
     std::int64_t at = 0;
-    for (int i = 0; i < index<Tag>(); ++i) at += each[i];
+    for (int i = 0; i < place<Tag>(); ++i) at += each[i];
     return at;
   }
 
-  //: THE CTA'S SHARED MEMORY: declared here and nowhere else
+  //: THE CTA'S SHARED MEMORY, declared for every kernel that lays it out here
   __device__ __forceinline__ static unsigned char* base() {
     extern __shared__ __align__(16) unsigned char fsla_shared_memory[];
     return fsla_shared_memory;
@@ -108,12 +126,12 @@ namespace smem_proof {
 //: two cards that differ in shared memory alone: the layout below must fit both, and give the larger card more
 struct Large {
   static constexpr ::denseref::arch::Traits traits = {
-      {}, ::denseref::arch::Caps{.smem_per_sm = 65536, .smem_per_cta_optin = 65536}};
+      {}, ::denseref::arch::Caps{.smem_per_sm = 66560, .smem_per_cta_optin = 65536}};
 };
 
 struct Small {
   static constexpr ::denseref::arch::Traits traits = {
-      {}, ::denseref::arch::Caps{.smem_per_sm = 32768, .smem_per_cta_optin = 32768}};
+      {}, ::denseref::arch::Caps{.smem_per_sm = 33280, .smem_per_cta_optin = 32256}};
 };
 
 struct Table;
@@ -130,7 +148,8 @@ static_assert(L::bytes <= L::budget && S::bytes <= S::budget, "a layout fits its
 static_assert(L::count<Table> == 100 && S::count<Table> == 100, "a fixed tile is the same");
 static_assert(L::count<Ring> > S::count<Ring>, "a share is larger on the larger card");
 static_assert(S::count<Ring> > 2 && S::count<Panel> > 8, "a share is above its least");
-static_assert(Proof<Large, 2>::budget == S::budget, "the CTAs an SM divide the budget");
+static_assert(L::budget == 65536 && S::budget == 32256, "a lone CTA reserves the card's limit");
+static_assert(2 * (Proof<Large, 2>::budget + 1024) == 66560, "two CTAs' budgets fill the SM");
 static_assert(S::offset<Ring>() == 400, "a tile's offset is the bytes before it");
 
 }  // namespace smem_proof

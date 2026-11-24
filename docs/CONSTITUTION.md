@@ -88,7 +88,8 @@ across the ranges the descriptors state ("Fail to compile means it couldnt adapt
 to the template parameters which the descriptor gives the ranges of valid values for"): a build that fails names a
 card the layout cannot serve. The rule is general and not shared memory's alone ("it's not just about smem, this is a
 general thing"). The host decides none of it: a launch reads its grid, its threads and its bytes off the same
-functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)).
+functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)). NOT YET SO for decode
+(R12), and the lints that refuse the hand-written forms are not built.
 
 ONE ENTRY A KERNEL, BLIND TO ITS IMPLEMENTATION. A kernel's caller sees one interface: the entry finds the device's card
 from its tensors' device and selects the family's schedule and the atoms' instructions behind it; the caller passes no
@@ -159,9 +160,13 @@ per-level widths and the leaf order are runtime addressing; the window and its t
 <a id="r12"></a>
 ## R12. Shape compile-time, addressing runtime
 
-Only the register shape -- the plan's rows, factors and channels a warp holds -- is compiled. Every shared-memory
-tenant is launch-sized from the descriptor; residency is asserted at the seam as a refusal; no runtime trip count sits
-in a register-shaped loop; shared memory is never max-sized.
+The register shape -- the plan's rows, factors and channels a warp holds -- is compiled, and so is the shared-memory
+layout: each branch of a kernel sizes its shared-memory tenants at compile time from the card's budget, through the one
+layout ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)), and may hold the whole of what its CTA
+can reserve (Blake, 2026-11-24, R8's "facts in the template, decisions in the kernel": "all smem layout decisions are
+made in the kernel"; "that smem budget can just be the whole card"). What a CALL needs of a tenant is checked against
+the tenant's capacity at the seam, as a refusal; no runtime trip count sits in a register-shaped loop. NOT YET SO for
+decode, whose launch function sizes its tenants on the host from the descriptor and refuses a step over the budget.
 
 <a id="r13"></a>
 ## R13. The state owns its format

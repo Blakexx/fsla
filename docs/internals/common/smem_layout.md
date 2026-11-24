@@ -11,11 +11,12 @@ the same type.
 ## <a id="layout"></a>A layout
 
 `SmemLayout<Bt, CTAS, Tiles...>` is one CTA's shared memory on the build `Bt` where `CTAS` CTAs share an SM. Its
-`budget` is the smaller of the SM's shared memory over `CTAS` (`smem_per_sm`) and the most one CTA may reserve
-(`smem_per_cta_optin`). A tile is named by a type (`Tag`) and holds elements of a type; every tile starts on a 16-byte
+`budget` is the SM's shared memory over `CTAS` (`smem_per_sm`) less what the card keeps of each CTA's (`smem_per_sm`
+less `smem_per_cta_optin`): with one CTA an SM that is what a CTA may reserve, and with more their budgets and what
+the card keeps of each add to the SM. A tile is named by a type (`Tag`) and holds elements of a type; every tile starts on a 16-byte
 boundary. The layout gives, as compile-time constants, each tile's `count<Tag>` (its elements ON THIS CARD), its
 `offset<Tag>()`, and `bytes`, the whole; and at run time `get<Tag>()`, the tile as its elements. `base()` declares the
-CTA's shared memory, the one place in the tree that does.
+CTA's shared memory for every kernel that lays it out here.
 
 - `Fixed<Tag, T, COUNT>`: exactly `COUNT` elements.
 - <a id="share"></a>`Share<Tag, T, LEAST, WEIGHT>`: at least `LEAST` elements, and `WEIGHT` parts of what the budget
@@ -25,16 +26,17 @@ CTA's shared memory, the one place in the tree that does.
 
 THE ONE COMPILE FAILURE is the `static_assert` that the tiles' least sizes fit the budget: it means the layout cannot
 adapt to that card, and the compiler's instantiation trace names the build, the kernel and the case. A name no tile
-has, or two tiles have, does not compile either.
+has, or two tiles have, does not compile either: a tile's count, offset, type and pointer all go through `place`.
 
 ## The proof in the header
 
 `smem_proof` instantiates one layout on two cards that differ in shared memory alone and asserts, at every build, that
 it fits both, that a fixed tile is the same on both, that a share is larger on the larger card and above its least on
-the smaller, that halving the budget by the CTAs an SM equals halving the card, and that a tile's offset is the bytes
-before it.
+the smaller, that one CTA an SM may reserve what the card says, that two CTAs' budgets and what the card keeps of each
+are the SM, and that a tile's offset is the bytes before it.
 
 ## What is NOT built
 
-No kernel uses the layout yet: `csrc/fsla/src/entmax/factor.cu` and `csrc/fsla/src/decode/decode.cu` declare their
-shared memory by hand. No lint refuses a hand declaration or a literal size yet.
+`csrc/fsla/src/entmax/factor.cu`'s forward kernel lays its slots out here. `csrc/fsla/src/decode/decode.cu` declares its
+shared memory by hand and its launch function sizes it on the host. No lint refuses a hand declaration or a literal
+size yet.
