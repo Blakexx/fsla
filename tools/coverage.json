@@ -66,9 +66,7 @@
   },
   "factor_forward_kernel": {
    "oracle": "tests/integration/test_production_levels.py::test_cuda_lowering_matches_the_fp64_oracle",
-   "sanitizer": {
-    "owed": "no sanitizer row launches it"
-   },
+   "sanitizer": "entmax",
    "budget": {
     "owed": "no budget line"
    },

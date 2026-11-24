@@ -54,7 +54,7 @@ primitives" rule.
 
 <a id="static-assert"></a>The per-thread `TempStorage` declarations are only legal because CUB resolves all of
 them to the pure-shfl specializations. That is MEASURED, not assumed (1 byte for every `WarpScan` / `WarpReduce`
-instantiation the solves use), and the `static_assert`s in the threshold and the backward turn a future CUB that changes its mind
+instantiation the solves use), and the `static_assert`s beside each declaration (in `threshold` and in the softmax forward) turn a future CUB that changes its mind
 into a compile error rather than a race.
 
 ## <a id="frozen-support-word"></a>3. The frozen support-word layout
