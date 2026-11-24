@@ -15,14 +15,11 @@ namespace fsla::plan {
 
 using PrefillDescriptor = prefill::Facts;
 
-//: the window of the hopper build (cc 900), provisional until the Hopper carry's design picks it
-inline constexpr int kHopperWindow = 1024;
-
-//: THE WINDOW the device of a descriptor runs, in tokens: the one statement of it, a function of the device's facts as the arm is (docs/internals/common/plan/prefill_launch.md#window);
-//: compute capability 900 gives 1024, any other aborts
+//: THE WINDOW the device of a descriptor runs, in tokens (`window_of_cc`, docs/internals/common/plan/prefill_launch.md#window); a card with none aborts
 constexpr int prefill_window(const PrefillDescriptor& d) {
-  if (!prefill::Reader::cc(d).point() || prefill::Reader::cc(d).lo != kHopperCc) std::abort();
-  return kHopperWindow;
+  const int window = prefill::Reader::cc(d).point() ? window_of_cc(prefill::Reader::cc(d).lo) : 0;
+  if (window == 0) std::abort();
+  return window;
 }
 
 //: `leaves` is the call's leaves a batch-head (the product of the levels' widths); `cta_leaves` a CTA's, the smaller of 512 and `leaves`; `ctas_per_head = leaves / cta_leaves` (it does not depend on how

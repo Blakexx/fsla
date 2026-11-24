@@ -15,7 +15,7 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
 
 //: the bytes of the prepared masks' layout, from the call's shape alone
 int64_t mask_prepare_bytes(const std::vector<int64_t>& width_bits,
-                           const std::vector<int64_t>& heads, int64_t words);
+                           const std::vector<int64_t>& heads, int64_t words, int64_t window);
 
 }  // namespace mask_prepare
 }  // namespace fsla

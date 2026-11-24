@@ -3,13 +3,13 @@
 // measured (`mask_prep`: 1, 4 and 16 digits) and the four no kernel has (32 to 256 digits, whose lanes OR by warp
 // shuffle)? METHOD: this file compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts a
 // clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
-// level-side of 4 to 5 live digits a token, a window 1,024 tokens. A round is the CTA's own windows (4 at a group of
+// level-side of 4 to 5 live digits a token, a window the hopper card's (1,024 tokens). A round is the CTA's own windows (4 at a group of
 // one digit, 16 at 4, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows.
 // The density byte selects the group as it does in the library. Every word, count and total of the first round is
 // checked against the host's, in the library's layout.
-// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (4 words' at one digit, 2 at more), a trip
+// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (16 words' at one digit, 8 at four, 2 at more), a trip
 // finishes the held words and issues the loads that many words on; at 32 digits and above a word's finish is a warp
-// shuffle across the group's lanes. Live: the held loads (4, or 2 lines of 16 digits) and the running count.
+// shuffle across the group's lanes. Live: the held loads (16 words, 8 lines, or 2 words of 4 lines) and the running count.
 // see docs/internals/tools/lab.md#mask-prepare-time
 #include "lab.cuh"
 #include "mask_prepare/mask_prepare_kernel.cuh"
@@ -19,7 +19,7 @@ namespace mask_prepare_time {
 namespace pass = fsla::mask_prepare::detail;
 namespace plan = fsla::plan;
 
-constexpr int kWindow = 1024, kWords = plan::kMaskWindowWords, kWidthBits = 8, kDigits = 1 << kWidthBits;
+constexpr int kWindow = plan::window_of_cc(plan::kHopperCc), kWords = kWindow / 32, kWidthBits = 8, kDigits = 1 << kWidthBits;
 
 //: token `x` has 4 or 5 live digits, a stride apart from a start its own
 constexpr int live_of(uint32_t x) { return 4 + (x % 3 == 0); }
@@ -33,7 +33,7 @@ __global__ void __launch_bounds__(pass::kThreads, 1)
   clock.start();
 #pragma unroll 1
   for (int round = 0; round < rounds; ++round) {
-    pass::mask_prepare_cta(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride);
+    pass::mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride);
   }
   clock.stop(times);
 }
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
   constexpr int kCtaWindows = 256;
   const int ctas = b.sms;
   const size_t windows = static_cast<size_t>(ctas) * kCtaWindows, mask_words = windows * kWords * kDigits;
-  const size_t block = static_cast<size_t>(plan::prepared_block_bytes(kWidthBits)), bytes = windows * block;
+  const size_t block = static_cast<size_t>(plan::prepared_block_bytes(kWidthBits, kWords)), bytes = windows * block;
   uint32_t* dmask = nullptr;
   uint8_t *dwork = nullptr, *ddensity = nullptr;
   LAB_CHECK(cudaMalloc(&dmask, mask_words * 4));
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
       const uint8_t* const at = got.data() + w * block;
       const uint16_t* const totals = reinterpret_cast<const uint16_t*>(at);
       const uint16_t* const counts = reinterpret_cast<const uint16_t*>(at + plan::prepared_counts_at(groups));
-      const uint32_t* const words = reinterpret_cast<const uint32_t*>(at + plan::prepared_words_at(groups));
+      const uint32_t* const words = reinterpret_cast<const uint32_t*>(at + plan::prepared_words_at(groups, kWords));
       for (int q = 0; q < groups; ++q) {
         uint32_t before = 0;
         for (int j = 0; j < kWords; ++j) {

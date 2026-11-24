@@ -1,6 +1,6 @@
 {
   "name": "call",
-  "doc": "the call's contract of the mask-preparation pass (`mask_prepare_kernel`, csrc/fsla/src/mask_prepare/mask_prepare.cu): every width from 2 to 256 and a density of 1 to 4 levels. A list is alternatives, each its own context; a range is one context.",
+  "doc": "the call's contract of the mask-preparation pass (`mask_prepare_kernel`, csrc/fsla/src/mask_prepare/mask_prepare_kernel.cuh; the host half csrc/fsla/src/mask_prepare/mask_prepare.cu): every width from 2 to 256 and a density of 1 to 4 levels. A list is alternatives, each its own context; a range is one context.",
   "facts": {
     "width": {
       "value": {

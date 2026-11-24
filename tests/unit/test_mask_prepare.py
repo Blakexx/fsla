@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE MASK-PREPARATION PASS'S HOST SIDE, no GPU (csrc/fsla/src/mask_prepare/mask_prepare.cu, docs/internals/mask_prepare/mask_prepare.md): the host
 reference's group rule is the carve's (`plan_tool --cta-carve`, on every density byte and every width the carve holds), the reference's layout
-arithmetic is the layout header's on a hand-computed case, and the pass's registry (`hardware/kernels/mask_prepare/`) holds the call's facts and refuses a call outside them.
+arithmetic is the layout header's, on a hand-computed case at two windows (32 and 16 mask words), and the pass's registry (`hardware/kernels/mask_prepare/`) holds the call's facts and refuses a call outside them.
 
 Symbols: ``byte`` a density byte (``d = byte + 1`` 256ths), ``width`` a level-side's digits (a power of two), ``g`` its group in digits."""
 from __future__ import annotations
@@ -68,22 +68,30 @@ def _tiny() -> Masks:
     return Masks(PREFILL, (mask,), (None,))
 
 
-def test_the_layout_of_a_hand_computed_call():
-    #: widths 2 and 4 on slots 0 and 5, 1 and 2 batch-heads, 3 windows: slot 0's blocks 132 bytes each, slot 5's 264
+@pytest.mark.parametrize(
+    ("window_words", "block_bytes_at_width_2", "block_bytes_at_width_4", "offsets", "total", "words_at"),
+    [
+        #: 32 words (a window of 1,024 tokens): a digit's block 66 bytes, slot 0's blocks 132 each, slot 5's 264; the words start at (66 * groups + 3) & ~3
+        (32, 132, 264, [0, 396, 396, 396, 396, 396, 1980, 1980], 1980, (68, 132, 528)),
+        #: 16 words (a window of 512 tokens): a digit's block 34 bytes, slot 0's blocks 68 each, slot 5's 136; the words start at (34 * groups + 3) & ~3
+        (16, 68, 136, [0, 204, 204, 204, 204, 204, 1020, 1020], 1020, (36, 68, 272)),
+    ],
+)
+def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_bytes_at_width_2, block_bytes_at_width_4, offsets, total, words_at):
+    #: widths 2 and 4 on slots 0 and 5, 1 and 2 batch-heads, 3 windows
     widths, heads = [2, 2, 2, 2, 2, 4, 2, 2], [1, 0, 0, 0, 0, 2, 0, 0]
-    offsets, total = reference.layout(widths, heads, 3)
-    assert offsets == [0, 396, 396, 396, 396, 396, 1980, 1980] and total == 1980
-    assert reference.block_bytes(256) == 66 * 256
-    assert (reference.counts_at(1), reference.words_at(1)) == (2, 68)
-    assert (reference.counts_at(2), reference.words_at(2)) == (4, 132)
-    assert (reference.counts_at(8), reference.words_at(8)) == (16, 528)
+    assert (reference.block_bytes(2, window_words), reference.block_bytes(4, window_words)) == (block_bytes_at_width_2, block_bytes_at_width_4)
+    assert reference.layout(widths, heads, 3, window_words) == (offsets, total)
+    assert reference.block_bytes(256, window_words) == 2 * (window_words + 1) * 256
+    assert (reference.counts_at(1), reference.counts_at(2), reference.counts_at(8)) == (2, 4, 16)
+    assert (reference.words_at(1, window_words), reference.words_at(2, window_words), reference.words_at(8, window_words)) == words_at
 
 
 def test_the_reference_of_a_hand_computed_block():
     #: 4 digits at byte 254 (d = 255, 1020 of 1024 live): the group is the 4 digits. Digits' word 0: 0x1, 0x2, 0x0, 0x2 -> OR 0x3; word 1: 0x1 only on digit 0.
     masks = _tiny()
     density = torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8)
-    out = reference.expected(masks, density)
+    out = reference.expected(masks, density, 32)
     assert list(out) == [0]
     block = out[0]
     assert block.group == 4
@@ -91,35 +99,40 @@ def test_the_reference_of_a_hand_computed_block():
     assert block.words[0, :3, 0].tolist() == [0x3, 0x1, 0x0]
     #: the live tokens before each word: none before word 0, the 2 of word 0 before word 1, all 3 from word 2 on (the window's words past the mask are zero)
     assert block.counts[0, :4, 0].tolist() == [0, 2, 3, 3] and block.counts[0, :, 0].max().item() == 3
-    assert reference.bytes_of(masks) == 1 * 1 * reference.block_bytes(4)
+    assert reference.bytes_of(masks, 32) == 1 * 1 * reference.block_bytes(4, 32)
 
 
-def test_the_reference_reads_the_bytes_the_layout_names():
+@pytest.mark.parametrize("window_words", [32, 16])
+def test_the_reference_reads_the_bytes_the_layout_names(window_words):
     masks = _tiny()
     groups, width = 1, 4
-    block = bytearray(reference.block_bytes(width))
+    block = bytearray(reference.block_bytes(width, window_words))
     struct.pack_into("<H", block, 0, 3)
-    for j, count in enumerate([0, 2] + [3] * 30):
+    for j, count in enumerate([0, 2] + [3] * (window_words - 2)):
         struct.pack_into("<H", block, reference.counts_at(groups) + 2 * j, count)
-    for j, word in enumerate([0x3, 0x1] + [0] * 30):
-        struct.pack_into("<I", block, reference.words_at(groups) + 4 * j, word)
-    got = reference.read(torch.frombuffer(block, dtype=torch.uint8).clone(), masks, 0, 4)
-    want = reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8))[0]
+    for j, word in enumerate([0x3, 0x1] + [0] * (window_words - 2)):
+        struct.pack_into("<I", block, reference.words_at(groups, window_words) + 4 * j, word)
+    got = reference.read(torch.frombuffer(block, dtype=torch.uint8).clone(), masks, 0, 4, window_words)
+    want = reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), window_words)[0]
     assert got.totals.tolist() == want.totals.tolist() and got.counts.tolist() == want.counts.tolist() and got.words.tolist() == want.words.tolist()
 
 
 def test_a_group_of_one_digit_keeps_no_words_and_its_counts_are_a_digits_own():
     masks = Masks(PREFILL, (torch.tensor([[[[0x5, 0x0]]]], dtype=torch.int32),), (None,))
-    block = reference.blocks_of(masks.read[0], 1)
+    block = reference.blocks_of(masks.read[0], 1, 32)
     assert block.words is None and block.totals.tolist() == [[2, 0]] and block.counts[0, 0].tolist() == [0, 0]
 
 
-def test_the_references_layout_constants_are_the_layout_headers():
+def test_the_references_block_formulas_are_the_layout_headers_at_both_windows():
     text = LAYOUT.read_text()
-    assert f"kMaskWindowWords = {reference.WINDOW_WORDS}" in text
-    assert re.search(r"std::int64_t\{2 \* \(kMaskWindowWords \+ 1\)\} << width_bits", text)
+    assert "kMaskWindowWords" not in text
+    assert re.search(r"prepared_block_bytes\(int width_bits, int words\)", text)
+    assert re.search(r"std::int64_t\{2\} \* \(words \+ 1\) << width_bits", text)
     assert re.search(r"std::int64_t\{2\} \* groups", text)
-    assert re.search(r"\(std::int64_t\{2 \* \(kMaskWindowWords \+ 1\)\} \* groups \+ 3\) & ~std::int64_t\{3\}", text)
+    assert re.search(r"\(std::int64_t\{2\} \* \(words \+ 1\) \* groups \+ 3\) & ~std::int64_t\{3\}", text)
+    for window_words in (32, 16):
+        assert reference.block_bytes(1 << 3, window_words) == (2 * (window_words + 1)) << 3
+        assert reference.words_at(3, window_words) == (2 * (window_words + 1) * 3 + 3) & ~3
 
 
 # ---------------------------------------------------------------- the registry and the contract

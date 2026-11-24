@@ -5,14 +5,14 @@
 #include <cstdint>
 
 #include "common/structure_switch.cuh"
-#include "common/plan/mask_prepare_layout.h"
+#include "plan/levels.h"
+#include "plan/mask_prepare_layout.h"
 
 namespace fsla {
 namespace mask_prepare {
 namespace detail {
 
 constexpr int kThreads = 1024;
-constexpr int kWords = plan::kMaskWindowWords;
 constexpr int kSides = plan::kLevelSides;
 constexpr int kGroupSizes = plan::kGroupSizes;
 
@@ -95,7 +95,7 @@ __device__ __forceinline__ void finish(const Raw<U>& raw, std::uint32_t keep, bo
 }
 
 //: A LEVEL-SIDE AT A GROUP OF `1 << GB` DIGITS -- see docs/internals/mask_prepare/mask_prepare.md#the-walk
-template <int GB>
+template <int GB, int WORDS>
 __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, int s, int cta) {
   constexpr int kUnitBits = GB < 4 ? GB : 4, kUnit = 1 << kUnitBits, kLanes = 1 << (GB - kUnitBits);
   const int wb = a.width_bits[s], ub = wb - kUnitBits, gb = wb - GB;
@@ -108,28 +108,30 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   const int u = static_cast<int>(unit) & ((1 << ub) - 1), group = u >> (GB - kUnitBits);
   const bool store = (unit >> ub) < windows && (u & (kLanes - 1)) == 0;
   const int window = static_cast<int>(at_window % a.windows);
-  const std::int64_t first_word = (at_window / a.windows) * a.words + std::int64_t{window} * kWords;
-  const int have = a.words - window * kWords < kWords ? a.words - window * kWords : kWords;
+  const std::int64_t first_word = (at_window / a.windows) * a.words + std::int64_t{window} * WORDS;
+  const int have = a.words - window * WORDS < WORDS ? a.words - window * WORDS : WORDS;
   const std::int64_t stride = std::int64_t{1} << wb;
   const std::uint32_t* const at = a.mask[s] + (first_word << wb) + (u << kUnitBits);
-  std::uint8_t* const block = workspace + a.out[s] + at_window * plan::prepared_block_bytes(wb);
+  const std::int64_t block_bytes = plan::prepared_block_bytes(wb, WORDS);
+  std::uint8_t* const block = workspace + a.out[s] + at_window * block_bytes;
   std::uint16_t* const totals = reinterpret_cast<std::uint16_t*>(block);
 
   const int groups = 1 << gb;
   std::uint8_t* const counts = block + plan::prepared_counts_at(groups);
-  std::uint8_t* const words = block + plan::prepared_words_at(groups);
+  std::uint8_t* const words = block + plan::prepared_words_at(groups, WORDS);
   std::uint16_t* count = reinterpret_cast<std::uint16_t*>(counts) + group;
   std::uint32_t* word = reinterpret_cast<std::uint32_t*>(words) + group;
 
   //: THE WALK'S LOADS HELD, issued before any is read: 16 words' at one digit a thread, 8 at four digits, 2 at more
   constexpr int kHeld = kUnit == 1 ? 16 : kUnit == 4 ? 8 : 2;
+  static_assert(WORDS % kHeld == 0 && WORDS * 32 <= 65536, "a window is whole trips");
   Raw<kUnit> held[kHeld];
   const std::uint32_t* row = at;
 #pragma unroll
   for (int i = 0; i < kHeld; ++i) load<kUnit>(held[i], i < have ? row + i * stride : at);
   std::uint32_t before = 0;
 #pragma unroll 1
-  for (int j = 0; j < kWords; j += kHeld) {
+  for (int j = 0; j < WORDS; j += kHeld) {
 #pragma unroll
     for (int i = 0; i < kHeld; ++i) {
       //: a word finished, and the load `kHeld` words on issued into the registers it left; a word past the mask's last reads as zero
@@ -145,6 +147,7 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
 }
 
 //: A CTA OF THE GRID, `cta` its index -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+template <int WORDS>
 __device__ __forceinline__ void mask_prepare_cta(const Args& a, const std::uint8_t* density,
                                                  std::uint8_t* workspace, int cta) {
   int s = 0;
@@ -156,7 +159,8 @@ __device__ __forceinline__ void mask_prepare_cta(const Args& a, const std::uint8
   if (dense == plan::kWholeDensity) return;
   const int bits = plan::prefill_group_bits(dense, a.width_bits[s]);
   uniform_switch<kGroupSizes>(group_index(bits), [&](auto member) {
-    prepare<plan::kGroupSizeBits[decltype(member)::value]>(a, workspace, s, cta - a.first_cta[s]);
+    constexpr int kBits = plan::kGroupSizeBits[decltype(member)::value];
+    prepare<kBits, WORDS>(a, workspace, s, cta - a.first_cta[s]);
   });
 }
 
@@ -165,7 +169,9 @@ template <class Bt>
 __global__ __launch_bounds__(kThreads, 1) void mask_prepare_kernel(const __grid_constant__ Args a,
                                                                    const std::uint8_t* density,
                                                                    std::uint8_t* workspace) {
-  mask_prepare_cta(a, density, workspace, static_cast<int>(blockIdx.x));
+  //: the window is the card's: a constant of the build
+  constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
+  mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x));
 }
 
 //: the grid a level-side needs at a group of one digit, which is what the host can know: a thread a (window, digit)

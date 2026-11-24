@@ -43,8 +43,8 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
   the most. At a word of 4 bytes and a count of 2 (the lab's widths), that is groups of one digit, where the word is
   the mask's own and only the counts are stored: 2 bytes a mask word, half the level-side's mask. A group of 4 digits
   or more stores a word and a count a group, at most 1.5 bytes a mask word. THE LAYOUT IS `mask_prepare_layout.h`
-  ([`internals/common/plan/mask_prepare_layout.md`](../internals/common/plan/mask_prepare_layout.md)): a block a (batch-head, window) of `66 * width`
-  bytes, the totals, the counts and the words in it, A WINDOW'S TOTAL A GROUP IS STORED beside the counts.
+  ([`internals/common/plan/mask_prepare_layout.md`](../internals/common/plan/mask_prepare_layout.md)): a block a (batch-head, window) of `2 * (words + 1) * width`
+  bytes (`words` the card's window in mask words: 66 a digit at the hopper card's 32), the totals, the counts and the words in it, A WINDOW'S TOTAL A GROUP IS STORED beside the counts.
 - THE INTRA, in the owner's words, NOT YET CHECKED against the kernel: "the intra doesnt use makss, so it can start
   alongisde that mask pass".
 

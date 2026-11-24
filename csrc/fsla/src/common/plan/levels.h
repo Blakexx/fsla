@@ -10,6 +10,11 @@ namespace fsla::plan {
 //: the compute capability of the hopper device (`sm_90a`), the one both launch functions' matchers name
 inline constexpr int kHopperCc = 900;
 
+inline constexpr int kHopperWindow = 1024;
+
+//: THE WINDOW OF A CARD, in tokens, from its compute capability: the one statement of it (docs/internals/common/plan/prefill_launch.md#window); 0 where no window is derived for the card
+constexpr int window_of_cc(std::int64_t cc) { return cc == kHopperCc ? kHopperWindow : 0; }
+
 //: the call's width fact of level `l` (0-based): the log2 of that level's width
 template <typename F>
 constexpr Interval level_width_bits(const F& d, int l) {

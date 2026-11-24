@@ -2,10 +2,8 @@
 // Design of record: docs/internals/mask_prepare/mask_prepare.md.
 // Gate: `tests/oracle/test_mask_prepare.py` (the host's words, counts and totals, exactly).
 //
-// One launch over every level-side that has a mask. A CTA finds its level-side, derives the
-// side's group from its density byte with the carve's one rule, and switches once to the body
-// compiled for that group: each group's word (its digits' words ORed), the count of the
-// group's live tokens of the window before each word, and the window's total.
+// The op's host half: its operands checked, its grid and its place in the workspace, the launch.
+// The device half -- the kernel, the walk and the switch on the group -- is mask_prepare_kernel.cuh.
 
 #include <algorithm>
 
@@ -23,8 +21,6 @@
 namespace fsla {
 namespace mask_prepare {
 namespace detail {
-
-static_assert(plan::kHopperWindow == kWords * 32, "a window is 32 mask words of 32 tokens");
 
 //: an operand the kernel reads as a contiguous array of `dtype` on the call's device
 void check_operand(const Tensor& t, Dtype dtype, int device, const char* name) {
@@ -61,7 +57,9 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   Args args{};
   args.levels = static_cast<int>(density.size(1));
   args.words = static_cast<int>(masks[0].size(2));
-  args.windows = (args.words + kWords - 1) / kWords;
+  const int window_words = plan::window_of_cc(card_of(device).cc) / 32;
+  STD_TORCH_CHECK(window_words > 0, "mask_prepare has no window for this card");
+  args.windows = (args.words + window_words - 1) / window_words;
   std::int64_t heads[kSides] = {};
   std::int64_t widest = 0;
   for (std::size_t i = 0; i < masks.size(); ++i) {
@@ -85,7 +83,8 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
     args.heads[s] = static_cast<int>(heads[s]);
   }
 
-  const plan::PreparedLayout layout = plan::prepared_layout(args.width_bits, heads, args.windows);
+  const plan::PreparedLayout layout =
+      plan::prepared_layout(args.width_bits, heads, args.windows, window_words);
   STD_TORCH_CHECK(
       workspace.numel() * static_cast<std::int64_t>(workspace.element_size()) >= layout.bytes,
       "mask_prepare's workspace holds the prepared masks' layout");
@@ -109,18 +108,21 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   });
 }
 
-//: the bytes `mask_prepare` writes for a call's level-sides: `width_bits[s]` and `heads[s]` of each of the 8, 0 heads where it has no mask, of masks `words` long
+//: the bytes `mask_prepare` writes for a call's level-sides: `width_bits[s]` and `heads[s]` of each of the 8, 0 heads where it has no mask, of masks `words` long, on a card whose window is `window` tokens
 int64_t mask_prepare_bytes(const std::vector<int64_t>& width_bits,
-                           const std::vector<int64_t>& heads, int64_t words) {
+                           const std::vector<int64_t>& heads, int64_t words, int64_t window) {
   STD_TORCH_CHECK(width_bits.size() == detail::kSides && heads.size() == detail::kSides,
                   "mask_prepare_bytes takes the 8 level-sides' width bits and batch-heads");
+  STD_TORCH_CHECK(window >= 32 && window % 32 == 0, "a window is whole mask words of 32 tokens");
+  const int window_words = static_cast<int>(window / 32);
   int bits[detail::kSides];
   std::int64_t each[detail::kSides];
   for (int s = 0; s < detail::kSides; ++s) {
     bits[s] = static_cast<int>(width_bits[s]);
     each[s] = heads[s];
   }
-  return plan::prepared_layout(bits, each, (words + detail::kWords - 1) / detail::kWords).bytes;
+  const std::int64_t windows = (words + window_words - 1) / window_words;
+  return plan::prepared_layout(bits, each, windows, window_words).bytes;
 }
 
 }  // namespace mask_prepare
