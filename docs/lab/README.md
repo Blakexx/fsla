@@ -35,6 +35,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`intra_window`](intra_window.md) | experiment |
 | [`call_pair`](call_pair.md) | experiment |
 | [`facts_lists`](facts_lists.md) | experiment |
+| [`mask_prep`](mask_prep.md) | experiment |
 | [`gather_pass`](gather_pass.md) | experiment |
 | [`cast_cluster`](cast_cluster.md) | experiment |
 | [`value_gather`](value_gather.md) | experiment |
