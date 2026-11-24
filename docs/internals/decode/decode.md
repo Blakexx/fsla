@@ -809,14 +809,13 @@ rather than as a plausible zero is what a gate wants.
 
 ## <a id="smem-refusal"></a>35. The staged-amplitude SMEM budget is a declared capacity
 
-The launch function sizes the step's shared memory (`decode_smem_bytes`, `DecodeLayout::smem_bytes`) and holds it against the descriptor's per-block budget (`smem_per_cta_optin`); the host entry's launch refuses a step over it
+<a id="smem"></a>The step's shared memory is the kernel's own layout (`DecodeSmem`, a `SmemLayout`: [`../common/smem_layout.md`](../common/smem_layout.md)), compiled from the card's budget: each control field, the scan's storage, the clock's rows, the token value and a fold row a warp are fixed tiles, each its own shared object, and what the budget leaves is one tile (`StepWords`) that holds the call's staged rows and tables, addressed at run time. The launch function states what a call needs of that tile (`decode_step_words`, `DecodeLayout::step_words`), and the host entry's launch refuses a step that needs more than the tile holds on the card
 (`decode_smem_refusal`), naming `sum_l width_l` in the message. That
-function's total is the staged amplitude rows, the dial row, the token value, the
-cross-warp fold buffer and BOTH factor-table blocks (the digit masks, the owner
+function's total is the staged amplitude rows, the dial row and BOTH factor-table blocks (the digit masks, the owner
 lists compacted from them and the write side's digit lists —
 `2 * mask_total + 4 * olist_total + dlist_total` words,
 [`decode_lattice.md`](decode_lattice.md)):
-everything a step's prologue puts in shared memory, all of it. It is **refused loudly
+everything of a step whose size the call decides. It is **refused loudly
 rather than taken as a slower path** — there is no spill-to-global arm for any of it, and
 there is no second address space for the factor tables to fall back to either.
 

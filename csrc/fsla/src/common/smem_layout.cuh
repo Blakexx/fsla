@@ -19,6 +19,28 @@ struct Fixed {
   static constexpr std::int64_t weight = 0;
 };
 
+//: A TILE OF ONE `T`
+template <class Tag, class T>
+struct One {
+  using tag = Tag;
+  using type = T;
+  //: FIXED by the tile's kind: one element
+  static constexpr std::int64_t least = 1;
+  //: FIXED by the tile's kind: no part of what the budget leaves
+  static constexpr std::int64_t weight = 0;
+};
+
+//: A TILE OF WHAT THE BUDGET LEAVES, one part of it: its elements are addressed at run time -- see docs/internals/common/smem_layout.md#rest
+template <class Tag, class T>
+struct Rest {
+  using tag = Tag;
+  using type = T;
+  //: FIXED by the tile's kind: no least
+  static constexpr std::int64_t least = 0;
+  //: FIXED by the tile's kind: one part of what the budget leaves
+  static constexpr std::int64_t weight = 1;
+};
+
 //: A TILE OF AT LEAST `LEAST` elements of `T`, and `WEIGHT` parts of what the budget leaves -- see docs/internals/common/smem_layout.md#share
 template <class Tag, class T, int LEAST, int WEIGHT>
 struct Share {
@@ -47,6 +69,9 @@ struct SmemLayout {
   static constexpr std::int64_t least_bytes =
       (Tile::least * element<Tile> + kAlign - 1) & ~(kAlign - 1);
 
+  template <class Tile>
+  static constexpr std::int64_t reserved_least = Tile::weight == 0 ? 0 : least_bytes<Tile>;
+
   static constexpr std::int64_t least = (std::int64_t{0} + ... + least_bytes<Tiles>);
   static constexpr std::int64_t weights = (std::int64_t{0} + ... + Tiles::weight);
   static_assert(least <= budget, "SmemLayout: the least sizes do not fit this card");
@@ -64,8 +89,14 @@ struct SmemLayout {
   template <class Tile>
   static constexpr std::int64_t tile_count = Tile::least + extra_bytes<Tile> / element<Tile>;
 
-  //: the bytes the launch reserves
-  static constexpr std::int64_t bytes = (std::int64_t{0} + ... + tile_bytes<Tiles>);
+  //: A TILE WITH NO SHARE IS ITS OWN SHARED OBJECT, so the compiler knows no two overlap; a tile with a share is in what the launch reserves -- see docs/internals/common/smem_layout.md#own
+  template <class Tile>
+  static constexpr std::int64_t reserved_bytes = Tile::weight == 0 ? 0 : tile_bytes<Tile>;
+
+  static constexpr std::int64_t own_bytes = least - (std::int64_t{0} + ... + reserved_least<Tiles>);
+
+  //: the bytes the launch reserves: the shares'
+  static constexpr std::int64_t bytes = (std::int64_t{0} + ... + reserved_bytes<Tiles>);
 
   //: the place of the tile named `Tag` among the tiles, -1 where no tile or more than one has the name
   template <class Tag>
@@ -101,24 +132,45 @@ struct SmemLayout {
   template <class Tag>
   static constexpr std::int64_t count = counted<Tag>();
 
+  //: where a tile with a share starts in what the launch reserves
   template <class Tag>
   static constexpr std::int64_t offset() {
-    constexpr std::int64_t each[kTiles] = {tile_bytes<Tiles>...};
+    constexpr std::int64_t each[kTiles] = {reserved_bytes<Tiles>...};
     std::int64_t at = 0;
     for (int i = 0; i < place<Tag>(); ++i) at += each[i];
     return at;
   }
 
-  //: THE CTA'S SHARED MEMORY, declared for every kernel that lays it out here
+  //: what the launch reserves of the CTA's shared memory
   __device__ __forceinline__ static unsigned char* base() {
     extern __shared__ __align__(16) unsigned char fsla_shared_memory[];
     return fsla_shared_memory;
   }
 
+  //: a tile with no share: its own shared object
+  template <class Tile>
+  __device__ __forceinline__ static typename Tile::type* own() {
+    __shared__ __align__(16) typename Tile::type cells[Tile::least];
+    return cells;
+  }
+
+  template <class Tag, class Tile>
+  __device__ __forceinline__ static void find(type<Tag>*& at) {
+    if constexpr (std::is_same_v<Tag, typename Tile::tag>) {
+      if constexpr (Tile::weight == 0) {
+        at = own<Tile>();
+      } else {
+        at = reinterpret_cast<type<Tag>*>(base() + offset<Tag>());
+      }
+    }
+  }
+
   //: the tile named `Tag`, as its elements
   template <class Tag>
   __device__ __forceinline__ static type<Tag>* get() {
-    return reinterpret_cast<type<Tag>*>(base() + offset<Tag>());
+    type<Tag>* at = nullptr;
+    (find<Tag, Tiles>(at), ...);
+    return at;
   }
 };
 
@@ -139,19 +191,23 @@ struct Table;
 struct Ring;
 struct Panel;
 
+using RingTile = Share<Ring, std::int64_t, 2, 3>;
+
 template <class Bt, int CTAS>
-using Proof = SmemLayout<Bt, CTAS, Fixed<Table, std::int32_t, 100>, Share<Ring, std::int64_t, 2, 3>,
+using Proof = SmemLayout<Bt, CTAS, Fixed<Table, std::int32_t, 100>, RingTile,
                          Share<Panel, std::int16_t, 8, 1>>;
 
 using L = Proof<Large, 1>;
 using S = Proof<Small, 1>;
-static_assert(L::bytes <= L::budget && S::bytes <= S::budget, "a layout fits its card");
+static_assert(L::bytes + L::own_bytes <= L::budget, "a layout fits the larger card");
+static_assert(S::bytes + S::own_bytes <= S::budget, "a layout fits the smaller card");
 static_assert(L::count<Table> == 100 && S::count<Table> == 100, "a fixed tile is the same");
 static_assert(L::count<Ring> > S::count<Ring>, "a share is larger on the larger card");
 static_assert(S::count<Ring> > 2 && S::count<Panel> > 8, "a share is above its least");
 static_assert(L::budget == 65536 && S::budget == 32256, "a lone CTA reserves the card's limit");
 static_assert(2 * (Proof<Large, 2>::budget + 1024) == 66560, "two CTAs' budgets fill the SM");
-static_assert(S::offset<Ring>() == 400, "a tile's offset is the bytes before it");
+static_assert(S::own_bytes == 400 && S::offset<Ring>() == 0, "a fixed tile is its own object");
+static_assert(S::offset<Panel>() == S::tile_bytes<RingTile>, "shares follow shares");
 
 }  // namespace smem_proof
 

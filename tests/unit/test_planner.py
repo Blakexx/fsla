@@ -50,7 +50,7 @@ def _lines(run) -> dict:
 def test_a_device_of_other_facts_in_the_ranges_plans_with_its_own_numbers():
     for sms in (114, 120, 132):
         out = _lines(_plan({"sm_count": sms}))
-        assert out["args"] == f"cc=900 threads=512 smem_budget=232448 pad=0 sms={sms}"
+        assert out["args"] == f"cc=900 threads=512 pad=0 sms={sms}"
         assert out["arm"] == "d_v=64 levels=2 decay=1"
 
 

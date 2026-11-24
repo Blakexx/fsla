@@ -15,10 +15,18 @@ the same type.
 less `smem_per_cta_optin`): with one CTA an SM that is what a CTA may reserve, and with more their budgets and what
 the card keeps of each add to the SM. A tile is named by a type (`Tag`) and holds elements of a type; every tile starts on a 16-byte
 boundary. The layout gives, as compile-time constants, each tile's `count<Tag>` (its elements ON THIS CARD), its
-`offset<Tag>()`, and `bytes`, the whole; and at run time `get<Tag>()`, the tile as its elements. `base()` declares the
-CTA's shared memory for every kernel that lays it out here.
+`bytes`, what the launch reserves (the tiles with a share), and `offset<Tag>()`, where such a tile starts in it; and at
+run time `get<Tag>()`, the tile as its elements. `base()` declares what the launch reserves, and `own` a tile's own
+object.
 
-- `Fixed<Tag, T, COUNT>`: exactly `COUNT` elements.
+- `Fixed<Tag, T, COUNT>`: exactly `COUNT` elements. `One<Tag, T>`: one element.
+- <a id="own"></a>A TILE WITH NO SHARE IS ITS OWN SHARED OBJECT (`own`), not a range of one buffer, so that the compiler
+  knows no two such tiles overlap: decode's control fields carved out of one buffer cost every arm about 12 registers
+  a thread and more convergence instructions than its hand-declared variables had, and as tiles of their own its arms
+  are the same size or smaller. Only the tiles with a share are in the bytes the launch reserves (`bytes`); the budget
+  covers both (`own_bytes` and `bytes`).
+- <a id="rest"></a>`Rest<Tag, T>`: all the budget leaves, one part of it, with no least: a tile whose elements a call
+  addresses at run time, the call's need checked against `count<Tag>` at the seam.
 - <a id="share"></a>`Share<Tag, T, LEAST, WEIGHT>`: at least `LEAST` elements, and `WEIGHT` parts of what the budget
   leaves once every tile's least is placed (dealt in whole 16-byte steps). A share is how a layout ADAPTS: the same
   source gives a deeper ring on a card with more shared memory and a shallower one on a card with less. Code reads
@@ -35,8 +43,9 @@ it fits both, that a fixed tile is the same on both, that a share is larger on t
 the smaller, that one CTA an SM may reserve what the card says, that two CTAs' budgets and what the card keeps of each
 are the SM, and that a tile's offset is the bytes before it.
 
-## What is NOT built
+## Who uses it
 
-`csrc/fsla/src/entmax/factor.cu`'s forward kernel lays its slots out here. `csrc/fsla/src/decode/decode.cu` declares its
-shared memory by hand and its launch function sizes it on the host: its declarations are the backlog of the lint that
-refuses one (`tools/lint/facts_in_template.py`, [`../tools/lint.md`](../tools/lint.md#facts-in-the-template)).
+`csrc/fsla/src/entmax/factor.cu`'s forward kernel (a slot a warp, a fixed tile) and `csrc/fsla/src/decode/decode.cu`'s step
+(its control fields, scan storage, clock rows, value and fold rows as fixed tiles, and the call's staged rows and tables
+in what the budget leaves). The lint that refuses a hand declaration is `tools/lint/facts_in_template.py`
+([`../tools/lint.md`](../tools/lint.md#facts-in-the-template)).

@@ -12,8 +12,7 @@ parameters carry. The three parts are composed from three functions and stay str
 - `decode_args(const DecodeDescriptor&, const DecodeArm&)` is the ARGS half, computed from EXACT values only and never evaluated over a range (a range
   aborts): the compute capability of the build to launch, the CTA's threads (`decode_threads(regs_per_sm)`, the register file over `kDecodeRegsPerThread`, the one
   function of the walk's registers a thread: `decode_args` calls it on the device's register file and `decode.cuh`'s `DecodePlan<B>::kThreads` on the build's, and the launch refuses a descriptor whose
-  threads differ from the compiled plan's), the shared memory a CTA may opt in to (`smem_per_cta_optin`: the launch opts the kernel in above the
-  48 KB every launch has), the padding of the call's `d_v` to the arm's (`arm.d_v - d_v`: the value width is a contract range and the arm
+  threads differ from the compiled plan's), the padding of the call's `d_v` to the arm's (`arm.d_v - d_v`: the value width is a contract range and the arm
   holds it, so the padding is the launch function's, not a second law beside it), the device's SMs, and what the call states of its levels:
   each level's width (`widths`, `1 << width_bits_k` for a level the call has, 0 beyond its `levels`), its offset into the flattened per-level rows
   (`row_offsets`, the prefix sums of the widths) and `write_dense` (whether the step deposits whole atoms: DERIVED here, 1 when the innermost level's `write_listed_k` fact is 0).

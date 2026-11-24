@@ -162,7 +162,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `fsla` exports), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
-| `facts_in_template.py` | 79 over 3 rules (2026-11-24) | the rules' findings in kernels and planner headers: [the facts-in-the-template rules](#facts-in-the-template) |
+| `facts_in_template.py` | 65 over 3 rules (2026-11-24) | the rules' findings in kernels and planner headers: [the facts-in-the-template rules](#facts-in-the-template) |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |
 | `rules_table.py --owed` | 63 (2026-11-17) | the `owed` rows of `docs/rules.json`: each leaves when its rule gains a mechanism, a `gate`, `tool`, `hook` or `review` row, in the commit that lands it ([above](#rules-table)) |
 | `coverage.py` | 0 (2026-09-29) | nothing: it gates the undeclared gaps (a kernel not in `tools/coverage.json`, a pointer to nothing); the owed obligations -- budgets, phase ledgers, sanitizer rows and oracle tests for the entmax solves, three kernels -- are the backlog it prints ([`coverage.md`](coverage.md)) |
@@ -235,9 +235,8 @@ match, `//` and `/* */`. Each has its fixture pair `drift_facts_bad.cuh` / `drif
   other types (`bool`, `float`, `unsigned int`, an alias), a split declaration and several declarators on a line; a
   trailing comment does not state the reason.
 
-Their findings on the tree of 2026-11-24 are in the baseline: 14 of the first rule, all `decode/decode.cu`'s (the entmax
-forward's shared memory is a tile of `SmemLayout`); 0 of the second (that tile's count is an expression); and 65 of the
-third.
+Their findings on the tree are in the baseline: 0 of the first rule (the entmax forward's and the decode step's shared
+memory are tiles of `SmemLayout`); 0 of the second (those tiles' counts are expressions); and 65 of the third.
 
 ## <a id="standards"></a>The standards lint, in detail
 

@@ -243,9 +243,7 @@ density, a live count or "small L" never is.
 **SMEM is laid out in the kernel, at compile time.** Each branch of a kernel declares its shared tenants through the
 one layout, sized from the card's budget, and the launch reserves the bytes that layout states (CONSTITUTION R12;
 [`internals/common/smem_layout.md`](internals/common/smem_layout.md)). What a call needs of a tenant is checked against
-the tenant's capacity at the seam, as a refusal. NOT YET SO for decode: its launch function sizes its tenants on the
-host from the descriptor, passes them as dynamic shared memory, and sets the one-time function attribute above the
-48 KB static limit.
+the tenant's capacity at the seam, as a refusal (decode's step: [`internals/decode/decode.md`](internals/decode/decode.md#smem)).
 
 ---
 

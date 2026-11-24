@@ -168,10 +168,10 @@ void print_layout(const fsla::plan::DecodeLaunch& launch) {
               layout.lat_inner_bits, layout.lat_outer_bits);
   std::printf("tables: mask_total=%d olist_total=%d dlist_total=%d write_atoms=%d\n",
               layout.mask_total, layout.olist_total, layout.dlist_total, layout.write_atoms);
-  std::printf("step: leaves=%lld total_rows=%d unit_ceiling=%lld smem_bytes=%lld fits=%d\n",
+  std::printf("step: leaves=%lld total_rows=%d unit_ceiling=%lld step_words=%lld\n",
               static_cast<long long>(layout.leaves), layout.total_rows,
               static_cast<long long>(layout.unit_ceiling),
-              static_cast<long long>(layout.smem_bytes), layout.fits);
+              static_cast<long long>(layout.step_words));
 }
 
 //: THE DECODE KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch's arguments, and the grid when `--grid` names its inputs
@@ -187,8 +187,7 @@ void print_decode(const Named& device_facts, const Named& call_facts, const std:
 
   std::printf("descriptor: %s\n", fsla::plan::spell<Decode>(call.descriptor).c_str());
   std::printf("arm: d_v=%d levels=%d decay=%d\n", arm.d_v, arm.levels, arm.decay);
-  std::printf("args: cc=%d threads=%d smem_budget=%d pad=%d sms=%d\n", args.cc, args.threads,
-              args.smem_budget, args.pad, args.sms);
+  std::printf("args: cc=%d threads=%d pad=%d sms=%d\n", args.cc, args.threads, args.pad, args.sms);
 
   std::string widths, offsets;
   for (int l = 0; l < arm.levels; ++l) {

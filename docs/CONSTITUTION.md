@@ -91,8 +91,8 @@ general thing"), and it is a rule of WHERE A DECISION'S INPUTS EXIST: "it's not 
 dependency availability. Smem lZyout depends on runtime arguments so it needs to be in the kenrel. Things that don't
 can be in the template in theory" -- what the card and the call's shape decide may be a template parameter the matcher
 picks; what run-time values decide is a case of the kernel's switch, compiled like the rest of the case. The host decides none of it: a launch reads its grid, its threads and its bytes off the same
-functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)). NOT YET SO for decode
-(R12); what the tree still writes by hand is the backlog of the lints that refuse it (`tools/lint/facts_in_template.py`).
+functions the kernel compiles ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)). What the tree still
+writes by hand is the backlog of the lints that refuse it (`tools/lint/facts_in_template.py`).
 
 ONE ENTRY A KERNEL, BLIND TO ITS IMPLEMENTATION. A kernel's caller sees one interface: the entry finds the device's card
 from its tensors' device and selects the family's schedule and the atoms' instructions behind it; the caller passes no
@@ -168,8 +168,7 @@ layout: each branch of a kernel sizes its shared-memory tenants at compile time 
 layout ([`internals/common/smem_layout.md`](internals/common/smem_layout.md)), and may hold the whole of what its CTA
 can reserve (Blake, 2026-11-24, R8's "facts in the template, decisions in the kernel": "all smem layout decisions are
 made in the kernel"; "that smem budget can just be the whole card"). What a CALL needs of a tenant is checked against
-the tenant's capacity at the seam, as a refusal; no runtime trip count sits in a register-shaped loop. NOT YET SO for
-decode, whose launch function sizes its tenants on the host from the descriptor and refuses a step over the budget.
+the tenant's capacity at the seam, as a refusal; no runtime trip count sits in a register-shaped loop.
 
 <a id="r13"></a>
 ## R13. The state owns its format

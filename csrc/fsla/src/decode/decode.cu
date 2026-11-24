@@ -30,6 +30,7 @@
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
+#include "common/smem_layout.cuh"
 #include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
 #include "decode.cuh"
@@ -134,6 +135,43 @@ __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fo
 }
 
 //: THE STEP at build `Bt::build` (a type: docs/internals/common/hardware.md#build-tag), at its plan's threads.
+struct RowSums;
+struct ScanTemp;
+struct Running;
+struct ListCounts;
+struct DenseCounts;
+struct TermFields;
+struct TermUnits;
+struct Admit;
+struct Blocks;
+struct Next;
+struct Last;
+struct TermFirst;
+struct ClockRows;
+struct ValueRow;
+struct FoldRows;
+struct StepWords;
+
+//: THE STEP'S SHARED MEMORY: the control state a field a tile, the scan's storage, the clock's rows, the value and a fold row a warp, and what is left for the call's staged rows and tables -- see docs/internals/decode/decode.md#smem
+template <class Bt, int DV>
+struct DecodeTiles {
+  using Dp = DecodePlan<Bt::build>;
+  using Scan = typename LatticeScan<Dp::kThreads>::TempStorage;
+  static constexpr int kClock = Dp::kWarps * PhaseClock<kDecodePhases>::kRow;
+  static constexpr int kFold = Dp::kWarps * (DV + 4);
+  static constexpr int kFields = kMaxTerms * kMaxLevels;
+  static constexpr int kLists = kKinds * kMaxLevels;
+};
+
+template <class Bt, int DV, class Tl = DecodeTiles<Bt, DV>>
+using DecodeSmem = SmemLayout<
+    Bt, Tl::Dp::kBlocksPerSm, Fixed<RowSums, float, kMaxLevels>, One<ScanTemp, typename Tl::Scan>,
+    One<Running, int>, Fixed<ListCounts, int, Tl::kLists>, Fixed<DenseCounts, int, kMaxLevels>,
+    Fixed<TermFields, int, Tl::kFields>, Fixed<TermUnits, int, kMaxTerms>, One<Admit, int>,
+    One<Blocks, int>, One<Next, int>, One<Last, int>, Fixed<TermFirst, int, kMaxTerms + 1>,
+    Fixed<ClockRows, long long, Tl::kClock>, Fixed<ValueRow, float, DV>,
+    Fixed<FoldRows, float, Tl::kFold>, Rest<StepWords, std::uint32_t>>;
+
 template <class Bt, int DV, int D, bool DECAY>
 __global__
 __launch_bounds__(DecodePlan<Bt::build>::kThreads, DecodePlan<Bt::build>::kBlocksPerSm) void
@@ -146,7 +184,7 @@ decode_step_kernel(DecodeParams p) {
   using Page = fsla::state_page::Blocks<DV>;
   using Lanes = LeafLanes<DV>;
 
-  extern __shared__ __align__(16) char smem_raw[];
+  using Smem = DecodeSmem<Bt, DV>;
   const int tid = threadIdx.x;
   const int lane = tid & 31;
   const int warp = tid >> 5;
@@ -155,34 +193,35 @@ decode_step_kernel(DecodeParams p) {
   // ---- SMEM ledger ----------------------------------------------------------
   // sa_r, sa_w [total_rows] fp32 both sides' amplitude rows ...
   // see docs/internals/decode/decode.md#decode-step-kernel-note-l95
-  float* sa_r = reinterpret_cast<float*>(smem_raw);
+  float* sa_r = reinterpret_cast<float*>(Smem::template get<StepWords>());
   float* sa_w = sa_r + total_rows;
   float* sd = sa_w + total_rows;
-  float* v_tok = sd + (DECAY ? total_rows : 0);
-  float* fold = v_tok + DV;
-  uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + Dp::kWarps * (cols + 3));
+  float* v_tok = Smem::template get<ValueRow>();
+  float* fold = Smem::template get<FoldRows>();
+  uint32_t* mask_r = reinterpret_cast<uint32_t*>(sd + (DECAY ? total_rows : 0));
   uint32_t* mask_w = mask_r + p.mask_total;
   int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
   int32_t* dlist = olist + kKinds * p.olist_total;
 
-  __shared__ float s_sum[kMaxLevels];
-  __shared__ typename Scan::TempStorage scan_temp;
-  __shared__ int s_running;
-  __shared__ int s_n_o[kKinds * kMaxLevels];
-  __shared__ int s_n_d[kMaxLevels];
+  float* const s_sum = Smem::template get<RowSums>();
+  typename Scan::TempStorage& scan_temp = *Smem::template get<ScanTemp>();
+  int& s_running = *Smem::template get<Running>();
+  int* const s_n_o = Smem::template get<ListCounts>();
+  int* const s_n_d = Smem::template get<DenseCounts>();
   //: THE TERM TABLE, ONE PACKED WORD PER (term, level): the field's position, its -- see docs/internals/decode/decode.md#decode-step-kernel-note-l137
-  __shared__ int s_fld[kMaxTerms * kMaxLevels];
+  int* const s_fld = Smem::template get<TermFields>();
   //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space -- see docs/internals/decode/decode.md#near-line-122
-  __shared__ int s_units[kMaxTerms];
+  int* const s_units = Smem::template get<TermUnits>();
   //: THE HEAD'S ADMISSION as this CTA holds it: whether it admits, the outcome, the position count. -- see docs/internals/decode/decode.md#queue-admission
-  __shared__ int s_admit;
-  __shared__ int s_blocks;
+  int& s_admit = *Smem::template get<Admit>();
+  int& s_blocks = *Smem::template get<Blocks>();
   //: The head the CTA visits next, and whether it steals it, as warp 0 chose. -- see docs/internals/decode/decode.md#queue-next
-  __shared__ int s_next;
-  __shared__ int s_last;
+  int& s_next = *Smem::template get<Next>();
+  int& s_last = *Smem::template get<Last>();
   //: A HEAD'S TERMS' FIRST POSITIONS, and past the last its position count. -- see docs/internals/decode/decode.md#queue-positions
-  __shared__ int s_first[kMaxTerms + 1];
-  __shared__ long long s_clock[Dp::kWarps][PhaseClock<kDecodePhases>::kRow];
+  int* const s_first = Smem::template get<TermFirst>();
+  using ClockRow = long long[PhaseClock<kDecodePhases>::kRow];
+  ClockRow* const s_clock = reinterpret_cast<ClockRow*>(Smem::template get<ClockRows>());
 
   PhaseClock<kDecodePhases> clock(&s_clock[warp][0], lane);
 
@@ -649,14 +688,9 @@ void fsla_decode_ledger_bind(const std::optional<Tensor>& ledger) {
   g_phase_ledger_ctas = ledger->size(0);
 }
 
-//: the dynamic shared memory a launch may take without opting in
-constexpr size_t kDefaultDynamicSmem = 48 * 1024;
-
 void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, const DecodeParams& p) {
   const plan::DecodeArm& arm = launch.arm;
   const plan::DecodeArgs& args = launch.args;
-  const size_t smem = static_cast<size_t>(launch.layout.smem_bytes);
-  if (!launch.layout.fits) STD_TORCH_CHECK(false, plan::decode_smem_refusal(launch));
   auto stream = current_stream();
   //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three -- see docs/internals/decode/decode.md#launch
   auto enqueue = [&](auto DV, auto LEVELS, auto DECAY) {
@@ -670,11 +704,15 @@ void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, cons
                         DecodePlan<kB>::kThreads);
         auto kernel =
             &detail::decode_step_kernel<::denseref::arch::BuildTag<kB>, kDv, kLevels, kDecay>;
-        if (smem > kDefaultDynamicSmem) {
-          FSLA_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                               static_cast<int>(smem)));
-        }
-        kernel<<<dim3(p.ctas), args.threads, smem, stream>>>(p);
+        //: the step's shared memory is the kernel's layout on this card; the call's rows and tables go in what it leaves
+        using Smem = detail::DecodeSmem<::denseref::arch::BuildTag<kB>, kDv>;
+        constexpr std::int64_t kStep = Smem::template count<detail::StepWords>;
+        STD_TORCH_CHECK(launch.layout.step_words <= kStep,
+                        plan::decode_smem_refusal(launch, kStep));
+        constexpr int kShared = static_cast<int>(Smem::bytes);
+        FSLA_CUDA_CHECK(
+            cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kShared));
+        kernel<<<dim3(p.ctas), args.threads, kShared, stream>>>(p);
       }
     });
   };
