@@ -41,7 +41,8 @@ has, or two tiles have, does not compile either: a tile's count, offset, type an
 `smem_proof` instantiates one layout on two cards that differ in shared memory alone and asserts, at every build, that
 it fits both, that a fixed tile is the same on both, that a share is larger on the larger card and above its least on
 the smaller, that one CTA an SM may reserve what the card says, that two CTAs' budgets and what the card keeps of each
-are the SM, and that a tile's offset is the bytes before it.
+are the SM, that a fixed tile is its own object and outside what the launch reserves, and that a share's offset is
+the shares' bytes before it.
 
 ## Who uses it
 
