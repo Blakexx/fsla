@@ -11,8 +11,8 @@ vocabulary this file shares with it, are [`entmax.md`](entmax.md).
 
 Gates: `tests/integration/test_production_levels.py` (the fp64 oracle, forward AND
 VJP, across `tied` / `mixed_per_level` / `dense_only`),
-`tests/unit/test_entmax_production.py` (the masked `production_factor` surface, the
-support word's bit-31 and tail-word contracts, the tile-major arena).
+`tests/unit/test_entmax_production.py` (the packed-projection read, the dense levels' complete
+write, the batched solve against the per-level loop, the plan's launch count).
 
 Symbols are `entmax.md`'s: a *stream* is one (batch, head)-like routing stream, a
 *token* one row of the solve, `width` the level's branch width with `col` indexing
@@ -22,9 +22,9 @@ it, `LW` the logical warp width, `IPT` the items per lane (`W_PAD = LW * IPT`),
 ## <a id="logit-dtype"></a>
 ## The logit plane's dtype is a template axis
 
-`LogitT` is `float` or `__nv_bfloat16`, and every kernel in this family widens a logit to
-fp32 **in register** before it does any arithmetic. The solve is unchanged; what changed
-is the plane it reads.
+The kernels keep a `LogitT` template parameter, and the contract holds bf16 alone (`hardware/kernels/<kernel>/parts/call.json`: the library sends the solves
+nothing else, `fsla/ops/produce.py`'s `projection_dtype`; a plane of another dtype is refused naming the fact), so every arm reads a bf16 plane. Every
+kernel in this family widens a logit to fp32 **in register** before it does any arithmetic.
 
 **Why bf16 is the shipped one.** The router GEMM runs bf16 operands on the tensor cores,
 where cuBLAS's output is bf16 — there is no bf16-operand / fp32-output GEMM to ask for.
@@ -87,8 +87,8 @@ IS there and is not in the union kernel: the candidate mask.
 
 ### <a id="mask"></a>2.1 The mask, and why it is a per-ROW quantity
 
-<a id="factorforward"></a>`production_factor` is a public surface and takes an optional detached boolean candidate
-mask, laid out like the logits (absent: every element is a candidate). A masked element is not a candidate: it leaves
+<a id="factorforward"></a>The independent entmax kernels take an optional detached boolean candidate
+mask, laid out like the logits (absent: every element is a candidate); no caller passes one. A masked element is not a candidate: it leaves
 the
 support by construction rather than by a correction applied afterwards.
 
@@ -102,8 +102,7 @@ reduction, not `width`:
   which is what keeps a masked column from being admitted by a prefix that never
   included it;
 * an empty row produces `chosen = −1`, hence `tau = 0`, hence no support and no
-  amplitude — the autograd contract
-  `test_production_factor_empty_rows_preserve_autograd_contract` pins.
+  amplitude.
 
 The mask pointer is NULL on every plan-level path (`_launch_factor_backward_into_logits` and the
 batched entry), and the count reduction is skipped there — one uniform branch on a
@@ -115,8 +114,7 @@ matrix to buy a prologue.
 <a id="near-line-204"></a><a id="near-line-212"></a>Identical to the union solve's, including the two things that are
 easy to get
 wrong: support is the set of POST-CAST bf16 nonzeros and never the pre-quantization
-solve ([bf16-support-boundary](entmax.md#bf16-support-boundary)) — which holds even
-when this level's values are STORED in fp32, because the word describes what the
+solve ([bf16-support-boundary](entmax.md#bf16-support-boundary)) — the word describes what the
 consumer will read — and the 32-token word is packed by the epilogue butterfly over
 the lanes at or above `LW`
 ([epilogue-butterfly](entmax.md#epilogue-butterfly)), one CTA owning exactly one
@@ -192,9 +190,5 @@ value below bf16's smallest subnormal cannot arise, because the smallest amplitu
 solve can produce and still call supported is bounded away from it by the threshold
 arithmetic. That identity is the self-masking theorem's storage precondition
 (`docs/architecture/self-masking-theorem.md`) and it is gated without tolerance by
-`tests/integration/test_production_levels.py::test_the_stored_form_preserves_the_support_exactly`
-over four stress fixtures x four routing shapes x two alphas.
-
-`stored_dtype=torch.float32` exists for one purpose: a FIDELITY gate that wants the
-solve's own arithmetic without the storage quantization on top of it. It is a test-side
-argument; no runtime path passes it.
+`tests/integration/test_production_levels.py`'s oracle rows, which compare the stored levels' support sets exactly against the fp64 oracle's over four stress
+fixtures x four routing shapes x two alphas. The stored form is bf16 alone: the contract holds it, and `production.py` names it once, where it allocates the planes.

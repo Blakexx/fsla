@@ -36,6 +36,11 @@ carries the whole rule for that output:
 
 The tightest of the two binds, and a failure names which one it was.
 
+A GRADIENT is no multilinear output: its coefficients are a nonlinear function of the stored values (roots, a division by their
+sum), so it takes no envelope. Its reference is the operator's mathematical gradient evaluated in fp64 at the SAME stored values the
+backward kernel reads (`tests/oracle/stored_vjp.py`), and its kind (`ENTMAX_GRADIENTS_FROM_STORED`) states the family budget on the
+result with the absolute floor the output already carries. Its margins are to be recorded by the device run.
+
 MEASURED 2026-09-14 (`pytest --oracle-margins=<file>` records every comparison):
 the worst error over its allowance under its budget, and the smallest uniform
 relative error the rule sees on some slot of the output.
@@ -134,10 +139,23 @@ PROJECTION_LOGITS = Output("projection logits", rtol=U_BF16, clauses=((0.0, 1.32
 ENTMAX_VALUES = Output("entmax values", clauses=((0.0, 8.34e-2), (ENTMAX_RTOL, ENTMAX_ATOL)))
 ENTMAX_GRADIENTS = Output("entmax gradients", clauses=((0.0, 5.96e-5), (ENTMAX_GRAD_RTOL, ENTMAX_GRAD_ATOL)))
 STORED_LEVELS = Output("stored bf16 levels", clauses=((0.0, 1.52e-1), (BF16_RTOL, BF16_RTOL)))
+#: THE SOLVE'S OWN bf16 STORED FORM against the reference's value rounded to bf16 (the CUDA solve writes bf16 and nothing else): one bf16 unit in
+#: the last place, `2^-7` of the value (a round to nearest moves a value by at most `2^-8` of itself, and the reference's own rounding may land on
+#: the neighbouring side of the cut), over the absolute floor the fp32 form was held to (`ENTMAX_ATOL`). Derived, not measured.
+ENTMAX_STORED_VALUES = Output("entmax stored values", clauses=((2.0 ** -7, ENTMAX_ATOL),))
+#: THE ENTMAX, SOFTMAX AND UNION BACKWARDS' GRADIENTS INTO THE LOGITS, against the reference's gradient evaluated in fp64 at the SAME stored
+#: bf16 values the backward reads (`tests/oracle/stored_vjp.py`; the union's is derived from the reference forward, not published), so both sides evaluate one nonlinear function at one point. What is
+#: left is the kernel's fp32 arithmetic and the rounding of its bf16 result (`U_BF16` of the slot): the family budget `BF16_RTOL`
+#: on the result over the absolute floor this output already carries (`ENTMAX_GRAD_ATOL`, the fp32 form's), and no envelope: the
+#: coefficients of a gradient are a nonlinear function of the stored values, not a multilinear sum of terms. Derived, not measured;
+#: the device run's margins (`--oracle-margins`) are to be recorded. The error against the oracle's gradient at the unrounded values is reported.
+ENTMAX_GRADIENTS_FROM_STORED = Output("entmax gradients from stored values", clauses=((BF16_RTOL, ENTMAX_GRAD_ATOL),))
 STORED_ROUTE = Output("stored route", clauses=((0.0, 2 * STORED_ROUTE_ATOL), (STORED_ROUTE_RTOL, STORED_ROUTE_ATOL)))
 
 #: EVERY OUTPUT KIND, for the test that holds each to declaring its clauses and their measurement.
-OUTPUTS = (DECODE_Y, DECODE_STATE, PROJECTION_LOGITS, ENTMAX_VALUES, ENTMAX_GRADIENTS, STORED_LEVELS, STORED_ROUTE)
+OUTPUTS = (DECODE_Y, DECODE_STATE, PROJECTION_LOGITS, ENTMAX_VALUES, ENTMAX_GRADIENTS, ENTMAX_STORED_VALUES,
+           ENTMAX_GRADIENTS_FROM_STORED,
+           STORED_LEVELS, STORED_ROUTE)
 
 #: Where the per-slot check records its margins: `--oracle-margins`, set by `tests/conftest.py`; None records nothing.
 MARGINS_FILE = None

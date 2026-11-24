@@ -62,24 +62,6 @@
    "count": 1
   },
   {
-   "path": "fsla/routing/entmax/production.py",
-   "message": "production_factor(..., activation=) is only ever 'entmax' -- across every call in this tree, nothing moves it",
-   "line_sha256": "d18cfb8e300da4c0",
-   "count": 1
-  },
-  {
-   "path": "fsla/routing/entmax/production.py",
-   "message": "production_factor(..., alpha=) is only ever 1.5 -- across every call in this tree, nothing moves it",
-   "line_sha256": "d18cfb8e300da4c0",
-   "count": 1
-  },
-  {
-   "path": "fsla/routing/entmax/production.py",
-   "message": "production_factor(..., mask=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "d18cfb8e300da4c0",
-   "count": 1
-  },
-  {
    "path": "fsla/routing/entmax/reference.py",
    "message": "entmax_forward(..., dim=) is only ever -1 -- across every call in this tree, nothing moves it",
    "line_sha256": "6d91a47c17342777",
@@ -89,12 +71,6 @@
    "path": "fsla/routing/projection.py",
    "message": "packed_router_logits(..., route_bias=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "0c6c0b53e40d5eb1",
-   "count": 1
-  },
-  {
-   "path": "fsla/routing/projection.py",
-   "message": "packed_router_logits_reference(..., route_bias=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "d43d764a2ff37fdf",
    "count": 1
   },
   {

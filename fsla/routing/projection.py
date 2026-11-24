@@ -84,9 +84,7 @@ def _packed_router_logits(
     # BIT-IDENTICAL, and that is the whole safety argument: a column of the output is a
     # dot product over the full hidden dim and is unaffected by which OTHER columns share
     # the GEMM, or by whether the weight it reads is a view or a copy of the same values.
-    # So `test_projection_tf32_support_gate.py` -- the gate that exists because effd23c
-    # moved this GEMM's arithmetic and flipped 14-95 entmax support entries -- sees
-    # byte-for-byte the logits it sees today, as do the fp64 oracle gates.
+    # So the fp64 oracle gates see byte-for-byte the same logits.
     def pack_weight(slots: tuple[int, ...], *, with_gain: bool = False):
         """One side's slot columns, as a view when they are one run and a copy when not.
 
@@ -174,17 +172,4 @@ def packed_router_logits(
     """Project production router logits in fp32."""
     read, write, _ = _packed_router_logits(
         h, route_W, routing, route_bias=route_bias, projection_dtype=torch.float32)
-    return read, write
-
-
-def packed_router_logits_reference(
-    h: torch.Tensor,
-    route_W: torch.Tensor,
-    routing: ResolvedRouting,
-    *,
-    route_bias: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Project canonical reference router logits in fp64."""
-    read, write, _ = _packed_router_logits(
-        h, route_W, routing, route_bias=route_bias, projection_dtype=torch.float64)
     return read, write

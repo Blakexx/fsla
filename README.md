@@ -147,37 +147,37 @@ guarantees an arm for) and the architectures the build produces; the gate fails 
 
 | Compute capability | GPUs | width | levels | alpha_tenths | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 15, 20 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 15, 20 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 
 **`factor_forward`**
 
 | Compute capability | GPUs | width | levels | alpha_tenths | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 15, 20 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 15, 20 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 
 **`softmax_backward`**
 
 | Compute capability | GPUs | width | levels | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 
 **`softmax_forward`**
 
 | Compute capability | GPUs | width | levels | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 
 **`union_backward`**
 
 | Compute capability | GPUs | width | levels | alpha_tenths | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 15, 20 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 15, 20 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 
 **`union_forward`**
 
 | Compute capability | GPUs | width | levels | alpha_tenths | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| `sm_90a` | H100 | 1..256 | 1..16 | 15, 20 | 0..1 | 0..1 | `cu13` | ptxas 13.5.37 | built |
+| `sm_90a` | H100 | 2..256 | 1..16 | 15, 20 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
 <!-- END GENERATED: tools/supported.py -->
 
 An architecture that is not built refuses to load. Bringing one up is a measurement:

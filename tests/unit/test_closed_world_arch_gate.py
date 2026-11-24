@@ -40,6 +40,7 @@ import pytest
 import torch
 
 from hardware import registry
+from tests.oracle.tolerances import ENTMAX_STORED_VALUES
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "fsla" / "src"
@@ -195,7 +196,8 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     #: refuses by name where no device part of the registry states this device's architecture: the part is then the one to add
     registry.device_arch(*torch.cuda.get_device_capability())
     L, width = 32, 16
-    values = torch.zeros(1, L, width, device="cuda")
-    extension().routing_softmax_forward(torch.randn(1, L, width, device="cuda"), values, None, [0], [0], [width], 1)
+    values = torch.zeros(1, L, width, device="cuda", dtype=torch.bfloat16)
+    extension().routing_softmax_forward(torch.randn(1, L, width, device="cuda", dtype=torch.bfloat16), values, None, [0], [0], [width], 1)
     torch.cuda.synchronize()
-    assert torch.allclose(values.sum(-1), torch.ones(1, L, device="cuda"))
+    #: the stored values are bf16: their sum is one within one bf16 unit in the last place
+    assert torch.allclose(values.float().sum(-1), torch.ones(1, L, device="cuda"), rtol=ENTMAX_STORED_VALUES.clauses[0][0])

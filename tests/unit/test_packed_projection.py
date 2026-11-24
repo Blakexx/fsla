@@ -161,9 +161,7 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(untied_lev
     the output is a dot product over the full hidden dim, so it cannot depend on where
     the column is written -- `torch.equal`, not a tolerance, because a tolerance here
     would hide a real arithmetic change behind an "acceptable" one and this seam's whole
-    licence is that it moves no number (`test_projection_tf32_support_gate.py` exists
-    because a previous change to this GEMM's arithmetic flipped 14-95 entmax support
-    entries).
+    licence is that it moves no number.
 
     **And the token-major form is a VIEW of one GEMM**: it is contiguous, where the flat
     form needs a transpose of the whole plane to make `(B, H)` one axis. That is the

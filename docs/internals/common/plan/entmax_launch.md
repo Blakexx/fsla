@@ -17,16 +17,16 @@ THE LAW IT OWNS, each stated once:
   width class; level i has width w against class k"); a test pins the words.
 
 `entmax_reach<K>` is the ARM half, a decision tree on `Truth` in the rule language ([`rules.md`](rules.md)): the levels within the bound, a ladder over the width's classes, a fork on alpha
-where the kernel has one, a ladder over each dtype. It is exact over ranges ([`rules.md#exact`](rules.md#exact)), so the arm generator ([`arms_gen.md`](arms_gen.md)) asks it what a contract reaches; the arm
+where the kernel has one, a ladder over each dtype (the contracts hold bf16 alone, so each ladder reaches one rung over a contract's range; the arm key keeps both dtypes). It is exact over ranges ([`rules.md#exact`](rules.md#exact)), so the arm generator ([`arms_gen.md`](arms_gen.md)) asks it what a contract reaches; the arm
 of a point is the same walk (`entmax_arm`). `entmax_launch<K>` is `{arm, klass, levels}` for a point: the arm, the padded width the launch's levels share (what `entmax_class_refusal`
 holds every level to) and the level count (the grid's depth). `entmax_call<K>` states the call's facts in the form `describe` takes, so the fact names are written beside the reader.
 
 THE GRID STAYS IN THE LAUNCH FUNCTIONS: `ceil(tokens / WORD_TOKENS)` reads the support word's 32 tokens, which the kernels read too (`entmax.cuh`'s `WORD_TOKENS`, FROZEN), so a matcher that
 computed it would state the constant twice.
 
-The arm has two forms because the softmax kernels have no alpha: `EntmaxAlphaArm` (`lw`, `ipt`, `alpha15`, `logit`, `value`, named as the kernels' template parameters are: 64 arms from 8 classes, 2 alphas and 4 dtype pairs) and
-`EntmaxPlainArm` (`lw`, `ipt`, `logit`, `value`: 32). `EntmaxArmOf<K>` picks by the kernel's facts (`EntmaxHasAlpha<K>`: whether its reader has an alpha).
+The arm has two forms because the softmax kernels have no alpha: `EntmaxAlphaArm` (`lw`, `ipt`, `alpha15`, `logit`, `value`, named as the kernels' template parameters are: 16 arms from 8 classes and 2 alphas, the dtypes bf16 alone) and
+`EntmaxPlainArm` (`lw`, `ipt`, `logit`, `value`: 8). `EntmaxArmOf<K>` picks by the kernel's facts (`EntmaxHasAlpha<K>`: whether its reader has an alpha).
 
 THE HOST USES IT as `decode.cu` uses decode's: an entry builds its kernel's facts from its own arguments, `plan::descriptor_of<K>` checks them against the contract (the refusal is the contract's,
 naming the fact and the nearest context's range), `entmax_launch<K>` is the launch, and `arm_switch` over the family's generated arm set selects the instantiation. `tests/unit/test_entmax_matcher.py`
-holds the arm of every width, both alphas and the four dtype pairs for each kernel (through `plan_tool --kernel <kernel>`), each refusal, and the families' row counts.
+holds the arm of every width from 2, both alphas and bf16 planes for each kernel (through `plan_tool --kernel <kernel>`), each refusal, and the families' row counts.

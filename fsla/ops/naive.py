@@ -27,7 +27,7 @@ is out of scope here.
 
 This module intentionally does not import or reuse anything from the Q/K-era
 oracle it replaces (``ResolvedRouting``, ``routing_factor_levels``,
-``packed_router_logits_reference``, ``fsla.ops.decay`` --
+``fsla.ops.decay`` --
 all tied to the packed-router / matrix-state ABI). The old oracle survives only
 in git history at ``d6f73e97`` and is used there, read-only, by the migration
 equivalence test.

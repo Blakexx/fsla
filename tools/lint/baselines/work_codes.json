@@ -1040,12 +1040,6 @@
    "count": 1
   },
   {
-   "path": "tests/integration/test_production_levels.py",
-   "message": "names the work code 'V9'",
-   "line_sha256": "edbe620eb2ce35bd",
-   "count": 1
-  },
-  {
    "path": "tests/integration/test_state_facade.py",
    "message": "names the work code 'K31'",
    "line_sha256": "2e11a99effa8dcbc",

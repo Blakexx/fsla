@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE ENTMAX KERNELS' MATCHER AND THEIR CONTRACTS (`csrc/fsla/src/common/plan/entmax_launch.h`, `hardware/kernels/<kernel>/`,
-docs/internals/common/plan/entmax_launch.md): `plan_tool --kernel <kernel>` is the matcher on a call given by hand, with no GPU. Every width, both alphas and the four
-dtype pairs reach the arm the old switches picked (the padded width's lane width and items a thread); a call outside a contract is refused naming the fact; a
+docs/internals/common/plan/entmax_launch.md): `plan_tool --kernel <kernel>` is the matcher on a call given by hand, with no GPU. Every width from 2, both alphas and bf16 planes
+reach the arm the old switches picked (the padded width's lane width and items a thread); a call outside a contract is refused naming the fact; a
 launch of two width classes is refused in the words the solves' level table always used; each family's arm list is the product of its contract's ranges. The Python
 copies of the matcher's laws read the extension's answer, and the public surface's own limits are tied to the contracts' ranges."""
 from __future__ import annotations
@@ -29,9 +29,9 @@ KERNELS = ENTMAX + SOFTMAX
 
 HOPPER = registry.device_point()
 
-#: the code of each alpha the contracts hold, and the dtypes' codes
+#: the code of each alpha the contracts hold, and the one dtype code they hold (bf16)
 ALPHAS = {15: 1, 20: 0}
-DTYPES = (0, 1)
+BF16 = 1
 
 
 def _old_class(width: int) -> int:
@@ -49,7 +49,7 @@ def _old_arm(width: int):
     return klass, lane, klass // lane
 
 
-def _facts(kernel: str, width: int, levels: int = 1, alpha: int = 15, logit: int = 0, value: int = 0) -> str:
+def _facts(kernel: str, width: int, levels: int = 1, alpha: int = 15, logit: int = BF16, value: int = BF16) -> str:
     cells = {"width": width, "levels": levels, **({"alpha_tenths": alpha} if kernel in ENTMAX else {}), "logit_dtype": logit, "value_dtype": value}
     return ",".join(f"{k}={v}" for k, v in cells.items())
 
@@ -73,10 +73,10 @@ def _arm_text(kernel: str, lane: int, items: int, alpha15: int, logit: int, valu
 
 
 @pytest.mark.parametrize("kernel", KERNELS)
-@pytest.mark.parametrize("logit, value", list(itertools.product(DTYPES, DTYPES)))
-def test_every_width_alpha_and_dtype_pair_reaches_the_arm_the_switches_picked(kernel, logit, value):
+def test_every_width_and_alpha_reaches_the_arm_the_switches_picked(kernel):
+    logit = value = BF16
     for alpha, alpha15 in (ALPHAS.items() if kernel in ENTMAX else [(15, 0)]):
-        widths = range(1, 257)
+        widths = range(2, 257)
         run = _run(kernel, ";".join(_facts(kernel, w, 1, alpha, logit, value) for w in widths))
         for width, out in zip(widths, _blocks(run), strict=True):
             klass, lane, items = _old_arm(width)
@@ -92,15 +92,18 @@ def test_a_launch_of_up_to_sixteen_levels_keeps_its_levels(kernel):
 
 @pytest.mark.parametrize("kernel", KERNELS)
 @pytest.mark.parametrize("call, named", [
-    ({"width": 257}, "width=257 (the contract: 1..256)"),
-    ({"width": 0}, "width=0 (the contract: 1..256)"),
+    ({"width": 257}, "width=257 (the contract: 2..256)"),
+    ({"width": 1}, "width=1 (the contract: 2..256)"),
+    ({"width": 0}, "width=0 (the contract: 2..256)"),
     ({"levels": 0}, "levels=0 (the contract: 1..16)"),
     ({"levels": 17}, "levels=17 (the contract: 1..16)"),
-    ({"logit": 2}, "logit_dtype=2 (the contract: 0..1)"),
-    ({"value": -1}, "value_dtype=-1 (the contract: 0..1)"),
+    ({"logit": 0}, "logit_dtype=0 (the contract: 1)"),
+    ({"logit": 2}, "logit_dtype=2 (the contract: 1)"),
+    ({"value": 0}, "value_dtype=0 (the contract: 1)"),
+    ({"value": -1}, "value_dtype=-1 (the contract: 1)"),
 ])
 def test_a_call_outside_a_contract_is_refused_naming_the_fact(kernel, call, named):
-    facts = {"width": 64, "levels": 1, "logit": 0, "value": 0, **call}
+    facts = {"width": 64, "levels": 1, "logit": BF16, "value": BF16, **call}
     run = _run(kernel, _facts(kernel, facts["width"], facts["levels"], 15, facts["logit"], facts["value"]))
     assert run.returncode == 1
     assert f"outside FSLA's {kernel} contract" in run.stderr and named in run.stderr
@@ -149,17 +152,17 @@ def _contract_arms(kernel: str) -> int:
 def test_each_family_has_as_many_arms_as_its_contract_states(kernel):
     rows = json.loads((PLAN / f"{kernel}_plan" / f"{kernel}_arm_rows.json").read_text())
     assert rows["family"] == kernel
-    assert len(rows["arms"]) == _contract_arms(kernel) == (64 if kernel in ENTMAX else 32)
+    assert len(rows["arms"]) == _contract_arms(kernel)
     assert rows["key"] == (["lw", "ipt", "alpha15", "logit", "value"] if kernel in ENTMAX else ["lw", "ipt", "logit", "value"])
     assert rows["arms"] == sorted(rows["arms"])
 
 
 @pytest.mark.parametrize("kernel", KERNELS)
-def test_a_contract_states_every_width_both_alphas_the_four_dtype_pairs_and_sixteen_levels(kernel):
+def test_a_contract_states_every_width_from_two_both_alphas_bf16_planes_and_sixteen_levels(kernel):
     contexts = registry.contexts(kernel)
-    assert {c.facts["width"] for c in contexts} == {(1, 256)}
+    assert {c.facts["width"] for c in contexts} == {(2, 256)}
     assert {c.facts["levels"] for c in contexts} == {(1, 16)}
-    assert {c.facts["logit_dtype"] for c in contexts} == {(0, 1)} and {c.facts["value_dtype"] for c in contexts} == {(0, 1)}
+    assert {c.facts["logit_dtype"] for c in contexts} == {(BF16, BF16)} and {c.facts["value_dtype"] for c in contexts} == {(BF16, BF16)}
     if kernel in ENTMAX:
         assert sorted(c.facts["alpha_tenths"] for c in contexts) == [(15, 15), (20, 20)]
     else:
@@ -183,6 +186,6 @@ def test_the_planners_width_class_and_level_bound_are_the_extensions_answer():
     from fsla.ops._ext import extension
     from fsla.routing.entmax import production
 
-    for width in range(1, 257):
+    for width in range(2, 257):
         assert production._width_class(width) == _old_class(width) == int(extension().entmax_width_class(width))
     assert production._max_batched_levels() == 16 == max(c.facts["levels"][1] for k in KERNELS for c in registry.contexts(k))

@@ -168,7 +168,8 @@ constexpr EntmaxReach<K> entmax_reach(const typename K::Descriptor& d) {
   };
 
   const auto widths = [&] {
-    ladder(R::width(d), 1, kEntmaxClasses.data(), kEntmaxClasses.size(), hole, leaf);
+    ladder(R::width(d), kEntmaxClasses[0], kEntmaxClasses.data(), kEntmaxClasses.size(), hole,
+           leaf);
   };
 
   fork(in(R::levels(d), 1, kEntmaxMaxLevels), widths, hole);

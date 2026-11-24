@@ -147,7 +147,7 @@ declares `heads == 1`: the solve takes the logit plane in whichever layout the c
 above never happens.
 
 The producer emits the token-major plane only where the CUDA solve will read it (CUDA
-fp32). The torch lowering and the fp64 reference solve read a level by SLICING, with no
+bf16). The torch lowering and the fp64 reference solve read a level by SLICING, with no
 stride tuple to read a head axis through, so they keep the flat plane — **no reference's
 accepted shape changed**, and no dual run is owed.
 
@@ -214,18 +214,17 @@ names.
 descriptors describe the public contract that enters into those arms, the matchers map that contract to arms" (the owner, 2026-11-23), and asked whether the
 six kernels share one registry or each has its own: "One per kernel". So `union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward` and `softmax_backward`
 each have `hardware/kernels/<kernel>/` (`schema.json`, `parts/call.json`, `descriptors/hopper_<kernel>.json`), whose facts are the call's, in the caller's terms:
-`width` (1 to 256: every width the topology states, from 1 up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
-has no scalar enum type, so alpha is an exact integer code; absent from the two softmax kernels), `logit_dtype` and `value_dtype` (0 fp32, 1 bf16 each, all four pairs). The contract states
-exactly what the kernels serve; a call outside it is refused naming the fact and the nearest context's range. The matcher
-([`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the contract to the arm, so the instantiations are generated from it: 8 width classes, 2 alphas and 4 dtype pairs are
-64 arms of each kernel with an alpha, 8 classes and 4 dtype pairs the 32 of each softmax kernel (`ARM_FAMILIES`, one family for each kernel; [`../../build-graph.md#arms`](../../build-graph.md#arms)).
+`width` (2 to 256: every width a level has, from 2 (`ResolvedRouting` refuses a narrower level) up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
+has no scalar enum type, so alpha is an exact integer code; absent from the two softmax kernels), `logit_dtype` and `value_dtype` (code 1, bf16, each: the library sends the solves bf16 logits alone and stores bf16 values, and a plane of another dtype is refused naming the fact). The contract states
+exactly what the library sends the kernels, and the kernels keep their `LogitT` / `OutT` template parameters, which no other arm instantiates; a call outside it is refused naming the fact and the nearest context's range. The matcher
+([`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the contract to the arm, so the instantiations are generated from it: 8 width classes and 2 alphas are
+16 arms of each kernel with an alpha, 8 classes the 8 of each softmax kernel (80 in all) (`ARM_FAMILIES`, one family for each kernel; [`../../build-graph.md#arms`](../../build-graph.md#arms)).
 The SASS gate holds every arm to be carried exactly once, and each arm keeps what its SASS shows of the two rules the solves predate (`csrc/fsla/src/entmax/arms.bzl`).
 The public surface's own limits stay its own: the activation registry's alpha rows and the topology's branch width limit are validated at the surface, and
 `tests/unit/test_entmax_matcher.py` ties each to the contracts' ranges.
 
 <a id="check-logits"></a><a id="checklogits"></a>Two dtype axes meet in one call, the logit plane's and the route
-values': bf16 on the shipped path (the router GEMM's bf16 output), fp32 on the gates that want the solve's
-arithmetic without either storage quantization ([`factor.md#logit-dtype`](factor.md#logit-dtype)).
+values': both bf16, the router GEMM's bf16 output and the stored form ([`factor.md#logit-dtype`](factor.md#logit-dtype)).
 
 ## <a id="overflow-free-delta"></a>6. `overflow_free_delta` — the read-write difference
 
@@ -480,7 +479,7 @@ construction.
 
 On support the action is `diag(s) - s s^T / (1.s)` — the α-entmax Jacobian action,
 with `s = 1` (α = 2) or `s = sqrt(p) = p^(2-alpha)` (α = 1.5) — plus the write side's
-second rank-1 (the softmax form inside `d_log_weight`) and the diagonal gate terms.
+second rank-1 (the softmax form inside the write side's log-weight adjoint) and the diagonal gate terms.
 
 ### Dead directions are exactly zero, by multiplication
 

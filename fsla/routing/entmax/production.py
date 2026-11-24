@@ -6,7 +6,7 @@ fixed-alpha VJP. Its plan-level surface is ``production_routing_levels``: dense 
 ``[BH, T, width_l]`` factors, the contract the consumer and its fp64 oracle both consume. This is what
 the producer calls.
 
-and through two lowerings of one semantics: hand-CUDA on fp32 CUDA tensors, and the identical
+It runs through two lowerings of one semantics: hand-CUDA on bf16 CUDA tensors, and the identical
 sorted closed form in torch for the domains the kernels do not cover (CPU, fp64). Neither surface
 ever calls the reference; it is the test oracle, not a fallback.
 
@@ -19,11 +19,9 @@ fallback on CUDA: `fsla.ops._ext` raises loudly if the wheel is missing
 from __future__ import annotations
 
 from functools import cache
-from math import prod
 
 import torch
 
-from fsla.routing.topology import MAX_BRANCH_WIDTH
 from fsla.routing.types import (
     ROUTE_TILE_SIZE as _ROUTE_TILE_SIZE_VALUE,
 )
@@ -36,33 +34,9 @@ from fsla.routing.types import (
     UnionRouting,
 )
 
-_SPARSE_ACTIVATIONS = {"entmax", "sparsemax"}
-
-#: THE LOGIT PLANE'S ADMISSIBLE DTYPES. `bfloat16` is what the shipped projection emits
-#: (bf16 operands on the tensor cores, fp32 accumulate, bf16 out); `float32` is the gate
-#: domain that wants the solve's arithmetic without the projection's output quantization.
-#: The kernels take either through one `LogitT` template and widen in-register
-#: (docs/internals/entmax/factor.md#logit-dtype).
-_SOLVE_LOGIT_DTYPES = (torch.float32, torch.bfloat16)
-_SUPPORTED_PRODUCTION_ALPHAS = (1.5, 2.0)
-
-#: The support word's token quantum, and the tile-major arena's lane count: one word is
-#: one tile, which is what lets a level's support and its values share a tile index.
-_WORD_TOKENS = 32
-
 
 def _cdiv(a: int, b: int) -> int:
     return -(-a // b)
-
-
-def _production_alpha(alpha: float) -> float:
-    """Validate the two exact production entmax specializations."""
-    alpha = float(alpha)
-    if alpha not in _SUPPORTED_PRODUCTION_ALPHAS:
-        raise ValueError(
-            "production routing supports exactly alpha=1.5 (entmax) and alpha=2.0 "
-            f"(sparsemax), got {alpha!r}")
-    return alpha
 
 
 def _extension():
@@ -76,89 +50,6 @@ def _one(width: int) -> list[int]:
     """The single-level table a one-level launch takes: offsets are already in the
     tensors' own `data_ptr`, because every caller here hands a level SLICE."""
     return [width]
-
-
-def _launch_fwd(z, mask, alpha, *, tokens, n_streams):
-    rows, cols = z.shape
-    p = torch.empty_like(z)
-    support_words = torch.empty(
-        (n_streams, _cdiv(tokens, _WORD_TOKENS), cols), dtype=torch.int32, device=z.device)
-    if rows == 0:
-        return p, support_words
-    _extension().entmax_factor_forward(
-        z.view(n_streams, tokens, cols), mask.view(n_streams, tokens, cols),
-        p.view(n_streams, tokens, cols), None, support_words,
-        [0], [0], [0], _one(cols), 1, float(alpha))
-    return p, support_words
-
-
-class _ProductionFactorFn(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, z, mask, alpha, tokens, n_streams):
-        p, support_words = _launch_fwd(
-            z, mask, alpha, tokens=tokens, n_streams=n_streams)
-        ctx.save_for_backward(p, support_words, mask)
-        ctx.alpha = float(alpha)
-        ctx.tokens = int(tokens)
-        ctx.n_streams = int(n_streams)
-        ctx.mark_non_differentiable(support_words)
-        return p, support_words
-
-    @staticmethod
-    def backward(ctx, dp, _dsupport_words):
-        if dp is None:
-            return None, None, None, None, None
-        p, support_words, mask = ctx.saved_tensors
-        dp = dp.contiguous()
-        rows, cols = p.shape
-        dz = torch.empty_like(p)
-        if rows == 0:
-            return dz, None, None, None, None
-        shape = (ctx.n_streams, ctx.tokens, cols)
-        _extension().entmax_factor_backward(
-            p.view(shape), support_words, mask.view(shape), dp.view(shape), None, dz.view(shape),
-            [0], [0], [0], _one(cols), False, 1, ctx.alpha)
-        return dz, None, None, None, None
-
-
-def production_factor(z, activation="entmax", alpha=1.5, mask=None):
-    """Return ``(values, packed_support_words)`` for an alpha=1.5 or alpha=2 CUDA routing solve.
-
-    Logits and output factors are fp32. ``mask`` is a detached boolean candidate mask and is broadcast
-    over leading dimensions. Support is packed over the penultimate (token) axis into signed ``int32``
-    words whose bit pattern is uint32. Packed support describes factors that remain nonzero after the
-    native bf16 route-storage cast; the returned fp32 factors retain the analytic solve values and are
-    reused directly by the VJP.
-    """
-    if not z.is_cuda:
-        raise RuntimeError("production_factor is CUDA-only; use the fp64 naive oracle on CPU")
-    if z.dtype != torch.float32:
-        raise TypeError(f"production_factor requires fp32 logits, got {z.dtype}")
-    if z.dim() < 1 or z.shape[-1] < 1:
-        raise ValueError(f"production_factor expects a non-empty branch axis, got {tuple(z.shape)}")
-    if z.shape[-1] > MAX_BRANCH_WIDTH:
-        raise ValueError(
-            f"production_factor branch width must be <= {MAX_BRANCH_WIDTH}; "
-            f"got {z.shape[-1]}")
-    if activation not in _SPARSE_ACTIVATIONS:
-        raise ValueError(f"production_factor requires entmax/sparsemax, got {activation!r}")
-    alpha = _production_alpha(alpha)
-
-    cols = z.shape[-1]
-    if z.dim() == 1:
-        tokens, n_streams, support_shape = 1, 1, (1, cols)
-    else:
-        tokens = z.shape[-2]
-        n_streams = prod(z.shape[:-2])
-        support_shape = (*z.shape[:-2], _cdiv(tokens, _WORD_TOKENS), cols)
-    z_rows = z.reshape(n_streams * tokens, cols).contiguous()
-    if mask is None:
-        mask_rows = torch.ones_like(z_rows, dtype=torch.bool)
-    else:
-        mask_rows = mask.to(device=z.device, dtype=torch.bool).expand_as(z).reshape(-1, cols).contiguous()
-    p, support_words = _ProductionFactorFn.apply(
-        z_rows, mask_rows, float(alpha), tokens, n_streams)
-    return p.reshape_as(z), support_words.reshape(support_shape)
 
 
 def _arena_shape(logits: torch.Tensor) -> tuple[int, int]:
@@ -347,11 +238,9 @@ class _ProductionLevelsFn(torch.autograd.Function):
     kernels, the same tied/union dispatch, the same packed support -- against one
     dense plane per side rather than the tile-major arena the earlier chunk ABI took.
 
-    ``stored_dtype`` is the STORED form (docs/internals/entmax/factor.md#stored-form):
+    The CUDA solve writes the STORED form (docs/internals/entmax/factor.md#stored-form):
     ``bfloat16`` is what the consumer reads and therefore what the producer emits, and
-    the solve writes it directly rather than through a narrowing pass. ``float32``
-    exists for a gate that wants the solve's own arithmetic without the storage
-    quantization on top of it.
+    the solve writes it directly rather than through a narrowing pass.
 
     Read and write are always distinct allocations, even where one solve serves both
     (a ``TiedRouting`` level): the kernels already write a second output and accumulate
@@ -360,7 +249,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, read_logits, write_logits, routing, stored_dtype):
+    def forward(ctx, read_logits, write_logits, routing):
         n_streams, tokens = _arena_shape(read_logits)
         device = read_logits.device
         support_words = torch.empty(
@@ -382,7 +271,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
         #: `tokens` no kernel touches).
         packed_width = routing.level_offsets[-1]
         read_plane = torch.empty(
-            (n_streams, tokens, packed_width), dtype=stored_dtype, device=device)
+            (n_streams, tokens, packed_width), dtype=torch.bfloat16, device=device)
         write_plane = torch.empty_like(read_plane)
         union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
                         if isinstance(level, UnionRouting)]
@@ -470,7 +359,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
         d_write_logits = torch.zeros_like(d_read_logits)
         n_streams, tokens = ctx.logits_shape[:2]
         if n_streams == 0 or tokens == 0:
-            return d_read_logits, d_write_logits, None, None
+            return d_read_logits, d_write_logits, None
 
         union_index = 0
         for index, level in enumerate(routing.levels):
@@ -526,7 +415,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 else:
                     _launch_softmax_backward_into_logits(
                         output, d_output, None, target, accumulate=False)
-        return d_read_logits, d_write_logits, None, None
+        return d_read_logits, d_write_logits, None
 
 
 # ---------------------------------------------------------------------------
@@ -669,8 +558,6 @@ def production_routing_levels(
     read_logits: torch.Tensor,
     write_logits: torch.Tensor,
     routing: ResolvedRouting,
-    *,
-    stored_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...], torch.Tensor | None]:
     """Exact per-level ``(read, write)`` routing factors on the production solve, and the solve's ``support_words``.
 
@@ -682,17 +569,15 @@ def production_routing_levels(
 
     Returns one ``[BH, T, width_l]`` tensor per level-side -- the shape the producer
     hands ``naive_fsla`` and the consumer. Lowered to the hand-CUDA solve
-    on CUDA fp32 and to the identical sorted closed form in torch elsewhere;
+    on CUDA bf16 and to the identical sorted closed form in torch elsewhere;
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.
 
-    LOGITS ARRIVE IN EITHER DTYPE AND EITHER LAYOUT. ``bfloat16`` is what the shipped
-    projection emits -- bf16 operands on the tensor cores, fp32 accumulate, bf16 out,
-    which is the only shape cuBLAS offers and 2.76x the fp32 SIMT GEMM at the pinned cell
-    -- and ``float32`` is the gate domain that wants the solve's arithmetic without the
-    projection's output quantization. The kernels take either through one ``LogitT``
-    template and widen each logit IN REGISTER, so no pass over the plane exists in either
-    direction (docs/internals/entmax/factor.md#logit-dtype).
+    CUDA LOGITS ARRIVE IN ``bfloat16``, which is what the shipped projection emits -- bf16
+    operands on the tensor cores, fp32 accumulate, bf16 out -- or in ``float64``, which takes
+    the torch lowering (the oracle-equivalence gate runs there); any other CUDA dtype is
+    refused by name. The kernels widen each logit IN REGISTER, so no pass over the plane
+    exists in either direction (docs/internals/entmax/factor.md#logit-dtype).
 
     LAYOUT: flat ``[BH, T, packed_logit_width]``, or the
     TOKEN-MAJOR ``[B, T, H, packed_logit_width]`` the packed router GEMM writes without
@@ -701,12 +586,10 @@ def production_routing_levels(
     lowering flattens it first, which is the transpose this seam exists to avoid paying
     on the shipped path and does not mind paying on the oracle's.
 
-    ``stored_dtype`` selects the CUDA solve's output format, and its default is the
-    STORED form: the consumer reads bf16 and nothing else reads these at all, so the
-    kernel writes bf16 and no narrowing pass exists. ``float32`` is for a gate that
-    wants the solve's arithmetic without the storage quantization on it. It does not
-    reach the torch lowering, whose domains (CPU, fp64) are the ones where the stored
-    form is not the question.
+    The CUDA solve's output is the STORED form: the consumer reads bf16 and nothing else
+    reads these at all, so the kernel writes bf16 and no narrowing pass exists. The torch
+    lowering returns its own dtype, the domains (CPU, fp64) where the stored form is not
+    the question.
     """
     if not isinstance(routing, ResolvedRouting):
         raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
@@ -722,12 +605,16 @@ def production_routing_levels(
     if read_logits.device != write_logits.device or read_logits.dtype != write_logits.dtype:
         raise ValueError("read/write logits must share one device and dtype")
 
-    if read_logits.is_cuda and read_logits.dtype in _SOLVE_LOGIT_DTYPES:
+    if read_logits.is_cuda and read_logits.dtype not in (torch.bfloat16, torch.float64):
+        raise TypeError(
+            "the CUDA routing solve takes bfloat16 logits (the kernels) or float64 logits (the torch "
+            f"lowering the oracle-equivalence gate runs), got {read_logits.dtype}")
+    if read_logits.is_cuda and read_logits.dtype is torch.bfloat16:
         #: NOT `.contiguous()`: every solve entry below reads the logits through an
         #: explicit stride tuple, so a packed projection's half-slice -- and its head
         #: axis -- are addressable as they stand, and materializing either is a whole
         #: extra pass over the side.
-        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing, stored_dtype)
+        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing)
         return tuple(outputs[:routing.D]), tuple(outputs[routing.D:2 * routing.D]), outputs[2 * routing.D]
     reads, writes = _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
     return reads, writes, None
@@ -747,6 +634,5 @@ def _flat(logits: torch.Tensor) -> torch.Tensor:
 
 
 __all__ = [
-    "production_factor",
     "production_routing_levels",
 ]

@@ -136,8 +136,8 @@ def entmax_solve(fx) -> Launch:
     routing = fx["layer"].routing.resolved
     gen = torch.Generator(device="cuda").manual_seed(spec.seed + 900)
     shape = (spec.B * spec.H, spec.tokens, routing.packed_logit_width)
-    read_logits = torch.randn(shape, device="cuda", dtype=torch.float32, generator=gen)
-    write_logits = torch.randn(shape, device="cuda", dtype=torch.float32, generator=gen)
+    read_logits = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen)
+    write_logits = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen)
 
     def run():
         return production_routing_levels(read_logits, write_logits, routing)

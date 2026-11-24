@@ -32,7 +32,7 @@ import torch
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.types import ResolvedRouting, UnionRouting
 from tests.oracle.fixtures import assert_slots_close
-from tests.oracle.tolerances import ENTMAX_VALUES
+from tests.oracle.tolerances import ENTMAX_STORED_VALUES
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
@@ -47,24 +47,24 @@ def _routing(width: int, alpha: float) -> ResolvedRouting:
 
 
 def _rows(kind: str, width: int, seed: int) -> torch.Tensor:
-    """[BH, T, width] fp32 rows of one tie family."""
+    """[BH, T, width] bf16 rows of one tie family: the family is drawn in fp32 and rounded to bf16, so equal values stay equal."""
     g = torch.Generator(device="cuda").manual_seed(seed)
     shp = (BH, T, width)
     kw = dict(device="cuda", dtype=torch.float32)
     if kind == "all-equal":
-        return torch.full(shp, 0.25, **kw)
+        return torch.full(shp, 0.25, **kw).bfloat16()
     if kind.startswith("levels-"):
         #: `n` distinct values over the whole row: every rank is a tie with many others,
         #: and with n small the tie CLUSTER straddles the support boundary.
         n = int(kind.split("-")[1])
         lvl = torch.randn((BH, T, n), generator=g, **kw) * 2.0
         idx = torch.randint(0, n, shp, generator=g, device="cuda")
-        return lvl.gather(2, idx)
+        return lvl.gather(2, idx).bfloat16()
     if kind == "one-ulp":
         base = torch.randn((BH, T, 1), generator=g, **kw).expand(shp).contiguous()
-        eps = torch.finfo(torch.float32).eps
+        eps = torch.finfo(torch.bfloat16).eps
         steps = torch.randint(-2, 3, shp, generator=g, device="cuda").float()
-        return base + steps * eps * base.abs().clamp_min(1.0)
+        return (base + steps * eps * base.abs().clamp_min(1.0)).bfloat16()
     if kind == "boundary":
         #: Exact ties pinned ON the certificate's own value cuts: 0 (the row max), -1
         #: (alpha 2's bound) and -2 (alpha 1.5's), so a tie sits exactly where a
@@ -72,7 +72,7 @@ def _rows(kind: str, width: int, seed: int) -> torch.Tensor:
         r = torch.zeros(shp, **kw)
         r[..., 1::3] = -1.0
         r[..., 2::3] = -2.0
-        return r
+        return r.bfloat16()
     raise AssertionError(kind)
 
 
@@ -91,18 +91,17 @@ def test_the_row_sort_is_bitwise_tie_order_independent(width, alpha, family):
     read = _rows(family, width, seed=width * 7 + 1)
     write = _rows(family, width, seed=width * 7 + 2)
 
-    cuda_r, cuda_w, _support = production_routing_levels(
-        read, write, routing, stored_dtype=torch.float32)
+    cuda_r, cuda_w, _support = production_routing_levels(read, write, routing)
     cpu_r, cpu_w, _support = production_routing_levels(
-        read.cpu(), write.cpu(), routing, stored_dtype=torch.float32)
+        read.float().cpu(), write.float().cpu(), routing)
 
     tag = f"{family} w={width} alpha={alpha}"
     for level, (a, b) in enumerate(zip(cuda_r, cpu_r)):
         assert torch.equal(a.cpu() != 0, b != 0), f"read level {level} support: {tag}"
-        assert_slots_close(a.cpu(), b, output=ENTMAX_VALUES, what=f"level {level}: {tag}")
+        assert_slots_close(a.cpu(), b.bfloat16(), output=ENTMAX_STORED_VALUES, what=f"level {level}: {tag}")
     for level, (a, b) in enumerate(zip(cuda_w, cpu_w)):
         assert torch.equal(a.cpu() != 0, b != 0), f"write level {level} support: {tag}"
-        assert_slots_close(a.cpu(), b, output=ENTMAX_VALUES, what=f"level {level}: {tag}")
+        assert_slots_close(a.cpu(), b.bfloat16(), output=ENTMAX_STORED_VALUES, what=f"level {level}: {tag}")
 
 
 @pytest.mark.cuda
@@ -121,17 +120,16 @@ def test_permuting_tied_columns_permutes_the_solve_exactly(width, alpha):
     read = _rows("levels-3", width, seed=99)
     write = _rows("levels-3", width, seed=100)
 
-    base_r, base_w, _support = production_routing_levels(
-        read, write, routing, stored_dtype=torch.float32)
+    base_r, base_w, _support = production_routing_levels(read, write, routing)
     roll_r, roll_w, _support = production_routing_levels(
-        read.roll(3, dims=2), write.roll(3, dims=2), routing, stored_dtype=torch.float32)
+        read.roll(3, dims=2), write.roll(3, dims=2), routing)
 
     for level, (a, b) in enumerate(zip(base_r, roll_r)):
         assert torch.equal(a.roll(3, dims=2) != 0, b != 0), f"read level {level} w={width}"
-        assert_slots_close(a.roll(3, dims=2), b, output=ENTMAX_VALUES, what=f"level {level} w={width}")
+        assert_slots_close(a.roll(3, dims=2), b, output=ENTMAX_STORED_VALUES, what=f"level {level} w={width}")
     for level, (a, b) in enumerate(zip(base_w, roll_w)):
         assert torch.equal(a.roll(3, dims=2) != 0, b != 0), f"write level {level} w={width}"
-        assert_slots_close(a.roll(3, dims=2), b, output=ENTMAX_VALUES, what=f"level {level} w={width}")
+        assert_slots_close(a.roll(3, dims=2), b, output=ENTMAX_STORED_VALUES, what=f"level {level} w={width}")
 
 
 @pytest.mark.cuda
@@ -147,14 +145,13 @@ def test_the_tie_fixtures_are_not_vacuous(family):
     """
     width = 64
     read, write = _rows(family, width, seed=width * 7 + 1), _rows(family, width, seed=width * 7 + 2)
-    mid = 0.5 * read + 0.5 * write
+    mid = 0.5 * read.float() + 0.5 * write.float()
     z = mid - mid.amax(-1, keepdim=True)
     srt, _ = z.sort(-1, descending=True)
     tied = (srt[..., 1:] == srt[..., :-1]).float().mean().item()
     assert tied >= 0.35, f"{family}: only {tied:.3f} of adjacent ranks are exact ties"
 
-    reads, _, _support = production_routing_levels(
-        read, write, _routing(width, 1.5), stored_dtype=torch.float32)
+    reads, _, _support = production_routing_levels(read, write, _routing(width, 1.5))
     support = (reads[0] != 0).float().mean().item()
     assert 0.0 < support <= 1.0, f"{family}: degenerate support {support}"
 
@@ -171,11 +168,10 @@ def test_teeth_a_moved_k_star_would_change_the_support(family):
     """
     width = 64
     read, write = _rows(family, width, seed=width * 7 + 1), _rows(family, width, seed=width * 7 + 2)
-    reads, _, _support = production_routing_levels(
-        read, write, _routing(width, 1.5), stored_dtype=torch.float32)
+    reads, _, _support = production_routing_levels(read, write, _routing(width, 1.5))
     shipped = reads[0] != 0
 
-    mid = 0.5 * read + 0.5 * write
+    mid = 0.5 * read.float() + 0.5 * write.float()
     z = mid - mid.amax(-1, keepdim=True)
     #: tau moved DOWN to the next distinct value below the realized boundary: exactly the
     #: support a `k*` one tie-cluster too large would produce.

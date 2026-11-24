@@ -16,7 +16,7 @@ narrower contract in the same commit. A family's contract is its own registry (`
 depths beside it (`hardware/kernels/decode/parts`; the registry page names them): `d_v` from 2 (the value width `fsla/_state.py`'s `StateFormat` admits) to 64, one to four `levels`,
 `decay` 0 or 1 (and the level widths, the per-level write walks, `batch_heads` and the rest of the call's facts, which the arm half does not read: the arm key stays `d_v`, `levels`,
 `decay`). The value width is a RANGE because the seam pads any width up to the arm that holds it, and the launch function maps it ([`decode_launch.md`](decode_launch.md)). Each of the
-six entmax kernels' contract is its `call` part: every width, both alphas where the kernel has one, the four dtype pairs, one to sixteen levels
+six entmax kernels' contract is its `call` part: every width from 2 to 256, both alphas where the kernel has one, bf16 planes, one to sixteen levels
 ([`../../entmax/entmax.md#the-contract`](../../entmax/entmax.md#the-contract)).
 
 <a id="coverage"></a>

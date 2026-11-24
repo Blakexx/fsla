@@ -50,7 +50,7 @@
    }
   },
   "factor_backward_kernel": {
-   "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
+   "oracle": "tests/integration/test_production_levels.py::test_cuda_lowering_matches_the_fp64_oracle",
    "sanitizer": {
     "owed": "no sanitizer row launches it"
    },
@@ -65,7 +65,7 @@
    }
   },
   "factor_forward_kernel": {
-   "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
+   "oracle": "tests/integration/test_production_levels.py::test_cuda_lowering_matches_the_fp64_oracle",
    "sanitizer": {
     "owed": "no sanitizer row launches it"
    },

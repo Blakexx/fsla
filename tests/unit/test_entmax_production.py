@@ -1,123 +1,24 @@
-"""Focused CUDA tests for the production entmax solve."""
+"""Focused tests for the production entmax solve: its width limit's refusal, the packed-projection read, the dense
+levels' complete write, the batched solve against the per-level loop and the plan's launch count. The CUDA solve takes
+bf16 logits and writes bf16 route values (`midpoint` values are fp32)."""
 
 import pytest
 import torch
 
-from fsla.routing.entmax.production import (
-    production_factor,
-)
-from fsla.routing.entmax.reference import entmax
 from fsla.routing.types import (
     IndependentRouting,
     ResolvedRouting,
     SoftmaxActivation,
     UnionRouting,
 )
-from tests.oracle.fixtures import assert_slots_close
-from tests.oracle.tolerances import ENTMAX_GRADIENTS, ENTMAX_VALUES
-
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="production entmax requires CUDA")
 
 
-def _assert_matches_oracle(actual, expected, *, gradient=False):
-    output = ENTMAX_GRADIENTS if gradient else ENTMAX_VALUES
-    assert_slots_close(actual, expected, output=output, what=f"the production solve ({output.name})")
-
-
-def _unpack_token_support(words, length):
-    tokens = torch.arange(length, device=words.device, dtype=torch.long)
-    selected = words.index_select(-2, torch.div(tokens, 32, rounding_mode="floor"))
-    shifts = tokens.remainder(32).view(*((1,) * (selected.ndim - 2)), length, 1)
-    return ((selected.to(torch.int64) >> shifts) & 1).bool()
-
-
-@pytest.mark.parametrize("alpha", [1.5, 2.0])
-def test_production_factor_mask_ties_support_values_and_vjp(alpha):
-    z = torch.tensor([[4.0, 4.0, 0.25, -8.0, 11.0]], device="cuda", dtype=torch.float32)
-    mask = torch.tensor([[True, True, True, False, True]], device="cuda")
-    coeff = torch.tensor([[0.4, -0.7, 1.2, 0.0, -0.2]], device="cuda", dtype=torch.float32)
-    zp = z.detach().clone().requires_grad_()
-    p, support_words = production_factor(zp, "entmax", alpha=alpha, mask=mask)
-    zr = z.detach().clone().to(torch.float64).requires_grad_()
-    ref = entmax(zr, alpha, dim=-1, mask=mask)
-    support = _unpack_token_support(support_words, z.shape[-2])
-    assert support_words.dtype == torch.int32
-    assert support_words.shape == (1, z.shape[-1])
-    assert torch.equal(support, p != 0)
-    assert p.dtype == torch.float32
-    _assert_matches_oracle(p, ref)
-    (p * coeff).sum().backward()
-    (ref * coeff).sum().backward()
-    _assert_matches_oracle(zp.grad, zr.grad, gradient=True)
-
-
-@pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("length", [1, 31, 32, 33, 65])
-def test_production_factor_packs_bit31_and_zeroes_tail_words(alpha, length):
-    z = torch.full((2, length, 3), -10.0, device="cuda", dtype=torch.float32)
-    z[..., 0] = 5.0
-    p, support_words = production_factor(z, "entmax", alpha=alpha)
-
-    assert torch.equal(_unpack_token_support(support_words, length), p != 0)
-    assert torch.all(p[..., 0] != 0)
-    raw_words = support_words.to(torch.int64) & 0xFFFFFFFF
-    if length >= 32:
-        assert torch.all((raw_words[:, 0, 0] & (1 << 31)) != 0)
-    remainder = length % 32
-    if remainder:
-        tail_bits = 0xFFFFFFFF ^ ((1 << remainder) - 1)
-        assert torch.count_nonzero(raw_words[:, -1, :] & tail_bits) == 0
-    _assert_matches_oracle(p, entmax(z.to(torch.float64), alpha, dim=-1))
-
-
-def test_production_factor_packs_masked_arbitrary_leading_dimensions():
-    gen = torch.Generator(device="cuda").manual_seed(68)
-    z = torch.randn(2, 3, 33, 4, device="cuda", dtype=torch.float32, generator=gen)
-    batch = torch.arange(2, device="cuda")[:, None, None, None]
-    token = torch.arange(33, device="cuda")[None, None, :, None]
-    branch = torch.arange(4, device="cuda")[None, None, None, :]
-    mask = ((batch + token + branch) % 3 != 0).expand(2, 1, 33, 4).clone()
-    mask[..., 0] = True
-
-    p, support_words = production_factor(z, "entmax", alpha=1.5, mask=mask)
-    ref = entmax(z.to(torch.float64), 1.5, dim=-1, mask=mask)
-
-    assert support_words.shape == (2, 3, 2, 4)
-    assert torch.equal(_unpack_token_support(support_words, z.shape[-2]), p != 0)
-    _assert_matches_oracle(p, ref)
-
-
-def test_production_factor_empty_rows_preserve_autograd_contract():
-    z = torch.empty(0, 4, device="cuda", dtype=torch.float32, requires_grad=True)
-    p, support_words = production_factor(z, "entmax", alpha=1.5)
-    assert p.shape == z.shape
-    assert support_words.shape == (0, z.shape[-1])
-    assert support_words.dtype == torch.int32
-    p.sum().backward()
-    assert z.grad is not None and z.grad.shape == z.shape
-
-
-def test_production_routing_width_limit_rejects_before_jit():
-    boundary = torch.empty(0, 256, device="cuda", dtype=torch.float32)
-    values, support_words = production_factor(boundary, "entmax", alpha=1.5)
-    assert values.shape == boundary.shape
-    assert support_words.shape == (0, 256)
-
-    too_wide = torch.empty(0, 257, device="cuda", dtype=torch.float32)
-    with pytest.raises(ValueError, match="branch width must be <= 256"):
-        production_factor(too_wide, "entmax", alpha=1.5)
-
+def test_production_routing_width_limit_rejects_at_the_level():
     with pytest.raises(ValueError, match="width must be <= 256"):
         IndependentRouting(width=257, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
-@pytest.mark.parametrize("alpha", [1.25, 1.8])
-def test_production_factor_rejects_unsupported_alpha(alpha):
-    logits = torch.zeros(1, 4, device="cuda", dtype=torch.float32)
-    with pytest.raises(ValueError, match="exactly alpha=1.5.*alpha=2.0"):
-        production_factor(logits, "entmax", alpha=alpha)
-
-
+@pytest.mark.cuda
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     """Every solve entry takes an explicit stride triple, so the logits need not be
@@ -135,7 +36,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     routing = ResolvedRouting(levels=(
         UnionRouting(width=8, alpha=alpha),
         IndependentRouting(width=8, read=SoftmaxActivation(), write=SoftmaxActivation())))
-    both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda",
+    both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda", dtype=torch.bfloat16,
                        requires_grad=True)
     sides = (both[:, :, routing.packed_logit_width:], both[:, :, :routing.packed_logit_width])
     assert not sides[0].is_contiguous()
@@ -153,6 +54,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     assert torch.equal(d_strided, d_packed)
 
 
+@pytest.mark.cuda
 @pytest.mark.parametrize("width", [3, 8, 64])
 def test_every_solve_writes_every_element_of_a_dense_level(width):
     """The licence for allocating a dense level UNINITIALIZED (P73 S4, inventory §B5).
@@ -167,15 +69,16 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
 
     torch.manual_seed(6)
     BH, T = 4, 96
-    logits = torch.randn(BH, T, width, device="cuda")
+    logits = torch.randn(BH, T, width, device="cuda", dtype=torch.bfloat16)
     other = logits + 1
     words = torch.empty((BH, (T + 31) // 32, width), dtype=torch.int32, device="cuda")
 
-    def buffers(fill, count):
-        return [torch.full((BH, T, width), fill, device="cuda") for _ in range(count)]
+    def buffers(fill, count, dtype=torch.bfloat16):
+        return [torch.full((BH, T, width), fill, device="cuda", dtype=dtype) for _ in range(count)]
 
     def solves(fill, alpha):
-        union, factor, soft = buffers(fill, 3), buffers(fill, 2), buffers(fill, 2)
+        union = buffers(fill, 2) + buffers(fill, 1, torch.float32)
+        factor, soft = buffers(fill, 2), buffers(fill, 2)
         plan = _Plan()
         plan.add("union", alpha, (logits, other, union[2], words, union[0], union[1]),
                  width, logit_off=0)
@@ -190,6 +93,7 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
                 "a solve left an element of its dense output alone")
 
 
+@pytest.mark.cuda
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize("kind", ["union", "entmax", "softmax"])
 def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
@@ -214,14 +118,14 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     widths = [3, 4, 4, 3]
     offsets = [0, 3, 7, 11]
     total = 14
-    read = torch.randn(BH, T, total, device="cuda")
-    write = torch.randn(BH, T, total, device="cuda")
+    read = torch.randn(BH, T, total, device="cuda", dtype=torch.bfloat16)
+    write = torch.randn(BH, T, total, device="cuda", dtype=torch.bfloat16)
     n_words = (T + 31) // 32
 
     def run(batched):
-        values = torch.zeros(BH, T, total, device="cuda")
+        values = torch.zeros(BH, T, total, device="cuda", dtype=torch.bfloat16)
         second = torch.zeros_like(values)
-        midpoints = torch.zeros_like(values)
+        midpoints = torch.zeros(BH, T, total, device="cuda", dtype=torch.float32)
         words = torch.zeros((BH, n_words, total), dtype=torch.int32, device="cuda")
         plans = [_Plan()] if batched else [_Plan() for _ in widths]
         for index, (width, offset) in enumerate(zip(widths, offsets)):
@@ -259,12 +163,13 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     # asserts the layer under it refuses one anyway.
     from fsla.ops._ext import extension
 
-    values = torch.zeros(BH, T, 68, device="cuda")
+    values = torch.zeros(BH, T, 68, device="cuda", dtype=torch.bfloat16)
     with pytest.raises(RuntimeError, match="one width class"):
         extension().routing_softmax_forward(
-            torch.randn(BH, T, 68, device="cuda"), values, None, [0, 4], [0, 4], [4, 64], 1)
+            torch.randn(BH, T, 68, device="cuda", dtype=torch.bfloat16), values, None, [0, 4], [0, 4], [4, 64], 1)
 
 
+@pytest.mark.cuda
 def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
     """`producer.py` has claimed "one packed projection and one batched solve" since it
     was written, and until P73 S5 the second half was false -- a python `for` over
@@ -288,8 +193,8 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
 
         _Plan.issue = counting
         try:
-            read = torch.randn(2, 64, routing.packed_logit_width, device="cuda")
-            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing, torch.bfloat16)
+            read = torch.randn(2, 64, routing.packed_logit_width, device="cuda", dtype=torch.bfloat16)
+            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing)
         finally:
             _Plan.issue = original
         return counted[0]

@@ -1,13 +1,13 @@
 {
   "name": "call",
-  "doc": "the call's contract of the union solve's VJP (`union_backward_kernel`, csrc/fsla/src/entmax/entmax.cu): every width, both alphas where the kernel has one, the four dtype pairs and 1 to 16 levels. A list is alternatives, each its own context; a range is one context.",
+  "doc": "the call's contract of the union solve's VJP (`union_backward_kernel`, csrc/fsla/src/entmax/entmax.cu): every width from 2 to 256, both alphas where the kernel has one, bf16 logits and route values and 1 to 16 levels. A list is alternatives, each its own context; a range is one context.",
   "facts": {
     "width": {
       "value": {
-        "lo": 1,
+        "lo": 2,
         "hi": 256
       },
-      "declared_by": "docs/internals/entmax/entmax.md#the-contract: every width from 1 (topology states a level width from 1, fsla/routing/topology.py) up to MAX_BRANCH_WIDTH 256 is served by the arm of its padded width class"
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: every width from 2 (ResolvedRouting refuses a level narrower, fsla/routing/types.py) up to MAX_BRANCH_WIDTH 256 is served by the arm of its padded width class"
     },
     "levels": {
       "value": {
@@ -25,17 +25,17 @@
     },
     "logit_dtype": {
       "value": {
-        "lo": 0,
+        "lo": 1,
         "hi": 1
       },
-      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the logit plane is fp32 or bf16"
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the logit plane is bf16: the library sends the solve bf16 logits alone (fsla/ops/produce.py, projection_dtype), and a plane of another dtype is refused"
     },
     "value_dtype": {
       "value": {
-        "lo": 0,
+        "lo": 1,
         "hi": 1
       },
-      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the route values are fp32 or bf16, independently of the logits"
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: the route values are bf16, the stored form (docs/api.md), and a plane of another dtype is refused"
     }
   }
 }
