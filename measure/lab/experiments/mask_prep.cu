@@ -1,16 +1,18 @@
-// measure/lab/experiments/mask_prep.cu -- QUESTION: what does it cost a token to turn a sparse level-side's mask, as
-// the prefill is handed it -- a word of 32 tokens a digit -- into what the gather and the carry read blind: each
-// GROUP's word (its digits' words ORed) and the group's live tokens of the window before that word; and does that
-// cost move with the group's size, or with how dense the mask is? METHOD: a CTA of 1,024 threads, a thread a
+// measure/lab/experiments/mask_prep.cu -- QUESTION: what does it cost a token to compute, from a sparse level-side's
+// mask as the prefill is handed it -- a word of 32 tokens a digit -- each GROUP's word (its digits' words ORed) and
+// the group's live tokens of the window before that word; and does that cost move with the group's size, or with
+// how dense the mask is? METHOD: a CTA of 1,024 threads, a thread a
 // (window, group) pair of one 256-digit level-side; a window is 1,024 tokens, 32 words a digit. A thread walks its
 // group's 32 words in order with a running count: a word's stores are the group's word (where a group is more than
 // a digit: at one digit the word is the mask's own, and only the count is written) and the count before it; after
 // the last word, the window's total. A group of 1, 4 or 16 digits, a kernel each; a mask of 4 to 5 live digits a
-// token and one of 32. Each is timed with its windows in cache -- a call's rounds over the same windows -- and
-// ONCE-READ, a round fresh windows. Every word, count and total of the first round is checked against the host's.
+// token and one of 32. Each is timed IN CACHE -- the grid over 528 windows at every group size (17 MB of mask), its
+// CTAs sharing them where a CTA's round is more than 4, a call's rounds the same windows -- and ONCE-READ, a round
+// fresh windows a CTA. Every word, count and total of the first round is checked against the host's.
 // TIMELINE: no MMA. A thread holds two words' loads at fixed registers: a pass of the walk finishes one word -- its
 // stores and its popcount -- and issues the load two words on into the registers it left, then does the same for
-// the other. A load is kept as it arrived (a group's lines are ORed when its word is finished), so nothing reads a
+// the other; the window's last two words are finished after the walk, with nothing to issue. A load is kept as it
+// arrived (a group's lines are ORed when its word is finished), so nothing reads a
 // load in the pass that issued it. Live: a group's lines of two words (2, 8 or 32 registers) and the count.
 // see docs/internals/tools/lab.md#mask-prep
 #include "lab.cuh"
@@ -60,12 +62,23 @@ __device__ __forceinline__ uint32_t word_of(const Raw<G>& raw) {
   }
 }
 
+//: A WORD FINISHED: the group's word stored where a group is more than a digit, the count before it, and its tokens
+//: counted
+template <int G>
+__device__ __forceinline__ void finish(const Raw<G>& raw, [[maybe_unused]] uint32_t* word, uint16_t* count,
+                                       uint32_t& before) {
+  const uint32_t w = word_of<G>(raw);
+  if constexpr (G > 1) word[0] = w;
+  count[0] = static_cast<uint16_t>(before);
+  before += static_cast<uint32_t>(__popc(w));
+}
+
 //: A CTA's WINDOWS a round: `kThreads` over the level's groups of them, a thread a (window, group); round `r` is
-//: the windows `(block + r stride) per` on
+//: the windows `(cta + r stride) per` on, `cta` the block among the `shared` that own windows of their own
 template <int G>
 __global__ void __launch_bounds__(kThreads, 1)
     prepare(long long* times, const uint32_t* masks, uint32_t* words, uint16_t* counts, uint16_t* totals, int rounds,
-            int stride) {
+            int stride, int shared) {
   constexpr int kGroups = kDigits / G, kPer = kThreads / kGroups;
   const int tid = threadIdx.x, group = tid % kGroups, local = tid / kGroups;
   lab::WarpSpan clock;
@@ -73,7 +86,7 @@ __global__ void __launch_bounds__(kThreads, 1)
 #pragma unroll 1
   for (int round = 0; round < rounds; ++round) {
     const long long window =
-        (static_cast<long long>(blockIdx.x) + static_cast<long long>(round) * stride) * kPer + local;
+        (static_cast<long long>(blockIdx.x % shared) + static_cast<long long>(round) * stride) * kPer + local;
     const uint32_t* at = masks + window * (kWords * kDigits) + group * G;
     [[maybe_unused]] uint32_t* word = words + window * (kWords * kGroups) + group;
     uint16_t* count = counts + window * (kWords * kGroups) + group;
@@ -83,22 +96,19 @@ __global__ void __launch_bounds__(kThreads, 1)
     load<G>(b, at + kDigits);
     uint32_t before = 0;
 #pragma unroll 1
-    for (int pair = 0; pair < kWords / 2; ++pair) {
-      //: A WORD FINISHED -- its stores, its count -- and the load two words on issued into the registers it left
-      const uint32_t first = word_of<G>(a);
-      if constexpr (G > 1) word[0] = first;
-      count[0] = static_cast<uint16_t>(before);
-      before += static_cast<uint32_t>(__popc(first));
-      if (pair + 1 < kWords / 2) load<G>(a, at + 2 * kDigits);
-      const uint32_t second = word_of<G>(b);
-      if constexpr (G > 1) word[kGroups] = second;
-      count[kGroups] = static_cast<uint16_t>(before);
-      before += static_cast<uint32_t>(__popc(second));
-      if (pair + 1 < kWords / 2) load<G>(b, at + 3 * kDigits);
+    for (int pair = 0; pair + 1 < kWords / 2; ++pair) {
+      //: A WORD FINISHED, and the load two words on issued into the registers it left
+      finish<G>(a, word, count, before);
+      load<G>(a, at + 2 * kDigits);
+      finish<G>(b, word + kGroups, count + kGroups, before);
+      load<G>(b, at + 3 * kDigits);
       at += 2 * kDigits;
       word += 2 * kGroups;
       count += 2 * kGroups;
     }
+    //: THE WINDOW'S LAST TWO WORDS: nothing follows them
+    finish<G>(a, word, count, before);
+    finish<G>(b, word + kGroups, count + kGroups, before);
     totals[window * kGroups + group] = static_cast<uint16_t>(before);
   }
   clock.stop(times);
@@ -109,6 +119,9 @@ __global__ void __launch_bounds__(kThreads, 1)
 int main(int argc, char** argv) {
   using namespace mask_prep;
   lab::Bench b(argc, argv);
+  //: at a group of one digit the toolkit moves the next word's popcount into the trip that loads it (the count's
+  //: recurrence shortened): of the walk's two loads, one is read 14 instructions on, in its own trip
+  b.expect(lab::kernel("mask_prep::prepare", {1}), "LOAD_IN_TRIP", "<=", 1);
   if (b.expect_only) return 0;
   //: every kernel covers the same windows a call, 256 a CTA, in rounds of its own 4, 16 or 64 windows
   constexpr int kCtaWindows = 256;
@@ -137,7 +150,7 @@ int main(int argc, char** argv) {
       LAB_CHECK(cudaMemset(dwords, 0xff, slots * 4));
       LAB_CHECK(cudaMemset(dcounts, 0xff, slots * 2));
       LAB_CHECK(cudaMemset(dtotals, 0xff, checked * groups * 2));
-      kernel<<<ctas, kThreads>>>(b.times, dmask, dwords, dcounts, dtotals, 1, 0);
+      kernel<<<ctas, kThreads>>>(b.times, dmask, dwords, dcounts, dtotals, 1, 0, ctas);
       LAB_CHECK(cudaDeviceSynchronize());
       std::vector<uint32_t> got_words(slots);
       std::vector<uint16_t> got_counts(slots), got_totals(checked * groups);
@@ -163,11 +176,13 @@ int main(int argc, char** argv) {
                   + " of " + std::to_string(slots) + " counts and " + std::to_string(wrong_totals) + " of "
                   + std::to_string(checked * groups) + " totals differ");
       for (int fresh = 0; fresh < 2; ++fresh) {
-        //: the windows in cache: a call's rounds are the same windows; ONCE-READ: a round fresh windows
+        //: IN CACHE: the grid over 4 windows a CTA's worth at every group size, its CTAs sharing them, a call's rounds
+        //: the same windows; ONCE-READ: a round fresh windows a CTA
+        const int shared = fresh ? ctas : ctas * 4 / per;
         const lab::Samples cycles = b.variant(
-            [&] { kernel<<<ctas, kThreads>>>(b.times, dmask, dwords, dcounts, dtotals, rounds, fresh ? ctas : 0); },
+            [&] { kernel<<<ctas, kThreads>>>(b.times, dmask, dwords, dcounts, dtotals, rounds, fresh ? ctas : 0, shared); },
             [&] { return b.span(kThreads >> 5) / rounds / (per * kWindow); });
-        const std::string timed = name + (fresh ? ", the mask once-read" : ", the mask in cache");
+        const std::string timed = name + (fresh ? ", the mask once-read" : ", the mask in cache, the grid over 4 windows a CTA's worth");
         b.unchecked(timed, "the row above checks this kernel's first round; this one is its time");
         b.record(timed, "SM-cycles a token", cycles);
       }
