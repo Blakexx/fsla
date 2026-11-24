@@ -26,13 +26,12 @@ HOPPER = registry.device_point()
 
 def _full(call: str, kernel: str = "decode") -> str:
     """The call with the facts it does not name given a lawful value: a call over one batch-head, 16-wide levels
-    (`width_bits_k` 4) for the levels it has and no level written by lists (a dense innermost write); the prefill's call also has one token and a state, every level read by lists."""
+    (`width_bits_k` 4) for the levels it has and no level written by lists (a dense innermost write); the prefill's call also has one token and a state."""
     named = dict(cell.split("=") for cell in call.split(",") if "=" in cell)
     levels = int(named.get("levels", 0))
     rest = {"batch_heads": 1,
-            **({"tokens": 1, "stateful": 1, **{f"read_listed_{k}": int(k <= levels) for k in (1, 2, 3, 4)}} if kernel == "prefill" else {}),
-            **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)},
-            **{f"write_listed_{k}": 0 for k in (1, 2, 3, 4)}}
+            **({"tokens": 1, "stateful": 1} if kernel == "prefill" else {f"write_listed_{k}": 0 for k in (1, 2, 3, 4)}),
+            **{f"width_bits_{k}": 4 if k <= levels else 0 for k in (1, 2, 3, 4)}}
     return ",".join([call, *(f"{k}={v}" for k, v in rest.items() if k not in named)])
 
 
@@ -200,7 +199,7 @@ def test_the_documented_batch_heads_bound_is_the_contracts():
     assert f"{BATCH_HEADS_MAX}" in text[text.index('<a id="batch-heads">'):][:1200]
 
 
-PREFILL = "d_v=64,levels=2,decay=0,tokens=4096,batch_heads=8,stateful=0,write_listed_1=1"
+PREFILL = "d_v=64,levels=2,decay=0,tokens=4096,batch_heads=8,stateful=0"
 
 
 def test_a_prefill_call_inside_an_owed_descriptor_is_refused_naming_each_owed_kernel():
@@ -222,18 +221,16 @@ def test_a_prefill_call_in_no_owed_descriptor_is_outside_the_contract_naming_the
 
 
 def _cell_prefill_calls():
-    """Every call a `requires_kernel("prefill")` or `requires_kernel("carry")` test builds: each central carry cell's prefill, each side's walk of each level
-    all listed or all not (the contract's range is 0..1), as the planner's `--call` states it."""
+    """Every call a `requires_kernel("prefill")` or `requires_kernel("carry")` test builds: each central carry cell's prefill, as the planner's `--call` states it (the facts
+    are the call's extents, its levels' widths and its kind: no weight is a fact)."""
     from measure.cells import carry_cells
 
     for cell in carry_cells():
         levels = len(cell.widths)
-        for listed in (0, 1):
-            facts = [f"d_v={cell.dv}", f"levels={levels}", "decay=0", f"tokens={cell.tokens}", f"batch_heads={cell.heads * cell.group}",
-                     f"stateful={int(cell.state != 'none')}"]
-            for k, width in enumerate(cell.widths, 1):
-                facts += [f"width_bits_{k}={width.bit_length() - 1}", f"read_listed_{k}={listed}", f"write_listed_{k}={listed}"]
-            yield pytest.param(",".join(facts), id=f"{cell.name}-listed{listed}")
+        facts = [f"d_v={cell.dv}", f"levels={levels}", "decay=0", f"tokens={cell.tokens}", f"batch_heads={cell.heads * cell.group}",
+                 f"stateful={int(cell.state != 'none')}"]
+        facts += [f"width_bits_{k}={width.bit_length() - 1}" for k, width in enumerate(cell.widths, 1)]
+        yield pytest.param(",".join(facts), id=cell.name)
 
 
 @pytest.mark.parametrize("call", _cell_prefill_calls())

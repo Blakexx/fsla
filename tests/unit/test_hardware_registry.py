@@ -21,8 +21,7 @@ BATCH_HEADS_MAX = 536870911
 
 DECODE_CALL = ("d_v", "levels", "decay", "batch_heads", "width_bits_1", "width_bits_2", "width_bits_3", "width_bits_4",
                "write_listed_1", "write_listed_2", "write_listed_3", "write_listed_4")
-PREFILL_CALL = ("d_v", "levels", "decay", "tokens", "batch_heads", "stateful", "width_bits_1", "width_bits_2", "width_bits_3", "width_bits_4",
-                *(f"{side}_listed_{k}" for side in ("read", "write") for k in (1, 2, 3, 4)))
+PREFILL_CALL = ("d_v", "levels", "decay", "tokens", "batch_heads", "stateful", "width_bits_1", "width_bits_2", "width_bits_3", "width_bits_4")
 
 
 @pytest.fixture()
@@ -328,6 +327,7 @@ def test_the_owed_descriptors_are_the_prefills_calls_and_none_of_them_is_in_any_
     assert {c.descriptor for c, _ in owed} == {f"hopper_prefill_d{lv}" for lv in (1, 2, 3, 4)}
     assert all(kernels == ("prefill",) and c.kernel == "prefill" for c, kernels in owed)
     assert all(c.facts["stateful"] == (0, 1) and c.facts["tokens"][0] == 1 for c, _ in owed)
+    assert not any(name.startswith(("read_listed_", "write_listed_", "read_weight_", "write_weight_")) for c, _ in owed for name in c.facts)
     assert registry.contexts("prefill") == [] and registry.owed("decode") == []
     assert not registry.descriptors(kernel="prefill") and not registry.descriptors(kernel="prefill", folder=registry.DEV)
     assert not any(name.startswith("hopper_prefill") for name in registry.descriptors(kernel="decode"))

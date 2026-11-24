@@ -120,7 +120,7 @@ def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():
 
 def test_the_walk_rule_reads_the_declaration_alone():
     """The producer-owned rule chooses from the DECLARATION: the levels each side walks by lists, which the descriptor states as its
-    ``read_listed_k`` and ``write_listed_k`` facts; no operand is read, and the declaration is hashable (the rule's cache key)."""
+    ``write_listed_k`` facts (decode's); no operand is read, and the declaration is hashable (the rule's cache key)."""
     layer, _x = _layer_and_x(1)
     assert activation_walks(layer.topology) == ((False, False), (False, False))
     topology = Topology(levels=(IndependentRouting(width=256, read=SoftmaxActivation(), write=SoftmaxActivation()),) * 2)

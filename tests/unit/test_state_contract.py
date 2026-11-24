@@ -207,7 +207,7 @@ def test_decode_descriptor_states_each_levels_width_as_its_log2_and_zero_beyond_
 
 
 def test_decode_descriptor_states_each_sides_walk_of_each_level_from_the_producers_rule_over_the_declaration(captured):
-    """THE PRODUCER'S RULE: a level a side walks by lists (`read_listed_k` of the prefill, `write_listed_k` of both kernels, 1) is one whose activation has exact zeros -- an opaque level
+    """THE PRODUCER'S RULE: a level a side walks by lists (`write_listed_k` of decode, 1) is one whose activation has exact zeros -- an opaque level
     may have them; a softmax has none. A level beyond the depth is 0. The planner's launch function derives the whole-atom deposit from the innermost
     level's write flag."""
     from fsla.routing.types import SoftmaxActivation
@@ -230,9 +230,9 @@ def test_decode_descriptor_refuses_a_width_that_is_no_power_of_two_naming_the_le
     assert not captured
 
 
-def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declarations_walks_and_padded_widths(captured):
+def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declarations_padded_widths(captured):
     """THE PREFILL'S DESCRIPTOR, `tests.descriptors.prefill_descriptor`: the kernel (`prefill`), the caller's extents and declarations, and from the declaration
-    each level's PADDED width as its log2 and each side's walk; a declared budget of `None` is the fact 0."""
+    each level's PADDED width as its log2 (no walk and no weight: the host never reads them); a declared budget of `None` is the fact 0."""
     from tests.descriptors import prefill_descriptor
 
     prefill_descriptor(_widths_topology((24, 16)), d_v=64, decay=False, tokens=4096, batch_heads=16, stateful=True, device=0)
@@ -240,7 +240,7 @@ def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declaration
     first, second = captured
     assert (first["kernel"], first["tokens"], first["batch_heads"], first["stateful"]) == ("prefill", 4096, 16, 1)
     assert (first["levels"], first["width_bits_1"], first["width_bits_2"], first["width_bits_3"]) == (2, 5, 4, 0), "24 pads to 32"
-    assert [first[f"read_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0] and [first[f"write_listed_{k}"] for k in (1, 2, 3, 4)] == [1, 1, 0, 0]
+    assert not any(name.startswith(("read_listed_", "write_listed_", "read_weight_", "write_weight_")) for name in first), "the prefill's facts are the widths and levels: the host never reads the weights"
     assert (second["decay"], second["stateful"], second["d_v"]) == (1, 0, 48)
 
 

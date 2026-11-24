@@ -84,12 +84,11 @@ launch and a new byte cost, separately. There is no third path in which a
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
 
-## <a id="carve"></a>The carve: the carry's box, the prefill launch function's
+## <a id="carve"></a>The carve: the carry's CTA's leaves, the prefill launch function's
 
-The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
-side's lists and the readout over the read side's. The prefill's launch function in `common/plan/` derives the carve for the two-box Hopper CTA
-(`docs/open-work.md` row A-f), from the call's descriptor facts -- each side's walk of each level (the prefill's `read_listed_k`, `write_listed_k`) and the level
-widths -- and never an operand. That is the standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared
+The carry's CTA owns a CARVE of leaves -- an extent a level, and a channel extent -- and runs two operations on it: the fold over the write
+side's lists and the readout over the read side's. The prefill's launch function in `common/plan/` has two halves
+(`docs/open-work.md` row A-f): the host's, from the call's descriptor facts -- the level widths, never an operand and never a weight -- the leaves of a batch-head, the CTA's leaves (512 at most) and the CTAs a head; and the carve, a function of the level widths and each side's weights alone (the weights are counted by the producer and carried in the mask format), which the prefill's kernels call. That is the standing rule for every launch-static axis: it is a function of launch-static facts (shapes, declared
 flags, the binary's arms) and never of a routing statistic, because the routing distribution moves step to step and a layout chosen from it
 would make the state's shape depend on the data. The workspace's device plan (each box's counts and the step-shape word) is written from it (row A-g).
 

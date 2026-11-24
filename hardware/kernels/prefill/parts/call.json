@@ -1,6 +1,6 @@
 {
   "name": "call",
-  "doc": "the prefill call's contract, the facts that do not depend on the depth: the value width and the decay the carry will serve, the call's length and streams and whether a state rides it. It is composed only by the OWED descriptors (descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths and the per-level walks are a depth part's (depth1 .. depth4).",
+  "doc": "the prefill call's contract, the facts that do not depend on the depth: the value width and the decay the carry will serve, the call's length and streams and whether a state rides it. It is composed only by the OWED descriptors (descriptors/owed): the prefill kernels are not built, so nothing here is in the full contract. The depth, the level widths are a depth part's (depth1 .. depth4).",
   "facts": {
     "d_v": {
       "value": {

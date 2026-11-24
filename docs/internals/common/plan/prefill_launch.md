@@ -1,63 +1,68 @@
-# The prefill launch function's carve (`csrc/fsla/src/common/plan/prefill_launch.h`)
+# The prefill launch function (`csrc/fsla/src/common/plan/prefill_launch.h`, `cta_carve.h`)
 
-`prefill_carve(const PrefillDescriptor&)` (`prefill::Facts`, the prefill's own registry's facts) returns a `PrefillCarve`: how a prefill call's levels fall into boxes of 256 leaves, each side's roles in a box, the CTA's pair of
-boxes, the level its two folds split along, the counts of a batch-head and the window. It is the first half of the prefill launch function
-([`../../../architecture/hopper-carry.md#the-order-of-the-build`](../../../architecture/hopper-carry.md#the-order-of-the-build), step 1), written like
-[`decode_launch.md`](decode_launch.md)'s args half: from EXACT facts only (a range aborts), reading `levels`, `width_bits_1..4`, `read_listed_1..4`,
-`write_listed_1..4` (through the per-level lookups of [`levels.md`](levels.md)), `tokens` and `cc`, and deciding nothing from data (R24: the op reads the descriptor and the masks, never a flag of the data).
-`prefill_carves(d)` is whether the call has a carve; `prefill_carve` aborts on one that has none. The prefill stays an OWED descriptor
-([`../../hardware/registry.md#the-owed-folder`](../../hardware/registry.md#the-owed-folder)): no arm is declared here, and which carves have a built kernel is the arms' business.
+The prefill's launch function has TWO HALVES. Which half is called by whom follows from one ruling (the owner, 2026-11-24: "why can't the producer also write the sparsity counter as its writing the masks?" -- "The sparsity profile is part of the masks we hand
+the prefill? It can just read them if data dependent switch is allowed? And just uniform switch in kernel?" -- "switching uniformly to precomputed things defined for those patterns. Like switching to a part of the code that is meant for group size 4 fully for the whole
+call" -- "We are just templating in the code instead of at the arm"): the weights are counted by the producer and carried in the mask format, so THE HOST NEVER READS THEM. They are no fact of the prefill's descriptor, and the kernels derive the groups and the carve from them with the one rule
+this library states.
 
-Levels are 0-based. A level is LISTED on a side when that side's `*_listed` fact is 1 (the side walks it by its lists), WHOLE when 0.
+| half | function | input | called by | result |
+|---|---|---|---|---|
+| THE LAUNCH (the host's) | `prefill_launch(const PrefillDescriptor&)` (`prefill_launch.h`) | the descriptor: `levels`, `width_bits_1..4`, `tokens`, `cc` | the host, right before the launch | `PrefillLaunch`: `levels`, `width_bits[l]`, `leaves`, `cta_leaves`, `ctas_per_head`, `window`, `windows` |
+| THE CARVE | `prefill_carve(levels, width_bits, write_weight, read_weight)` (`cta_carve.h`, [`cta_carve.md`](cta_carve.md)) | the widths and the two weight lists alone | the kernels of the prefill (the same function: it is not yet annotated for the device and no kernel includes it yet) and `plan_tool --cta-carve` | `PrefillCarve`: the groups, `carve_bits`, `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `unit_ctas` |
 
-## The rules as built
+The launch is the first half of the prefill launch function ([`../../../architecture/hopper-carry.md#the-order-of-the-build`](../../../architecture/hopper-carry.md#the-order-of-the-build), step 1), written like [`decode_launch.md`](decode_launch.md)'s args half: from EXACT facts only
+(a range aborts), reading `levels`, `width_bits_1..4` (through the per-level lookup of [`levels.md`](levels.md)), `tokens` and `cc`, and deciding nothing from data (R24: the op reads the descriptor and the masks, never a flag of the data). Every call of the contract has a launch. The prefill stays an OWED descriptor
+([`../../hardware/registry.md#the-owed-folder`](../../hardware/registry.md#the-owed-folder)): no arm is declared here, and which launches have a built kernel is the arms' business. `plan_tool --kernel prefill ... --launch json` prints the launch ([`plan_tool.md`](plan_tool.md)).
 
-- R1, THE LEVELS IN A BOX (`prefill_box_levels`; CONSTITUTION R10, every pattern at every depth has a carve). A box is 256 leaves: 8 address bits; `box_bits[l]` is level `l`'s
-  bits in a box and they sum to 8. A box's two halves of 4 bits are each drawn from a level (`prefill_box_bits`): the first level the write side walks by its lists and
-  the first it walks whole, or the first two levels when the write side has not both; every other level has 0. A call of one level draws both halves from it (`{8}`).
-- R2, EACH SIDE'S ROLES. Of a box's 8 bits a side takes 4 as LIST bits (16 lists) and 4 as COLUMN bits (16 columns): `read_list_bits[l]` and `write_list_bits[l]` (4 on the
-  list level, 0 elsewhere; at one level 4 of the level's 8), the column bits `box_bits[l] - list_bits[l]`. One level: the level's 4 high bits are list bits. Two box levels
-  `lo < hi`: when exactly one is listed on the side, it is the side's list level and the other its column level; when both or neither, `lo` is the list level
-  and `hi` the column level.
-- R3, THE PAIR (CONSTITUTION R20: the region gives the read side its larger extent along a level it walks whole, so a CTA's two boxes neighbour along one). Boxes along level `l` are
-  `2^(width_bits[l] - box_bits[l])`, so a level outside the box (0 bits) has `2^width_bits[l]` of them. `pair_level` is the first that holds: (1) the read side's column level, if
-  it walks it whole with 2 or more boxes; (2) the lowest other level it walks whole with 2 or more boxes (its list level where that is whole, or a level outside the box);
-  (3) where no level it walks whole has 2 boxes, its column level if that has 2 or more boxes, else its list level if that has 2 or more, else the lowest other level with 2 or more;
-  (4) else -1 (a call of one level has that level in both roles). `boxes_per_cta` is 2 with a pair level, else 1. A pair level outside the box's levels doubles neither the lists nor
-  the columns: the CTA's two boxes are the same box digits at two neighbouring digits of that level.
-- R4, THE FOLDS' SPLIT (CONSTITUTION R20: along a write-sparse level first, otherwise write dense). `split_level` is the write side's list level when the write side walks
-  it by its lists, else the pair level (the write side's list level where there is no pair). The CTA's region is 16 digits of each level in the box, doubled along the pair
-  level -- 32 digits of a pair level in the box, 2 of one outside it (a box covers one digit of a level with no bits in it); a fold is half the region along the split level. `fold_lists` and `fold_columns` are the fold's extents along the write side's list and column levels; `fold_outer` is its
-  extent in boxes along a pair level that is not one of the box's two levels: 2 where there is one and the folds do not split along it, else 1. A fold's leaves are
-  `fold_lists * fold_columns * fold_outer`: 256 with a pair, 128 without.
-  Where the write side's lists and columns are one level's bits (a call of one level), the pair and the split take its lists, the high bits: 16 and 16 with a pair, 8 and 16
-  without. So a split along the pair level gives 16 by 16, a split off it with a pair 8 by 32 (a pair outside the box: 8 by 16, outer 2), no pair 8 by 16.
-- R5, THE COUNTS of a batch-head. `boxes_per_head` is the product over levels of the boxes along each; `ctas_per_head = boxes_per_head / boxes_per_cta`;
-  `units_per_head` is the product, over every level the write side walks by its lists, of the CTA positions along it (the boxes along it, halved where it is the pair level),
-  1 where it lists none. A UNIT is the CTAs that share a write-listed position: all the readers of its value streams
-  ([`../../../architecture/hopper-carry.md#the-packets`](../../../architecture/hopper-carry.md#the-packets)). `unit_ctas = ctas_per_head / units_per_head`.
-- <a id="window"></a>R6, THE WINDOW. `window` is what `prefill_window(descriptor)` derives from the device's facts, as the arm is: `kHopperWindow` (1024) at `cc` `kHopperCc` (900, defined
+## The launch
+
+Levels are 0-based. `leaves` is the call's leaves a batch-head, the product of the levels' widths; `cta_leaves` is a CTA's, the smaller of 512 and `leaves`; `ctas_per_head = leaves / cta_leaves`. `ctas_per_head` does not depend on how the carve falls across the levels (whatever share each level takes, the shares multiply to
+`cta_leaves`: 512 where the call has that many leaves, else every leaf), so the host states it without the weights; `tests/unit/test_prefill_launch.py` checks it against the carve of every weight pattern of small calls.
+
+- <a id="window"></a>THE WINDOW. `window` is what `prefill_window(descriptor)` derives from the device's facts, as the arm is: `kHopperWindow` (1024) at `cc` `kHopperCc` (900, defined
   once in `levels.h`, which both launch functions include), any other `cc` aborts. It is not a fact of the registry: the owner (2026-11-23): "why? shouldnt the matchers be mapping the hardware facts etc to the arm with the correct window. where else would we derive window". The device card (`fsla.ops.window.window_of`) takes it from the
   same function (`device_card_op`, `fsla_api.cpp`, over the card's compute capability). `windows = ceil(tokens / window)`.
 
-NOT CARVED (`prefill_carves`): a call with a level narrower than its bits in a box -- one level under 256 digits, or a box level under 16. Nothing else is refused.
-THE CONTRACT ACCEPTS SUCH CALLS: `hardware/kernels/prefill/parts/depth1.json` takes one level of 16 to 256 digits and only 256 has a carve. A box of fewer leaves, or a narrower
-contract, is owed ([`../../../open-work.md`](../../../open-work.md) row A-f).
+## <a id="the-carve"></a>The carve
 
-## The table (widths 256 x 256, `cc` 900, `tokens` 65,536: window 1024, 64 windows)
+A side's WEIGHT on a level is the share of the level's digits a token of that side is live on, in 256ths (the owner, 2026-11-24: "each weight is like the sparsity of that level on its own, and we have an indepence assumption of sparsity between levels, and with that we derive everything else"):
+256 where the side walks the level whole, 1 where it walks it by its lists, a measured sparsity in between. The carve takes the weights as the mask format carries them, and clamps one outside 1..256 into the range: the carve is total.
 
-| write | read | write list lvl | read list lvl | pair | split | fold lists x cols | outer | boxes | CTAs | units | unit CTAs |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1,0 | 0,1 | 0 | 1 | 0 | 0 | 16 x 16 | 1 | 256 | 128 | 8 | 16 |
-| 0,1 | 1,0 | 1 | 0 | 1 | 1 | 16 x 16 | 1 | 256 | 128 | 8 | 16 |
-| 1,0 | 1,0 | 0 | 0 | 1 | 0 | 8 x 32 | 1 | 256 | 128 | 16 | 8 |
-| 1,1 | 1,1 | 0 | 0 | 1 | 0 | 8 x 32 | 1 | 256 | 128 | 128 | 1 |
-| 0,0 | 0,0 | 0 | 0 | 1 | 1 | 16 x 16 | 1 | 256 | 128 | 1 | 128 |
+- <a id="groups"></a>R1, THE GROUPS (`prefill_group_bits`, `cta_carve.h`; the owner: "the rule is just grouping, where by default dense level digits are always grouped, and sparse level digits are not ... carry doesn't read the metadata, it just reads
+  group size per legel"; "Group size should be like 1,4,16,32,64,128,256 right? ... it's basically multiply the sparsity by the actual level digits and round that to our allows range"). One rule for both sides. The ALLOWED group
+  sizes are 1, 4, 16, 32, 64, 128 and 256 digits (`kGroupSizeBits`), those no larger than the level's width. A side's group on a level is the allowed size nearest to `weight * width / 256` digits, a tie to the smaller
+  size, compared exactly in integers (the distance of a size `a` is `|a * 256 - weight * width|`). On a level of 256 digits, weight to group: 1 to 1, 2 to 1, 3 to 4, 5 to 4, 10 to 4, 11 to 16, 24 to 16, 25 to 32, 48 to 32, 49 to 64, 96 to 64,
+  97 to 128, 192 to 128, 193 to 256, 256 to 256. The groups are per call ("per window is not possible to implement efficiently from what we found"), and "the producer can be improved to choose them better without any
+  carry changes": the kernel reads the groups. A group and a CTA's carve size on a level nest, and a group may be the larger ("the more important thing is the multiple rule, which we can guarantee via padding").
+- R2, THE CTA'S CARVE ([`cta_carve.md`](cta_carve.md)): `carve_bits[l]` of the level's weights (`write_weight[l] + read_weight[l]`), the CTA's `cta_leaves` the product of the carve sizes (at most 512, the call's leaves where fewer).
+- R3, THE FOLDS' SPLIT (CONSTITUTION R20, the owner, 2026-11-23: "take any write sparse level first, otherwise write dense"). `split_level` is the first level (lowest index) whose write group is smaller than its width and whose
+  carve size is at least 2 digits; where there is none, the first level whose carve size is at least 2; -1 where the CTA's carve is one leaf. `folds` is 2 with a split level, else 1; `fold_bits[l]` is `carve_bits[l]`, less 1 on the
+  split level; `fold_leaves = cta_leaves / folds`.
+- R4, THE SIDES' SETS. THE WRITE SIDE of a fold: `fold_set_leaves` is the product over levels of `2^min(write_group_bits[l], fold_bits[l])`, the leaves a token is expanded over at once, and `fold_sets = fold_leaves / fold_set_leaves`, the
+  separate sets of tokens a fold holds. THE READ SIDE over the whole carve (readout does not partition): `read_set_leaves` is the product of `2^min(read_group_bits[l], carve_bits[l])`, `read_sets = cta_leaves / read_set_leaves`.
+- R5, THE UNITS. `unit_ctas` is the product of `2^max(0, write_group_bits[l] - carve_bits[l])`, the CTAs inside one combination of write groups, which read one value stream
+  ([`../../../architecture/hopper-carry.md#the-packets`](../../../architecture/hopper-carry.md#the-packets)). The units a head, `units_per_head = ctas_per_head / unit_ctas`, join the carve with the launch's count: the carve does not state it, and `plan_tool --cta-carve` prints it.
 
-Every row has box bits 4,4. One level of 65,536 digits: box bits 8, 256 boxes paired along level 0 (128 CTAs), split 0, 16 x 16; write listed 128 units of one CTA, write whole one unit of 128. `tests/unit/test_prefill_carve.py` holds these and the depth-3 and depth-4 cells (the pair on a level outside the box: 8 x 16, outer 2), the pair-falls-to-the-list-level cell and a cell for each of rule 3's clauses, each worked by hand in its comments and each asserting the fold's leaves.
+## Worked cases (`cc` 900, `tokens` 65,536: window 1024, 64 windows)
+
+THE LAUNCH: two levels of 256 digits are 65,536 leaves, a CTA of 512 and 128 CTAs a head; one level of 256 digits is 256 leaves and one CTA; one level of 16 digits is 16 leaves and one CTA (`tests/unit/test_prefill_launch.py`).
+
+THE CARVE: a level is `write weight / read weight`; widths 256 digits unless stated; carve sizes, then the groups written write / read. The CTAs a head are the launch's.
+
+| levels | carve | groups (write / read) | split | fold | fold set leaves x sets | read set leaves x sets | CTAs, unit CTAs, units |
+|---|---|---|---|---|---|---|---|
+| A 5 / 256, B 256 / 1 | 32 x 16 | 4, 256 / 256, 1 | 0 | 16 x 16 | 64 x 4 | 32 x 16 | 128, 16, 8 |
+| A 1 / 256, B 256 / 1 | 32 x 16 | 1, 256 / 256, 1 | 0 | 16 x 16 | 16 x 16 | 32 x 16 | 128, 16, 8 |
+| A 256 / 1, B 1 / 256 | 16 x 32 | 256, 1 / 1, 256 | 1 | 16 x 16 | 16 x 16 | 32 x 16 | 128, 16, 8 |
+| A, B 256 / 256 | 32 x 16 | 256, 256 / 256, 256 | 0 | 16 x 16 | 256 x 1 | 512 x 1 | 128, 128, 1 |
+| A 5 / 256, B 256 / 1, C 256 / 256 | 4 x 4 x 32 | 4, 256, 256 / 256, 1, 256 | 0 | 2 x 4 x 32 | 256 x 1 | 128 x 4 | 32768, 512, 64 |
+| one level, 5 / 256 | 256 | 4 / 256 | 0 | 128 | 4 x 32 | 256 x 1 | 1, 1, 1 |
+
+A 256 / 1 against B 1 / 256 weigh alike (257 each): the larger read weight (B's) takes the first doubling, so B takes the ninth, 16 x 32. A weight of 0 or 300 is clamped to 1 or 256: the carve of weights 0 and 300 is the carve of 1 and 256. `tests/unit/test_prefill_carve.py` holds these and the
+other cases (a weight of 128, four levels, two levels of 16 digits, one level of 16), every field against the tool's answer.
 
 ## What is NOT here
 
 The grid's split between the gather and the carry CTAs, the ring's size, the workspace's layout and the segment length wait on
-[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). No Python API and no op:
-`fsla.ops.prefill` keeps refusing by name. `plan_tool` prints a prefill call's carve as JSON ([`plan_tool.md`](plan_tool.md)).
+[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The producer's counting of the weights into the mask format is the masks' own change
+(`fsla/routing/masks.py`), not built here. No Python API and no op: `fsla.ops.prefill` keeps refusing by name.

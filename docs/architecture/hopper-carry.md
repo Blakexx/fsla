@@ -13,20 +13,28 @@ then the fold of the window's writes into the state.
 
 ## The call's shape
 
-- A BOX is 16 digits of each of two levels by the value channels: 256 leaves, in registers for the call. A CTA OWNS
-  TWO, neighbours along a level the read side walks whole, so one reader list serves both; inside that region its two
-  fold warpgroups split along a level the write side walks by its lists first, otherwise one it walks whole
-  ([`CONSTITUTION.md` R20](../CONSTITUTION.md#r20)). The carve, the split, the window and the grid are outputs of the
-  prefill launch function, computed before the launch and stored nowhere (R24; [`open-work.md`](../open-work.md) row
-  A-f).
-- ONE CTA A MULTIPROCESSOR (R15), a CTA a (box pair, batch-head). Where a call has more CTAs than the card has
-  multiprocessors they run in waves, each CTA its boxes' whole segment; carry CTAs meet each other only at the output's
+- A CTA OWNS A CARVE OF 512 LEAVES ([`CONSTITUTION.md` R20](../CONSTITUTION.md#r20)), in registers for the call: a
+  power-of-two extent a level, APPORTIONED across the levels by the two sides' weights
+  ([`cta_carve.md`](../internals/common/plan/cta_carve.md)). The measured cell -- the write side grouping 4 digits of one
+  level and walking the other whole, the read side the reverse -- comes out 32 x 16, the 32 along the level the read side
+  walks whole. Its two fold warpgroups hold half each, 16 x 16, split along a level the write side walks by groups smaller
+  than the level first, otherwise one it walks whole; the readout warpgroup takes the carve whole. A fold's half of the
+  carve is called a BOX below.
+- A SIDE'S WEIGHT on a level is its sparsity there -- live digit-token pairs over all pairs -- counted by the producer
+  as it writes the masks and carried in the mask format; ITS GROUP SIZE is the weight times the level's digits, rounded
+  to 1, 4, 16, 32, 64, 128 or 256 (R10). The kernels read the weights, derive the groups, the carve and the split with
+  that one rule, and switch once a call to the code compiled for the pattern (`uniform_switch`; R9). The host reads no
+  weight: its half of the launch is the grid's counts and the window
+  ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md); R24; [`open-work.md`](../open-work.md) row A-f).
+  NOT BUILT: the masks carrying the weights, and the kernels.
+- ONE CTA A MULTIPROCESSOR (R15), a CTA a (carve, batch-head). Where a call has more CTAs than the card has
+  multiprocessors they run in waves, each CTA its carve's whole segment; carry CTAs meet each other only at the output's
   adds (R22). A carry CTA also takes its packets from the gather's CTAs: [the hand-off](#the-hand-off).
-- A UNIT is a batch-head's pair of blocks of the level the write side walks by its lists: the 16 CTAs that hold the
-  pair's boxes, one a block of the read side's listed level. They are all the readers of the pair's two value streams,
-  and units are taken head by head, pair by pair (Blake, 2026-11-23: "looping by head, by sparse box, so the gather is
-  servign as many ctas as possible at once").
-- THE WINDOW is the card's (1,024 tokens on hopper, provisional), global to every box.
+- A UNIT is the CTAs inside one combination of the write side's groups: where a group is larger than the carve on its
+  level, the CTAs along it read one value stream a fold -- in the measured cell the 16 CTAs along the level the write
+  side walks whole. They are all the readers of the unit's value streams, and units are taken head by head (Blake,
+  2026-11-23: "looping by head, by sparse box, so the gather is servign as many ctas as possible at once").
+- THE WINDOW is the card's (1,024 tokens on hopper, provisional), global to every CTA.
 - THE SKELETON'S CELL: two levels of 256 digits, each side walking one level by its lists and the other whole, 64
   value channels, a segment a whole number of windows, the state zero at entry and not stored. What a wider contract
   needs beyond it is under [The order of the build](#the-order-of-the-build).
@@ -96,14 +104,13 @@ at a token list's values, an eighth of the carry's work ([`lab/gather_pass.md`](
 | DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines; a reader's output line is the CTA's lists' |
 
 A warpgroup's registers are set once, at its role's head; two counts in one warpgroup hang the CTA. Every barrier
-wait is a suspending poll. Shared memory: a box's packet slots, the two boxes' images, the readout's coefficient
+wait is a suspending poll. Shared memory: a fold's packet slots, the two folds' images, the readout's coefficient
 tiles, two panels.
 
 A STEP IS NEVER WIDER THAN 64 COLUMNS (R25). THE SKELETON'S fold is the group of four digits alone: a token's value
 lines once, its row the coefficients of the group's digits it is live on and zeros, a step 16 tokens by 64 columns,
-and a group's steps a loop on the packet's count whose test is a warp vote. The fixed set of widths (1, 4 and 16
-digits, RULED 2026-11-20) and the word that picks one a box are the climb's; the rule that chooses the word is OPEN
-(R9).
+and a group's steps a loop on the packet's count whose test is a warp vote. The group a step lays out is its level's, from the side's weight
+([the call's shape](#the-calls-shape)); the step shapes that execute a group are the climb's.
 
 ## A window
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "plan/arm_family.h"
+#include "plan/cta_carve.h"
 #include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/lattice.h"
@@ -41,10 +42,62 @@ Named parse(const std::string& text, std::vector<std::string>& keep) {
   return out;
 }
 
-//: the carve of a prefill call as JSON, from the facts given: the planner's verdict on the call (held,
+//: the numbers `values[0 .. levels)` as a comma list
+template <typename T>
+std::string list_of(const T* values, int levels) {
+  std::string out;
+  for (int l = 0; l < levels; ++l) out += (l ? "," : "") + std::to_string(values[l]);
+  return out;
+}
+
+//: `values[0 .. levels)` as a JSON list
+template <typename T>
+std::string json_list(const T* values, int levels) {
+  return "[" + list_of(values, levels) + "]";
+}
+
+//: the launch's host half of a prefill call as JSON members, `separator` between them (`window` and `windows` follow, the descriptor's)
+void print_launch_fields(const fsla::plan::PrefillLaunch& p, const char* separator) {
+  const auto n = [](std::int64_t v) { return std::to_string(v); };
+  std::printf("\"levels\": %s%s", n(p.levels).c_str(), separator);
+  std::printf("\"width_bits\": %s%s", json_list(p.width_bits, p.levels).c_str(), separator);
+  std::printf("\"leaves\": %s%s", n(p.leaves).c_str(), separator);
+  std::printf("\"cta_leaves\": %s%s", n(p.cta_leaves).c_str(), separator);
+  std::printf("\"ctas_per_head\": %s", n(p.ctas_per_head).c_str());
+}
+
+//: the carve's fields from `levels` to `unit_ctas` as JSON members, `separator` between them
+void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator) {
+  const auto list = [&](const int* v) { return json_list(v, c.levels); };
+  const auto n = [](std::int64_t v) { return std::to_string(v); };
+  bool first = true;
+  const auto line = [&](const std::string& key, const std::string& value) {
+    std::printf("%s\"%s\": %s", first ? "" : separator, key.c_str(), value.c_str());
+    first = false;
+  };
+  line("levels", n(c.levels));
+  line("width_bits", list(c.width_bits));
+  line("write_weight", list(c.write_weight));
+  line("read_weight", list(c.read_weight));
+  line("write_group_bits", list(c.write_group_bits));
+  line("read_group_bits", list(c.read_group_bits));
+  line("carve_bits", list(c.carve_bits));
+  line("cta_leaves", n(c.cta_leaves));
+  line("split_level", n(c.split_level));
+  line("folds", n(c.folds));
+  line("fold_bits", list(c.fold_bits));
+  line("fold_leaves", n(c.fold_leaves));
+  line("fold_set_leaves", n(c.fold_set_leaves));
+  line("fold_sets", n(c.fold_sets));
+  line("read_set_leaves", n(c.read_set_leaves));
+  line("read_sets", n(c.read_sets));
+  line("unit_ctas", n(c.unit_ctas));
+}
+
+//: the launch of a prefill call as JSON, from the facts given: the planner's verdict on the call (held,
 //: owed with its kernels, or outside) is printed beside it, never a gate on it
-void print_carve(const fsla::plan::PrefillDescriptor& device, const Named& call,
-                 const std::string& model) {
+void print_launch(const fsla::plan::PrefillDescriptor& device, const Named& call,
+                  const std::string& model) {
   using namespace fsla::plan;
   PrefillDescriptor d = device;
   for (const auto& [name, value] : call) {
@@ -60,10 +113,6 @@ void print_carve(const fsla::plan::PrefillDescriptor& device, const Named& call,
       refuse("the call states no value for '" + std::string(name) + "'");
     }
   }
-  if (!prefill_carves(d)) {
-    std::printf("{\"carved\": false}\n");
-    return;
-  }
   const Planned<Prefill> verdict = describe<Prefill>(device, call, model);
   std::string kernels;
   for (const std::string& k : verdict.owed) {
@@ -72,45 +121,11 @@ void print_carve(const fsla::plan::PrefillDescriptor& device, const Named& call,
   std::string held = "owed";
   if (verdict.ok()) held = "built";
   if (!verdict.ok() && verdict.owed.empty()) held = "outside the contract";
-  const PrefillCarve c = prefill_carve(d);
-  const auto list = [&](const int* v) {
-    std::string out = "[";
-    for (int i = 0; i < c.levels; ++i) out += (i ? ", " : "") + std::to_string(v[i]);
-    return out + "]";
-  };
-  const auto line = [](const std::string& key, const std::string& value, bool last = false) {
-    std::printf(" \"%s\": %s%s\n", key.c_str(), value.c_str(), last ? "}" : ",");
-  };
-  const auto n = [](std::int64_t v) { return std::to_string(v); };
-  std::printf("{\"carved\": true,\n");
-  line("kernels", "\"" + held + "\"");
-  line("owed", "[" + kernels + "]");
-  line("levels", n(c.levels));
-  line("box_bits", list(c.box_bits));
-  line("read_list_bits", list(c.read_list_bits));
-  line("write_list_bits", list(c.write_list_bits));
-  line("read_list_level", n(c.read_list_level));
-  line("write_list_level", n(c.write_list_level));
-  line("pair_level", n(c.pair_level));
-  line("split_level", n(c.split_level));
-  line("boxes_per_cta", n(c.boxes_per_cta));
-  line("fold_lists", n(c.fold_lists));
-  line("fold_columns", n(c.fold_columns));
-  line("fold_outer", n(c.fold_outer));
-  line("boxes_per_head", n(c.boxes_per_head));
-  line("ctas_per_head", n(c.ctas_per_head));
-  line("units_per_head", n(c.units_per_head));
-  line("unit_ctas", n(c.unit_ctas));
-  line("window", n(c.window));
-  line("windows", n(c.windows), true);
-}
-
-//: the numbers `values[0 .. levels)` as a comma list
-template <typename T>
-std::string list_of(const T* values, int levels) {
-  std::string out;
-  for (int l = 0; l < levels; ++l) out += (l ? "," : "") + std::to_string(values[l]);
-  return out;
+  const PrefillLaunch p = prefill_launch(d);
+  std::printf("{\"kernels\": \"%s\",\n \"owed\": [%s],\n ", held.c_str(), kernels.c_str());
+  print_launch_fields(p, ",\n ");
+  std::printf(",\n \"window\": %d,\n \"windows\": %lld}\n", p.window,
+              static_cast<long long>(p.windows));
 }
 
 void print_box(int k, long long m, long long bc, long long owners, const std::string& spans,
@@ -204,6 +219,44 @@ std::vector<std::int64_t> parse_widths(const std::string& text) {
   return out;
 }
 
+//: THE CARVE of one call: the levels' width bits and each side's weights (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
+void print_cta_carve(const std::string& widths_text, const std::string& write_text,
+                     const std::string& read_text) {
+  using namespace fsla::plan;
+  const auto bits = [&](const std::string& text, const char* flag) {
+    const std::vector<std::int64_t> v = parse_widths(text);
+    if (v.empty() || v.size() > kCarveMaxLevels) {
+      refuse(std::string(flag) + " takes 1 to " + std::to_string(kCarveMaxLevels)
+             + " numbers, a comma list");
+    }
+    return v;
+  };
+  const auto width = bits(widths_text, "--cta-carve");
+  const auto write = bits(write_text, "--write-weight");
+  const auto read = bits(read_text, "--read-weight");
+  if (write.size() != width.size() || read.size() != width.size()) {
+    refuse("--cta-carve, --write-weight and --read-weight take one number a level");
+  }
+
+  const int levels = static_cast<int>(width.size());
+  int w[kCarveMaxLevels] = {};
+  int weight_write[kCarveMaxLevels] = {};
+  int weight_read[kCarveMaxLevels] = {};
+  for (int l = 0; l < levels; ++l) {
+    w[l] = static_cast<int>(width[l]);
+    weight_write[l] = static_cast<int>(write[l]);
+    weight_read[l] = static_cast<int>(read[l]);
+  }
+  //: the carve is total (a weight is clamped into 1..256); the CTAs a head are the launch's, `units_per_head` their quotient by the carve's unit CTAs
+  const PrefillCarve c = prefill_carve(levels, w, weight_write, weight_read);
+  const PrefillLaunch p = prefill_launch_of(c.width_bits, c.levels);
+  std::printf("{");
+  print_carve_fields(c, ", ");
+  std::printf(", \"ctas_per_head\": %lld, \"units_per_head\": %lld}\n",
+              static_cast<long long>(p.ctas_per_head),
+              static_cast<long long>(p.ctas_per_head / c.unit_ctas));
+}
+
 //: ONE ENTMAX KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch; `widths` (the levels' widths of the launch) are held to the launch's one width class
 template <typename K>
 void print_entmax(const Named& device_facts, const Named& call_facts, const std::string& model,
@@ -260,12 +313,18 @@ void print_entmax_kernel(const std::string& kernel, const Named& device_facts,
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string kernel, device_text, call_text, model, grid_text, carve_text, lattice_text,
-      widths_text;
+  std::string kernel, device_text, call_text, model, grid_text, launch_text, lattice_text,
+      widths_text, cta_carve_text, write_weight_text, read_weight_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--lattice") {
       lattice_text = argv[i + 1];
+    } else if (flag == "--cta-carve") {
+      cta_carve_text = argv[i + 1];
+    } else if (flag == "--write-weight") {
+      write_weight_text = argv[i + 1];
+    } else if (flag == "--read-weight") {
+      read_weight_text = argv[i + 1];
     } else if (flag == "--kernel") {
       kernel = argv[i + 1];
     } else if (flag == "--device") {
@@ -274,8 +333,8 @@ int main(int argc, char** argv) {
       call_text = argv[i + 1];
     } else if (flag == "--model") {
       model = argv[i + 1];
-    } else if (flag == "--carve") {
-      carve_text = argv[i + 1];
+    } else if (flag == "--launch") {
+      launch_text = argv[i + 1];
     } else if (flag == "--grid") {
       grid_text = argv[i + 1];
     } else if (flag == "--widths") {
@@ -285,11 +344,37 @@ int main(int argc, char** argv) {
     }
   }
   const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
-  if (argc % 2 == 0 || (lattice_text.empty() && !launch_given)) {
+  if (argc % 2 == 0 || (lattice_text.empty() && cta_carve_text.empty() && !launch_given)) {
     refuse(
         "usage: plan_tool --kernel decode|prefill|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
-        "[--grid ...] (decode) | [--carve json] (prefill: the descriptor, or the carve) | [--widths w,...] (an entmax kernel: the launch's "
-        "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device)");
+        "[--grid ...] (decode) | [--launch json] (prefill: the descriptor, or the launch's host half) | [--widths w,...] (an entmax kernel: the launch's "
+        "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device) | "
+        "plan_tool --cta-carve width_bits,... --write-weight w,... --read-weight w,... (the carve of a call's widths and weights, no device)");
+  }
+  if (!cta_carve_text.empty()) {
+    if (!lattice_text.empty() || !kernel.empty() || !device_text.empty() || !call_text.empty()) {
+      refuse("--cta-carve stands alone");
+    }
+    //: calls, `;` between them: one line of JSON each
+    const auto calls = [](const std::string& text) {
+      std::vector<std::string> out;
+      std::size_t at = 0;
+      while (at <= text.size()) {
+        std::size_t end = text.find(';', at);
+        if (end == std::string::npos) end = text.size();
+        out.push_back(text.substr(at, end - at));
+        at = end + 1;
+      }
+      return out;
+    };
+    const auto widths = calls(cta_carve_text);
+    const auto writes = calls(write_weight_text);
+    const auto reads = calls(read_weight_text);
+    if (writes.size() != widths.size() || reads.size() != widths.size()) {
+      refuse("--cta-carve, --write-weight and --read-weight take the same number of calls");
+    }
+    for (std::size_t i = 0; i < widths.size(); ++i) print_cta_carve(widths[i], writes[i], reads[i]);
+    return 0;
   }
   if (!lattice_text.empty()) {
     if (!kernel.empty() || !device_text.empty() || !call_text.empty()) {
@@ -318,15 +403,15 @@ int main(int argc, char** argv) {
   }
   const Named call_facts = parse(call_text, keep);
   if (kernel == "decode") {
-    if (!carve_text.empty()) refuse("--carve is the prefill's");
+    if (!launch_text.empty()) refuse("--launch is the prefill's");
     print_decode(device_facts, call_facts, model, grid_text, keep);
   } else if (kernel == "prefill") {
     const auto device = fsla::plan::device_descriptor<Prefill>(device_facts, model);
     if (!device.ok()) refuse(device.refusal);
     if (!grid_text.empty()) refuse("--grid is decode's");
-    if (!carve_text.empty()) {
-      if (carve_text != "json") refuse("--carve takes json");
-      print_carve(device.descriptor, call_facts, model);
+    if (!launch_text.empty()) {
+      if (launch_text != "json") refuse("--launch takes json");
+      print_launch(device.descriptor, call_facts, model);
       return 0;
     }
     const auto call = fsla::plan::describe<Prefill>(device.descriptor, call_facts, model);

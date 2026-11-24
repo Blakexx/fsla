@@ -26,7 +26,7 @@ nothing bounds what accumulation embeds.
 | the fold | the coefficient of a (token, leaf) -- its levels' bytes with the token's scales, multiplied in fp32 where the bytes are expanded -- rounded to bf16 once; the values bf16 as stored | fp32 |
 | the readout | the state as a bf16 operand; the read coefficient bf16 | fp32 |
 | the intra | a window's token pairs' products exact (u8 rows, integer MMAs); the pair's weight bf16; the values bf16 | fp32 |
-| the output's sum | a token's partial sums from every CTA that reads it | fp32 inside a CTA; across CTAs the plan's: fp32, or one f16 line a CTA a token, scaled by a power of two from one coarse bound re-based each segment and stored with the state -- 0.083% a token at the median with two boxes a CTA ([`arith_model`](../internals/tools/arith_model.md#f16)) |
+| the output's sum | a token's partial sums from every CTA that reads it | fp32 inside a CTA; across CTAs the plan's: fp32, or one f16 line a CTA a token, scaled by a power of two from one coarse bound re-based each segment and stored with the state -- 0.083% a token at the median with 512 leaves a CTA ([`arith_model`](../internals/tools/arith_model.md#f16)) |
 | decode | the bundle's token, the stored state | each written element updated in fp32 and rounded to its group's unit (2^-23 of the group's largest) |
 | the output | `y = P / den`, bf16 | -- |
 
@@ -61,7 +61,7 @@ reads, and each alone costs under 0.02% at the 99th percentile on the dense cell
 ones.
 
 THE SUM'S WIDTH IS THE PLAN'S because f16 costs by the partials it joins and the op counts none (R24): 29 f16 lines
-a token (two boxes a CTA, added in fp32 first) are 0.083% a token at the median on nl64k-alt-k4, 58 are 0.115%, the
+a token (512 leaves a CTA, added in fp32 first) are 0.083% a token at the median on nl64k-alt-k4, 58 are 0.115%, the
 family's own error being 0.115% ([`arith_model`](../internals/tools/arith_model.md#f16); MODELLED on that one
 sparse cell -- a dense read side and wider levels are NOT modelled). So the producer's planner chooses the width from the
 declaration's structure, the levels' widths and walks. A sum a fold group with the groups merged in fp32 reads

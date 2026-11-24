@@ -116,7 +116,7 @@ validating its operands: a prefill is refused there as `KernelNotBuilt` naming
 `prefill` while no carry is built, operands that are not on a CUDA device are refused there naming the device, and any other call outside the contract
 is refused naming the facts. A call that carries a gradient is refused by name before any of them (`BackwardNotImplemented`).
 
-**A walk is an action.** `read_listed_k` (the prefill's call) and `write_listed_k` (both kernels') state whether that side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses them from the declaration (a side whose activation has exact zeros is listed); a walk costs time and never the result.
+**A walk is an action.** `write_listed_k` (decode's call) states whether the write side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses it from the declaration (a side whose activation has exact zeros is walked by its lists); a walk costs time and never the result. The prefill's call states no walk and no weight: each side's per-level weights are counted by the producer and carried in the mask format, and the prefill's kernels derive their groups and the CTA's carve from them ([`internals/common/plan/prefill_launch.md`](internals/common/plan/prefill_launch.md)).
 
 **There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
 is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads

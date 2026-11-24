@@ -187,15 +187,15 @@ def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: i
 def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
     """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side WALKS BY ITS LISTS (the rest are walked digit by digit) -- the
     levels whose activation has exact zeros (an opaque level, which may have zeros, included). An action chosen once from the
-    declaration's activation metadata and stated as the call's ``read_listed_k`` and ``write_listed_k`` facts; no consumer
-    asks the activations again."""
+    declaration's activation metadata and stated by :func:`level_facts` as decode's ``write_listed_k`` facts; no consumer asks the activations again."""
     return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
                  for side in ("read", "write"))
 
 
 def level_facts(kernel: str, topology, widths: tuple[int, ...]) -> dict[str, int]:
     """The facts a call of ``kernel`` states per level: each width as its log2 (a level's width is a power of two,
-    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`) as far as the kernel's call facts name it, and ``levels``;
+    ``fsla._state.StateFormat``'s law), each side's walk of each level (:func:`activation_walks`) as far as the kernel's call facts name it (decode's ``{side}_listed_k``, 1 where the side
+    walks the level by its lists; the prefill's facts are the widths and ``levels`` alone, its weights are the masks' and no fact of the call) and ``levels``;
     a level beyond the call's depth is 0. The kernel's own call facts name how many levels its contract holds."""
     for level, width in enumerate(widths):
         if width < 1 or width & (width - 1):
