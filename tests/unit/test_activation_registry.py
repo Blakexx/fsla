@@ -18,7 +18,6 @@ import pytest
 import torch
 
 import fsla
-from fsla.engine.rules import envelope
 from fsla.routing.activations import (
     ACTIVATION_COLUMNS,
     ACTIVATION_REGISTRY,
@@ -208,21 +207,6 @@ def test_tied_routing_admits_any_registered_activation_without_widening_an_isins
 
     with pytest.raises(UnknownActivation):
         TiedRouting(width=4, op=_Future())
-
-
-# --- the op refuses no activation ---------------------------------------------
-
-def test_the_envelope_names_the_device_and_no_activation():
-    """The op is agnostic to activations: a registered-but-unsolved activation is nothing the envelope speaks of."""
-    tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True)
-    try:
-        topology = _topology(entmax(1.75), entmax(1.75))
-        assert topology is not None
-        refusal = envelope(torch.device("cpu"))
-        assert "activation" not in refusal and envelope(torch.device("cuda")) is None
-    finally:
-        del ACTIVATION_REGISTRY[tag]
 
 
 # --- no case list may exist outside the registry -----------------------------

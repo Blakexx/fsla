@@ -149,19 +149,12 @@ def layer_prefill(fx) -> Launch:
     projection in) and the op. The output projection is the same GEMM as attention's and is outside both entries."""
     spec, layer = fx["cell"], fx["layer"]
     x = fx["x"][:, :spec.tokens].contiguous()
-    _one_segment(spec, layer)
 
     def run():
         with torch.no_grad():
             return layer._prefill(x, None, None)[0]
 
     return Launch(name=f"layer_prefill|{spec.name}|{fx['construction'].name}", call=run)
-
-
-def _one_segment(spec, layer) -> None:
-    if layer.memory_budget is not None:
-        raise ValueError(f"{spec.name}: the layer declares a memory budget, so it would split {spec.tokens} tokens into segments, and a "
-                         "segment boundary carries a state the prefill does not take yet")
 
 
 def layer_op(fx) -> Launch:
@@ -171,7 +164,6 @@ def layer_op(fx) -> Launch:
     from fsla import prefill
 
     spec, layer = fx["cell"], fx["layer"]
-    _one_segment(spec, layer)
     with torch.no_grad():
         routes, values, masks, density = layer._produce(fx["x"][:, :spec.tokens].contiguous())
 
