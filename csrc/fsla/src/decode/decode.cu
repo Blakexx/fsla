@@ -27,6 +27,7 @@
 #include <cuda_bf16.h>
 
 #include <algorithm>
+#include <atomic>
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
@@ -688,13 +689,11 @@ void fsla_decode_ledger_bind(const std::optional<Tensor>& ledger) {
   g_phase_ledger_ctas = ledger->size(0);
 }
 
-//: FIXED by the driver: the dynamic shared memory a launch may take without opting in
-constexpr std::int64_t kDefaultDynamicSmem = 48 * 1024;
-
 void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, const DecodeParams& p) {
   const plan::DecodeArm& arm = launch.arm;
   const plan::DecodeArgs& args = launch.args;
   auto stream = current_stream();
+
   //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three -- see docs/internals/decode/decode.md#launch
   auto enqueue = [&](auto DV, auto LEVELS, auto DECAY) {
     constexpr int kDv = decltype(DV)::value, kLevels = decltype(LEVELS)::value;
@@ -712,12 +711,19 @@ void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, cons
         constexpr std::int64_t kStep = Smem::template count<detail::StepWords>;
         const std::int64_t words = launch.layout.step_words;
         STD_TORCH_CHECK(words <= kStep, plan::decode_smem_refusal(launch, kStep));
-        const std::int64_t smem = Smem::template reserved_to<detail::StepWords>(words);
-        if (smem > kDefaultDynamicSmem) {
-          FSLA_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                               static_cast<int>(smem)));
+        const int smem = static_cast<int>(Smem::template reserved_to<detail::StepWords>(words));
+
+        //: the kernel's ceiling is the layout's bytes, raised once a device; a launch reserves `smem` of it -- see docs/internals/common/smem_layout.md#reserve
+        static std::atomic<std::uint64_t> raised{0};
+        STD_TORCH_CHECK(card.device < 64, "device ", card.device, " is past the 64 tracked");
+        const std::uint64_t mine = std::uint64_t{1} << card.device;
+        if ((raised.load(std::memory_order_relaxed) & mine) == 0) {
+          constexpr int kCeiling = static_cast<int>(Smem::bytes);
+          FSLA_CUDA_CHECK(
+              cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kCeiling));
+          raised.fetch_or(mine, std::memory_order_relaxed);
         }
-        kernel<<<dim3(p.ctas), args.threads, static_cast<size_t>(smem), stream>>>(p);
+        kernel<<<dim3(p.ctas), args.threads, smem, stream>>>(p);
       }
     });
   };

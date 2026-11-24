@@ -35,6 +35,11 @@ object.
   two levels of 256 digits on an H100; reserving up to the call's last word it ran at 0.99 to 1.01 (two libraries, each
   in its own process, interleaved, 24 November 2026). On that card the first-level cache and the shared memory are one
   memory, so that the cache is what the larger reservation took is LIKELY; no counter was read, so it is NOT SHOWN.
+  THE KERNEL'S CEILING (the function attribute a launch over the driver's default needs) is the layout's `bytes`,
+  raised once a device: with the ceiling at the whole layout and each launch reserving its call's need the step ran at
+  1.00 to 1.01 of the earlier library's time at two levels, so it is what a launch reserves that costs and not the
+  ceiling; and the attribute set on every launch cost about 2 microseconds a step (1.03 to 1.06 at one level, a step of
+  50 to 110 microseconds).
 - <a id="share"></a>`Share<Tag, T, LEAST, WEIGHT>`: at least `LEAST` elements, and `WEIGHT` parts of what the budget
   leaves once every tile's least is placed (dealt in whole 16-byte steps). A share is how a layout ADAPTS: the same
   source gives a deeper ring on a card with more shared memory and a shallower one on a card with less. Code reads
@@ -49,8 +54,8 @@ has, or two tiles have, does not compile either: a tile's count, offset, type an
 `smem_proof` instantiates one layout on two cards that differ in shared memory alone and asserts, at every build, that
 it fits both, that a fixed tile is the same on both, that a share is larger on the larger card and above its least on
 the smaller, that one CTA an SM may reserve what the card says, that two CTAs' budgets and what the card keeps of each
-are the SM, that a fixed tile is its own object and outside what the launch reserves, and that a share's offset is
-the shares' bytes before it.
+are the SM, that a fixed tile is its own object and outside what the launch reserves, that a share's offset is
+the shares' bytes before it, and that a call using part of the last share reserves up to what it uses.
 
 ## Who uses it
 

@@ -141,7 +141,7 @@ struct SmemLayout {
     return at;
   }
 
-  //: the bytes a launch reserves for a call that uses `used` elements of the tile named `Tag`, the last with a share: what a call does not reserve stays the SM's cache -- see docs/internals/common/smem_layout.md#reserve
+  //: the bytes a launch reserves for a call that uses `used` elements of the tile named `Tag`, the last with a share -- see docs/internals/common/smem_layout.md#reserve
   template <class Tag>
   static constexpr std::int64_t reserved_to(std::int64_t used) {
     constexpr std::int64_t each[kTiles] = {reserved_bytes<Tiles>...};
