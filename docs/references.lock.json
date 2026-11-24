@@ -933,7 +933,7 @@
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "5d5d4cd4574d", "reviewed": true, "sha256": "", "target": "docs/internals/common/plan/decode_launch.md"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "fee4a4bc708b", "reviewed": true, "sha256": "", "target": "docs/internals/common/plan/lattice.md"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "a0213f9241d2", "reviewed": true, "sha256": "", "target": "docs/internals/common/smem_layout.md"},
-  {"doc": "docs/internals/decode/decode.md", "pinned_at": "2f02e456deae", "reviewed": true, "sha256": "c8998e77ea0e7a37", "target": "docs/internals/common/smem_layout.md#reserve"},
+  {"doc": "docs/internals/decode/decode.md", "pinned_at": "3d9692dceb06", "reviewed": true, "sha256": "ce64a3eceb6c5233", "target": "docs/internals/common/smem_layout.md#reserve"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "4d9938a2040f", "reviewed": true, "sha256": "12a50b1b37eca82e", "target": "docs/internals/common/state_page.md#geometry"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "0685c902b308", "reviewed": true, "sha256": "ab8173eecb503077", "target": "docs/internals/decode/decode.md#absent-atom"},
   {"doc": "docs/internals/decode/decode.md", "pinned_at": "0685c902b308", "reviewed": true, "sha256": "cae8f7a2305b4b83", "target": "docs/internals/decode/decode.md#aligned-subranges"},

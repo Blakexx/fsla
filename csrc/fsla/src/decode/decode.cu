@@ -27,8 +27,8 @@
 #include <cuda_bf16.h>
 
 #include <algorithm>
-#include <map>
 #include <mutex>
+#include <set>
 
 #include "common/arch_runtime.cuh"
 #include "common/select.cuh"
@@ -716,14 +716,14 @@ void launch_decode_step(const Card& card, const plan::DecodeLaunch& launch, cons
 
         //: the kernel's ceiling is the layout's bytes, settled once a device; a launch reserves `smem` of it -- see docs/internals/common/smem_layout.md#reserve
         static std::mutex mu;
-        static std::map<int, int> ceilings;
+        static std::set<int> settled;
         {
           const std::lock_guard<std::mutex> hold(mu);
-          if (ceilings.find(card.device) == ceilings.end()) {
+          if (settled.count(card.device) == 0) {
             constexpr int kMost = static_cast<int>(Smem::bytes);
             FSLA_CUDA_CHECK(
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kMost));
-            ceilings.emplace(card.device, kMost);
+            settled.insert(card.device);
           }
         }
         kernel<<<dim3(p.ctas), args.threads, smem, stream>>>(p);

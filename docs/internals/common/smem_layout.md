@@ -36,7 +36,7 @@ object.
   in its own process, interleaved, 24 November 2026). On that card the first-level cache and the shared memory are one
   memory, so that the cache is what the larger reservation took is LIKELY; no counter was read, so it is NOT SHOWN.
   THE KERNEL'S CEILING (the function attribute a launch over the driver's default needs) is the layout's `bytes`,
-  settled once a device (a map by device under a mutex, as the card's admission is): with the ceiling at the whole layout and each launch reserving its call's need the step ran at
+  settled once a device (the devices settled, a set under a mutex): with the ceiling at the whole layout and each launch reserving its call's need the step ran at
   1.00 to 1.01 of the earlier library's time at two levels, so it is what a launch reserves that costs and not the
   ceiling; and the attribute set on every launch cost about 2 microseconds a step (1.03 to 1.06 at one level, a step of
   50 to 110 microseconds).
