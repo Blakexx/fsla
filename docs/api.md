@@ -410,7 +410,7 @@ A mask is a bit per side, per level, per digit, per token (ruled 2026-11-13) and
 is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22). The masks are validated for shape, dtype and device, never for
 their values. What a bit says depends on the consumer.
 
-**DECODE computes with `r * m`**, the product under the mask (unchanged): a bit under a nonzero row drops that digit's term, a bit over a
+**DECODE computes with `r * m`**, the product under the mask: a bit under a nonzero row drops that digit's term, a bit over a
 zero row adds nothing, and the oracle (`fsla.naive_fsla(..., masks=)`) is the result the data fixes. The backward saves the masks and they
 carry no gradient: a masked coefficient's gradient is zero.
 

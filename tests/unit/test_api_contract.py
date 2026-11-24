@@ -26,7 +26,6 @@ import torch
 
 import fsla
 from fsla.routing.factors import RouteFactors
-from fsla.routing.masks import PREFILL
 from fsla.values import Values
 
 
@@ -58,13 +57,11 @@ def _context(routes, values):
     """The call's context: the bundle's own bits as the PREFILL-layout masks (validation reads the masks' shapes) (a non-bundle is the type
     refusal's, which speaks before the masks are read)."""
     from fsla.engine.prefill_call import PrefillContext
-    from fsla.routing.masks import density_of_masks
-    from tests.oracle.fixtures import masks_of
 
     if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
         return PrefillContext(routes=routes, values=values, masks=None, density=None)
-    masks = masks_of(routes, PREFILL)
-    return PrefillContext(routes=routes, values=values, masks=masks, density=density_of_masks(routes, masks))
+    masks, density = fsla.masks_and_density(routes)
+    return PrefillContext(routes=routes, values=values, masks=masks, density=density)
 
 
 def _admitted(routes, v) -> None:

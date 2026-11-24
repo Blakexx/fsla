@@ -305,7 +305,9 @@ in the same scale format, and thats what the op uses".
 The op and every kernel under it execute a PLAN their caller supplies (Blake, 2026-11-11): the carve, each side's
 walk of each level -- by its lists, or every digit -- the list groups, the window and the segment, the drain's width
 and its scale's form. A plan field names an ACTION. It never names a property of the data -- dense, sparse, an
-activation, a count of live digits -- and the op's inputs carry none: they carry shapes, dtypes, scales and counts.
+activation, a count of live digits -- and the op's inputs carry none but the
+prefill's `density` (R9), which is no plan field and chooses a layout among exact forms: they carry shapes, dtypes,
+scales and counts.
 A level's sparse MASK is not a plan field but an OPERAND, data as its rows are (Blake, 2026-11-13): the op
 reads no row to find what is live. On the prefill a bit of 0 is its supplier's guarantee that the entry's row is zero,
 and a 1 guarantees nothing (Blake, 2026-11-24: "if it's zero you are guaranting to use this value is zero. If it's not

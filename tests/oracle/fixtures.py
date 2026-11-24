@@ -19,7 +19,7 @@ from fsla.ops import carry as carry_ops
 from fsla.ops.naive import naive_fsla
 from fsla.ops.paging import decode_pages, encode_pages
 from fsla.routing.factors import RouteFactors
-from fsla.routing.masks import DECODE, Masks, pack_digits, pack_tokens
+from fsla.routing.masks import DECODE, Masks, pack_digits
 from fsla.values import Values
 from tests.oracle import tolerances
 
@@ -77,12 +77,12 @@ def step_bundles(v, read, write, topology):
     return routes, Values.from_projection(v.float())
 
 
-def masks_of(routes, consumer=DECODE):
-    """THE MASKS A FIXTURE'S DRAW SUPPORTS, in ``consumer``'s layout: a bit where the bundle's own row is nonzero (the
-    producer knows what it gives; a test fixture is the producer here). Data handed to the op, never read back by it."""
-    pack = pack_digits if consumer == DECODE else pack_tokens
-    return Masks(consumer, tuple(pack(rows != 0) for rows in routes.read_rows),
-                 tuple(pack(rows != 0) for rows in routes.write_rows))
+def masks_of(routes):
+    """THE DECODE MASKS A FIXTURE'S DRAW SUPPORTS: a bit where the bundle's own row is nonzero (the producer knows what
+    it gives; a test fixture is the producer here). Data handed to the op, never read back by it. The prefill's masks
+    are the library's own (``fsla.masks_and_density``)."""
+    return Masks(DECODE, tuple(pack_digits(rows != 0) for rows in routes.read_rows),
+                 tuple(pack_digits(rows != 0) for rows in routes.write_rows))
 
 
 def live_of(routes, side):
