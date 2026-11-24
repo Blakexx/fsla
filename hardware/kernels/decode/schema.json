@@ -61,28 +61,28 @@
       "type": "int",
       "unit": "0 or 1 (0: every digit is walked, or the call has no such level)",
       "read": "CALL",
-      "doc": "1 when the write side of level 1 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
+      "doc": "1 when the write side of level 1 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.routing.types.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
     },
     {
       "name": "write_listed_2",
       "type": "int",
       "unit": "0 or 1 (0: every digit is walked, or the call has no such level)",
       "read": "CALL",
-      "doc": "1 when the write side of level 2 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
+      "doc": "1 when the write side of level 2 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.routing.types.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
     },
     {
       "name": "write_listed_3",
       "type": "int",
       "unit": "0 or 1 (0: every digit is walked, or the call has no such level)",
       "read": "CALL",
-      "doc": "1 when the write side of level 3 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
+      "doc": "1 when the write side of level 3 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.routing.types.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
     },
     {
       "name": "write_listed_4",
       "type": "int",
       "unit": "0 or 1 (0: every digit is walked, or the call has no such level)",
       "read": "CALL",
-      "doc": "1 when the write side of level 4 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.ops.produce.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
+      "doc": "1 when the write side of level 4 is WALKED BY ITS LISTS, 0 when every digit of it is walked (an action, never a property of the data: a wrong walk costs time and never the result). The producer's rule chooses it from the declaration (fsla.routing.types.activation_walks: a side whose activation has exact zeros is walked by its lists); 0 for a level beyond the call's `levels`"
     }
   ]
 }

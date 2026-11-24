@@ -33,14 +33,14 @@
         "lo": 0,
         "hi": 1
       },
-      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+      "declared_by": "fsla.routing.types.activation_walks: 1 when the write side of level 1 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
     },
     "write_listed_2": {
       "value": {
         "lo": 0,
         "hi": 1
       },
-      "declared_by": "fsla.ops.produce.activation_walks: 1 when the write side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
+      "declared_by": "fsla.routing.types.activation_walks: 1 when the write side of level 2 is walked by its lists, 0 when every digit is walked (the producer's rule chooses it from the declaration), either value is a lawful call; one context, not two, because the walk of a level is independent of every other fact"
     },
     "write_listed_3": {
       "value": 0,

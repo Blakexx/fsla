@@ -36,7 +36,7 @@ from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, activation_walks
 from fsla.values import Values
 
-__all__ = ["ProducerWeights", "activation_walks", "hidden_contiguous", "level_facts",
+__all__ = ["ProducerWeights", "hidden_contiguous", "level_facts",
            "produce_decode", "produce_prefill", "projection_dtype", "route_logits"]
 
 

@@ -26,7 +26,7 @@ def support(routes) -> list[dict]:
     """Each level's and side's nonzero digits a token, over every batch row, token and head."""
     import torch
 
-    from fsla.ops.produce import activation_walks
+    from fsla.routing.types import activation_walks
 
     walks = activation_walks(routes.topology)
     out = []

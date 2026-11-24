@@ -725,8 +725,9 @@ DecayConfig: TypeAlias = None | LeafMassDecay
 
 @cache
 def activation_walks(topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
-    """THE PRODUCER'S WALK RULE, ``(read, write)`` a bool a level: the levels a side WALKS BY ITS LISTS (the rest are walked digit by digit) -- the
-    levels whose activation has exact zeros (an opaque level, which may have zeros, included). An action chosen once from the
-    declaration's activation metadata and stated by :func:`level_facts` as decode's ``write_listed_k`` facts; no consumer asks the activations again."""
+    """WHICH LEVEL-SIDES CAN MAKE EXACT ZEROS, ``(read, write)`` a bool a level, from the declaration's activation metadata (an opaque level, which
+    may have zeros, included) and never from the data; asked once a topology. It has two readers. THE PRODUCER'S WALK RULE: a side walks such a level
+    BY ITS LISTS (the rest digit by digit), which :func:`fsla.ops.produce.level_facts` states as decode's ``write_listed_k`` facts. THE PREFILL'S
+    MASKS: the producer and the masks' helpers (:mod:`fsla.routing.masks`) make a mask exactly for these level-sides, and leave the rest absent, dense."""
     return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
                  for side in ("read", "write"))

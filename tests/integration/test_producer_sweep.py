@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fsla.ops.produce import activation_walks
+from fsla.routing.types import activation_walks
 from measure.cells import by_name
 from measure.cells.layer import CONSTRUCTIONS, build
 

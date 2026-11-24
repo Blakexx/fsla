@@ -13,9 +13,9 @@ import torch
 from conftest import build_layer
 
 from fsla.ops.naive import naive_fsla
-from fsla.ops.produce import activation_walks, produce_decode, produce_prefill
+from fsla.ops.produce import produce_decode, produce_prefill
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
-from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, TiedRouting, Topology
+from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, TiedRouting, Topology, activation_walks
 
 _TOPOLOGY = Topology(levels=tuple(
     IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in (4, 6)))

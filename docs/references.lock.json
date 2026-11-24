@@ -1220,7 +1220,7 @@
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "dab660e6e105", "reviewed": true, "sha256": "102c79e3cdbfddb5", "target": "fsla/_state.py::StateFormat"},
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "b6465d84ec22", "reviewed": true, "sha256": "36dbb3506626b3f5", "target": "fsla/ops/_ext.py::not_built"},
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "c06f08dda0f2", "reviewed": true, "sha256": "96194a912caa7fde", "target": "fsla/ops/descriptor.py::descriptor"},
-  {"doc": "docs/internals/hardware/registry.md", "pinned_at": "b6465d84ec22", "reviewed": true, "sha256": "b3695860ae22754a", "target": "fsla/ops/produce.py::activation_walks"},
+  {"doc": "docs/internals/hardware/registry.md", "pinned_at": "0f01b798ed0e", "reviewed": true, "sha256": "b3695860ae22754a", "target": "fsla/routing/types.py::activation_walks"},
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "77eca85d5cb5", "reviewed": true, "sha256": "", "target": "hardware"},
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "84beafffca1c", "reviewed": true, "sha256": "", "target": "hardware/parts/device"},
   {"doc": "docs/internals/hardware/registry.md", "pinned_at": "77eca85d5cb5", "reviewed": true, "sha256": "", "target": "hardware/registry.py"},
