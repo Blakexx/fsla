@@ -4,8 +4,9 @@
 
 `write(root, instance)` reads that record under `root` and rewrites `docs/lab/mask_prep.md` under `root` from its
 `MEASURED (` line to its end, every figure the record's own and every comparative word chosen by the figures it
-compares. It REFUSES, naming what is missing, where the record is absent, lacks one of the experiment's twelve rows, or
-holds a row whose check failed. `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits
+compares. It REFUSES, naming what is missing, where the record is absent, lacks one of the experiment's twelve rows,
+holds a row whose check failed, or is not the record its predictions were written for (`PREDICTED_FOR`): a new run's
+predictions and their basis are written here before it runs. `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits
 vast.ai), which only words the card's line. It returns the files it wrote (`lab page mask_prep --instance LABEL`,
 docs/internals/tools/lab.md).
 """
@@ -27,9 +28,18 @@ GROUPS = (
 )
 CACHED = ", the mask in cache, the grid over 4 windows a CTA's worth"
 FRESH = ", the mask once-read"
-#: THE PREDICTIONS WRITTEN BEFORE THE RECORD'S RUN, a range a (group, how), the same for both masks: once-read from the
-#: run before it (the kernel's traffic unchanged); in cache from the compiled walk's instructions a token at the one
-#: rate that run gave, 2.9 warp-instructions a cycle an SM
+#: THE RECORD THE PREDICTIONS ARE OF, by its experiment's commit: they were written before that run and grade no other
+PREDICTED_FOR = "f22d40f0"
+#: WHAT EACH RANGE WAS DERIVED FROM, as written before the run
+BASIS = {
+    FRESH: "the experiment's first run (an H100, 132 CTAs, the experiment at 92c67f2d; its record is not kept, this "
+    "one replaced it) measured 5.08, 3.45 and 2.60 at groups of 1, 4 and 16 digits, and the kernel's memory traffic "
+    "is the same in both, so each within about 4% of that",
+    CACHED: "the compiled walk is 21, 30 and 46 instructions a pass of two words at groups of 1, 4 and 16 digits "
+    "(2.9, 1.0 and 0.38 warp-instructions a token), priced at 2.9 warp-instructions a cycle an SM: the rate of "
+    "the first run's row at a group of 1 digit, the only one of its rows that was in cache",
+}
+#: THE PREDICTED RANGES, one a (group, how), the same for both masks (the mask's density changes no instruction)
 PREDICTED = {
     (1, FRESH): (4.9, 5.3),
     (4, FRESH): (3.3, 3.6),
@@ -51,6 +61,12 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
     if failed:
         raise SystemExit(f"lab page: the record holds failed checks, {failed}: its figures are not the page's to state")
+    if not d["git"]["sha"].startswith(PREDICTED_FOR):
+        raise SystemExit(
+            f"lab page: the predictions here were written for the run of the experiment at {PREDICTED_FOR}, and the "
+            f"record is of {d['git']['sha'][:8]}: write that run's predictions and their basis (PREDICTED_FOR, BASIS, "
+            "PREDICTED) as they stood before it ran, then generate"
+        )
     R = Record({r["name"]: r["median"] for r in d["results"]})
     checked = sum(1 for c in d["checks"] if c["lab"] == "check" and c["ok"])
 
@@ -91,6 +107,16 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
             f"{got[0]:.2f} and {got[1]:.2f} -- {'HELD' if held else 'MISSED'}."
         )
     missed = [v for v in verdicts if v.endswith("MISSED.")]
+    misses = (
+        """
+WHAT THE MISSES SAY, AND WHAT IS OPEN. A range priced by the instructions the pass issues, at a rate read off one
+row, that its row falls outside says the pass is not bound by issue there. What does bound it is OPEN: the cache's
+read rate fits (the pass reads 32 bytes of mask a token at every group size), and so do the shared stores of the
+in-cache rows below, and no run of this experiment separates them.
+"""
+        if missed
+        else ""
+    )
     text = f"""MEASURED ({card(d['device'], instance)}, driver {d['driver']}; {d['date'][:10]}, the experiment at
 {d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every word, count and total of each kernel's first
 round exact; the median). {UNIT[0].upper()}{UNIT[1:]} for one side's sparse level:
@@ -100,14 +126,10 @@ round exact; the median). {UNIT[0].upper()}{UNIT[1:]} for one side's sparse leve
 WHAT IT SHOWS.
 {chr(10).join(lines)}
 
-AGAINST THE PREDICTIONS WRITTEN BEFORE THE RUN ({len(verdicts) - len(missed)} held, {len(missed)} missed; the two masks' figures each):
+AGAINST THE PREDICTIONS WRITTEN BEFORE THIS RUN ({len(verdicts) - len(missed)} held, {len(missed)} missed; the two masks' figures each).
+Once-read, the basis: {BASIS[FRESH]}. In cache, the basis: {BASIS[CACHED]}.
 {chr(10).join(verdicts)}
-
-WHAT THE MISSES SAY, AND WHAT IS OPEN. The in-cache ranges priced the pass by the instructions it issues, at a rate
-read off one row; a row outside its range says the pass in cache is not bound by issue there. What does bound it is
-OPEN: the cache's read rate fits (the pass reads 32 bytes of mask a token at every group size), and so do the shared
-stores of the rows below, and no run of this experiment separates them.
-
+{misses}
 WHAT THE IN-CACHE ROWS ARE AND ARE NOT. They run the grid over one working set at every group size: 4 windows a CTA's
 worth, so at groups of 4 and 16 digits, where a CTA's round is 16 and 64 windows, several CTAs own the same windows
 and store the same words, counts and totals to the same places. The outputs are the same whichever CTA writes them;
