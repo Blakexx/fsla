@@ -19,7 +19,7 @@ group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width /
   with its region untouched. Otherwise `prefill_group_bits(density, width_bits)` (`cta_carve.h`, the carve's one rule) gives the group and `uniform_switch` over `kGroupSizeBits` (7 members, `group_index` the place of a group's bits among them) enters
   the body compiled for it, `prepare<GB>`.
 - A SURPLUS CTA LEAVES AT ONCE. At a group of 4 digits or more a window needs fewer threads than the grid holds: a CTA whose first thread is past the level-side's last window returns before it loads.
-- THE HOST (`mask_prepare`) checks what the kernel assumes and nothing else: a slot a mask, distinct and inside the density's depth; each mask int32 `[B, H, ceil(T / 32), width]` with `width` a power of two from 2 to 256; the mask's memory
+- THE HOST (`mask_prepare`) checks what the kernel assumes and nothing else: the density, the workspace and each mask a contiguous array of its dtype on the density's card (`check_operand`); a slot a mask, distinct and inside the density's depth; each mask int32 `[B, H, ceil(T / 32), width]` with `width` a power of two from 2 to 256; the mask's memory
   16-byte aligned (a group's digits are loaded 16 bytes at once; a width under 4 has no such load); the workspace as large as the layout; the grid at most 2^31 - 1 CTAs. It takes the call's descriptor, `plan::descriptor_of<plan::mask_prepare::Kernel>`
   at the widest mask's width and the density's depth, so a call outside the contract (`hardware/kernels/mask_prepare/parts/call.json`) is refused by name before a launch, and `mask_prepare_bytes` is the layout's size from the call's shape alone.
 
@@ -30,8 +30,8 @@ group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width /
 - a thread a (window, group) at groups of 1, 4 and 16 digits: its unit is the group, 1, 4 or 16 digits, `Raw<U>` holding them as loaded (a word at one digit, 16-byte lines from 4);
 - a thread a (window, 16 digits) at groups of 32 to 256: its unit is 16 digits and the group's `1 << (GB - 4)` lanes (2 to 16, adjacent threads of a warp) OR their words by warp shuffle, in `finish`.
 
-A thread walks its window's 32 words in order with ITS LOADS HELD AHEAD: `kHeld` words' loads are issued before any is read -- 4 at one digit a thread, 2 at more -- and each trip finishes `kHeld` words, issuing as it finishes one the load `kHeld` words on into the registers that word left, so
-`kHeld` loads are in flight through the walk (`#pragma unroll 1` over the trips). With two words held at one digit a thread the assembler gate found a load read in the trip that issued it; with four it finds none. Per word it stores, at its group's place in the block, the group's word (where the group is more than one digit), the count of the group's live tokens of the window before the
+A thread walks its window's 32 words in order with ITS LOADS HELD AHEAD: `kHeld` words' loads are issued before any is read -- 16 at one digit a thread, 8 at four digits, 2 at more -- and each trip finishes `kHeld` words, issuing as it finishes one the load `kHeld` words on into the registers that word left, so
+`kHeld` loads are in flight through the walk (`#pragma unroll 1` over the trips). With two words held at one digit a thread the assembler gate found a load read in the trip that issued it; with four or more it finds none. Per word it stores, at its group's place in the block, the group's word (where the group is more than one digit), the count of the group's live tokens of the window before the
 word (`before`) and adds the word's popcount; at the end it stores the window's total.
 
 - A word past the mask's last (the window is the mask's last and ragged, `have < 32`) is read as zero: its load re-reads the thread's first word (an address inside the mask) and the word's `keep` is zero, so there is no branch and no read past the mask.
@@ -45,4 +45,4 @@ word (`before`) and adds the word's popcount; at the end it stores the window's 
 
 - THE LIBRARY KERNEL ITSELF. The lab ([`../../lab/mask_prep.md`](../../lab/mask_prep.md)) measured groups of 1, 4 and 16 digits in a lab kernel with its last two words peeled; the library's `mask_prepare_kernel` is not that kernel, and no measurement of it has run.
 - GROUPS OF 32 TO 256 DIGITS, at any kernel: the lab measured none.
-- NO DEVICE TEST HAS RUN: `tests/oracle/test_mask_prepare.py` grades the kernel against `tests/oracle/mask_prepare_reference.py` exactly and is written for a GPU; the host's checks run without one (`tests/unit/test_mask_prepare.py`).
+- ITS EXACTNESS IS NOT IN THIS LIST: `tests/oracle/test_mask_prepare.py` grades the kernel against `tests/oracle/mask_prepare_reference.py` exactly and passes on an H100; the host's checks run without a GPU (`tests/unit/test_mask_prepare.py`).

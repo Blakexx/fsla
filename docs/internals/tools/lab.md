@@ -432,6 +432,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="call-pair"></a>[`call_pair`](../../lab/call_pair.md)
 - <a id="facts-lists"></a>[`facts_lists`](../../lab/facts_lists.md)
 - <a id="mask-prep"></a>[`mask_prep`](../../lab/mask_prep.md)
+- <a id="mask-prepare-time"></a>[`mask_prepare_time`](../../lab/mask_prepare_time.md)
 - <a id="gather-pass"></a>[`gather_pass`](../../lab/gather_pass.md)
 - <a id="cast-cluster"></a>[`cast_cluster`](../../lab/cast_cluster.md)
 - <a id="value-gather"></a>[`value_gather`](../../lab/value_gather.md)

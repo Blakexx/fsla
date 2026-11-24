@@ -40,7 +40,11 @@ cc_library(
 #: the repository's headers come first, so a repository header wins any name collision
 include_root(
     name = "headers",
-    hdrs = glob(["src/**/*.cuh"]),
+    #: with the two plan headers a kernel includes: the carve and the prepared masks' layout, pure text of no generated part
+    hdrs = glob(["src/**/*.cuh"]) + [
+        "src/common/plan/cta_carve.h",
+        "src/common/plan/mask_prepare_layout.h",
+    ],
     roots = ["src"],
     deps = [":hardware"],
 )

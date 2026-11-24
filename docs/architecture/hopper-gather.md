@@ -31,7 +31,7 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - MEASURED ([`lab/mask_prep.md`](../lab/mask_prep.md), an H100, 132 CTAs, every word and count exact): the mask
   once-read, 4.93, 3.46 and 2.60 SM-cycles a token a sparse level-side at groups of 1, 4 and 16 digits, at either
   density measured; the mask in cache, about 1.0 at every group size, what bounds it there being open.
-- BUILT, DEVICE-UNTESTED UNTIL ITS FIRST DEVICE RUN: THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
+- BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
   and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel is NOT MEASURED: the lab's
   numbers above are a lab kernel's, groups of 1, 4 and 16 digits with its last two words peeled; groups of 32 to 256 digits are measured nowhere.
