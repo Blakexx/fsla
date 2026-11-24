@@ -29,7 +29,8 @@ measured in the lab before it is written into the library.
 | fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
 | decode (the `T = 1` step, over the paged fixed-size state) | **built** |
 | entmax / softmax row solves, the paged state | built |
-| prefill: the mask-preparation pass, the gather pass, the carry, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
+| prefill: the mask-preparation pass | built (a kernel and its op, `fsla.ops.mask_prepare.prepare_masks`), **no device test has run** ([`docs/internals/mask_prepare/mask_prepare.md`](docs/internals/mask_prepare/mask_prepare.md)) |
+| prefill: the gather pass, the carry, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
 | backward | **not built.** `fsla.prefill` refuses any call that carries a gradient; there is no training path yet |
 | depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
 
@@ -153,6 +154,12 @@ guarantees an arm for) and the architectures the build produces; the gate fails 
 | Compute capability | GPUs | width | levels | alpha_tenths | logit_dtype | value_dtype | Toolchain | Assembler | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | `sm_90a` | H100 | 2..256 | 1..16 | 15, 20 | 1 | 1 | `cu13` | ptxas 13.5.37 | built |
+
+**`mask_prepare`**
+
+| Compute capability | GPUs | width | levels | Toolchain | Assembler | Status |
+|---|---|---|---|---|---|---|
+| `sm_90a` | H100 | 2..256 | 1..4 | `cu13` | ptxas 13.5.37 | built |
 
 **`softmax_backward`**
 

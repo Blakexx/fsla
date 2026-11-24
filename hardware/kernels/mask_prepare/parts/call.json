@@ -1,0 +1,20 @@
+{
+  "name": "call",
+  "doc": "the call's contract of the mask-preparation pass (`mask_prepare_kernel`, csrc/fsla/src/mask_prepare/mask_prepare.cu): every width from 2 to 256 and a density of 1 to 4 levels. A list is alternatives, each its own context; a range is one context.",
+  "facts": {
+    "width": {
+      "value": {
+        "lo": 2,
+        "hi": 256
+      },
+      "declared_by": "docs/internals/mask_prepare/mask_prepare.md#the-kernel: a mask's width is a power of two from 2 (a level narrower is refused, fsla/routing/types.py) up to MAX_BRANCH_WIDTH 256, and the grid is sized for the widest"
+    },
+    "levels": {
+      "value": {
+        "lo": 1,
+        "hi": 4
+      },
+      "declared_by": "docs/internals/common/plan/mask_prepare_layout.md: a level-side's slot is side * 4 + level, so a density carries at most plan::kCarveMaxLevels = 4 levels"
+    }
+  }
+}

@@ -31,16 +31,20 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - MEASURED ([`lab/mask_prep.md`](../lab/mask_prep.md), an H100, 132 CTAs, every word and count exact): the mask
   once-read, 4.93, 3.46 and 2.60 SM-cycles a token a sparse level-side at groups of 1, 4 and 16 digits, at either
   density measured; the mask in cache, about 1.0 at every group size, what bounds it there being open.
-- NOT BUILT: the pass in the library; the gather; the carry's listing from prepared GROUP words (the lab's listing,
+- BUILT, DEVICE-UNTESTED UNTIL ITS FIRST DEVICE RUN: THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
+  [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
+  and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel is NOT MEASURED: the lab's
+  numbers above are a lab kernel's, groups of 1, 4 and 16 digits with its last two words peeled; groups of 32 to 256 digits are measured nowhere.
+- NOT BUILT: the gather; the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
   handed to it).
 - ITS PLACE IN THE WORKSPACE IS SIZED WITHOUT THE DENSITIES, which the host never reads
   ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the host sizes it for the group size that needs
   the most. At a word of 4 bytes and a count of 2 (the lab's widths), that is groups of one digit, where the word is
   the mask's own and only the counts are stored: 2 bytes a mask word, half the level-side's mask. A group of 4 digits
-  or more stores a word and a count a group, at most 1.5 bytes a mask word. NOT BUILT.
-- NOT DECIDED: whether the pass is its own kernel or a role in the gather's launch; the layout of the prepared words
-  and counts inside that place; whether a window's total a group is stored beside the counts.
+  or more stores a word and a count a group, at most 1.5 bytes a mask word. THE LAYOUT IS `mask_prepare_layout.h`
+  ([`internals/common/plan/mask_prepare_layout.md`](../internals/common/plan/mask_prepare_layout.md)): a block a (batch-head, window) of `66 * width`
+  bytes, the totals, the counts and the words in it, A WINDOW'S TOTAL A GROUP IS STORED beside the counts.
 - THE INTRA, in the owner's words, NOT YET CHECKED against the kernel: "the intra doesnt use makss, so it can start
   alongisde that mask pass".
 

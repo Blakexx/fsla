@@ -12,6 +12,7 @@
 #include "plan/environment.h"
 #include "plan/factor_backward/contract.h"
 #include "plan/factor_forward/contract.h"
+#include "plan/mask_prepare/contract.h"
 #include "plan/plan_api.cuh"
 #include "plan/prefill/contract.h"
 #include "plan/softmax_backward/contract.h"
@@ -50,6 +51,7 @@ DeviceFacts read_device(int device) {
   settle_device<factor_backward::Kernel>(facts);
   settle_device<softmax_forward::Kernel>(facts);
   settle_device<softmax_backward::Kernel>(facts);
+  settle_device<mask_prepare::Kernel>(facts);
   return facts;
 }
 
@@ -141,6 +143,7 @@ template softmax_forward::Kernel::Descriptor descriptor_of<softmax_forward::Kern
                                                                                     const Named&);
 template softmax_backward::Kernel::Descriptor descriptor_of<softmax_backward::Kernel>(int,
                                                                                       const Named&);
+template mask_prepare::Kernel::Descriptor descriptor_of<mask_prepare::Kernel>(int, const Named&);
 
 std::string fsla_call_facts(std::string kernel) {
   return with_kernel(kernel, [](auto k) {

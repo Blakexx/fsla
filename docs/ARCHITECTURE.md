@@ -232,6 +232,7 @@ The compiled key is the family's own:
 | decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer, gather pass (designs, not built) | none: one instantiation each | every width, kind and offset, from the plan or the layout |
+| mask-preparation pass | none: the build tag alone, one arm a card; the group is no compiled key | each level-side's group, switched on the device from its density byte (`uniform_switch` over the seven group sizes), and its place, from the layout |
 | entmax solves, each kernel its own family | the padded width class (its lane width and items a thread), alpha (not the softmax kernels), the two operand dtypes (`csrc/fsla/src/entmax/arms.bzl`) | the level table |
 
 The window `W`, the warp counts and the register budgets are constants. **Structure is branched on, never a
@@ -248,7 +249,7 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 ## 6. The kernels
 
 Five kernel families and one pass, in one call's order: the producer writes the bundle; the mask-preparation pass (its own
-kernel or a role in the gather's launch: NOT DECIDED, section 6.2) reads its masks once and writes the words and counts the
+kernel, built, section 6.2) reads its masks once and writes the words and counts the
 gather and the carry read; the gather pass writes the carry its
 packets from them (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
@@ -283,7 +284,7 @@ from the prepared read-side words and counts. A carry CTA forms its own coeffici
 gather pass runs in its own CTAs beside the carry's, in one grid, the stream a ring read by a unit of 16 carry CTAs (RULED 2026-11-15 and
 2026-11-23); the card's split between the two and a unit's start are not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
 [`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). A mask bit of 0 is the caller's guarantee that the entry's row is zero and a 1 guarantees nothing: the pass reads no
-row to decide what to skip. No gather kernel and no mask-preparation pass is built on this line. Where the factor
+row to decide what to skip. The mask-preparation pass is its own kernel, built and device-untested until its first device run ([`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), its layout [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md)); no gather kernel is built on this line. Where the factor
 products and the tile unions come from is open ([`open-work.md`](open-work.md), row A-e).
 
 ### 6.3 The carry — the inter-window term
@@ -378,6 +379,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token at a coarse state-carried bound, as the plan states (R17). `red.global` a token: a carry's rows are not contiguous | the same |
 | shared memory under pressure | a continuum, never a refusal short of the degenerate floor: the buffers' depths give way first (the panel's two to one, the pool's two slots to one), and only when no depth is left is the box shrunk, whose image and pools scale with its leaves; the card's shared-memory size is read where the kernel is entered (R8), never by a planner on the host. A shrunk box leaves fold registers unused: accepted, it is the failure case and no part of the `wgmma` family is short of shared memory (a CTA may take 227 KB of a multiprocessor's 228). The image is never ringed: it is a snapshot of the state at the window's top, which the fold's steps then mutate | the same order; the image is tensor memory's |
 | the box grain | one CTA per multiprocessor, a carve of 512 leaves a CTA: two fold warpgroups holding half each and one readout warpgroup over both halves' images, whether the two sides' layouts differ or are equal (R20); no cluster -- its sum, its state transfer and its multicast each measured as a loss ([`cluster_sum`](lab/cluster_sum.md), [`state_move`](lab/state_move.md), [`value_cast`](lab/value_cast.md)) | one CTA per multiprocessor; its boxes a CTA and its roles are NOT STATED: no blackwell carry is designed and no blackwell card measured (owed with that family's first lab) |
+| the mask-preparation pass | global loads and stores a thread a (window, group), a warp shuffle across the lanes of a group of 32 digits or more; no shared memory, no tensor core (NOT MEASURED as a library kernel) | the same |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
 | the closed world | the declared targets and the per-build gates, device stamp | the same |
 
@@ -401,6 +403,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the host order of a call | [`internals/engine/prefill_call.md`](internals/engine/prefill_call.md), [`internals/engine/decode_step.md`](internals/engine/decode_step.md) |
 | the digits, the row alignment law and the atom byte | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
+| the mask-preparation pass and its layout | [`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |
 | the laws and the constitution | [`KERNEL_STANDARDS.md`](KERNEL_STANDARDS.md) |

@@ -20,3 +20,9 @@ def test_every_implemented_op_has_a_definition_and_the_reverse():
     assert defs and impls
     assert not impls - defs, f"implemented but never defined (silently dropped): {sorted(impls - defs)}"
     assert not defs - impls, f"defined but never implemented: {sorted(defs - impls)}"
+
+
+def test_the_mask_preparation_pass_registers_its_two_ops_with_their_schemas():
+    text = API.read_text()
+    assert 'm.def("mask_prepare(Tensor[] masks, int[] slots, Tensor density, Tensor(a!) workspace) -> ()");' in text
+    assert 'm.def("mask_prepare_bytes(int[] width_bits, int[] heads, int words) -> int");' in text

@@ -6,6 +6,13 @@
 
 #include <cstdint>
 
+//: what a kernel calls of the carve is the device's too; a host tool compiles the same text
+#if defined(__CUDACC__)
+#define FSLA_CARVE_FN __host__ __device__
+#else
+#define FSLA_CARVE_FN
+#endif
+
 namespace fsla::plan {
 
 inline constexpr int kCarveMaxLevels = 4;
@@ -23,19 +30,33 @@ inline constexpr int kLeastDensity = 1;
 
 //: the allowed group sizes in digits, as log2: 1, 4, 16, 32, 64, 128, 256 (those no larger than a level's width are allowed on it)
 inline constexpr int kGroupSizeBits[] = {0, 2, 4, 5, 6, 7, 8};
+inline constexpr int kGroupSizes = 7;
+
+//: `kGroupSizeBits[i]` as arithmetic: a kernel evaluates it where it cannot read the table
+FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i < 3 ? 2 * i : i + 2; }
+
+constexpr bool group_size_bits_is_the_table() {
+  for (int i = 0; i < kGroupSizes; ++i) {
+    if (group_size_bits(i) != kGroupSizeBits[i]) return false;
+  }
+  return sizeof(kGroupSizeBits) == kGroupSizes * sizeof(int);
+}
+
+static_assert(group_size_bits_is_the_table(), "group_size_bits is kGroupSizeBits");
 
 //: `value` held within `lo` .. `hi`
-constexpr int carve_clamp(int value, int lo, int hi) {
+FSLA_CARVE_FN constexpr int carve_clamp(int value, int lo, int hi) {
   return value < lo ? lo : value > hi ? hi : value;
 }
 
 //: THE GROUP OF A DENSITY (docs/internals/common/plan/prefill_launch.md#groups), one rule for both sides: the log2 of the allowed group size nearest to `density * width / 256` digits,
 //: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`
-constexpr int prefill_group_bits(int density, int width_bits) {
+FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
   const std::int64_t live = std::int64_t{density} << width_bits;
   int best = 0;
   std::int64_t best_distance = -1;
-  for (const int bits : kGroupSizeBits) {
+  for (int i = 0; i < kGroupSizes; ++i) {
+    const int bits = group_size_bits(i);
     if (bits > width_bits) break;
     const std::int64_t size = (std::int64_t{1} << bits) << 8;
     const std::int64_t distance = size > live ? size - live : live - size;

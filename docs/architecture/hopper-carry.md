@@ -75,9 +75,9 @@ form. What the carry is handed, a (CTA, window):
   is 10.5% dearer at 132 CTAs than at one); the drain's adds trimmed (its chunk is 181 instructions against the fixed
   drain's 63). NOT MEASURED: a count of passes from the lists; a digit of more than 16 readers a window; a reader's
   byte on its digit loaded.
-- NOT BUILT: the mask-preparation pass; the gather that writes the fold's packets from the prepared write-side words
+- NOT BUILT: the gather that writes the fold's packets from the prepared write-side words
   and counts ([`hopper-gather.md`](hopper-gather.md)); the carry's listing from prepared GROUP words; the lab's host
-  played the first two.
+  played both.
 
 ## The hand-off
 

@@ -1,0 +1,18 @@
+{
+  "facts": [
+    {
+      "name": "width",
+      "type": "int",
+      "unit": "digits of a level-side",
+      "read": "CALL",
+      "doc": "the width of the widest masked level-side of the launch, a power of two"
+    },
+    {
+      "name": "levels",
+      "type": "int",
+      "unit": "levels of the density",
+      "read": "CALL",
+      "doc": "the depth of the call's density, the levels its two sides carry"
+    }
+  ]
+}

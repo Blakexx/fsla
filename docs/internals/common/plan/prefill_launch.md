@@ -8,7 +8,7 @@ this library states.
 | half | function | input | called by | result |
 |---|---|---|---|---|
 | THE LAUNCH (the host's) | `prefill_launch(const PrefillDescriptor&)` (`prefill_launch.h`) | the descriptor: `levels`, `width_bits_1..4`, `tokens`, `cc` | the host, right before the launch | `PrefillLaunch`: `levels`, `width_bits[l]`, `leaves`, `cta_leaves`, `ctas_per_head`, `window`, `windows` |
-| THE CARVE | `prefill_carve(levels, width_bits, write_density, read_density)` (`cta_carve.h`, [`cta_carve.md`](cta_carve.md)) | the widths and the two density lists alone | the kernels of the prefill (the same function: it is not yet annotated for the device and no kernel includes it yet) and `plan_tool --cta-carve` | `PrefillCarve`: the groups, `carve_bits`, `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `unit_ctas` |
+| THE CARVE | `prefill_carve(levels, width_bits, write_density, read_density)` (`cta_carve.h`, [`cta_carve.md`](cta_carve.md)) | the widths and the two density lists alone | the kernels of the prefill (the same function: its group rule is annotated for the device and one kernel calls it, [the mask-preparation pass's](../../mask_prepare/mask_prepare.md#the-kernel); the rest is host text) and `plan_tool --cta-carve` | `PrefillCarve`: the groups, `carve_bits`, `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `unit_ctas` |
 
 The launch is the first half of the prefill launch function ([`../../../architecture/hopper-carry.md#the-order-of-the-build`](../../../architecture/hopper-carry.md#the-order-of-the-build), step 1), written like [`decode_launch.md`](decode_launch.md)'s args half: from EXACT facts only
 (a range aborts), reading `levels`, `width_bits_1..4` (through the per-level lookup of [`levels.md`](levels.md)), `tokens` and `cc`, and deciding nothing from data (R24: the op reads the descriptor and the masks, never a flag of the data). Every call of the contract has a launch. The prefill stays an OWED descriptor
@@ -33,7 +33,7 @@ A side's DENSITY on a level is the share of the level's digits a token of that s
   sizes are 1, 4, 16, 32, 64, 128 and 256 digits (`kGroupSizeBits`), those no larger than the level's width. A side's group on a level is the allowed size nearest to `density * width / 256` digits, a tie to the smaller
   size, compared exactly in integers (the distance of a size `a` is `|a * 256 - density * width|`). On a level of 256 digits, density to group: 1 to 1, 2 to 1, 3 to 4, 5 to 4, 10 to 4, 11 to 16, 24 to 16, 25 to 32, 48 to 32, 49 to 64, 96 to 64,
   97 to 128, 192 to 128, 193 to 256, 256 to 256. The groups are per call ("per window is not possible to implement efficiently from what we found"), and "the producer can be improved to choose them better without any
-  carry changes": the kernel reads the groups. A group and a CTA's carve size on a level nest, and a group may be the larger ("the more important thing is the multiple rule, which we can guarantee via padding").
+  carry changes": the kernel reads the groups: the mask-preparation pass derives each level-side's group on the device from its density byte by this rule. A group and a CTA's carve size on a level nest, and a group may be the larger ("the more important thing is the multiple rule, which we can guarantee via padding").
 - R2, THE CTA'S CARVE ([`cta_carve.md`](cta_carve.md)): `carve_bits[l]` of the level's densities (`write_density[l] + read_density[l]`), the CTA's `cta_leaves` the product of the carve sizes (at most 512, the call's leaves where fewer).
 - R3, THE FOLDS' SPLIT (CONSTITUTION R20, the owner, 2026-11-23: "take any write sparse level first, otherwise write dense"). `split_level` is the first level (lowest index) whose write group is smaller than its width and whose
   carve size is at least 2 digits; where there is none, the first level whose carve size is at least 2; -1 where the CTA's carve is one leaf. `folds` is 2 with a split level, else 1; `fold_bits[l]` is `carve_bits[l]`, less 1 on the
@@ -63,7 +63,6 @@ other cases (a density of 128, four levels, two levels of 16 digits, one level o
 
 ## What is NOT here
 
-The grid's split between the gather and the carry CTAs, the ring's size, the workspace's layout and the segment length wait on
-[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and, for the workspace, on
-[the mask-preparation pass's open points](../../../architecture/hopper-gather.md#the-mask-preparation-pass), and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The density input reaches the prefill's kernels once they are built: the call carries it
-(`fsla/engine/prefill_call.py`, [`../../engine/prefill_call.md`](../../engine/prefill_call.md)) and no kernel reads it yet. `fsla.ops.prefill` keeps refusing by name.
+The grid's split between the gather and the carry CTAs, the ring's size, the ring's part of the workspace and the segment length wait on
+[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The workspace's part for the prepared masks is built ([the prepared masks' layout](mask_prepare_layout.md)). The density input reaches the prefill's kernels once they are built: the call carries it
+(`fsla/engine/prefill_call.py`, [`../../engine/prefill_call.md`](../../engine/prefill_call.md)) and the mask-preparation pass is the one kernel that reads it. `fsla.ops.prefill` keeps refusing by name.

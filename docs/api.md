@@ -50,7 +50,7 @@ contract before any launch -- from what it is handed: the bundles' extents and d
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
 call's steps: the prefill's holds the ring
 ([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)) and the words and counts the
-mask-preparation pass prepares ([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)), and its layout is owed ([`open-work.md`](open-work.md) A-g); decode needs
+mask-preparation pass prepares ([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)), and its layout is [`mask_prepare_layout.h`](internals/common/plan/mask_prepare_layout.md); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 
 `decode_step_gated` has no host participation and is capturable in a CUDA graph. A batch-head whose write atoms the state can neither address nor

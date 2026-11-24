@@ -11,6 +11,7 @@
 #include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/lattice.h"
+#include "plan/mask_prepare/contract.h"
 #include "plan/planner.h"
 #include "plan/prefill/contract.h"
 #include "plan/prefill_launch.h"
@@ -345,7 +346,7 @@ int main(int argc, char** argv) {
   const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
   if (argc % 2 == 0 || (lattice_text.empty() && cta_carve_text.empty() && !launch_given)) {
     refuse(
-        "usage: plan_tool --kernel decode|prefill|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
+        "usage: plan_tool --kernel decode|prefill|mask_prepare|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
         "[--grid ...] (decode) | [--launch json] (prefill: the descriptor, or the launch's host half) | [--widths w,...] (an entmax kernel: the launch's "
         "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device) | "
         "plan_tool --cta-carve width_bits,... --write-density w,... --read-density w,... (the carve of a call's widths and densities, no device)");
@@ -416,8 +417,19 @@ int main(int argc, char** argv) {
     const auto call = fsla::plan::describe<Prefill>(device.descriptor, call_facts, model);
     if (!call.ok()) refuse(call.refusal);
     std::printf("descriptor: %s\n", fsla::plan::spell<Prefill>(call.descriptor).c_str());
+  } else if (kernel == fsla::plan::mask_prepare::Kernel::name) {
+    using MaskPrepare = fsla::plan::mask_prepare::Kernel;
+    if (!grid_text.empty() || !launch_text.empty()) {
+      refuse("--grid is decode's and --launch the prefill's");
+    }
+    const auto device = fsla::plan::device_descriptor<MaskPrepare>(device_facts, model);
+    if (!device.ok()) refuse(device.refusal);
+    const auto call = fsla::plan::describe<MaskPrepare>(device.descriptor, call_facts, model);
+    if (!call.ok()) refuse(call.refusal);
+    std::printf("descriptor: %s\n", fsla::plan::spell<MaskPrepare>(call.descriptor).c_str());
   } else {
-    refuse("no kernel '" + kernel + "': the kernels are decode, prefill and the entmax kernels");
+    refuse("no kernel '" + kernel
+           + "': the kernels are decode, prefill, mask_prepare and the entmax kernels");
   }
   return 0;
 }

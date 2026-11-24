@@ -77,6 +77,21 @@
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
   },
+  "mask_prepare_kernel": {
+   "oracle": "tests/oracle/test_mask_prepare.py",
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
+  },
   "sm_clock_kernel": {
    "oracle": {
     "owed": "no test reads it; measure/executors.py records it with every measurement"

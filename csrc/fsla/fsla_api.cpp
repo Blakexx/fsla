@@ -27,6 +27,7 @@
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
+#include "src/mask_prepare/mask_prepare.cuh"
 #include "src/paging/vmm_owner.cuh"
 
 using fsla::check_arch_table;
@@ -130,6 +131,10 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "routing_softmax_backward(Tensor values, Tensor d_values, Tensor? d_values_second, Tensor(a!) d_logits, "
       "int[] logit_offsets, int[] value_offsets, int[] widths, int heads) -> ()");
 
+  // ---- the prefill's mask-preparation pass ---------------------------------
+  m.def("mask_prepare(Tensor[] masks, int[] slots, Tensor density, Tensor(a!) workspace) -> ()");
+  m.def("mask_prepare_bytes(int[] width_bits, int[] heads, int words) -> int");
+
   m.def("entmax_max_levels() -> int");
   m.def("entmax_width_class(int width) -> int");
   m.def("fsla_factor_forward_arms() -> int[][]");
@@ -189,6 +194,8 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("entmax_factor_backward", TORCH_BOX(&fsla::entmax::factor_backward));
   m.impl("routing_softmax_forward", TORCH_BOX(&fsla::entmax::softmax_forward));
   m.impl("routing_softmax_backward", TORCH_BOX(&fsla::entmax::softmax_backward));
+  m.impl("mask_prepare", TORCH_BOX(&fsla::mask_prepare::mask_prepare));
+  m.impl("mask_prepare_bytes", TORCH_BOX(&fsla::mask_prepare::mask_prepare_bytes));
   m.impl("entmax_max_levels", TORCH_BOX(&fsla::entmax::max_levels));
   m.impl("entmax_width_class", TORCH_BOX(&fsla::entmax::width_class));
   m.impl("fsla_factor_forward_arms", TORCH_BOX(&fsla::entmax::factor_forward_arms));
