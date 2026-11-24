@@ -322,7 +322,8 @@ out.
 are interchangeable at the bit.
 
 MEASURED, not merely argued: 1560 cases / 5040 output tensors — every padded-width class,
-both alphas, both logit and value dtypes, masked and unmasked, across random, tie-cluster,
+both alphas, both logit and value dtypes, masked and unmasked (the fp32 forms and the
+candidate mask were measured then and have since left the solves), across random, tie-cluster,
 one-ulp, all-equal and extreme-magnitude row families — digest-compared between a
 merge-sort binary and this one. Zero mismatches. The standing gate is
 `tests/unit/test_entmax_row_sort.py`, which asserts the tie-sensitive quantity (the
@@ -402,9 +403,8 @@ reads happen once; `midpoint = (r + w)/2` and `delta = r - w` (§6) are all that
 survive into the rest of the kernel.
 
 <a id="threshold"></a>PHASES B AND C ARE ONE HEADER FUNCTION, `threshold<LW, IPT, ALPHA15>`: the union forward calls
-it on the midpoint row and the independent forward (`factor.cu`) on its masked row -- one statement of the sorted
-threshold, taking the row's member bits and their count (a masked row can be empty: its `row_max` is then 0 and its
-sentinel -1).
+it on the midpoint row and the independent forward (`factor.cu`) on its logit row -- one statement of the sorted
+threshold, taking the row's member bits and their count (a row with no member has `row_max` 0 and sentinel -1).
 
 <a id="near-line-161"></a>
 <a id="near-line-165"></a>**PHASE B — row max/min, sentinel-pad, sort descending.** `midpoint` is shifted by
@@ -516,5 +516,3 @@ is only ~30%. The first pass therefore carries NOTHING into the next but two sca
 `midpoint_values` in the final pass; one extra load per element buys the spill back
 to zero.
 
-<a id="near-line-86"></a>The tied backward's second contribution lands through the ACCUMULATING store; bf16 device
-atomics are sm_80+, which the closed-world architecture set (sm_90a) already is.

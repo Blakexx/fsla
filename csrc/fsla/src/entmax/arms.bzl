@@ -53,6 +53,12 @@ ENTMAX_KERNEL = {
 }
 
 _PREDATES = "predates the rule; fixed at the family's Hopper rewrite: "
+#: THE ENTMAX BACKWARD AFTER ITS REWORK: what its trip loop still holds, inferred from the counts (4 an item where alpha is 1.5, 2 or 4 a
+#: kernel besides; the softmax backward, with the same guarded stores and no division or square root, holds none) --
+#: docs/internals/entmax/factor.md#backward-stages
+_REASON = {
+    "factor_backward": "the slow paths of the trip's division and, at alpha 1.5, of each item's square root: ",
+}
 _FOUND = {
     "load_in_trip": "global loads whose value the same trip reads, in the solves' loops",
     "loop_convergence": "convergence instructions (BSSY, BSYNC, BRA.DIV) inside the solves' loops",
@@ -87,30 +93,30 @@ _FINDINGS = {
         [32, 8, 1, 1, 1, 88, 214],
     ],
     "factor_forward": [
-        [8, 1, 0, 1, 1, 2, 82],
-        [8, 1, 1, 1, 1, 2, 83],
-        [16, 1, 0, 1, 1, 2, 104],
-        [16, 1, 1, 1, 1, 2, 105],
-        [32, 1, 0, 1, 1, 2, 16],
-        [32, 1, 1, 1, 1, 2, 15],
-        [32, 2, 0, 1, 1, 6, 24],
-        [32, 2, 1, 1, 1, 6, 25],
-        [32, 4, 0, 1, 1, 12, 36],
-        [32, 4, 1, 1, 1, 12, 41],
-        [32, 8, 0, 1, 1, 0, 70],
-        [32, 8, 1, 1, 1, 0, 83],
+        [8, 1, 0, 1, 1, 1, 74],
+        [8, 1, 1, 1, 1, 1, 75],
+        [16, 1, 0, 1, 1, 1, 94],
+        [16, 1, 1, 1, 1, 1, 95],
+        [32, 1, 0, 1, 1, 1, 15],
+        [32, 1, 1, 1, 1, 1, 14],
+        [32, 2, 0, 1, 1, 2, 19],
+        [32, 2, 1, 1, 1, 2, 20],
+        [32, 4, 0, 1, 1, 4, 31],
+        [32, 4, 1, 1, 1, 4, 36],
+        [32, 8, 0, 1, 1, 0, 65],
+        [32, 8, 1, 1, 1, 0, 78],
     ],
     "factor_backward": [
-        [16, 1, 0, 1, 1, 0, 34],
-        [16, 1, 1, 1, 1, 0, 38],
-        [32, 1, 0, 1, 1, 0, 13],
-        [32, 1, 1, 1, 1, 0, 17],
-        [32, 2, 0, 1, 1, 0, 11],
-        [32, 2, 1, 1, 1, 0, 47],
-        [32, 4, 0, 1, 1, 0, 19],
-        [32, 4, 1, 1, 1, 0, 77],
-        [32, 8, 0, 1, 1, 0, 99],
-        [32, 8, 1, 1, 1, 0, 161],
+        [16, 1, 0, 1, 1, 0, 4],
+        [16, 1, 1, 1, 1, 0, 8],
+        [32, 1, 0, 1, 1, 0, 4],
+        [32, 1, 1, 1, 1, 0, 8],
+        [32, 2, 0, 1, 1, 0, 2],
+        [32, 2, 1, 1, 1, 0, 10],
+        [32, 4, 0, 1, 1, 0, 2],
+        [32, 4, 1, 1, 1, 0, 18],
+        [32, 8, 0, 1, 1, 0, 2],
+        [32, 8, 1, 1, 1, 0, 34],
     ],
     "softmax_forward": [
         [16, 1, 1, 1, 1, 30],
@@ -119,19 +125,13 @@ _FINDINGS = {
         [32, 4, 1, 1, 4, 44],
         [32, 8, 1, 1, 8, 84],
     ],
-    "softmax_backward": [
-        [16, 1, 1, 1, 0, 13],
-        [32, 1, 1, 1, 0, 5],
-        [32, 2, 1, 1, 0, 11],
-        [32, 4, 1, 1, 0, 23],
-        [32, 8, 1, 1, 0, 47],
-    ],
+    "softmax_backward": [],
 }
 
 def _declarations(kernel):
     key = ENTMAX_KEYS[kernel]
     return [
-        arm_declaration(rule, row[len(key) + i], _PREDATES + _FOUND[rule], where = {field: [row[j]] for j, field in enumerate(key)}, arch = "sm_90a")
+        arm_declaration(rule, row[len(key) + i], _REASON.get(kernel, _PREDATES) + _FOUND[rule], where = {field: [row[j]] for j, field in enumerate(key)}, arch = "sm_90a")
         for row in _FINDINGS[kernel]
         for i, rule in enumerate(["load_in_trip", "loop_convergence"])
         if row[len(key) + i]

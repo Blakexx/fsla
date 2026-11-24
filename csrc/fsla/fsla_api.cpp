@@ -126,19 +126,19 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "Tensor(b!) d_write_logits, int[] logit_offsets, int[] value_offsets, int[] midpoint_offsets, "
       "int[] support_offsets, int[] widths, int heads, float alpha) -> ()");
   m.def(
-      "entmax_factor_forward(Tensor logits, Tensor? mask, Tensor(a!) values, Tensor(b!)? values_second, "
+      "entmax_factor_forward(Tensor logits, Tensor(a!) values, Tensor(b!)? values_second, "
       "Tensor(c!) support_words, int[] logit_offsets, int[] value_offsets, int[] support_offsets, int[] widths, "
       "int heads, float alpha) -> ()");
   m.def(
-      "entmax_factor_backward(Tensor values, Tensor support_words, Tensor? mask, Tensor d_values, "
+      "entmax_factor_backward(Tensor values, Tensor support_words, Tensor d_values, "
       "Tensor? d_values_second, Tensor(a!) d_logits, int[] logit_offsets, int[] value_offsets, "
-      "int[] support_offsets, int[] widths, bool accumulate, int heads, float alpha) -> ()");
+      "int[] support_offsets, int[] widths, int heads, float alpha) -> ()");
   m.def(
       "routing_softmax_forward(Tensor logits, Tensor(a!) values, Tensor(b!)? values_second, int[] logit_offsets, "
       "int[] value_offsets, int[] widths, int heads) -> ()");
   m.def(
       "routing_softmax_backward(Tensor values, Tensor d_values, Tensor? d_values_second, Tensor(a!) d_logits, "
-      "int[] logit_offsets, int[] value_offsets, int[] widths, bool accumulate, int heads) -> ()");
+      "int[] logit_offsets, int[] value_offsets, int[] widths, int heads) -> ()");
 
   m.def("entmax_max_levels() -> int");
   m.def("entmax_width_class(int width) -> int");

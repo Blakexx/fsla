@@ -42,15 +42,13 @@ namespace detail {
 // ---------------------------------------------------------------------------
 template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void
-factor_forward_kernel(const LogitT* __restrict__ logits, const bool* __restrict__ mask,
-                      OutT* __restrict__ values, OutT* __restrict__ values_second,
-                      int32_t* __restrict__ support_words, int tokens, int heads, LevelTable table,
-                      Strides sz, Strides smask, Strides sv, Strides sv2, Strides ssup) {
+factor_forward_kernel(const LogitT* __restrict__ logits, OutT* __restrict__ values,
+                      OutT* __restrict__ values_second, int32_t* __restrict__ support_words,
+                      int tokens, int heads, LevelTable table, Strides sz, Strides sv, Strides sv2,
+                      Strides ssup) {
   constexpr int W_PAD = LW * IPT;
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
-
-  using WarpRedI = cub::WarpReduce<int, LW>;
 
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias -- see docs/internals/entmax/factor.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
@@ -58,14 +56,12 @@ factor_forward_kernel(const LogitT* __restrict__ logits, const bool* __restrict_
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
   __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
-  static_assert(sizeof(typename WarpRedI::TempStorage) <= 4, "WarpReduce must be shfl-only");
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
   const unsigned lmask = logical_warp_mask<LW>();
   const int logical = threadIdx.x / LW;
   const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
-  typename WarpRedI::TempStorage redi_store;
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
@@ -88,31 +84,19 @@ factor_forward_kernel(const LogitT* __restrict__ logits, const bool* __restrict_
     const int token = word * WORD_TOKENS + local;
     if (local >= WORD_TOKENS || token >= tokens) continue;
 
-    // ---- PHASE A: load striped (coalesced); the candidate mask is per ELEMENT ----
+    // ---- PHASE A: load striped (coalesced); every column of the width is a candidate ----
     float z[IPT];
     uint32_t valid_mask = 0u;
-    int local_valid = 0;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
-      const bool in_width = col < width;
-      const bool valid =
-          in_width && (mask == nullptr || mask[addr_split(smask, sb, sh, token, logit_base + col)]);
-      if (valid) {
-        valid_mask |= (1u << i);
-        ++local_valid;
-      }
+      const bool valid = col < width;
+      if (valid) valid_mask |= (1u << i);
       z[i] = valid ? load_value(logits, addr_split(sz, sb, sh, token, logit_base + col)) : 0.0f;
-    }
-    //: A masked row can be EMPTY, so the member count is a per-row reduction and not -- see docs/internals/entmax/factor.md#validcount
-    int valid_count = width;
-    if (mask != nullptr) {
-      valid_count = WarpRedI(redi_store).Reduce(local_valid, Sum());
-      valid_count = __shfl_sync(lmask, valid_count, 0, LW);
     }
 
     // ---- PHASES B, C: the threshold (`threshold`) ----
-    const float tau = threshold<LW, IPT, ALPHA15>(z, valid_mask, valid_count, lane, lmask,
+    const float tau = threshold<LW, IPT, ALPHA15>(z, valid_mask, width, lane, lmask,
                                                   smem + warp * SLOT, logical_in_warp);
 
     // ---- PHASE D: amplitudes, both outputs, and the support bit ----
@@ -159,21 +143,71 @@ factor_forward_kernel(const LogitT* __restrict__ logits, const bool* __restrict_
   }
 }
 
+//: A LOGICAL WARP'S SUM, in every one of its lanes: a butterfly over the lane bits below `LW`, the whole warp shuffling -- see docs/internals/entmax/factor.md#backward-stages
+template <int LW>
+__device__ __forceinline__ float warp_sum(float x) {
+#pragma unroll
+  for (int d = 1; d < LW; d <<= 1) x += __shfl_xor_sync(0xffffffffu, x, d);
+  return x;
+}
+
+//: THE BACKWARD'S READS of one block, WALKED: a row offset a tensor, stepped a token, and a column step an item -- see docs/internals/entmax/factor.md#backward-stages
+template <int LW, int IPT, typename OutT>
+struct BackwardReads {
+  const OutT* values;
+  const OutT* d_values;
+  const OutT* d_values_second;
+  Strides sv, sdv, sdv2;
+  int lane = 0, width = 0, tokens = 0, token = 0;
+  int64_t rv = 0, rd = 0, r2 = 0;
+  int64_t fv = 0, fd = 0, f2 = 0;
+
+  //: the logical warp's first token's offsets (`r*`), and the block's first entry's (`f*`), which an item with none reads
+  __device__ __forceinline__ void start(int64_t stream, int t0, int logical, int64_t base) {
+    token = t0 + logical;
+    rv = addr(sv, stream, t0, base + lane) + logical * (sv.token + sv.lane);
+    rd = addr(sdv, stream, t0, base + lane) + logical * (sdv.token + sdv.lane);
+    r2 = addr(sdv2, stream, t0, base + lane) + logical * (sdv2.token + sdv2.lane);
+    fv = addr(sv, stream, t0, base);
+    fd = addr(sdv, stream, t0, base);
+    f2 = addr(sdv2, stream, t0, base);
+  }
+
+  //: THE NEXT TOKEN'S LOADS, issued RAW into a stage -- nothing here reads what they return -- then the step to the token after
+  __device__ __forceinline__ void issue(OutT (&v)[IPT], OutT (&d)[IPT], OutT (&d2)[IPT]) {
+    const bool in_call = token < tokens;
+    int64_t av = rv;
+    int64_t ad = rd;
+    int64_t a2 = r2;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const bool has = in_call && lane + i * LW < width;
+      v[i] = values[has ? av : fv];
+      d[i] = d_values[has ? ad : fd];
+      if (d_values_second != nullptr) d2[i] = d_values_second[has ? a2 : f2];
+      av += LW * sv.col;
+      ad += LW * sdv.col;
+      a2 += LW * sdv2.col;
+    }
+    rv += (BLOCK_THREADS / LW) * (sv.token + sv.lane);
+    rd += (BLOCK_THREADS / LW) * (sdv.token + sdv.lane);
+    r2 += (BLOCK_THREADS / LW) * (sdv2.token + sdv2.lane);
+    token += BLOCK_THREADS / LW;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // BACKWARD -- the alpha-entmax rank-1 Jacobian action.
 // see docs/internals/entmax/factor.md#launch-bounds
 template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void
+__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::backward_min_blocks(IPT)) void
 factor_backward_kernel(const OutT* __restrict__ values, const int32_t* __restrict__ support_words,
-                       const bool* __restrict__ mask, const OutT* __restrict__ d_values,
-                       const OutT* __restrict__ d_values_second, LogitT* __restrict__ d_logits,
-                       int tokens, int heads, bool accumulate, LevelTable table, Strides sv,
-                       Strides ssup, Strides smask, Strides sdv, Strides sdv2, Strides sdz) {
+                       const OutT* __restrict__ d_values, const OutT* __restrict__ d_values_second,
+                       LogitT* __restrict__ d_logits, int tokens, int heads, LevelTable table,
+                       Strides sv, Strides ssup, Strides sdv, Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
-  using WarpRedP = cub::WarpReduce<Pair, LW>;
-  static_assert(sizeof(typename WarpRedP::TempStorage) <= 4, "WarpReduce must be shfl-only");
-  typename WarpRedP::TempStorage redp_store;
+  static_assert((LW & (LW - 1)) == 0, "a logical warp is a power of two of lanes");
 
   const int lane = threadIdx.x % LW;
   const int logical = threadIdx.x / LW;
@@ -190,59 +224,69 @@ factor_backward_kernel(const OutT* __restrict__ values, const int32_t* __restric
   const int64_t value_base = table.value_off[level];
   const int64_t support_base = table.support_off[level];
 
-  for (int it = 0; it < ITERS; ++it) {
-    const int local = it * LOGICAL_PER_BLOCK + logical;
-    const int token = word * WORD_TOKENS + local;
-    if (local >= WORD_TOKENS || token >= tokens) continue;
+  //: A BLOCK OF MORE LOGICAL WARPS THAN ITS WORD HAS TOKENS idles whole warps -- see docs/internals/entmax/factor.md#backward-stages
+  if (logical >= WORD_TOKENS) return;
 
+  //: THE SUPPORT WORDS of the block's 32 tokens, a column each, read once -- see docs/internals/entmax/factor.md#backward-stages
+  uint32_t wword[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    const int col = lane + i * LW;
+    const int64_t held = support_base + (col < width ? col : 0);
+    const int64_t at = stream * ssup.stream + (int64_t)word * ssup.token + held * ssup.col;
+    const uint32_t w = (uint32_t)support_words[at];
+    wword[i] = col < width ? w : 0u;
+  }
+
+  //: A STAGE AHEAD: a trip takes its token's terms from what the last trip loaded, issues the next token's loads, then reduces and stores -- see docs/internals/entmax/factor.md#backward-stages
+  const int t0 = word * WORD_TOKENS;
+  BackwardReads<LW, IPT, OutT> reads{values, d_values, d_values_second, sv, sdv, sdv2};
+  reads.lane = lane;
+  reads.width = width;
+  reads.tokens = tokens;
+  reads.start(stream, t0, logical, value_base);
+  OutT v[IPT] = {};
+  OutT d[IPT] = {};
+  OutT d2[IPT] = {};
+  reads.issue(v, d, d2);
+
+  constexpr int UNROLL = ITERS <= 2 ? ITERS : 1;
+  int token = t0 + logical;
+  int64_t rz = addr_split(sdz, sb, sh, token, logit_base + lane);
+#pragma unroll UNROLL
+  for (int it = 0; it < ITERS; ++it) {
+    const bool in_call = token < tokens;
     uint32_t live_mask = 0u;
-    Pair partial{0.0f, 0.0f};
+    float s[IPT];
+    float dp[IPT];
+    float num = 0.0f;
+    float den = 0.0f;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
-      const int col = lane + i * LW;
-      const bool valid =
-          (col < width)
-          && (mask == nullptr || mask[addr_split(smask, sb, sh, token, logit_base + col)]);
-      const uint32_t wword =
-          (col < width) ? (uint32_t)support_words[stream * ssup.stream + (int64_t)word * ssup.token
-                                                  + (support_base + col) * ssup.col]
-                        : 0u;
-      const bool live = valid && ((wword >> (token & 31)) & 1u);
-      if (live) live_mask |= (1u << i);
-      const float v = live ? load_value(values, addr(sv, stream, token, value_base + col)) : 0.0f;
-      const float s = live ? (ALPHA15 ? sqrtf(v) : 1.0f) : 0.0f;
-      float dp = live ? load_value(d_values, addr(sdv, stream, token, value_base + col)) : 0.0f;
-      if (live && d_values_second != nullptr)
-        dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
-      partial.p += s * dp;
-      partial.q += s;
+      const bool live = in_call && ((wword[i] >> (token & 31)) & 1u);
+      live_mask |= (uint32_t)live << i;
+      float x = load_value(d, i);
+      if (d_values_second != nullptr) x += load_value(d2, i);
+      const float root = ALPHA15 ? sqrtf(load_value(v, i)) : 1.0f;
+      s[i] = live ? root : 0.0f;
+      dp[i] = live ? x : 0.0f;
+      num += s[i] * dp[i];
+      den += s[i];
     }
-    Pair red = WarpRedP(redp_store).Reduce(partial, PairAdd());
-    float num = __shfl_sync(lmask, red.p, 0, LW);
-    float den = __shfl_sync(lmask, red.q, 0, LW);
+    if (it + 1 < ITERS) reads.issue(v, d, d2);
+    num = warp_sum<LW>(num);
+    den = warp_sum<LW>(den);
     den = den > 0.0f ? den : 1.0f;
     const float shift = num / den;
-
+    int64_t az = rz;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
-      const int col = lane + i * LW;
-      if (col >= width) continue;
-      const bool live = (live_mask >> i) & 1u;
-      float dz = 0.0f;
-      if (live) {
-        const float v = load_value(values, addr(sv, stream, token, value_base + col));
-        const float s = ALPHA15 ? sqrtf(v) : 1.0f;
-        float dp = load_value(d_values, addr(sdv, stream, token, value_base + col));
-        if (d_values_second != nullptr)
-          dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
-        dz = s * (dp - shift);
-      }
-      const int64_t out = addr_split(sdz, sb, sh, token, logit_base + col);
-      if (accumulate)
-        add_value(d_logits, out, dz);
-      else
-        store_value(d_logits, out, dz);
+      const float dz = ((live_mask >> i) & 1u) ? s[i] * (dp[i] - shift) : 0.0f;
+      if (in_call && lane + i * LW < width) store_value(d_logits, az, dz);
+      az += LW * sdz.col;
     }
+    rz += LOGICAL_PER_BLOCK * sdz.token;
+    token += LOGICAL_PER_BLOCK;
   }
 }
 
@@ -313,16 +357,14 @@ softmax_forward_kernel(const LogitT* __restrict__ logits, OutT* __restrict__ val
 }
 
 template <class Bt, int LW, int IPT, typename LogitT, typename OutT>
-__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void
+__global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::backward_min_blocks(IPT)) void
 softmax_backward_kernel(const OutT* __restrict__ values, const OutT* __restrict__ d_values,
                         const OutT* __restrict__ d_values_second, LogitT* __restrict__ d_logits,
-                        int tokens, int heads, bool accumulate, LevelTable table, Strides sv,
-                        Strides sdv, Strides sdv2, Strides sdz) {
+                        int tokens, int heads, LevelTable table, Strides sv, Strides sdv,
+                        Strides sdv2, Strides sdz) {
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
-  using WarpRedF = cub::WarpReduce<float, LW>;
-  static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
-  typename WarpRedF::TempStorage red_store;
+  static_assert((LW & (LW - 1)) == 0, "a logical warp is a power of two of lanes");
 
   const int lane = threadIdx.x % LW;
   const int logical = threadIdx.x / LW;
@@ -338,40 +380,50 @@ softmax_backward_kernel(const OutT* __restrict__ values, const OutT* __restrict_
   const int64_t logit_base = table.logit_off[level];
   const int64_t value_base = table.value_off[level];
 
+  //: A BLOCK OF MORE LOGICAL WARPS THAN ITS WORD HAS TOKENS idles whole warps -- see docs/internals/entmax/factor.md#backward-stages
+  if (logical >= WORD_TOKENS) return;
+
+  //: A STAGE AHEAD: a trip takes its token's terms from what the last trip loaded, issues the next token's loads, then reduces and stores -- see docs/internals/entmax/factor.md#backward-stages
+  const int t0 = word * WORD_TOKENS;
+  BackwardReads<LW, IPT, OutT> reads{values, d_values, d_values_second, sv, sdv, sdv2};
+  reads.lane = lane;
+  reads.width = width;
+  reads.tokens = tokens;
+  reads.start(stream, t0, logical, value_base);
+  OutT v[IPT] = {};
+  OutT d[IPT] = {};
+  OutT d2[IPT] = {};
+  reads.issue(v, d, d2);
+
+  constexpr int UNROLL = ITERS <= 2 ? ITERS : 1;
+  int token = t0 + logical;
+  int64_t rz = addr_split(sdz, sb, sh, token, logit_base + lane);
+#pragma unroll UNROLL
   for (int it = 0; it < ITERS; ++it) {
-    const int local = it * LOGICAL_PER_BLOCK + logical;
-    const int token = word * WORD_TOKENS + local;
-    if (local >= WORD_TOKENS || token >= tokens) continue;
-
-    float local_dot = 0.0f;
+    const bool in_call = token < tokens;
+    float p[IPT];
+    float dp[IPT];
+    float dot = 0.0f;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
-      const int col = lane + i * LW;
-      if (col >= width) continue;
-      const float p = load_value(values, addr(sv, stream, token, value_base + col));
-      float dp = load_value(d_values, addr(sdv, stream, token, value_base + col));
-      if (d_values_second != nullptr)
-        dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
-      local_dot += p * dp;
+      const bool own = in_call && (lane + i * LW < width);
+      float x = load_value(d, i);
+      if (d_values_second != nullptr) x += load_value(d2, i);
+      p[i] = own ? load_value(v, i) : 0.0f;
+      dp[i] = own ? x : 0.0f;
+      dot += p[i] * dp[i];
     }
-    float dot = WarpRedF(red_store).Reduce(local_dot, Sum());
-    dot = __shfl_sync(lmask, dot, 0, LW);
-
+    if (it + 1 < ITERS) reads.issue(v, d, d2);
+    dot = warp_sum<LW>(dot);
+    int64_t az = rz;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
-      const int col = lane + i * LW;
-      if (col >= width) continue;
-      const float p = load_value(values, addr(sv, stream, token, value_base + col));
-      float dp = load_value(d_values, addr(sdv, stream, token, value_base + col));
-      if (d_values_second != nullptr)
-        dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
-      const float dz = p * (dp - dot);
-      const int64_t out = addr_split(sdz, sb, sh, token, logit_base + col);
-      if (accumulate)
-        add_value(d_logits, out, dz);
-      else
-        store_value(d_logits, out, dz);
+      const float dz = p[i] * (dp[i] - dot);
+      if (in_call && lane + i * LW < width) store_value(d_logits, az, dz);
+      az += LW * sdz.col;
     }
+    rz += LOGICAL_PER_BLOCK * sdz.token;
+    token += LOGICAL_PER_BLOCK;
   }
 }
 
@@ -392,23 +444,22 @@ FSLA_DEFINE_ARM_SET(SoftmaxForwardArmSet, SOFTMAX_FORWARD);
 FSLA_DEFINE_ARM_SET(SoftmaxBackwardArmSet, SOFTMAX_BACKWARD);
 
 template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-void launch_factor_forward_at(const Tensor& logits, const std::optional<Tensor>& mask,
-                              Tensor& values, const std::optional<Tensor>& values_second,
-                              Tensor& support, const LevelTable& table, int levels, int heads) {
+void launch_factor_forward_at(const Tensor& logits, Tensor& values,
+                              const std::optional<Tensor>& values_second, Tensor& support,
+                              const LevelTable& table, int levels, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
   factor_forward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
-      (const LogitT*)logits.data_ptr(), ptr_or_null<const bool>(mask), (OutT*)values.data_ptr(),
-      ptr_or_null<OutT>(values_second), support.mutable_data_ptr<int32_t>(), tokens, heads, table,
-      five_logits(logits, heads), five_or_zero(mask), five(values), five_or_zero(values_second),
-      five(support));
+      (const LogitT*)logits.data_ptr(), (OutT*)values.data_ptr(), ptr_or_null<OutT>(values_second),
+      support.mutable_data_ptr<int32_t>(), tokens, heads, table, five_logits(logits, heads),
+      five(values), five_or_zero(values_second), five(support));
   FSLA_CUDA_LAUNCH_CHECK();
 }
 
 //: `launch_factor_forward_at` at the arm the matcher chose, at `logits`'s card's build: the one branch to the arm, and inside it the one branch to the build, outside every launch.
-void launch_factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Tensor& values,
+void launch_factor_forward(const Tensor& logits, Tensor& values,
                            const std::optional<Tensor>& values_second, Tensor& support,
                            const LevelTable& table, const plan::EntmaxLaunch<FactorForward>& launch,
                            int heads) {
@@ -424,37 +475,33 @@ void launch_factor_forward(const Tensor& logits, const std::optional<Tensor>& ma
           if constexpr (in_image(kB)) {
             using Bt = ::denseref::arch::BuildTag<kB>;
             launch_factor_forward_at<Bt, kLane, kItems, kAlpha15, LogitT, OutT>(
-                logits, mask, values, values_second, support, table, launch.levels, heads);
+                logits, values, values_second, support, table, launch.levels, heads);
           }
         });
       });
 }
 
 template <class Bt, int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
-void launch_factor_backward_at(const Tensor& values, const Tensor& support,
-                               const std::optional<Tensor>& mask, const Tensor& d_values,
+void launch_factor_backward_at(const Tensor& values, const Tensor& support, const Tensor& d_values,
                                const std::optional<Tensor>& d_values_second, Tensor& d_logits,
-                               const LevelTable& table, int levels, int heads, bool accumulate) {
+                               const LevelTable& table, int levels, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-2
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
   factor_backward_kernel<Bt, LW, IPT, ALPHA15, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
       (const OutT*)values.data_ptr(), support.mutable_data_ptr<int32_t>(),
-      ptr_or_null<const bool>(mask), (const OutT*)d_values.data_ptr(),
-      ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens, heads,
-      accumulate, table, five(values), five(support), five_or_zero(mask), five(d_values),
-      five_or_zero(d_values_second), five_logits(d_logits, heads));
+      (const OutT*)d_values.data_ptr(), ptr_or_null<const OutT>(d_values_second),
+      (LogitT*)d_logits.data_ptr(), tokens, heads, table, five(values), five(support),
+      five(d_values), five_or_zero(d_values_second), five_logits(d_logits, heads));
   FSLA_CUDA_LAUNCH_CHECK();
 }
 
 //: `launch_factor_backward_at` at the arm the matcher chose, at `values`'s card's build.
-void launch_factor_backward(const Tensor& values, const Tensor& support,
-                            const std::optional<Tensor>& mask, const Tensor& d_values,
+void launch_factor_backward(const Tensor& values, const Tensor& support, const Tensor& d_values,
                             const std::optional<Tensor>& d_values_second, Tensor& d_logits,
                             const LevelTable& table,
-                            const plan::EntmaxLaunch<FactorBackward>& launch, int heads,
-                            bool accumulate) {
+                            const plan::EntmaxLaunch<FactorBackward>& launch, int heads) {
   const plan::EntmaxAlphaArm& arm = launch.arm;
   arm_switch<FactorBackwardArmSet>(
       {{arm.lw, arm.ipt, arm.alpha15, arm.logit, arm.value}}, [&](auto built) {
@@ -467,8 +514,7 @@ void launch_factor_backward(const Tensor& values, const Tensor& support,
           if constexpr (in_image(kB)) {
             using Bt = ::denseref::arch::BuildTag<kB>;
             launch_factor_backward_at<Bt, kLane, kItems, kAlpha15, LogitT, OutT>(
-                values, support, mask, d_values, d_values_second, d_logits, table, launch.levels,
-                heads, accumulate);
+                values, support, d_values, d_values_second, d_logits, table, launch.levels, heads);
           }
         });
       });
@@ -511,16 +557,15 @@ void launch_softmax_forward(const Tensor& logits, Tensor& values,
 template <class Bt, int LW, int IPT, typename LogitT, typename OutT>
 void launch_softmax_backward_at(const Tensor& values, const Tensor& d_values,
                                 const std::optional<Tensor>& d_values_second, Tensor& d_logits,
-                                const LevelTable& table, int levels, int heads, bool accumulate) {
+                                const LevelTable& table, int levels, int heads) {
   //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-4
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = current_stream();
   softmax_backward_kernel<Bt, LW, IPT, LogitT, OutT><<<grid, BLOCK_THREADS, 0, stream>>>(
       (const OutT*)values.data_ptr(), (const OutT*)d_values.data_ptr(),
-      ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens, heads,
-      accumulate, table, five(values), five(d_values), five_or_zero(d_values_second),
-      five_logits(d_logits, heads));
+      ptr_or_null<const OutT>(d_values_second), (LogitT*)d_logits.data_ptr(), tokens, heads, table,
+      five(values), five(d_values), five_or_zero(d_values_second), five_logits(d_logits, heads));
   FSLA_CUDA_LAUNCH_CHECK();
 }
 
@@ -528,8 +573,7 @@ void launch_softmax_backward_at(const Tensor& values, const Tensor& d_values,
 void launch_softmax_backward(const Tensor& values, const Tensor& d_values,
                              const std::optional<Tensor>& d_values_second, Tensor& d_logits,
                              const LevelTable& table,
-                             const plan::EntmaxLaunch<SoftmaxBackward>& launch, int heads,
-                             bool accumulate) {
+                             const plan::EntmaxLaunch<SoftmaxBackward>& launch, int heads) {
   const plan::EntmaxPlainArm& arm = launch.arm;
   arm_switch<SoftmaxBackwardArmSet>({{arm.lw, arm.ipt, arm.logit, arm.value}}, [&](auto built) {
     constexpr int kLane = decltype(built)::values[0], kItems = decltype(built)::values[1];
@@ -540,7 +584,7 @@ void launch_softmax_backward(const Tensor& values, const Tensor& d_values,
       if constexpr (in_image(kB)) {
         using Bt = ::denseref::arch::BuildTag<kB>;
         launch_softmax_backward_at<Bt, kLane, kItems, LogitT, OutT>(
-            values, d_values, d_values_second, d_logits, table, launch.levels, heads, accumulate);
+            values, d_values, d_values_second, d_logits, table, launch.levels, heads);
       }
     });
   });
@@ -570,7 +614,7 @@ std::vector<std::vector<int64_t>> softmax_backward_arms() {
   return detail::SoftmaxBackwardArmSet::rows();
 }
 
-void factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Tensor& values,
+void factor_forward(const Tensor& logits, Tensor& values,
                     const std::optional<Tensor>& values_second, Tensor& support_words,
                     const std::vector<int64_t>& logit_offsets,
                     const std::vector<int64_t>& value_offsets,
@@ -592,18 +636,16 @@ void factor_forward(const Tensor& logits, const std::optional<Tensor>& mask, Ten
   const auto table =
       detail::build_table(logit_offsets, value_offsets, support_offsets, widths, launch.klass);
   const DeviceGuard guard(device);
-  detail::launch_factor_forward(logits, mask, values, values_second, support_words, table, launch,
+  detail::launch_factor_forward(logits, values, values_second, support_words, table, launch,
                                 (int)heads);
 }
 
-void factor_backward(const Tensor& values, const Tensor& support_words,
-                     const std::optional<Tensor>& mask, const Tensor& d_values,
+void factor_backward(const Tensor& values, const Tensor& support_words, const Tensor& d_values,
                      const std::optional<Tensor>& d_values_second, Tensor& d_logits,
                      const std::vector<int64_t>& logit_offsets,
                      const std::vector<int64_t>& value_offsets,
                      const std::vector<int64_t>& support_offsets,
-                     const std::vector<int64_t>& widths, bool accumulate, int64_t heads,
-                     double alpha) {
+                     const std::vector<int64_t>& widths, int64_t heads, double alpha) {
   check_arch_table();
   detail::check_logits(d_logits);
   STD_TORCH_CHECK(support_offsets.size() == widths.size(),
@@ -622,8 +664,8 @@ void factor_backward(const Tensor& values, const Tensor& support_words,
   const auto table =
       detail::build_table(logit_offsets, value_offsets, support_offsets, widths, launch.klass);
   const DeviceGuard guard(device);
-  detail::launch_factor_backward(values, support_words, mask, d_values, d_values_second, d_logits,
-                                 table, launch, (int)heads, accumulate);
+  detail::launch_factor_backward(values, support_words, d_values, d_values_second, d_logits, table,
+                                 launch, (int)heads);
 }
 
 void softmax_forward(const Tensor& logits, Tensor& values,
@@ -651,7 +693,7 @@ void softmax_backward(const Tensor& values, const Tensor& d_values,
                       const std::optional<Tensor>& d_values_second, Tensor& d_logits,
                       const std::vector<int64_t>& logit_offsets,
                       const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
-                      bool accumulate, int64_t heads) {
+                      int64_t heads) {
   check_arch_table();
   detail::check_logits(d_logits);
   detail::check_values(values, d_values_second);
@@ -668,7 +710,7 @@ void softmax_backward(const Tensor& values, const Tensor& d_values,
   const auto table = detail::build_table(logit_offsets, value_offsets, {}, widths, launch.klass);
   const DeviceGuard guard(device);
   detail::launch_softmax_backward(values, d_values, d_values_second, d_logits, table, launch,
-                                  (int)heads, accumulate);
+                                  (int)heads);
 }
 
 }  // namespace entmax

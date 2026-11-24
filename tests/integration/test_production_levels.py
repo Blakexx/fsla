@@ -13,10 +13,7 @@ anywhere in this file's ground truth.
 **THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/fsla/src/entmax/entmax.cu`);
 the independent per-side solves and the softmax pair are `csrc/fsla/src/entmax/factor.cu`,
 ported off Triton for the closed-world AOT policy and for P65, which trains through
-them. Everything below that says "the two lowerings" still means exactly what it
-meant, device against torch; what changed over time is WHICH BINARY the rows were
-measured on, and the tie table was
-re-measured on the new one.
+them. "The two lowerings" below means device against torch.
 
 Support is checked for **exact** set equality, never by threshold: entmax support is a
 discrete object (sparsity comes from entmax, not from a floor), so "the same zeros" is a hard
@@ -158,7 +155,7 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
         # softmax is fp32-ill-conditioned -- a conditioning property of the fixture, not
         # of the solve (both production lowerings agree with each other to 2e-7 there,
         # and disagree with fp64 together). Union's extreme-magnitude contract (the
-        # overflow-free delta) is gated by the overflow-free delta of the kernels' own arithmetic.
+        # overflow-free delta) is gated by `test_union_is_exact_at_the_bf16_extremes`.
         return base * 5.0
     raise ValueError(kind)
 
@@ -748,8 +745,7 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
     Support is an EXACT set assertion: both are closed forms, so neither has
     convergence slack to hide behind (sparsity comes from entmax, not from a floor -- entmax
     support is a discrete object, not a thresholded one). The exact-TIE fixture is
-    excluded because it has its own gate,
-    ``test_the_two_lowerings_agree_on_exact_ties``, with its own measured bound.
+    excluded because it has its own gate, ``test_the_two_lowerings_agree_on_exact_ties``.
     """
     routing = _routings(alpha)[shape]
     cuda_read = _stress_logits(routing, kind, device="cuda", seed=17).bfloat16().requires_grad_()
@@ -863,6 +859,30 @@ def test_the_package_imports_no_triton_and_declares_none():
     declared = text.split("dependencies    = ", 1)[1].split("\n", 1)[0]
     assert "triton" not in declared, (
         f"pyproject.toml still declares a triton dependency: {declared}")
+
+
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+@pytest.mark.parametrize("relationship", ["equal", "opposite"])
+def test_union_is_exact_at_the_bf16_extremes(alpha, relationship):
+    """Union's extreme-magnitude contract, the overflow-free delta, at bf16, whose exponent range is fp32's: opposite
+    extrema overflow a raw ``read - write`` in fp32 while their midpoint stays exactly representable. Values and VJP
+    against the fp64 oracle; at opposite extrema the midpoint is uniform, so every member lands on one side or the other."""
+    near_max = torch.finfo(torch.bfloat16).max if relationship == "opposite" else 1.0e8
+    read = torch.tensor([[[near_max, -near_max, near_max, -near_max]]], device="cuda", dtype=torch.bfloat16)
+    write = -read if relationship == "opposite" else read.clone()
+    routing = ResolvedRouting((UnionRouting(width=4, alpha=alpha),))
+    _check_against_oracle(routing, read, write, label=f"bf16-extremes/{relationship}/{alpha}")
+    production_read = read.detach().clone().requires_grad_()
+    production_write = write.detach().clone().requires_grad_()
+    reads, writes, _support = production_routing_levels(production_read, production_write, routing)
+    assert torch.isfinite(reads[0]).all() and torch.isfinite(writes[0]).all()
+    if relationship == "opposite":
+        assert ((reads[0] + writes[0]) != 0).all()
+    cotangent = torch.tensor([0.3, -0.8, 1.1, 0.4], device="cuda")
+    vjp = torch.autograd.grad((reads[0] * cotangent).sum() - (writes[0] * cotangent).sum(),
+                              (production_read, production_write))
+    assert torch.isfinite(vjp[0]).all() and torch.isfinite(vjp[1]).all()
 
 
 @_CUDA

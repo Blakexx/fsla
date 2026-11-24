@@ -44,8 +44,7 @@ reported, not gated.
 
 **The gradient rides the same plane.** `d_logits` is `LogitT` too — autograd requires a
 cotangent in the input's dtype, and a fp32 gradient plane feeding a bf16 GEMM backward
-would be a widening with nothing on the other end of it. The tied backward's accumulating
-store is `add_value`, which is a bf16 device atomic on the closed-world arch set (sm_90a).
+would be a widening with nothing on the other end of it.
 
 ## <a id="provenance"></a>1. Why these are CUDA, and how they are judged
 
@@ -63,7 +62,7 @@ not merely close.
 
 `factor_forward_kernel` is `union_forward_kernel` with the union split removed. Its
 phases B and C are the same header function, `threshold<LW, IPT, ALPHA15>`, called on
-the masked row where the union calls it on the midpoint row
+the logit row where the union calls it on the midpoint row
 ([`entmax.md#threshold`](entmax.md#threshold)): row max/min,
 <a id="sentinel"></a>the finite row-relative sentinel that pads without putting an infinity in the
 scan, the descending `RowSort`, the `(Σz, Σz²)` `WarpScan`, and <a id="packedkey"></a>the
@@ -82,32 +81,15 @@ with the support staging, and the stream split are the union kernel's, unchanged
 <a id="near-line-200"></a>A level that stores two sides from one solve (`values_second`, a `shares_solve` level) hands
 read and write the SAME amplitudes, never a second solve; `values_second` absent means the level stores one side.
 
-What is NOT there: phase A's midpoint fold and phase E's write normalization. What
-IS there and is not in the union kernel: the candidate mask.
+What is NOT there: phase A's midpoint fold and phase E's write normalization. Nothing is
+there that the union kernel lacks.
 
-### <a id="mask"></a>2.1 The mask, and why it is a per-ROW quantity
+### <a id="candidates"></a>2.1 The candidates are the row's width
 
-<a id="factorforward"></a>The independent entmax kernels take an optional detached boolean candidate
-mask, laid out like the logits (absent: every element is a candidate); no caller passes one. A masked element is not a candidate: it leaves
-the
-support by construction rather than by a correction applied afterwards.
-
-<a id="validcount"></a>The consequence that shapes the kernel is that the member count (`valid_count`) is then a
-reduction, not `width`:
-
-* The row max and min are taken over the CANDIDATES, and a fully-masked row has
-  neither — `row_max` is defined to 0 there and the sentinel to −1, so the sort and
-  the scan still run on finite values;
-* The greatest-valid-`k` search runs over `rank < valid_count`, not `rank < width`,
-  which is what keeps a masked column from being admitted by a prefix that never
-  included it;
-* an empty row produces `chosen = −1`, hence `tau = 0`, hence no support and no
-  amplitude.
-
-The mask pointer is NULL on every plan-level path (`_launch_factor_backward_into_logits` and the
-batched entry), and the count reduction is skipped there — one uniform branch on a
-pointer, not a codegen axis, because a mask arm would double the instantiation
-matrix to buy a prologue.
+<a id="factorforward"></a>Every column below the level's `width` is a candidate, and the member count passed to
+`threshold` is `width`: the entries take no candidate mask, so the kernel runs no per-row count
+reduction. The row max and min, the sort and the greatest-valid-`k` search all run over the
+`width` members, and a padded lane (`col >= width`) is a non-member.
 
 ### <a id="support"></a>2.2 The support word
 
@@ -144,9 +126,10 @@ staged form is what puts that kernel over its 64-register bound. Re-reading keep
 this family at zero spill across all 96 instantiations, which `tools/ratify.py --census`
 reports.
 
-<a id="factorbackward"></a>`accumulate` selects `atomicAdd` over a store. It is a parameter and not a fact
-about the tensor because a TIED level runs two solves into ONE gradient buffer, and
-only the second of them may accumulate — a property of the walk, not of the memory.
+<a id="factorbackward"></a>Both backward entries STORE into `d_logits`; a TIED level's second cotangent (`d_values_second`)
+is summed into `dp` inside the one launch, so no launch adds into a gradient another wrote.
+
+<a id="backward-stages"></a>THE BACKWARD KERNELS RUN A STAGE AHEAD. `factor_backward_kernel` and `softmax_backward_kernel` take a block's tokens a trip each (a token a logical warp; eight trips at 32 lanes). A trip turns its token's operands -- which the trip before loaded -- into the reduction's terms, at once issues the NEXT token's loads into the registers those operands just left, and then reduces and stores while the loads are in flight. The loads are kept RAW (`BackwardReads::issue`): the conversion from bf16 is itself a read, and a load whose value anything reads in the trip that issued it stalls the warp there. A value is read from memory once: the reduction's terms are kept for the stores. No load is guarded: an item with no entry -- a column past the level's width, a token past the call's end -- reads the block's first token at the level's first column instead (`fv`, `fd`, `f2`), and a select zeroes what was read; so no load sits under a data-dependent branch, every thread is present at the warp's reductions, and only the stores are guarded. A row's offsets are WALKED: inside a block a token's offset is the first token's plus `local * (token + lane)` strides (the block's tokens share one tile), so each tensor keeps one row offset, stepped a trip, and an item adds a column step; no offset is a product a column or a token. The reduction is `warp_sum`, a butterfly of `__shfl_xor_sync` over the lane bits below `LW` with the whole warp shuffling: every lane of a logical warp ends with the sum, with no mask, no branch and no broadcast after. The square root is taken of every item and selected after, never under the support's branch. The eight-item arms take the backward's register class (`backward_min_blocks(IPT)`, [`entmax.md`](entmax.md#residency)), as the union's backward does. The entmax backward reads its support words once a block, a word holding the block's 32 tokens. A block holds `BLOCK_THREADS / LW` logical warps and a word 32 tokens: where the block holds more (a logical warp of two lanes), the logical warps past the 32nd are whole warps with no token, and they return at once. An arm of one or two trips is unrolled whole and holds no loop (`UNROLL`); the others keep the trip loop. What the build's rules over loops find, declared in `arms.bzl` at the exact count: no load read in its trip, in either kernel; in the entmax backward 2 to 34 convergence instructions an arm, fewer in every arm than the form before (11 to 161) -- by their counts the slow paths of the trip's division and of each item's square root (4 an item where alpha is 1.5; the softmax backward, with the same guarded stores and neither, holds none), which is inferred from the counts and not read off a listing; in the softmax backward nothing. THE FORMS THAT FAILED, recorded so they are not rebuilt: the trips unrolled whole as a straight line of eight (the toolkit computed every trip's offsets ahead and held them: the eight-item arms spilled at 64 and at 80 registers a thread, and a one-item arm held 59 live); and two tokens held ahead at fixed registers (where a level is tied a token is three raw arrays, 48 of an eight-item arm's 80 registers, and it spilled).
 
 ## <a id="batched-levels"></a>4. One launch across levels
 

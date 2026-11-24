@@ -96,20 +96,6 @@ __device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int
   p[off] = __float2bfloat16(v);
 }
 
-//: The ACCUMULATING store, for the tied backward's second contribution. bf16 device -- see docs/internals/entmax/entmax.md#near-line-86
-template <typename T>
-__device__ __forceinline__ void add_value(T* p, int64_t off, float v);
-
-template <>
-__device__ __forceinline__ void add_value<float>(float* p, int64_t off, float v) {
-  atomicAdd(p + off, v);
-}
-
-template <>
-__device__ __forceinline__ void add_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
-  atomicAdd(p + off, __float2bfloat16(v));
-}
-
 template <typename T>
 __device__ __forceinline__ float load_value(const T* p, int64_t off);
 

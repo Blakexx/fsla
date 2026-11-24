@@ -137,7 +137,7 @@ class _Launch:
         elif self.kind == "entmax":
             logits, values, values_second, support = self.operands
             extension.entmax_factor_forward(
-                logits, None, values, values_second, support,
+                logits, values, values_second, support,
                 self.logit, self.value, self.support, self.widths, self.heads, self.alpha)
         else:
             logits, values, values_second = self.operands
@@ -188,12 +188,10 @@ def _launch_factor_backward_into_logits(
     support_words: torch.Tensor,
     d_logits: torch.Tensor,
     alpha: float,
-    *,
-    accumulate: bool,
 ) -> None:
     _extension().entmax_factor_backward(
-        output, support_words, None, d_output, d_output_second, d_logits,
-        [0], [0], [0], _one(d_logits.shape[-1]), bool(accumulate), _heads(d_logits),
+        output, support_words, d_output, d_output_second, d_logits,
+        [0], [0], [0], _one(d_logits.shape[-1]), _heads(d_logits),
         float(alpha))
 
 
@@ -223,12 +221,10 @@ def _launch_softmax_backward_into_logits(
     d_output: torch.Tensor,
     d_output_second: torch.Tensor | None,
     d_logits: torch.Tensor,
-    *,
-    accumulate: bool,
 ) -> None:
     _extension().routing_softmax_backward(
         output, d_output, d_output_second, d_logits,
-        [0], [0], _one(d_logits.shape[-1]), bool(accumulate), _heads(d_logits))
+        [0], [0], _one(d_logits.shape[-1]), _heads(d_logits))
 
 
 class _ProductionLevelsFn(torch.autograd.Function):
@@ -398,10 +394,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 if isinstance(shared_activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
                         read_output, d_read_output, d_write_output, words, d_write_level,
-                        shared_activation.alpha, accumulate=False)
+                        shared_activation.alpha)
                 else:
                     _launch_softmax_backward_into_logits(
-                        read_output, d_read_output, d_write_output, d_write_level, accumulate=False)
+                        read_output, d_read_output, d_write_output, d_write_level)
                 continue
 
             for activation, output, d_output, target in (
@@ -410,11 +406,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
             ):
                 if isinstance(activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
-                        output, d_output, None, words, target, activation.alpha,
-                        accumulate=False)
+                        output, d_output, None, words, target, activation.alpha)
                 else:
                     _launch_softmax_backward_into_logits(
-                        output, d_output, None, target, accumulate=False)
+                        output, d_output, None, target)
         return d_read_logits, d_write_logits, None
 
 
