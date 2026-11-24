@@ -10,7 +10,7 @@ It runs through two lowerings of one semantics: hand-CUDA on bf16 CUDA tensors, 
 sorted closed form in torch for the domains the kernels do not cover (CPU, fp64). Neither surface
 ever calls the reference; it is the test oracle, not a fallback.
 
-THE KERNELS ARE `csrc/fsla/src/entmax/` -- `entmax.cu` for the union split, `factor.cu` for the
+THE KERNELS ARE `csrc/fsla/src/entmax/` -- `factor.cu` for the
 independent per-side solves and the softmax pair. There is no Triton in this package and no torch
 fallback on CUDA: `fsla.ops._ext` raises loudly if the wheel is missing
 (docs/internals/entmax/factor.md).
@@ -31,7 +31,6 @@ from fsla.routing.types import (
     ResolvedRouting,
     SoftmaxActivation,
     TiedRouting,
-    UnionRouting,
 )
 
 
@@ -110,31 +109,24 @@ class _Launch:
     the kernel's address expression adds them in."""
 
     __slots__ = ("kind", "alpha", "operands", "heads",
-                 "logit", "value", "midpoint", "support", "widths")
+                 "logit", "value", "support", "widths")
 
     def __init__(self, kind, alpha, operands, heads):
         self.kind, self.alpha, self.operands, self.heads = kind, alpha, operands, heads
-        self.logit, self.value, self.midpoint, self.support, self.widths = [], [], [], [], []
+        self.logit, self.value, self.support, self.widths = [], [], [], []
 
     def full(self) -> bool:
         return len(self.widths) == _max_batched_levels()
 
-    def add(self, width, logit_off, value_off, midpoint_off, support_off) -> None:
+    def add(self, width, logit_off, value_off, support_off) -> None:
         self.widths.append(int(width))
         self.logit.append(int(logit_off))
         self.value.append(int(value_off))
-        self.midpoint.append(int(midpoint_off))
         self.support.append(int(support_off))
 
     def issue(self) -> None:
         extension = _extension()
-        if self.kind == "union":
-            read_logits, write_logits, midpoint, support, read_values, write_values = self.operands
-            extension.entmax_union_forward(
-                read_logits, write_logits, midpoint, support, read_values, write_values,
-                self.logit, self.value, self.midpoint, self.support, self.widths, self.heads,
-                self.alpha)
-        elif self.kind == "entmax":
+        if self.kind == "entmax":
             logits, values, values_second, support = self.operands
             extension.entmax_factor_forward(
                 logits, values, values_second, support,
@@ -159,14 +151,14 @@ class _Plan:
         self._issued: list[_Launch] = []
 
     def add(self, kind, alpha, operands, width, *, logit_off,
-            value_off=0, midpoint_off=0, support_off=0, heads=1):
+            value_off=0, support_off=0, heads=1):
         key = (kind, alpha, _width_class(width), heads, *(id(t) for t in operands))
         launch = self._open.get(key)
         if launch is None or launch.full():
             launch = _Launch(kind, alpha, operands, heads)
             self._open[key] = launch
             self._issued.append(launch)
-        launch.add(width, logit_off, value_off, midpoint_off, support_off)
+        launch.add(width, logit_off, value_off, support_off)
 
     def issue(self) -> int:
         for launch in self._issued:
@@ -195,27 +187,6 @@ def _launch_factor_backward_into_logits(
         float(alpha))
 
 
-def _launch_union_bwd(
-    read_logits_level: torch.Tensor,
-    write_logits_level: torch.Tensor,
-    midpoint: torch.Tensor,
-    support_words: torch.Tensor,
-    read_output: torch.Tensor,
-    write_output: torch.Tensor,
-    d_read_output: torch.Tensor,
-    d_write_output: torch.Tensor,
-    d_read_level: torch.Tensor,
-    d_write_level: torch.Tensor,
-    alpha: float,
-) -> None:
-    width = _one(d_read_level.shape[-1])
-    _extension().entmax_union_backward(
-        read_logits_level, write_logits_level, midpoint, support_words,
-        read_output, write_output, d_read_output, d_write_output,
-        d_read_level, d_write_level, [0], [0], [0], [0], width, _heads(d_read_level),
-        float(alpha))
-
-
 def _launch_softmax_backward_into_logits(
     output: torch.Tensor,
     d_output: torch.Tensor,
@@ -231,7 +202,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
     """Solve a routing plan into per-level dense ``[BH, T, width_l]`` factors.
 
     The plan walk -- the same
-    kernels, the same tied/union dispatch, the same packed support -- against one
+    kernels, the same tied/independent dispatch, the same packed support -- against one
     dense plane per side rather than the tile-major arena the earlier chunk ABI took.
 
     The CUDA solve writes the STORED form (docs/internals/entmax/factor.md#stored-form):
@@ -269,15 +240,9 @@ class _ProductionLevelsFn(torch.autograd.Function):
         read_plane = torch.empty(
             (n_streams, tokens, packed_width), dtype=torch.bfloat16, device=device)
         write_plane = torch.empty_like(read_plane)
-        union_widths = [routing.branches[i] for i, level in enumerate(routing.levels)
-                        if isinstance(level, UnionRouting)]
-        midpoints = torch.empty(
-            (n_streams, tokens, sum(union_widths)), dtype=torch.float32, device=device)
 
         read_levels: list[torch.Tensor] = []
         write_levels: list[torch.Tensor] = []
-        midpoint_offsets: list[int] = []
-        midpoint_offset = 0
         plan = _Plan()
 
         for index, level in enumerate(routing.levels):
@@ -287,17 +252,6 @@ class _ProductionLevelsFn(torch.autograd.Function):
             read_levels.append(read_plane[:, :, offset:offset + width])
             write_levels.append(write_plane[:, :, offset:offset + width])
             support_offset = routing.support_offsets[index]
-
-            if isinstance(level, UnionRouting):
-                midpoint_offsets.append(midpoint_offset)
-                if not empty_launch:
-                    plan.add("union", level.alpha,
-                             (read_logits, write_logits, midpoints, support_words,
-                              read_plane, write_plane),
-                             width, logit_off=logit_offset, value_off=offset,
-                             midpoint_off=midpoint_offset, support_off=support_offset, heads=heads)
-                midpoint_offset += width
-                continue
 
             assert isinstance(level, (IndependentRouting, TiedRouting))
             if empty_launch:
@@ -328,12 +282,10 @@ class _ProductionLevelsFn(torch.autograd.Function):
 
         plan.issue()
 
-        union_state = (read_logits, write_logits, midpoints) if midpoint_offsets else ()
-        ctx.save_for_backward(*read_levels, *write_levels, support_words, *union_state)
+        ctx.save_for_backward(*read_levels, *write_levels, support_words)
         ctx.routing = routing
         ctx.logits_shape = read_logits.shape
         ctx.logits_dtype = read_logits.dtype
-        ctx.midpoint_offsets = midpoint_offsets
         ctx.mark_non_differentiable(support_words)
         return (*read_levels, *write_levels, support_words)
 
@@ -345,10 +297,6 @@ class _ProductionLevelsFn(torch.autograd.Function):
         read_levels = saved[:D]
         write_levels = saved[D:2 * D]
         support_words = saved[2 * D]
-        if ctx.midpoint_offsets:
-            read_logits, write_logits, midpoints = saved[2 * D + 1:2 * D + 4]
-        else:
-            read_logits = write_logits = midpoints = None
 
         d_read_logits = torch.zeros(
             ctx.logits_shape, dtype=ctx.logits_dtype, device=support_words.device)
@@ -357,7 +305,6 @@ class _ProductionLevelsFn(torch.autograd.Function):
         if n_streams == 0 or tokens == 0:
             return d_read_logits, d_write_logits, None
 
-        union_index = 0
         for index, level in enumerate(routing.levels):
             width = routing.branches[index]
             read_output = read_levels[index]
@@ -376,17 +323,6 @@ class _ProductionLevelsFn(torch.autograd.Function):
             support_offset = routing.support_offsets[index]
             words = None if support_offset < 0 else support_words[
                 :, :, support_offset:support_offset + width]
-
-            if isinstance(level, UnionRouting):
-                assert read_logits is not None and write_logits is not None
-                midpoint_offset = ctx.midpoint_offsets[union_index]
-                midpoint = midpoints[:, :, midpoint_offset:midpoint_offset + width]
-                union_index += 1
-                _launch_union_bwd(
-                    read_logits[..., span], write_logits[..., span],
-                    midpoint, words, read_output, write_output,
-                    d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
-                continue
 
             assert isinstance(level, (IndependentRouting, TiedRouting))
             if isinstance(level, TiedRouting):
@@ -472,53 +408,6 @@ class _SortedEntmaxFn(torch.autograd.Function):
         return s * (dp - num / den), None
 
 
-def _overflow_free_delta(read_logits: torch.Tensor, write_logits: torch.Tensor) -> torch.Tensor:
-    """``read - write`` with the union kernel's saturating magnitude arithmetic.
-
-    Opposite-sign finite extrema overflow a raw subtraction while their midpoint stays
-    representable, so the kernel clamps the magnitude instead. Mirrored here so the two
-    lowerings agree on the same near-max fixtures the CUDA gate already covers.
-    """
-    finfo = torch.finfo(read_logits.dtype)
-    read_negative = read_logits < 0.0
-    opposite_sign = read_negative != (write_logits < 0.0)
-    read_magnitude, write_magnitude = read_logits.abs(), write_logits.abs()
-    hi = torch.maximum(read_magnitude, write_magnitude)
-    lo = torch.minimum(read_magnitude, write_magnitude)
-    opposite_magnitude = hi + torch.minimum(lo, finfo.max - hi)
-    opposite_delta = torch.where(read_negative, -opposite_magnitude, opposite_magnitude)
-    zero = torch.zeros_like(read_logits)
-    same_delta = torch.where(opposite_sign, zero, read_logits) - torch.where(
-        opposite_sign, zero, write_logits)
-    return torch.where(opposite_sign, opposite_delta, same_delta)
-
-
-def _torch_union_split(
-    read_logits: torch.Tensor, write_logits: torch.Tensor, alpha: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    z = 0.5 * read_logits + 0.5 * write_logits
-    values = _SortedEntmaxFn.apply(z, alpha)
-    # Support comes from the same `z > tau` bits `_sorted_solve` and the CUDA kernels'
-    # `semantic_support = valid & (z > tau)` compute, not from `values > 0`: the
-    # two conventions agree everywhere except a genuinely-supported member whose amplitude
-    # underflows fp32 to exactly 0 (alpha=1.5 squares `(z-tau)/2`, so `z-tau ~ 1e-25`
-    # suffices) -- adversarial review Claim 2. Recomputed directly (no grad needed; support
-    # is a discrete, non-differentiable mask) rather than threaded out of the autograd
-    # Function, so the two lowerings share one support definition instead of two that
-    # happen to usually agree.
-    with torch.no_grad():
-        _, support = _sorted_solve(z.detach(), alpha)
-    delta = _overflow_free_delta(read_logits, write_logits)
-    read = values * torch.sigmoid(delta)
-    safe = torch.where(support, values, torch.ones_like(values))
-    log_write = (safe.log() + torch.nn.functional.logsigmoid(-delta)).masked_fill(
-        ~support, float("-inf"))
-    has_support = support.any(dim=-1, keepdim=True)
-    write = torch.softmax(
-        torch.where(has_support, log_write, torch.zeros_like(log_write)), dim=-1)
-    return read, torch.where(has_support & support, write, torch.zeros_like(write))
-
-
 def _torch_activation(logits: torch.Tensor, activation) -> torch.Tensor:
     if isinstance(activation, SoftmaxActivation):
         return torch.softmax(logits, dim=-1)
@@ -533,9 +422,7 @@ def _torch_routing_factor_levels(
         span = routing.level_logit_slice(index)
         read_level = read_logits[..., span]
         write_level = write_logits[..., span]
-        if isinstance(level, UnionRouting):
-            read_factor, write_factor = _torch_union_split(read_level, write_level, level.alpha)
-        elif isinstance(level, TiedRouting):
+        if isinstance(level, TiedRouting):
             # TiedRouting names ONE activation for its one solve through the same
             # `.activation('write')` accessor it answers `'read'` with; it carries no
             # separate `.write` attribute.

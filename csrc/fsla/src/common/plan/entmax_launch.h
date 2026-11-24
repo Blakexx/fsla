@@ -1,7 +1,7 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
 // THE ENTMAX KERNELS' MATCHER (docs/internals/common/plan/entmax_launch.md): the arm to launch from a call's
-// facts, one function for the six kernels of `csrc/fsla/src/entmax/`, written over the kernel's generated
+// facts, one function for the four kernels of `csrc/fsla/src/entmax/`, written over the kernel's generated
 // definition `K` as `planner.h` is. The arm half is evaluable over ranges, so the build asks it what each
 // contract reaches.
 #pragma once
@@ -69,7 +69,7 @@ inline constexpr auto kEntmaxClasses = [] {
 
 inline constexpr int kEntmaxDtypeUpto[] = {kEntmaxFp32, kEntmaxBf16};
 
-//: an arm of the four kernels that have an alpha: the key of `<kernel>_kernel<Build, LW, IPT, ALPHA15, LogitT, OutT>`; the dtypes are the codes
+//: an arm of the two kernels that have an alpha: the key of `<kernel>_kernel<Build, LW, IPT, ALPHA15, LogitT, OutT>`; the dtypes are the codes
 struct EntmaxAlphaArm {
   int lw;
   int ipt;

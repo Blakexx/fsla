@@ -1,15 +1,16 @@
 """Focused tests for the production entmax solve: its width limit's refusal, the packed-projection read, the dense
 levels' complete write, the batched solve against the per-level loop and the plan's launch count. The CUDA solve takes
-bf16 logits and writes bf16 route values (`midpoint` values are fp32)."""
+bf16 logits and writes bf16 route values."""
 
 import pytest
 import torch
 
 from fsla.routing.types import (
+    EntmaxActivation,
     IndependentRouting,
     ResolvedRouting,
     SoftmaxActivation,
-    UnionRouting,
+    TiedRouting,
 )
 
 
@@ -34,7 +35,7 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
 
     torch.manual_seed(5)
     routing = ResolvedRouting(levels=(
-        UnionRouting(width=8, alpha=alpha),
+        IndependentRouting(width=8, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
         IndependentRouting(width=8, read=SoftmaxActivation(), write=SoftmaxActivation())))
     both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda", dtype=torch.bfloat16,
                        requires_grad=True)
@@ -70,22 +71,18 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
     torch.manual_seed(6)
     BH, T = 4, 96
     logits = torch.randn(BH, T, width, device="cuda", dtype=torch.bfloat16)
-    other = logits + 1
     words = torch.empty((BH, (T + 31) // 32, width), dtype=torch.int32, device="cuda")
 
     def buffers(fill, count, dtype=torch.bfloat16):
         return [torch.full((BH, T, width), fill, device="cuda", dtype=dtype) for _ in range(count)]
 
     def solves(fill, alpha):
-        union = buffers(fill, 2) + buffers(fill, 1, torch.float32)
         factor, soft = buffers(fill, 2), buffers(fill, 2)
         plan = _Plan()
-        plan.add("union", alpha, (logits, other, union[2], words, union[0], union[1]),
-                 width, logit_off=0)
         plan.add("entmax", alpha, (logits, factor[0], factor[1], words), width, logit_off=0)
         plan.add("softmax", 0.0, (logits, soft[0], soft[1]), width, logit_off=0)
         plan.issue()
-        return union + factor + soft
+        return factor + soft
 
     for alpha in (1.5, 2.0):
         for cold, hot in zip(solves(0.0, alpha), solves(7.0, alpha)):
@@ -95,7 +92,7 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("kind", ["union", "entmax", "softmax"])
+@pytest.mark.parametrize("kind", ["entmax", "softmax"])
 def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     """P73 the STOP CLAUSE, as a gate: batching may change the launch SHAPE and nothing
     else.
@@ -119,37 +116,30 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     offsets = [0, 3, 7, 11]
     total = 14
     read = torch.randn(BH, T, total, device="cuda", dtype=torch.bfloat16)
-    write = torch.randn(BH, T, total, device="cuda", dtype=torch.bfloat16)
     n_words = (T + 31) // 32
 
     def run(batched):
         values = torch.zeros(BH, T, total, device="cuda", dtype=torch.bfloat16)
         second = torch.zeros_like(values)
-        midpoints = torch.zeros(BH, T, total, device="cuda", dtype=torch.float32)
         words = torch.zeros((BH, n_words, total), dtype=torch.int32, device="cuda")
         plans = [_Plan()] if batched else [_Plan() for _ in widths]
         for index, (width, offset) in enumerate(zip(widths, offsets)):
             plan = plans[0] if batched else plans[index]
-            if kind == "union":
-                plan.add("union", alpha,
-                         (read, write, midpoints, words, values, second), width,
-                         logit_off=offset, value_off=offset, midpoint_off=offset,
-                         support_off=offset)
-            elif kind == "entmax":
+            if kind == "entmax":
                 plan.add("entmax", alpha, (read, values, second, words), width,
                          logit_off=offset, value_off=offset, support_off=offset)
             else:
                 plan.add("softmax", 0.0, (read, values, second), width,
                          logit_off=offset, value_off=offset)
         launches = sum(plan.issue() for plan in plans)
-        return launches, values, second, midpoints, words
+        return launches, values, second, words
 
     batched_count, *batched = run(True)
     loop_count, *loop = run(False)
     assert batched_count == 1 and loop_count == len(widths), (
         f"the shapes under comparison are wrong: batched issued {batched_count} launch(es) "
         f"and the loop {loop_count}; the point of the gate is 1 against {len(widths)}")
-    for name, got, want in zip(("values", "second", "midpoints", "support"), batched, loop):
+    for name, got, want in zip(("values", "second", "support"), batched, loop):
         assert torch.equal(got, want), (
             f"the batched solve's {name} differs from the per-level loop's in "
             f"{int((got != want).sum())} elements -- batching changed the arithmetic, "
@@ -199,12 +189,12 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
             _Plan.issue = original
         return counted[0]
 
-    uniform = ResolvedRouting((UnionRouting(width=4, alpha=1.5), UnionRouting(width=4, alpha=1.5),
-                              UnionRouting(width=4, alpha=1.5)))
+    level = TiedRouting(width=4, op=EntmaxActivation(1.5))
+    uniform = ResolvedRouting((level, level, level))
     assert launches(uniform, (4, 4, 4)) == 1, (
-        "three union levels of one width class must solve in ONE launch")
+        "three entmax levels of one width class must solve in ONE launch")
 
-    mixed = ResolvedRouting((UnionRouting(width=4, alpha=1.5), UnionRouting(width=64, alpha=1.5)))
+    mixed = ResolvedRouting((level, TiedRouting(width=64, op=EntmaxActivation(1.5))))
     assert launches(mixed, (4, 64)) == 2, (
         "levels of different width classes must NOT share a launch: the sort and the "
         "prefix scan associate differently per class")

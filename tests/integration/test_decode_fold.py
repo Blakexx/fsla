@@ -35,7 +35,7 @@ from fsla.ops.lattice import permutation
 from fsla.ops.paging import decode_pages
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
-from fsla.routing.types import Topology, UnionRouting
+from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, Topology
 from fsla.values import Values
 from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import masks_of, state_pages
@@ -71,8 +71,9 @@ def _single_leaf_state(BH: int, widths, s0: int, device, seed: int):
 def _routes(rows, scale):
     """A one-level bundle over ``rows`` (read) and an empty write side, both sides dense (depth one: the read rows are
     strictly positive and the dead write rows are all-zero rows). The level is
-    union-routed, whose read duty is never on the simplex: the fold reads it as stored."""
-    topology = Topology(levels=(UnionRouting(width=rows.shape[-1]),))
+    entmax-read, softmax-write; the fold reads the rows as stored."""
+    topology = Topology(levels=(
+        IndependentRouting(width=rows.shape[-1], read=EntmaxActivation(1.5), write=SoftmaxActivation()),))
     return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device),),
                                   (scale,), (torch.zeros_like(scale),))
 

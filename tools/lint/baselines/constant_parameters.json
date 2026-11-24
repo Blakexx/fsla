@@ -74,18 +74,6 @@
    "count": 1
   },
   {
-   "path": "fsla/routing/reference.py",
-   "message": "union_split(..., alpha=) is only ever 1.5 -- across every call in this tree, nothing moves it",
-   "line_sha256": "be7d939bb85b13c4",
-   "count": 1
-  },
-  {
-   "path": "fsla/routing/reference.py",
-   "message": "union_split(..., mask=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "be7d939bb85b13c4",
-   "count": 1
-  },
-  {
    "path": "fsla/routing/side_gain.py",
    "message": "gain_layout(..., write_gain=) is only ever True -- across every call in this tree, nothing moves it",
    "line_sha256": "f372f7616e3b0923",

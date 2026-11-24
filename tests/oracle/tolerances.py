@@ -143,8 +143,8 @@ STORED_LEVELS = Output("stored bf16 levels", clauses=((0.0, 1.52e-1), (BF16_RTOL
 #: the last place, `2^-7` of the value (a round to nearest moves a value by at most `2^-8` of itself, and the reference's own rounding may land on
 #: the neighbouring side of the cut), over the absolute floor the fp32 form was held to (`ENTMAX_ATOL`). Derived, not measured.
 ENTMAX_STORED_VALUES = Output("entmax stored values", clauses=((2.0 ** -7, ENTMAX_ATOL),))
-#: THE ENTMAX, SOFTMAX AND UNION BACKWARDS' GRADIENTS INTO THE LOGITS, against the reference's gradient evaluated in fp64 at the SAME stored
-#: bf16 values the backward reads (`tests/oracle/stored_vjp.py`; the union's is derived from the reference forward, not published), so both sides evaluate one nonlinear function at one point. What is
+#: THE ENTMAX AND SOFTMAX BACKWARDS' GRADIENTS INTO THE LOGITS, against the reference's gradient evaluated in fp64 at the SAME stored
+#: bf16 values the backward reads (`tests/oracle/stored_vjp.py`), so both sides evaluate one nonlinear function at one point. What is
 #: left is the kernel's fp32 arithmetic and the rounding of its bf16 result (`U_BF16` of the slot): the family budget `BF16_RTOL`
 #: on the result over the absolute floor this output already carries (`ENTMAX_GRAD_ATOL`, the fp32 form's), and no envelope: the
 #: coefficients of a gradient are a nonlinear function of the stored values, not a multilinear sum of terms. Derived, not measured;

@@ -1,12 +1,10 @@
 // THE PRODUCER'S INDEPENDENT (PER-SIDE) ROUTING SOLVES -- hand CUDA, CUB warp primitives.
 // Design of record: docs/internals/entmax/factor.md.
 // Gates: `tests/integration/test_production_levels.py` (fp64 oracle),
-// `tests/unit/test_entmax_production.py`, `tests/oracle/test_entmax_cuda_gates.py`.
+// `tests/unit/test_entmax_production.py`.
 //
 // Four kernels, two families, one launch shape: the exact alpha=1.5/2.0 threshold solve
-// (forward + VJP) and the softmax pair. They share `entmax.cuh`'s warp-row vocabulary
-// with the union solve next door, and the entmax forward IS the union forward's phases
-// B/C/D fed one logit tensor instead of a midpoint.
+// (forward + VJP) and the softmax pair. They share `entmax.cuh`'s warp-row vocabulary.
 //
 // ONE LAUNCH ACROSS LEVELS: `blockIdx.z` selects a LevelTable entry, so a plan's levels
 // that share a width class, an alpha and an output dtype run in ONE launch with

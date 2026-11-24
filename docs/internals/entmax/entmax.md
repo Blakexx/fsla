@@ -1,25 +1,22 @@
-# `csrc/fsla/src/entmax/entmax.{cuh,cu}` — the producer's union entmax solve
+# `csrc/fsla/src/entmax/entmax.{cuh,cu}` — the producer's entmax solves' warp-row vocabulary and threshold
 
-Hand CUDA over CUB warp primitives: the α-entmax solve that turns per-token read
-and write LOGITS into route VALUES, a midpoint amplitude, and §4.1's packed
-per-leaf support bitmap. `entmax.cuh` carries the host declaration pair
-(`union_forward` / `union_backward`) AND [the warp-row vocabulary](#warp-row) the
-whole entmax family speaks; `entmax.cu` is the union split's implementation — two
-kernels and their host dispatch.
-
-The family's other member is [`factor.md`](factor.md): the independent per-side
-solves, whose forward is this file's phases B/C/D fed one logit tensor.
+Hand CUDA over CUB warp primitives, and the vocabulary the producer's solves speak. `entmax.cuh` carries
+[the warp-row vocabulary](#warp-row) (`Strides`, the row sort, the row reductions, the level table), the exact α-entmax
+threshold ([`threshold`](#threshold), the sorted solve of one logit row) and the host declarations; `entmax.cu` holds the
+two host answers the matcher states, the level bound and the width class. The solves themselves, which turn per-token
+logits into route VALUES and §4.1's packed per-leaf support bitmap, are [`factor.md`](factor.md): the independent per-side
+entmax solve (forward and VJP) and the softmax pair.
 
 Design of record: this document.
-Gates: `tests/oracle/test_entmax_cuda_gates.py`, against the **fp64 oracle only** —
-never kernel-vs-kernel.
+Gates: `tests/integration/test_production_levels.py` and `tests/unit/test_entmax_row_sort.py`, against the **fp64
+oracle only** -- never kernel-vs-kernel.
 
 Symbols: a *stream* is one (batch, head)-like routing stream; a *token* is one row
 of the solve; `width` is the level's branch width and `col` indexes it; `LW` is the
 LOGICAL warp width (a power of two ≤ 32); `IPT` is items per lane, so
 `W_PAD = LW * IPT` is the padded row width; `alpha` is 1.5 (α-entmax) or 2.0
 (sparsemax); `tau` is the solve's threshold; *support* is the set of columns with
-`midpoint > tau`.
+`z > tau`, `z` the logit row.
 
 ---
 
@@ -50,14 +47,14 @@ The consequences are all structural:
   `cub::WarpReduce` `TempStorage` measures **1 byte** here — the pure-shfl
   specializations — so the 75%-bank-conflict `tl.sort` scratch is ELIMINATED, not
   tuned;
-- **exactly ONE `__syncthreads` in the whole kernel** (§8, the epilogue).
+- **exactly ONE `__syncthreads` in the whole kernel** (§10, the epilogue).
 
 CUB's warp primitives are the library half of the spec's "hand-roll semantics, never
 primitives" rule.
 
 <a id="static-assert"></a>The per-thread `TempStorage` declarations are only legal because CUB resolves all of
 them to the pure-shfl specializations. That is MEASURED, not assumed (1 byte for every `WarpScan` / `WarpReduce`
-instantiation this kernel uses), and the `static_assert`s in both kernels turn a future CUB that changes its mind
+instantiation the solves use), and the `static_assert`s in the threshold and the backward turn a future CUB that changes its mind
 into a compile error rather than a race.
 
 ## <a id="frozen-support-word"></a>3. The frozen support-word layout
@@ -70,15 +67,13 @@ the `1 << (token % 32)` packing needs **no global atomics and no zero-init pass*
 SM their register target fits in the card's registers -- `__launch_bounds__(128, 8)` on every tabulated card's 64K, a
 64-register target (`kForwardRegs`) -- which states the target to ptxas, so a regression becomes a compile-time
 allocation decision instead of a silent spill; the census (`tools/ratify.py --census`) then reads
-any spill growth. The backward's widest class (8 items a thread) holds both terms of
-its 8 items (`d_mid`, `d_delta`) across the pair reduction, which sm_90a's allocation does
-not fit in 72 (an 8-byte frame, four 64-bit address spills in the token loop, at the toolkit 13.0 build of 2026-11-20):
-its target is 80 registers (`backward_regs`), 6 blocks an SM on 64K (`EntmaxPlan<B>::backward_min_blocks`), every other
-class's 64.
+any spill growth. The backward's widest class (8 items a thread) holds a token's staged operands and its terms together
+([`factor.md#backward-stages`](factor.md#backward-stages)): its target is 80 registers (`backward_regs`), 6 blocks an SM
+on 64K (`EntmaxPlan<B>::backward_min_blocks`), every other class's 64.
 
 ## <a id="strides"></a>4. `Strides` — one address expression, two route-value layouts
 
-<a id="strides-2"></a><a id="five"></a>`read_values` / `write_values` accept BOTH route-value layouts through one stride
+<a id="strides-2"></a><a id="five"></a>The route values (and their cotangents) are accepted in BOTH layouts through one stride
 5-tuple `(stream, token, col, tile, lane)`:
 
 | layout | `stream` | `token` | `col` | `tile` | `lane` |
@@ -95,9 +90,6 @@ stream*s + tok*t + (tok>>5)*tile + col*c + (tok&31)*lane
 is correct for both, because `five()` already zeroes the members the layout does not
 use, deriving them from the tensor's own RANK (rank-4 is the tile-major arena, rank-3 the dense plane), which keeps
 one launch site per kernel instead of one per layout. **Layout is therefore data, not a codegen axis.**
-
-<a id="near-line-202"></a>The union solve's midpoint plane is packed over the UNION levels alone, so it does not
-share the levels' `value_off`; every other operand does.
 
 ## <a id="stream-split"></a>4.2 The stream axis is TWO strides
 
@@ -156,8 +148,7 @@ accepted shape changed**, and no dual run is owed.
 `Strides`/`addr`, `store_value`/`load_value`, `Descending`, `Pair`/`PairAdd`, the row
 reductions `Max`/`Min`/`Sum`, `bf16_nonzero`, `logical_warp_mask`, `five` and the block constants are declared in
 `entmax.cuh` rather than in either `.cu`, because `factor.cu`'s four kernels are the
-same machine over a different phase set and a second copy would be a second thing to
-keep in step.
+one machine's phases, and the host half (`fsla_api.cpp`) reads the same file for its declarations.
 
 <a id="near-line-33"></a>They sit behind `#ifdef __CUDACC__`. That guard is load-bearing and not defensive:
 `csrc/fsla/fsla_api.cpp` includes this header to reach the host declarations below,
@@ -178,18 +169,13 @@ were unchanged. Timed, the port costs 3-5% on a few entmax cells (deep-D4-w8, de
 13.0 alike, and CCCL 3's own functors move the cost between cells without removing it. No identity-preserving spelling
 exists once CCCL 3 deleted the originals. Accepted for the CUDA 13 move.
 
-The namespace is NAMED (`fsla::entmax::detail`), so moving these out of `entmax.cu`
-moved no mangled symbol and changed no generated code — the SASS-body hashes
-(`bazel run //tools:sass_bodies`) of all 380 bodies were equal across the
-move, which is the check that says so rather than the claim that it should.
-
 ## <a id="launch-shape"></a>5. Launch shape and the width class
 
-<a id="union-forward"></a><a id="max-batched-levels"></a>The grid is `(words, streams, LEVELS)`: one CTA owns one
+<a id="max-batched-levels"></a>The grid is `(words, streams, LEVELS)`: one CTA owns one
 32-token support word of one stream of one level, and `blockIdx.z` indexes a
 [`LevelTable`](factor.md#batched-levels) that arrives in the kernel's parameter space (448 B at
 `MAX_BATCHED_LEVELS`, against a 4 KB floor), so batching costs no device table, no H2D copy and no indirection. So
-one launch covers every union level
+one launch covers every level
 that selects the same template arm — same padded width, same alpha, same output dtype —
 and `production.py`'s `_Plan` is what groups a walk into those launches.
 
@@ -204,7 +190,7 @@ reads each level's own `width` from the table. The matcher refuses a mixed-class
 
 That this is exactly the loop is gated, at `rtol = 0`:
 `test_the_batched_solve_is_the_per_level_loop_bit_for_bit` runs four levels of one class
-as one launch and as four, and asserts `torch.equal` on values, second output, midpoints
+as one launch and as four, and asserts `torch.equal` on values, second output
 and support words. The launch itself is written once, per kernel: the matcher (`common/plan/entmax_launch.h`,
 [`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the call's facts to the arm, and `arm_switch` over the kernel's
 generated arm set ([`../common/arm_switch.md`](../common/arm_switch.md)) selects the instantiation `launch_*_at<Bt, LW, IPT, ALPHA15, LogitT, OutT>`
@@ -212,13 +198,13 @@ names.
 
 <a id="the-contract"></a>**The contract: one registry for each kernel.** "A kernel is a thing that has compiled arms that we run, the
 descriptors describe the public contract that enters into those arms, the matchers map that contract to arms" (the owner, 2026-11-23), and asked whether the
-six kernels share one registry or each has its own: "One per kernel". So `union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward` and `softmax_backward`
+four kernels share one registry or each has its own: "One per kernel". So `factor_forward`, `factor_backward`, `softmax_forward` and `softmax_backward`
 each have `hardware/kernels/<kernel>/` (`schema.json`, `parts/call.json`, `descriptors/hopper_<kernel>.json`), whose facts are the call's, in the caller's terms:
 `width` (2 to 256: every width a level has, from 2 (`ResolvedRouting` refuses a narrower level) up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
 has no scalar enum type, so alpha is an exact integer code; absent from the two softmax kernels), `logit_dtype` and `value_dtype` (code 1, bf16, each: the library sends the solves bf16 logits alone and stores bf16 values, and a plane of another dtype is refused naming the fact). The contract states
 exactly what the library sends the kernels, and the kernels keep their `LogitT` / `OutT` template parameters, which no other arm instantiates; a call outside it is refused naming the fact and the nearest context's range. The matcher
 ([`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the contract to the arm, so the instantiations are generated from it: 8 width classes and 2 alphas are
-16 arms of each kernel with an alpha, 8 classes the 8 of each softmax kernel (80 in all) (`ARM_FAMILIES`, one family for each kernel; [`../../build-graph.md#arms`](../../build-graph.md#arms)).
+16 arms of each kernel with an alpha, 8 classes the 8 of each softmax kernel (48 in all) (`ARM_FAMILIES`, one family for each kernel; [`../../build-graph.md#arms`](../../build-graph.md#arms)).
 The SASS gate holds every arm to be carried exactly once, and each arm keeps what its SASS shows of the two rules the solves predate (`csrc/fsla/src/entmax/arms.bzl`).
 The public surface's own limits stay its own: the activation registry's alpha rows and the topology's branch width limit are validated at the surface, and
 `tests/unit/test_entmax_matcher.py` ties each to the contracts' ranges.
@@ -226,24 +212,7 @@ The public surface's own limits stay its own: the activation registry's alpha ro
 <a id="check-logits"></a><a id="checklogits"></a>Two dtype axes meet in one call, the logit plane's and the route
 values': both bf16, the router GEMM's bf16 output and the stored form ([`factor.md#logit-dtype`](factor.md#logit-dtype)).
 
-## <a id="overflow-free-delta"></a>6. `overflow_free_delta` — the read-write difference
-
-<a id="overflow-free-delta-2"></a>Verbatim from the shipped semantics: two opposite-sign finite extrema overflow a raw
-subtraction while their MIDPOINT stays representable, so the MAGNITUDE is clamped
-instead. Gate A1 holds this **bit-identical** against plain fp32 torch — it is pure
-elementwise, so no reassociation exists.
-
-The `saturated` flag it returns is not cosmetic: the backward zeroes `d_delta`
-wherever it fires, because at saturation the difference is no longer a
-differentiable function of the two logits.
-
-<a id="logwritegate"></a>`csrc/fsla/src/entmax/entmax.cuh`'s `log_write_gate` is the companion:
-`log(sigmoid(-delta)) == -softplus(delta)`,
-finite for every finite input, computed as `-(max(d,0) + log1p(exp(-|d|)))`.
-**`log1pf` rather than `logf(1+x)`** because the governing baseline is the fp64
-oracle, which uses `logsigmoid`, and `log1pf` is the closer composition to it.
-
-## <a id="smem-slot-alias"></a>7. HAZARD — the support-word staging aliases the sort scratch
+## <a id="smem-slot-alias"></a>6. HAZARD — the support-word staging aliases the sort scratch
 
 The `__shared__` slot is sized `max(SORT_BYTES, STAGE_BYTES)` per PHYSICAL warp and
 serves both purposes in sequence. **No barrier is needed before the staging write**,
@@ -259,12 +228,12 @@ not flag.
 `WarpMergeSort::TempStorage` is `4 + 4*W_PAD` bytes, i.e. NOT a multiple of its own
 alignment.
 
-<a id="sort-bytes"></a><a id="kslotbytes"></a>`SORT_BYTES` is `RowSort<LW, IPT>::kSlotBytes` (§7.1), shared bytes
+<a id="sort-bytes"></a><a id="kslotbytes"></a>`SORT_BYTES` is `RowSort<LW, IPT>::kSlotBytes` (§6.1), shared bytes
 per PHYSICAL warp, which is **zero** for the register network. At `W_PAD <= 128` the slot is therefore the
 staging alone and the alias is vacuous; at `W_PAD = 256` it is the arrangement above,
 unchanged.
 
-## <a id="row-sort"></a>7.1 `RowSort` — the row sort, and why there are two networks
+## <a id="row-sort"></a>6.1 `RowSort` — the row sort, and why there are two networks
 
 <a id="rowsort"></a>Phase B needs one token's row in descending order. `RowSort<LW, IPT>::sort` is the ONE
 entry point; which network it lowers to is decided by the WIDTH CLASS at compile time —
@@ -279,7 +248,7 @@ dispatch axis, it is the existing one.
 ### The bitonic network
 
 <a id="sort"></a>The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout the prefix
-walk and its `WarpScan` association require (§9). A standard bitonic network compares
+walk and its `WarpScan` association require (§8). A standard bitonic network compares
 indices differing in one bit, so the partner distance `j` splits the stages in two:
 
 - `j < IPT` — partner is another ITEM of the same lane: a register compare-exchange, no
@@ -334,7 +303,7 @@ sorting network — merge or bitonic — has defined output there. The kernel wa
 unspecified on a NaN row (a NaN logit makes `row_max` NaN and every shifted key NaN);
 that is unchanged.
 
-## <a id="support-certificate"></a>7.2 The support certificate (derived, NOT shipped)
+## <a id="support-certificate"></a>6.2 The support certificate (derived, NOT shipped)
 
 Could the sort be replaced by a PARTIAL selection? Sort only a
 top-`m` prefix, and certify from the algorithm's own stopping condition that no element
@@ -364,8 +333,8 @@ sort. Generalized: `P_k >= P_m + (k-m) z_k` gives `cand(k) => z_k > tau_m` for a
 `m <= k*`, i.e. The kernel's own `tau_m` is a self-improving cut.
 
 **Why it is not shipped.** MEASURED on production logits at the pinned cell
-(`union_routing(1.5)`, widths 64, the untrained router the campaign runs): realized support
-is 28.2 of 64, but `c` is **63.7 of 64** — the midpoint spread is under 2.0, so the bound
+(widths 64, the untrained router the campaign runs; measured on the average of a level's read and write logits, so unverified for a single logit row): realized support
+is 28.2 of 64, but `c` is **63.7 of 64** — the spread is under 2.0, so the bound
 excludes almost nothing. The bootstrapped cut reaches 29 at best, and only by paying a
 second selection stage plus a cross-lane COMPACTION through shared memory — which is the
 cost the register network exists to delete. Selection only starts paying at routing gain
@@ -373,7 +342,7 @@ cost the register network exists to delete. Selection only starts paying at rout
 density-conditional, where the bitonic network's cost depends on `W_PAD` alone and never on
 the data.
 
-## <a id="logical-warp-mask"></a>8. HAZARD — the logical-warp member mask
+## <a id="logical-warp-mask"></a>7. HAZARD — the logical-warp member mask
 
 ```cpp
 const unsigned lmask = (LW == WARP_SIZE)
@@ -392,34 +361,33 @@ their lane-0 results did not, which is why the constant is spelled here.
 
 The same expression, and the same reason, appears in the backward kernel.
 
-## <a id="forward-phases"></a>9. The forward kernel, phase by phase
+## <a id="forward-phases"></a>8. The forward kernel, phase by phase
 
 <a id="continue"></a>A row past the end is skipped by `continue`: it has no token, and nothing reads what
-it would store. A row that is solved always has members -- both solves pass the level's
+it would store. A row that is solved always has members -- the solve passes the level's
 width as the member count, and a level is at least two digits wide -- so `threshold`
 carries no case for a row without one.
 
-**PHASE A — load striped (coalesced), fold, RETIRE both logit tiles.** Both logit
-reads happen once; `midpoint = (r + w)/2` and `delta = r - w` (§6) are all that
-survive into the rest of the kernel.
+**PHASE A -- load striped (coalesced).** The logit tile is read once, widened to fp32 in register; every column below
+the level's `width` is a member, and a padded lane is a non-member.
 
-<a id="threshold"></a>PHASES B AND C ARE ONE HEADER FUNCTION, `threshold<LW, IPT, ALPHA15>`: the union forward calls
-it on the midpoint row and the independent forward (`factor.cu`) on its logit row -- one statement of the sorted
-threshold, taking the row's member bits and their count.
+<a id="threshold"></a>PHASES B AND C ARE ONE HEADER FUNCTION, `threshold<LW, IPT, ALPHA15>`: the entmax forward
+(`factor.cu`) calls it on its logit row -- one statement of the sorted threshold, taking the row's member bits and
+their count.
 
 <a id="near-line-161"></a>
-<a id="near-line-165"></a>**PHASE B — row max/min, sentinel-pad, sort descending.** `midpoint` is shifted by
+<a id="near-line-165"></a>**PHASE B -- row max/min, sentinel-pad, sort descending.** `z` is shifted by
 `row_max` for stability. Padded lanes get a FINITE row-relative sentinel,
 `(row_min - row_max) - 1.0f`, which keeps them strictly below every real value
 without putting an infinity into the scan; `row_min` is pre-shift, so it is shifted
 too.
 
-A sort is a **PERMUTATION** — exact, no arithmetic — so the sorted sequence is
+A sort is a **PERMUTATION** -- exact, no arithmetic -- so the sorted sequence is
 identical whatever algorithm produces it. Feeding striped data is therefore fine:
 the output arrangement is what the scan reads, and CUB delivers it BLOCKED (rank
 order across lanes), which is exactly what the prefix walk needs.
 
-**PHASE C — `tau`.** The prefix sums, their squares, the per-rank candidates and the chosen column **all collapse to
+**PHASE C -- `tau`.** The prefix sums, their squares, the per-rank candidates and the chosen column **all collapse to
 scalars**; none is ever materialized full width. One
 `WarpScan` over the `(sum, sum-of-squares)` pair supplies each lane's carry, and the
 per-rank candidate test is
@@ -438,82 +406,22 @@ goes in the high 32 bits of a `unsigned long long`, which makes an integer `Max`
 pick it, and lane rank ranges are disjoint so a tie is impossible. `best_col = -1`
 maps to key 0, so a row with no candidate (every comparison false) yields `tau = 0`.
 
-**PHASE D — values, in place over `midpoint`.** `read` is emitted HERE, while
-`delta` is still the logit difference and before phase E overwrites it. That
-ordering is the reason the read side needs no saved tensor.
+**PHASE D -- amplitudes and the support bit** ([`factor.md#the-solve`](factor.md#the-solve)): the amplitude
+`((alpha-1)(z - tau))_+`, squared at alpha 1.5, stored in the output dtype, and the support bit packed from the
+STORED value ([§9](#bf16-support-boundary)).
 
-<a id="union-write"></a>**PHASE E — log-weights IN PLACE over `delta`, then the write normalization**
-(`union_write<LW, IPT, kFast>` in the header). A max-subtracted `exp` / sum over the support, with `has_mass` and
-`has_weight` guards so an empty support produces exact zeros rather than `0/0`. `kFast` is a fused producer's policy: the logarithms, exponentials and quotient on the special-function unit,
-since its fp32 levels only feed u8 digits; this family keeps the libm forms.
+## <a id="bf16-support-boundary"></a>9. HAZARD -- support is defined at the native bf16 storage boundary
 
-## <a id="bf16-support-boundary"></a>10. HAZARD — support is defined at the native bf16 storage boundary
+<a id="near-line-267"></a>The support bit is packed from `bf16_nonzero(value)`, i.e.
+from the value AS STORED, **not** from the pre-quantization solve. This makes the
+scheduler and the route stream ONE authority: **a numerically live stored factor is
+never skipped**. Testing the pre-cast float instead flips that guarantee -- it silently
+drops work the consumer will still read -- and nothing in the build complains.
 
-<a id="near-line-267"></a>The support bit is packed from `bf16_nonzero(read) || bf16_nonzero(write)`, i.e.
-from the values AS STORED, **not** from the pre-quantization solve. This makes the
-scheduler and the route stream ONE authority.
-
-Union has one scheduling stream for both roles, so it is the UNION of post-cast
-nonzeros that is packed: either side may create harmless false-live work, but **a
-numerically live stored factor is never skipped**. Testing the pre-cast float
-instead flips that guarantee — it silently drops work the consumer will still read —
-and nothing in the build complains.
-
-## <a id="epilogue-butterfly"></a>11. The epilogue — packing the 32-token support word
+## <a id="epilogue-butterfly"></a>10. The epilogue -- packing the 32-token support word
 
 <a id="near-line-275"></a>Lanes holding the same column in one physical warp differ only in bits at or above
 `LW`, so a `__shfl_xor_sync` butterfly over exactly those bits ORs across the logical
-warps IN PLACE — no shared atomics, no zero-init pass. Logical warp 0 of each
+warps IN PLACE -- no shared atomics, no zero-init pass. Logical warp 0 of each
 physical warp then stages its words, one `__syncthreads` follows, and warp 0 ORs the
 `BLOCK_WARPS` staged copies into the output.
-
-## <a id="backward"></a>12. The backward — the α-entmax Jacobian action through the union split
-
-<a id="launch-bounds"></a>**No sort and no scan: this is a THREE-REDUCTION elementwise pass.** It shares the
-forward's block/warp decomposition, width classes, striped
-access, stride expression and launch bounds, and it **RECOMPUTES `delta`** rather
-than reloading a saved tensor (cheaper than a third logit-sized read).
-
-**SUPPORT IS AN INPUT** here — unpacked from the same frozen `support_words` the
-forward emitted — so the two directions cannot disagree about the support set by
-construction.
-
-On support the action is `diag(s) - s s^T / (1.s)` — the α-entmax Jacobian action,
-with `s = 1` (α = 2) or `s = sqrt(p) = p^(2-alpha)` (α = 1.5) — plus the write side's
-second rank-1 (the softmax form inside the write side's log-weight adjoint) and the diagonal gate terms.
-
-### Dead directions are exactly zero, by multiplication
-
-Off support: `s = 0`, `read_values = 0` and `write_values = 0` (bf16 of exact
-zeros), hence
-
-```
-d_log_weight      = write_values * (...)                                   = 0
-d_midpoint_logits = s * (...)                                              = 0
-d_delta           = d_read*read_values*write_gate - d_log_weight*read_gate = 0
-```
-
-so both `0.5*d_ml + d_delta` and `0.5*d_ml - d_delta` are exact zeros. **The gate
-asserts the FORM (`rtol=0`), not a magnitude.**
-
-### The tie guard
-
-<a id="safe"></a>The VJP divides by the amplitude; at a TIE the amplitude is exactly 0, so the guard
-(`safe`) substitutes 1 and the support mask zeroes the term.
-
-### Two measured re-read decisions
-
-Both are register-pressure trades. MEASURED under `__launch_bounds__(128, 8)` at
-`IPT = 8`:
-
-| staged instead of re-read | measured cost |
-|---|---|
-| `write_values` / `d_write` across the two passes | 2·`IPT` live registers, **32 B stack frame** (spill) |
-| `s` as a third live `IPT`-array | **24 B of spill** |
-
-<a id="localdot"></a><a id="near-line-368"></a>Re-reading is the cheaper trade on a kernel whose DRAM throughput
-is only ~30%. The first pass therefore carries NOTHING into the next but two scalars
-(`local_dot` and the support mask), and `s` is recomputed from a re-read
-`midpoint_values` in the final pass; one extra load per element buys the spill back
-to zero.
-

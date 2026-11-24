@@ -10,8 +10,7 @@ form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- th
 party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
 anywhere in this file's ground truth.
 
-**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/fsla/src/entmax/entmax.cu`);
-the independent per-side solves and the softmax pair are `csrc/fsla/src/entmax/factor.cu`,
+**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The independent per-side solves and the softmax pair are hand-CUDA + CUB kernels (`csrc/fsla/src/entmax/factor.cu`),
 ported off Triton for the closed-world AOT policy and for P65, which trains through
 them. "The two lowerings" below means device against torch.
 
@@ -28,7 +27,7 @@ excluded from that hard assertion, and neither is a tolerance in disguise:
   INDEPENDENT closed forms -- production's fp32 sorted solve and the oracle's fp64
   `entmax_tau` -- at an exact equality, each free to land on either side of the same
   strict `z_i > tau` boundary. They are not obligated to agree there, and measured
-  directly they do not always (alpha=1.5, the `union` shape, level 0 disagrees). One
+  directly they do not always (alpha=1.5, level 0 of a mixed-per-level shape disagrees). One
   extra support member at that boundary moves `den` in `s*(dp - num/den)`, so the
   GRADIENT effect of a boundary disagreement is O(1) even though the two sides'
   amplitudes are close -- so nothing about that fixture can be gated on the oracle
@@ -59,10 +58,9 @@ from fsla.routing.types import (
     SoftmaxActivation,
     TiedRouting,
     Topology,
-    UnionRouting,
 )
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close
-from tests.oracle.stored_vjp import gradient_from_stored, saved_union_midpoints
+from tests.oracle.stored_vjp import gradient_from_stored
 from tests.oracle.tolerances import (
     ENTMAX_GRADIENTS,
     ENTMAX_GRADIENTS_FROM_STORED,
@@ -87,7 +85,6 @@ _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="fused producti
 def _routings(alpha: float) -> dict[str, ResolvedRouting]:
     """Every structural level shape the V3 producer can hand the solve."""
     return {
-        "union": ResolvedRouting((UnionRouting(width=6, alpha=alpha),)),
         # A second, untied level alongside the tied one, so `read_logits` is genuinely
         # used somewhere in the graph. A standalone tied level never reads
         # `read_logits` at all (by design: the read factor IS the write factor), which
@@ -103,7 +100,6 @@ def _routings(alpha: float) -> dict[str, ResolvedRouting]:
                 IndependentRouting(width=3, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
                 IndependentRouting(width=5, read=SoftmaxActivation(),
                                    write=EntmaxActivation(alpha)),
-                UnionRouting(width=4, alpha=alpha),
             ),
         ),
         "dense_only": ResolvedRouting(
@@ -150,12 +146,7 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     if kind == "large_magnitude":
         # 5x the router's natural logit scale: the solve's support collapses hard, so
         # the row-max shift is what keeps it finite. The scale is deliberately not pushed
-        # further because union's read side is `entmax_value * sigmoid(read - write)`, and
-        # once a support member's entmax value falls to ~1e-18 its `log` in the write
-        # softmax is fp32-ill-conditioned -- a conditioning property of the fixture, not
-        # of the solve (both production lowerings agree with each other to 2e-7 there,
-        # and disagree with fp64 together). Union's extreme-magnitude contract (the
-        # overflow-free delta) is gated by `test_union_is_exact_at_the_bf16_extremes`.
+        # further.
         return base * 5.0
     raise ValueError(kind)
 
@@ -174,24 +165,21 @@ def _assert_levels_match(actual, expected, *, gradient=False, stored=False, extr
     assert_slots_close(actual, expected, output=output, what=f"the levels ({output.name})", derived_atol=extra_atol)
 
 
-def _assert_gradients_from_stored(routing, got, stored, logits, cotangents, *, unrounded, label, capsys=None,
+def _assert_gradients_from_stored(routing, got, stored, cotangents, *, unrounded, label, capsys=None,
                                   teeth=False):
     """THE GRADIENTS INTO THE LOGITS, from the kernel's backward against the reference evaluated at the SAME stored values.
 
     ``got`` is the backward's ``(d read logits, d write logits)``; ``stored`` the forward's own ``(reads, writes)``
-    (bf16, what the backward reads), ``logits`` the bf16-exact ``(read, write)`` logits the forward was handed, and
-    ``cotangents`` the incoming gradients, ``(*reads, *writes)``. Every level (`tests/oracle/stored_vjp.py`: softmax,
-    entmax and the union's derived backward) is held per slot to the gradient the operator's fp64 form gives at those
-    stored values and, for a union, at the midpoint the kernel's forward SAVED (`saved_union_midpoints`: the backward
-    kernel's actual input, read off the solve's autograd node) (`ENTMAX_GRADIENTS_FROM_STORED`); with ``teeth`` the planted errors must fail on the kernel's own
+    (bf16, what the backward reads), and
+    ``cotangents`` the incoming gradients, ``(*reads, *writes)``. Every level (`tests/oracle/stored_vjp.py`: softmax
+    and entmax) is held per slot to the gradient the operator's fp64 form gives at those
+    stored values (`ENTMAX_GRADIENTS_FROM_STORED`); with ``teeth`` the planted errors must fail on the kernel's own
     gradient, over every slot together (`assert_planted_errors_fail`). The error against ``unrounded``, the gradient at
     the unrounded values, is REPORTED over every span, never gated (nothing when ``unrounded`` is None).
     """
     D = routing.D
     reads, writes = ([level.detach() for level in side] for side in stored)
-    reference = gradient_from_stored(routing, reads, writes, cotangents[:D], cotangents[D:],
-                                     logits[0].detach().double(), logits[1].detach().double(),
-                                     saved_union_midpoints(routing, stored[0]))
+    reference = gradient_from_stored(routing, reads, writes, cotangents[:D], cotangents[D:])
     covered = reference[2]
     for span in covered:
         for plane, name in ((0, "read"), (1, "write")):
@@ -289,11 +277,10 @@ def _check_against_oracle(
     oracle_loss = sum(
         (level * cotangent.to(torch.float64)).sum()
         for level, cotangent in zip((*oracle_reads, *oracle_writes), cotangents))
-    #: the graph is kept: the gradient gate reads the midpoint the solve's forward saved on it
-    production_vjp = torch.autograd.grad(loss, (production_read, production_write), retain_graph=True)
+    production_vjp = torch.autograd.grad(loss, (production_read, production_write))
     oracle_vjp = torch.autograd.grad(oracle_loss, (oracle_read, oracle_write))
     if cuda:
-        _assert_gradients_from_stored(routing, production_vjp, (reads, writes), (production_read, production_write),
+        _assert_gradients_from_stored(routing, production_vjp, (reads, writes),
                                       cotangents, unrounded=oracle_vjp,
                                       label=label, capsys=capsys)
         return
@@ -344,7 +331,7 @@ def test_cuda_tied_routing_read_factor_is_the_write_factor(alpha):
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
@@ -358,7 +345,7 @@ def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize(
-    "shape", ["union", "tied", "mixed_per_level", "dense_only"])
+    "shape", ["tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind, capsys):
@@ -371,7 +358,7 @@ def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind, capsys):
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level"])
 def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
     """Exact ties, where the oracle cannot arbitrate: the closed forms must still agree.
 
@@ -416,19 +403,19 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
     cuda_vjp = torch.autograd.grad(
         sum((level * cotangent.cuda()).sum()
             for level, cotangent in zip((*cuda_reads, *cuda_writes), cotangents)),
-        (read, write), retain_graph=True)
+        (read, write))
     cpu_vjp = torch.autograd.grad(
         sum((level * cotangent).sum()
             for level, cotangent in zip((*cpu_reads, *cpu_writes), cotangents)),
         (cpu_read, cpu_write))
-    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes), (read, write),
+    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes),
                                   [c.cuda() for c in cotangents], unrounded=tuple(g.cuda() for g in cpu_vjp),
                                   label=f"ties {shape}/{alpha}", capsys=capsys)
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
 def test_the_gradient_rule_sees_planted_errors_on_the_kernels_own_gradient(alpha, shape, capsys):
     """THE TEETH of `ENTMAX_GRADIENTS_FROM_STORED`: the kernel's own gradient passes the rule, and the median slot wiped, the
     smallest allowances exceeded and each clause moved past its allowance fail it (`assert_planted_errors_fail`), on the
@@ -441,8 +428,8 @@ def test_the_gradient_rule_sees_planted_errors_on_the_kernels_own_gradient(alpha
     cotangents = [torch.randn(level.shape, dtype=torch.float32, generator=generator).bfloat16().float().cuda()
                   for level in (*reads, *writes)]
     vjp = torch.autograd.grad(sum((level * cotangent).sum() for level, cotangent in zip((*reads, *writes), cotangents)),
-                              (read, write), retain_graph=True)
-    _assert_gradients_from_stored(routing, vjp, (reads, writes), (read, write), cotangents, unrounded=None,
+                              (read, write))
+    _assert_gradients_from_stored(routing, vjp, (reads, writes), cotangents, unrounded=None,
                                   label=f"teeth {shape}/{alpha}", capsys=capsys, teeth=True)
 
 
@@ -501,7 +488,6 @@ def _producer_topology(alpha: float) -> Topology:
     return Topology(
         levels=(
             TiedRouting(width=4, op=EntmaxActivation(alpha)),
-            UnionRouting(width=6, alpha=alpha),
             IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
     )
@@ -729,7 +715,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
@@ -776,12 +762,12 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
     cuda_vjp = torch.autograd.grad(
         sum((level * cotangent.cuda()).sum()
             for level, cotangent in zip((*cuda_reads, *cuda_writes), cotangents)),
-        (cuda_read, cuda_write), retain_graph=True)
+        (cuda_read, cuda_write))
     cpu_vjp = torch.autograd.grad(
         sum((level * cotangent).sum()
             for level, cotangent in zip((*cpu_reads, *cpu_writes), cotangents)),
         (cpu_read, cpu_write))
-    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes), (cuda_read, cuda_write),
+    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes),
                                   [c.cuda() for c in cotangents], unrounded=tuple(g.cuda() for g in cpu_vjp),
                                   label=f"{shape}/{kind}/{alpha}", capsys=capsys)
 
@@ -862,35 +848,10 @@ def test_the_package_imports_no_triton_and_declares_none():
 
 
 @_CUDA
-@pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("relationship", ["equal", "opposite"])
-def test_union_is_exact_at_the_bf16_extremes(alpha, relationship):
-    """Union's extreme-magnitude contract, the overflow-free delta, at bf16, whose exponent range is fp32's: opposite
-    extrema overflow a raw ``read - write`` in fp32 while their midpoint stays exactly representable. Values and VJP
-    against the fp64 oracle; at opposite extrema the midpoint is uniform, so every member lands on one side or the other."""
-    near_max = torch.finfo(torch.bfloat16).max if relationship == "opposite" else 1.0e8
-    read = torch.tensor([[[near_max, -near_max, near_max, -near_max]]], device="cuda", dtype=torch.bfloat16)
-    write = -read if relationship == "opposite" else read.clone()
-    routing = ResolvedRouting((UnionRouting(width=4, alpha=alpha),))
-    _check_against_oracle(routing, read, write, label=f"bf16-extremes/{relationship}/{alpha}")
-    production_read = read.detach().clone().requires_grad_()
-    production_write = write.detach().clone().requires_grad_()
-    reads, writes, _support = production_routing_levels(production_read, production_write, routing)
-    assert torch.isfinite(reads[0]).all() and torch.isfinite(writes[0]).all()
-    if relationship == "opposite":
-        assert ((reads[0] + writes[0]) != 0).all()
-    cotangent = torch.tensor([0.3, -0.8, 1.1, 0.4], device="cuda")
-    vjp = torch.autograd.grad((reads[0] * cotangent).sum() - (writes[0] * cotangent).sum(),
-                              (production_read, production_write))
-    assert torch.isfinite(vjp[0]).all() and torch.isfinite(vjp[1]).all()
-
-
-@_CUDA
 def test_an_empty_call_keeps_the_autograd_contract():
     """Zero tokens: the levels keep their shapes and dtype, and the backward still reaches both logits."""
     routings = (
         ResolvedRouting((IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),) * 2),
-        ResolvedRouting((UnionRouting(width=4, alpha=2.0),)),
     )
     for routing in routings:
         read = torch.empty(1, 0, routing.packed_logit_width, device="cuda", dtype=torch.bfloat16, requires_grad=True)

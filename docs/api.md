@@ -11,7 +11,7 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 ```python
 import fsla
 
-routing = fsla.Routing(fsla.uniform(2, fsla.union_routing(64, alpha=1.5)))
+routing = fsla.Routing(fsla.uniform(2, fsla.split_routing(64, alpha=1.5)))
 layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
@@ -331,24 +331,19 @@ outermost first, each carrying that level's WHOLE spec:
 ```python
 IndependentRouting(width, read, write)   # two logit slices, two activations, two solves
 TiedRouting(width, op)                   # one logit slice, one activation, one solve
-UnionRouting(width, alpha=1.5)           # one solve, support split
 ```
 
 `TiedRouting` is a first-class type: the read factor IS the write factor, the same
-tensor, because there is only one duty's worth of output. It differs from
-`UnionRouting`: union routing splits ONE shared support across two roles, so the read
-and write factors differ (a share each); tied routing hands both duties the SAME tensor
-outright. `op` is any registry activation — a tied *softmax* level is legal and reports
-dense on both sides. The vocabulary is exactly these three types — there is no
+tensor, because there is only one duty's worth of output. `op` is any registry activation — a tied *softmax* level is legal and reports
+dense on both sides. The vocabulary is exactly these two types — there is no
 compatibility flag on `IndependentRouting` for the tied case.
 
 Depth, leaf count `N`, the packed router width, the per-level logit offsets and the
 topology are all DERIVED from that list. None of them is a second input, so none of them
-can disagree with it. The five spellings the shipped configurations use:
+can disagree with it. The four spellings the shipped configurations use:
 
 ```python
 dense_routing(width)                      # softmax on both duties
-union_routing(width, alpha=1.5)           # one exact entmax solve, shared support
 split_routing(width, alpha, sparse_duty)  # entmax one duty, softmax the other
 tied_routing(width, activation=entmax(1.5))  # one activation, one solve, shared tensor
 uniform(depth, level)                     # `depth` levels spelled the same way

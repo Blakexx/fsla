@@ -1,8 +1,7 @@
 """Canonical, ops-internal routing plan types.
 
 These types deliberately describe routing execution rather than the layer-facing
-configuration vocabulary.  In particular, union routing is a fixed operation,
-not a parameterized activation-family choice.
+configuration vocabulary.
 """
 
 from __future__ import annotations
@@ -57,11 +56,6 @@ def activation_properties(activation: Any, *, owner: str = "activation") -> Acti
         raise TypeError(
             f"{owner} must be a routing activation carrying a registry `tag`, got {activation!r}")
     return properties_for(tag, owner=owner)
-
-
-def _validated_alpha(alpha: float, owner: str) -> float:
-    """Kept as the module's spelling of the check; the check itself is the registry."""
-    return validate_alpha(alpha, owner=owner)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +159,7 @@ class IndependentRouting:
         ):
             raise ValueError(
                 "IndependentRouting only permits two exact-zero (`exact_zeros`) sides when "
-                "the two duties are the SAME solve; use TiedRouting or UnionRouting for "
+                "the two duties are the SAME solve; use TiedRouting for "
                 "sparse/sparse routing. Stated against the registry column rather than "
                 "against a list of activation names, so a new zero-capable variant is "
                 "covered the moment its row exists")
@@ -190,47 +184,11 @@ class IndependentRouting:
 
 
 @dataclass(frozen=True, slots=True)
-class UnionRouting:
-    """Exact entmax shared support followed by read/write role splitting.
-
-    The INTERSECTION GUARANTEE -- that one solve determines a support both duties
-    then split across -- requires the activation to produce EXACT structural zeros.
-    That precondition is checked against the registry's `exact_zeros` column, not
-    against a list of activation names, so a future zero-capable family is admitted
-    by its row and a future non-zero-capable one is refused by its row.
-    """
-
-    width: int
-    alpha: float = 1.5
-
-    def __post_init__(self) -> None:
-        validate_level_width(self.width, owner="UnionRouting")
-        alpha = validate_alpha(self.alpha, owner="UnionRouting")
-        object.__setattr__(self, "alpha", alpha)
-        if not properties_for(("entmax", alpha), owner="UnionRouting").exact_zeros:
-            raise ValueError(
-                f"UnionRouting(alpha={alpha}) names an activation whose registry row says "
-                "`exact_zeros=False`. Union routing IS the shared-support construction: "
-                "without exact structural zeros there is no support to intersect, only "
-                "small numbers, and the read/write split would be silently meaningless")
-
-    def activation(self, duty: str) -> EntmaxActivation:
-        """Union routing runs ONE solve, so both duties name the same activation."""
-        if duty not in ("read", "write"):
-            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
-        return EntmaxActivation(self.alpha)
-
-    def at(self, width: int) -> UnionRouting:
-        """This level's operator choice at another branch width."""
-        return UnionRouting(width=width, alpha=self.alpha)
-
-
-@dataclass(frozen=True, slots=True)
 class TiedRouting:
     """One routing LEVEL, ONE activation, ONE solve: the read factor IS the write factor.
 
     A first-class type in its own right: the level-type vocabulary is exactly
-    ``IndependentRouting | TiedRouting | UnionRouting``, with tying named by which type
+    ``IndependentRouting | TiedRouting``, with tying named by which type
     a level IS rather than by a flag on ``IndependentRouting`` that happened to collapse
     its two independent solves into one. The stored field is named ``op`` rather than
     ``activation`` because :meth:`activation` is the per-duty ACCESSOR every routing
@@ -262,7 +220,7 @@ class TiedRouting:
         return TiedRouting(width=width, op=self.op)
 
 
-LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting
+LevelRouting: TypeAlias = IndependentRouting | TiedRouting
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +234,7 @@ class ResolvedRouting:
         if not levels:
             raise ValueError("ResolvedRouting.levels must be nonempty")
         for level in levels:
-            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting):
+            if type(level) not in (IndependentRouting, TiedRouting):
                 raise TypeError(f"ResolvedRouting.levels contains an invalid level: {level!r}")
         branches = tuple(level.width for level in levels)
         validate_routing_shape(branches, owner="ResolvedRouting")
@@ -413,8 +371,7 @@ class ResolvedRouting:
         branch here.
         """
         return tuple(
-            True if isinstance(level, UnionRouting)
-            else activation_properties(level.activation("read")).exact_zeros
+            activation_properties(level.activation("read")).exact_zeros
             for level in self.levels
         )
 
@@ -422,8 +379,7 @@ class ResolvedRouting:
     def write_level_can_zero(self) -> tuple[bool, ...]:
         """Exact-zero capability for every level on the write side. See :attr:`read_level_can_zero`."""
         return tuple(
-            True if isinstance(level, UnionRouting)
-            else activation_properties(level.activation("write")).exact_zeros
+            activation_properties(level.activation("write")).exact_zeros
             for level in self.levels
         )
 
@@ -528,7 +484,7 @@ class ResolvedRouting:
 # The config contract's routing types.
 #
 # ``Activation`` (above), ``LevelRouting`` (below, already ``Independent |
-# Union``), ``IndependentRouting``, and ``UnionRouting`` are reused verbatim --
+# Tied``), ``IndependentRouting``, and ``TiedRouting`` are reused verbatim --
 # they already satisfy the contract's shapes. Only the topology/decay
 # wrappers are new. These are producer-agnostic: they describe the routing
 # contract the naive oracle (``fsla/ops/naive.py``) consumes, not a
@@ -587,7 +543,7 @@ class OpaqueRouting:
         return OpaqueRouting(width=width)
 
 
-LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting | OpaqueRouting
+LevelRouting: TypeAlias = IndependentRouting | TiedRouting | OpaqueRouting
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,10 +567,10 @@ class Topology:
     def __post_init__(self) -> None:
         levels = tuple(self.levels)
         for index, level in enumerate(levels):
-            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting, OpaqueRouting):
+            if type(level) not in (IndependentRouting, TiedRouting, OpaqueRouting):
                 raise TypeError(
-                    f"Topology.levels[{index}] must be an IndependentRouting, TiedRouting, "
-                    f"UnionRouting or OpaqueRouting -- the level's whole spec, width included -- "
+                    f"Topology.levels[{index}] must be an IndependentRouting, TiedRouting "
+                    f"or OpaqueRouting -- the level's whole spec, width included -- "
                     f"got {level!r}")
         validate_routing_shape(tuple(level.width for level in levels), owner="Topology")
         object.__setattr__(self, "levels", levels)
@@ -658,7 +614,7 @@ class Topology:
         """A new ``Topology``, one level's ``.at(padded_width)`` per level.
 
         The SAME model described at its kernel-facing widths: same per-level
-        operator and activation choice (``IndependentRouting``, ``UnionRouting`` and
+        operator and activation choice (``IndependentRouting``, ``TiedRouting`` and
         ``OpaqueRouting`` all carry an ``.at(width)`` that keeps everything but the
         width), so the levels this returns describe "the b real digits plus dead pad
         digits", never a different model. A convenience for a caller building the

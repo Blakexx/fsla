@@ -123,7 +123,7 @@ refuses a torch header in a per-arm unit. MEASURED per `cicc` (`--threads=1`, on
 | the same, plus `torch/extension.h` | 33.7 s | 2.86 GB |
 
 Over a full both-arch build every unit that parses the extension header lands in one narrow band (`factor.cu` 2.92 GB,
-`entmax.cu` 2.89, `decode.cu` 2.81), and no generated arm unit is in the top twelve. A build's peak is the header's footprint times the
+`decode.cu` 2.81), and no generated arm unit is in the top twelve. A build's peak is the header's footprint times the
 `cicc` the host budget runs at once, and it stops being a function of the arm count.
 
 Per-arm units are what let the arms compile in parallel across the jobs the host budget grants, each a Bazel action keyed

@@ -2,8 +2,7 @@
 
 The vocabulary IS the tag vocabulary: one level config per routing level, each carrying
 its width and its per-duty activation OBJECTS -- ``IndependentRouting(width, read,
-write)``, ``TiedRouting(width, op)`` and ``UnionRouting(width, alpha)``
-(``fsla.routing.types``), with ``dense_routing``/``union_routing``/``split_routing``/
+write)`` and ``TiedRouting(width, op)`` (``fsla.routing.types``), with ``dense_routing``/``split_routing``/
 ``tied_routing`` as the spellings and ``uniform`` as the way to say one of them D times.
 Every row here holds one refusal that vocabulary owes a caller: a value that is not an
 activation, a width that cannot be a width, a depth past the built bound.
@@ -15,10 +14,10 @@ import inspect
 
 import pytest
 
-from fsla.routing.types import IndependentRouting, UnionRouting, entmax, softmax
+from fsla.routing.types import IndependentRouting, entmax, softmax
 
 # ---------------------------------------------------------------------------
-# `IndependentRouting`/`UnionRouting` validation -- the tag vocabulary's own gate.
+# `IndependentRouting` validation -- the tag vocabulary's own gate.
 # ---------------------------------------------------------------------------
 
 
@@ -27,12 +26,6 @@ def test_independent_routing_has_only_public_fields():
         'width', 'read', 'write'}
     with pytest.raises(TypeError):
         IndependentRouting(probability='softmax')
-
-
-def test_union_routing_has_only_public_fields():
-    assert set(inspect.signature(UnionRouting).parameters) == {'width', 'alpha'}
-    with pytest.raises(TypeError):
-        UnionRouting(probability='softmax')
 
 
 @pytest.mark.parametrize('side', ['read', 'write'])
@@ -50,9 +43,7 @@ def test_independent_routing_rejects_non_activation_side_values(side, value):
 
 
 @pytest.mark.parametrize('value', [True, 1, 1.8, float('inf'), float('nan')])
-def test_union_routing_validates_alpha_like_entmax(value):
+def test_entmax_validates_its_alpha(value):
     error = TypeError if value is True else ValueError
-    with pytest.raises(error):
-        UnionRouting(width=4, alpha=value)
     with pytest.raises(error):
         entmax(value)

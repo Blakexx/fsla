@@ -8,7 +8,6 @@ from fsla.routing.types import (
     ResolvedRouting,
     SoftmaxActivation,
     TiedRouting,
-    UnionRouting,
 )
 
 
@@ -115,7 +114,7 @@ def test_tied_routing_reads_off_the_write_projection():
 def test_packed_router_rejects_plan_shape_mismatches():
     routing = ResolvedRouting(
         (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
-         UnionRouting(width=3)),
+         IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation())),
     )
     h = torch.randn(1, 2, 3)
     # Both levels untied -> slot widths (2, 3, 2, 3), so 10 stored columns.

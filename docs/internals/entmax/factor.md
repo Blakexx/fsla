@@ -6,8 +6,7 @@ the exact α=1.5/2.0 threshold solve (with §4.1's packed per-leaf support bitma
 and softmax. `factor.cuh` is the host declaration set, `factor.cu` the
 implementation and its dispatch.
 
-Design of record: this document. The union split's own solve, and the warp-row
-vocabulary this file shares with it, are [`entmax.md`](entmax.md).
+Design of record: this document. The warp-row vocabulary and the threshold these kernels speak are [`entmax.md`](entmax.md).
 
 Gates: `tests/integration/test_production_levels.py` (the fp64 oracle, forward AND
 VJP, across `tied` / `mixed_per_level` / `dense_only`),
@@ -58,31 +57,27 @@ sums are not bitwise equal and a kernel-vs-kernel gate would measure the wrong t
 matching-the-naive antipattern). The governing gate asserts the SUPPORT SET identical,
 not merely close.
 
-## <a id="the-solve"></a>2. The forward: the union solve's phases B/C/D, fed one tensor
+## <a id="the-solve"></a>2. The forward: the threshold solve of one logit tensor
 
-`factor_forward_kernel` is `union_forward_kernel` with the union split removed. Its
-phases B and C are the same header function, `threshold<LW, IPT, ALPHA15>`, called on
-the logit row where the union calls it on the midpoint row
-([`entmax.md#threshold`](entmax.md#threshold)): row max/min,
+`factor_forward_kernel`'s
+phases B and C are the header function `threshold<LW, IPT, ALPHA15>`, called on
+the logit row ([`entmax.md#threshold`](entmax.md#threshold)): row max/min,
 <a id="sentinel"></a>the finite row-relative sentinel that pads without putting an infinity in the
 scan, the descending `RowSort`, the `(Σz, Σz²)` `WarpScan`, and <a id="packedkey"></a>the
 `packed_key` `Max` reduction that selects the greatest valid `k` and carries its `tau` in
-the same 64-bit word. Phase D is that kernel's too
-([forward-phases](entmax.md#forward-phases)): the amplitude `((α−1)(z − tau))_+`,
+the same 64-bit word. Phase D
+([forward-phases](entmax.md#forward-phases)) is the amplitude `((α−1)(z − tau))_+`,
 squared at α=1.5.
 
 <a id="sort-bytes"></a><a id="stream32"></a><a id="stream32-2"></a><a id="stream32-3"></a><a id="stream32-4"></a>
 <a id="nstreams"></a><a id="nstreams-2"></a><a id="nstreams-3"></a><a id="nstreams-4"></a>The
 shared-memory slot, its alias
-with the support staging, and the stream split are the union kernel's, unchanged
+with the support staging, and the stream split are the header's
 ([`entmax.md#smem-slot-alias`](entmax.md#smem-slot-alias),
 [`entmax.md#stream-split`](entmax.md#stream-split)).
 
 <a id="near-line-200"></a>A level that stores two sides from one solve (`values_second`, a `shares_solve` level) hands
 read and write the SAME amplitudes, never a second solve; `values_second` absent means the level stores one side.
-
-What is NOT there: phase A's midpoint fold and phase E's write normalization. Nothing is
-there that the union kernel lacks.
 
 ### <a id="candidates"></a>2.1 The candidates are the row's width
 
@@ -93,7 +88,7 @@ reduction. The row max and min, the sort and the greatest-valid-`k` search all r
 
 ### <a id="support"></a>2.2 The support word
 
-<a id="near-line-204"></a><a id="near-line-212"></a>Identical to the union solve's, including the two things that are
+<a id="near-line-204"></a><a id="near-line-212"></a>The two things that are
 easy to get
 wrong: support is the set of POST-CAST bf16 nonzeros and never the pre-quantization
 solve ([bf16-support-boundary](entmax.md#bf16-support-boundary)) — the word describes what the
@@ -113,8 +108,7 @@ Two facts make this a five-line kernel rather than a Jacobian:
 
 * **Support is an INPUT**, unpacked from the same frozen word the forward emitted,
   so the two directions cannot disagree about the support set by construction. Off
-  support every term is an exact zero by multiplication, which is what
-  `assert_off_support_zero` asserts at `rtol=0` — the FORM of the VJP, not a
+  support every term is an exact zero by multiplication — the FORM of the VJP, not a
   magnitude.
 * **The two sums are two butterflies.** `Σ s·dp` and `Σ s` each go through `warp_sum`:
   `__shfl_xor_sync` over the lane bits below `LW` with the whole warp shuffling, so every
@@ -162,8 +156,8 @@ The solve's levels have one consumer, the producer's torch path
 them and quantizes them into the bundle's rows (`RouteFactors.from_levels`); it reads
 `bf16`. So `OutT` is `__nv_bfloat16` on that path and the solve writes the stored
 representation directly; there is no fp32 plane and no narrowing pass between them. The
-union arm and the independent/softmax arms are both instantiated for it
-(`entmax.cu::union_forward`, `factor.cu::check_values`), and the value dtype is read off
+entmax and softmax arms are both instantiated for it
+(`factor.cu::check_values`), and the value dtype is read off
 the output tensor rather than templated at the host entry, so the choice is one
 allocation in `fsla/routing/entmax/production.py`.
 
@@ -177,4 +171,4 @@ solve can produce and still call supported is bounded away from it by the thresh
 arithmetic. That identity is the self-masking theorem's storage precondition
 (`docs/architecture/self-masking-theorem.md`) and it is gated without tolerance by
 `tests/integration/test_production_levels.py`'s oracle rows, which compare the stored levels' support sets exactly against the fp64 oracle's over four stress
-fixtures x four routing shapes x two alphas. The stored form is bf16 alone: the contract holds it, and `production.py` names it once, where it allocates the planes.
+fixtures x three routing shapes x two alphas. The stored form is bf16 alone: the contract holds it, and `production.py` names it once, where it allocates the planes.

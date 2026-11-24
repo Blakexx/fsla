@@ -267,13 +267,11 @@ template <typename Run>
 int with_family(const std::string& kernel, Run run) {
   using namespace fsla::plan;
   if (kernel == decode::Kernel::name) return run(decode::Kernel{});
-  if (kernel == union_forward::Kernel::name) return run(union_forward::Kernel{});
-  if (kernel == union_backward::Kernel::name) return run(union_backward::Kernel{});
   if (kernel == factor_forward::Kernel::name) return run(factor_forward::Kernel{});
   if (kernel == factor_backward::Kernel::name) return run(factor_backward::Kernel{});
   if (kernel == softmax_forward::Kernel::name) return run(softmax_forward::Kernel{});
   if (kernel == softmax_backward::Kernel::name) return run(softmax_backward::Kernel{});
-  refuse("no family '" + kernel + "': the families are decode, union_forward, union_backward, "
+  refuse("no family '" + kernel + "': the families are decode, "
          "factor_forward, factor_backward, softmax_forward, softmax_backward");
 }
 

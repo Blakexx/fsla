@@ -23,7 +23,7 @@ from hardware import registry  # noqa: E402
 TOOL = ROOT / "csrc" / "fsla" / "plan_tool"
 PLAN = ROOT / "csrc" / "fsla"
 
-ENTMAX = ("union_forward", "union_backward", "factor_forward", "factor_backward")
+ENTMAX = ("factor_forward", "factor_backward")
 SOFTMAX = ("softmax_forward", "softmax_backward")
 KERNELS = ENTMAX + SOFTMAX
 

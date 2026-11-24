@@ -129,36 +129,6 @@
    "overlap": {
     "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
-  },
-  "union_backward_kernel": {
-   "oracle": {
-    "owed": "no test grades the union solve's gradient against a reference"
-   },
-   "sanitizer": {
-    "owed": "no sanitizer row launches it"
-   },
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
-   }
-  },
-  "union_forward_kernel": {
-   "oracle": "tests/oracle/test_entmax_cuda_gates.py",
-   "sanitizer": "entmax",
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
-   }
   }
  }
 }

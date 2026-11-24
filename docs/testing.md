@@ -76,13 +76,9 @@ running the production gradient in fp64 against the fp64 oracle, where it collap
 (`tests/oracle/stored_vjp.py`; its kind is `ENTMAX_GRADIENTS_FROM_STORED` in `tests/oracle/tolerances.py`). A gradient is
 no multilinear output -- its coefficients are a nonlinear function of the bf16 values the forward stored -- so it takes
 the family budget `BF16_RTOL` on its result over the output's own absolute floor and no envelope, and the reference
-evaluates the operator's closed form (softmax and alpha-entmax with `s = p^(2 - alpha)` on the support, published; the
-union split's, DERIVED from the reference forward's definition, not published and not the kernel's) in fp64 at the
-kernel's own stored outputs, widened. For the union, `read` and `write` are the stored outputs, and `p` is the midpoint
-the kernel's forward SAVED (fp32, read off the solve's autograd node by `saved_union_midpoints`, upcast), the backward
-kernel's actual input: near the support's boundary `p` is tiny and `da / p` carries the kernel's fp32 rounding of it,
-undamped at alpha 2.0. The unit test at unrounded values passes the fp64 reference's own `entmax_alpha` instead. `tests/unit/test_stored_vjp.py` holds each form to the fp64 oracle's autograd at unrounded values (union:
-random, near-boundary, large-magnitude, exact-tie and collapsed rows, both alphas, and a saturated delta), and the
+evaluates the operator's closed form (softmax and alpha-entmax with `s = p^(2 - alpha)` on the support, published) in
+fp64 at the kernel's own stored outputs, widened. `tests/unit/test_stored_vjp.py` holds each form to the fp64 oracle's
+autograd at unrounded values (random, near-boundary, large-magnitude, exact-tie and collapsed rows, both alphas), and the
 gradient gate's teeth. The error against the oracle's gradient at the unrounded
 values is reported by each gate, never gated. The kind's margins are to be recorded by the device run.
 

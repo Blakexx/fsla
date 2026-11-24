@@ -932,12 +932,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/entmax/entmax.md",
-   "message": "names the work code 'A1'",
-   "line_sha256": "eeb9400b3bb5f23c",
-   "count": 1
-  },
-  {
    "path": "docs/internals/facts/liveness_contract.md",
    "message": "names the work code 'K50'",
    "line_sha256": "52cac4c088a407a6",
@@ -1157,18 +1151,6 @@
    "path": "tests/oracle/test_decode_vs_oracle.py",
    "message": "names the work code 'P67'",
    "line_sha256": "6c2ce55c167c6811",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_entmax_cuda_gates.py",
-   "message": "names the work code 'I6'",
-   "line_sha256": "c88d7dfa127ca1f3",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_entmax_cuda_gates.py",
-   "message": "names the work code 'I6'",
-   "line_sha256": "ec05cddb75dfd5de",
    "count": 1
   },
   {

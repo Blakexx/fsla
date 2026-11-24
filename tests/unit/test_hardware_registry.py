@@ -59,7 +59,7 @@ def test_every_file_of_the_registry_holds_its_schema():
 
 
 def test_the_registry_holds_a_registry_each_kernel_and_the_prefill_fact_is_nowhere():
-    assert registry.kernels() == ["decode", "factor_backward", "factor_forward", "prefill", "softmax_backward", "softmax_forward", "union_backward", "union_forward"]
+    assert registry.kernels() == ["decode", "factor_backward", "factor_forward", "prefill", "softmax_backward", "softmax_forward"]
     assert tuple(registry.kernel_schema("decode")) == DECODE_CALL
     assert tuple(registry.kernel_schema("prefill")) == PREFILL_CALL
     assert "prefill" not in registry.schema() and not any("prefill" in registry.kernel_schema(k) for k in registry.kernels())

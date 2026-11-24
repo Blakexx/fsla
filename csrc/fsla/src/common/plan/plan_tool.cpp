@@ -284,7 +284,7 @@ void print_entmax(const Named& device_facts, const Named& call_facts, const std:
   }
 }
 
-//: THE SIX ENTMAX KERNELS: `run` is called with the definition of the one named `kernel`, if it is one of them
+//: THE FOUR ENTMAX KERNELS: `run` is called with the definition of the one named `kernel`, if it is one of them
 template <typename Run>
 bool with_entmax_kernel(const std::string& kernel, Run run) {
   using namespace fsla::plan;
@@ -293,8 +293,7 @@ bool with_entmax_kernel(const std::string& kernel, Run run) {
     run(k);
     return true;
   };
-  return each(union_forward::Kernel{}) || each(union_backward::Kernel{})
-         || each(factor_forward::Kernel{}) || each(factor_backward::Kernel{})
+  return each(factor_forward::Kernel{}) || each(factor_backward::Kernel{})
          || each(softmax_forward::Kernel{}) || each(softmax_backward::Kernel{});
 }
 

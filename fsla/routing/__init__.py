@@ -12,7 +12,6 @@ from fsla.routing.types import (
     RoutingActivation,
     SoftmaxActivation,
     TiedRouting,
-    UnionRouting,
 )
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "RoutingActivation",
     "SoftmaxActivation",
     "TiedRouting",
-    "UnionRouting",
 ]

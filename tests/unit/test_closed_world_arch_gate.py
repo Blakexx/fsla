@@ -61,8 +61,6 @@ DEVICE_TUS = tuple(sorted(SRC.glob("*/*.cu")))
 _LAUNCHLESS = {
     "intra_footprint": "a host derivation over the widths; no device work",
     "fsla_decode_arms": "reads the built arm set out of compile-time constants",
-    "fsla_union_forward_arms": "reads the built arm set out of compile-time constants",
-    "fsla_union_backward_arms": "reads the built arm set out of compile-time constants",
     "fsla_factor_forward_arms": "reads the built arm set out of compile-time constants",
     "fsla_factor_backward_arms": "reads the built arm set out of compile-time constants",
     "fsla_softmax_forward_arms": "reads the built arm set out of compile-time constants",

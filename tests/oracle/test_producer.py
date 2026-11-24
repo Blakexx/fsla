@@ -29,7 +29,6 @@ from fsla.routing.types import (
     SoftmaxActivation,
     TiedRouting,
     Topology,
-    UnionRouting,
 )
 
 #: THE FORMAT'S ROUNDING BUDGET on a row's sum: each digit is within half a u8 step of its row max, so a
@@ -43,7 +42,6 @@ _D_V = 5
 def _topology(mixed: bool = False, tied: bool = False) -> Topology:
     levels = [
         IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
-        UnionRouting(width=6, alpha=1.5),
     ]
     if mixed:
         levels.append(IndependentRouting(
@@ -94,7 +92,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
 def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dtype):
     """Item 4's gate, repeated with a `TiedRouting` level in the mix: the producer's
     packed projection, solve and storage all admit it end to end, with no code path
-    that only knows `IndependentRouting`/`UnionRouting`."""
+    that only knows `IndependentRouting`."""
     topology = _topology(mixed=True, tied=True)
     B, L, H, dm = 2, 9, 2, 7
     x, route_W, gain_W, gain_bias, v = _params(
@@ -139,7 +137,7 @@ def test_the_write_gain_is_write_level_0s_magnitude():
 
 def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
     """THE PRODUCER STORES WHAT ITS SOLVE PRODUCED (docs/CONSTITUTION.md#r23): no level is divided by its sum, and the
-    write gain is folded into write level 0. Checked on a union level, whose read half does not sum to one:
+    write gain is folded into write level 0. Checked on an entmax-read level:
 
         read:   out_l[d]                        ==  level_l_raw[d]
         write:  out_0[d_0(s)] * out_1[d_1(s)]   ==  g_raw * level_0_raw[d_0(s)] * level_1_raw[d_1(s)]
@@ -153,7 +151,7 @@ def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
 
     topology = Topology(
         levels=(
-            UnionRouting(width=4, alpha=1.5),
+            IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
             IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
     )
@@ -172,10 +170,6 @@ def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
     def unfold(tensor):
         T, width = tensor.shape[1], tensor.shape[2]
         return tensor.reshape(B, H, T, width).permute(0, 2, 1, 3)
-
-    #: The union read must be genuinely unnormalized here, or the read identity is vacuous.
-    read_mass = unfold(reads_raw[0]).sum(-1)
-    assert float((read_mass - 1).abs().max()) > 1e-3
 
     #: THE FORMAT ROUNDS EACH LEVEL'S ROW against its max (`fsla.routing.quant`): |delta| <= m / 510 a digit, so a
     #: level holds to that and a leaf product to m_0 * m_1 / 255 (+ the second order term).

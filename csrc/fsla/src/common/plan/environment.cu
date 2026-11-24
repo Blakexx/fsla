@@ -16,8 +16,6 @@
 #include "plan/prefill/contract.h"
 #include "plan/softmax_backward/contract.h"
 #include "plan/softmax_forward/contract.h"
-#include "plan/union_backward/contract.h"
-#include "plan/union_forward/contract.h"
 
 namespace fsla::plan {
 
@@ -48,8 +46,6 @@ DeviceFacts read_device(int device) {
   DeviceFacts facts{std::move(read), model, cc, prop.multiProcessorCount};
   settle_device<decode::Kernel>(facts);
   settle_device<prefill::Kernel>(facts);
-  settle_device<union_forward::Kernel>(facts);
-  settle_device<union_backward::Kernel>(facts);
   settle_device<factor_forward::Kernel>(facts);
   settle_device<factor_backward::Kernel>(facts);
   settle_device<softmax_forward::Kernel>(facts);
@@ -137,9 +133,6 @@ template decode::Kernel::Descriptor checked_descriptor<decode::Kernel>(
 template prefill::Kernel::Descriptor descriptor_of<prefill::Kernel>(int, const Named&);
 template prefill::Kernel::Descriptor checked_descriptor<prefill::Kernel>(
     const std::vector<std::int64_t>&, int);
-template union_forward::Kernel::Descriptor descriptor_of<union_forward::Kernel>(int, const Named&);
-template union_backward::Kernel::Descriptor descriptor_of<union_backward::Kernel>(int,
-                                                                                  const Named&);
 template factor_forward::Kernel::Descriptor descriptor_of<factor_forward::Kernel>(int,
                                                                                   const Named&);
 template factor_backward::Kernel::Descriptor descriptor_of<factor_backward::Kernel>(int,

@@ -14,19 +14,7 @@ from fsla.routing.types import (
     ResolvedRouting,
     SoftmaxActivation,
     TiedRouting,
-    UnionRouting,
 )
-
-
-def test_union_routing_has_only_width_and_validated_alpha_and_fixed_split_semantics():
-    union = UnionRouting(width=4)
-    assert [f.name for f in fields(UnionRouting)] == ["width", "alpha"]
-    assert union.alpha == 1.5
-    assert UnionRouting(width=4, alpha=2.0) == UnionRouting(width=4, alpha=2.0)
-    assert UnionRouting(width=4, alpha=2.0) != union
-    assert not hasattr(union, "tied")
-    assert not hasattr(union, "read")
-    assert not hasattr(union, "write")
 
 
 def test_tied_routing_has_only_width_and_one_validated_activation():
@@ -54,7 +42,7 @@ def test_resolved_routing_derives_compact_descriptor_metadata():
         (
             TiedRouting(width=2, op=SoftmaxActivation()),
             IndependentRouting(width=3, read=EntmaxActivation(2.0), write=SoftmaxActivation()),
-            UnionRouting(width=5),
+            TiedRouting(width=5, op=EntmaxActivation(1.5)),
             IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
         ),
     )
@@ -80,13 +68,13 @@ def test_tied_routing_has_one_packed_slot_and_is_the_shared_solve_level():
     deleted), so there is no longer a second construction to compare this against."""
     tied_plan = ResolvedRouting(
         (TiedRouting(width=4, op=EntmaxActivation(1.5)),
-         UnionRouting(width=5)),
+         IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation())),
     )
     assert tied_plan.untied_levels == (1,)
     assert tied_plan.shared_solve_levels == (0,)
     assert tied_plan.packed_slot_widths == (4, 5, 5)
-    assert tied_plan.read_level_can_zero == (True, True)
-    assert tied_plan.write_level_can_zero == (True, True)
+    assert tied_plan.read_level_can_zero == (True, False)
+    assert tied_plan.write_level_can_zero == (True, False)
 
 
 @pytest.mark.parametrize(
@@ -95,10 +83,6 @@ def test_tied_routing_has_one_packed_slot_and_is_the_shared_solve_level():
         (lambda: EntmaxActivation(True), TypeError),
         (lambda: EntmaxActivation(1), ValueError),
         (lambda: EntmaxActivation(1.8), ValueError),
-        (lambda: UnionRouting(width=4, alpha=True), TypeError),
-        (lambda: UnionRouting(width=4, alpha=float("nan")), ValueError),
-        (lambda: UnionRouting(width=4, alpha=1), ValueError),
-        (lambda: UnionRouting(width=4, alpha=1.8), ValueError),
         (lambda: IndependentRouting(width=4, read="softmax",
                                     write=SoftmaxActivation()), TypeError),
         (lambda: IndependentRouting(width=4, read=EntmaxActivation(1.5),
@@ -119,7 +103,7 @@ def test_invalid_routing_values_are_rejected(factory, error):
 
 @pytest.mark.parametrize("read_alpha,write_alpha", [(1.5, 1.5), (1.5, 2.0)])
 def test_independent_routing_rejects_distinct_sparse_support_solves(read_alpha, write_alpha):
-    with pytest.raises(ValueError, match="UnionRouting"):
+    with pytest.raises(ValueError, match="TiedRouting"):
         IndependentRouting(
             width=4,
             read=EntmaxActivation(read_alpha),
@@ -138,10 +122,9 @@ def test_sparse_branch_width_is_bounded_without_limiting_total_capacity():
 def test_packed_router_shape_validation_derives_heads():
     plan = ResolvedRouting(
         (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
-         UnionRouting(width=3)),
+         IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation())),
     )
-    # Both levels are untied (an `IndependentRouting` level always is, and so is a
-    # union level), so the packed slots are write-0, write-1, read-0, read-1 with widths
+    # Both levels are untied (an `IndependentRouting` level always is), so the packed slots are write-0, write-1, read-0, read-1 with widths
     # 2, 3, 2, 3 -- 10 columns, not the 4 * max(2, 3) = 12 the padded layout stored.
     assert plan.packed_router_width == 10
     route_W = torch.randn(2, 5, 10)

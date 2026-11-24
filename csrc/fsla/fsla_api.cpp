@@ -116,16 +116,6 @@ STABLE_TORCH_LIBRARY(fsla, m) {
 
   // ---- the producer's solves -----------------------------------------------
   m.def(
-      "entmax_union_forward(Tensor read_logits, Tensor write_logits, Tensor(a!) midpoint_values, "
-      "Tensor(b!) support_words, Tensor(c!) read_values, Tensor(d!) write_values, int[] logit_offsets, "
-      "int[] value_offsets, int[] midpoint_offsets, int[] support_offsets, int[] widths, int heads, float alpha) "
-      "-> ()");
-  m.def(
-      "entmax_union_backward(Tensor read_logits, Tensor write_logits, Tensor midpoint_values, Tensor support_words, "
-      "Tensor read_values, Tensor write_values, Tensor d_read, Tensor d_write, Tensor(a!) d_read_logits, "
-      "Tensor(b!) d_write_logits, int[] logit_offsets, int[] value_offsets, int[] midpoint_offsets, "
-      "int[] support_offsets, int[] widths, int heads, float alpha) -> ()");
-  m.def(
       "entmax_factor_forward(Tensor logits, Tensor(a!) values, Tensor(b!)? values_second, "
       "Tensor(c!) support_words, int[] logit_offsets, int[] value_offsets, int[] support_offsets, int[] widths, "
       "int heads, float alpha) -> ()");
@@ -142,8 +132,6 @@ STABLE_TORCH_LIBRARY(fsla, m) {
 
   m.def("entmax_max_levels() -> int");
   m.def("entmax_width_class(int width) -> int");
-  m.def("fsla_union_forward_arms() -> int[][]");
-  m.def("fsla_union_backward_arms() -> int[][]");
   m.def("fsla_factor_forward_arms() -> int[][]");
   m.def("fsla_factor_backward_arms() -> int[][]");
   m.def("fsla_softmax_forward_arms() -> int[][]");
@@ -197,16 +185,12 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("sm_clock_ghz", TORCH_BOX(&fsla::sm_clock_ghz));
   m.impl("carry_geometry", TORCH_BOX(&fsla::carry::geometry));
   m.impl("carry_sub_boxes", TORCH_BOX(&fsla::carry::sub_box_set));
-  m.impl("entmax_union_forward", TORCH_BOX(&fsla::entmax::union_forward));
-  m.impl("entmax_union_backward", TORCH_BOX(&fsla::entmax::union_backward));
   m.impl("entmax_factor_forward", TORCH_BOX(&fsla::entmax::factor_forward));
   m.impl("entmax_factor_backward", TORCH_BOX(&fsla::entmax::factor_backward));
   m.impl("routing_softmax_forward", TORCH_BOX(&fsla::entmax::softmax_forward));
   m.impl("routing_softmax_backward", TORCH_BOX(&fsla::entmax::softmax_backward));
   m.impl("entmax_max_levels", TORCH_BOX(&fsla::entmax::max_levels));
   m.impl("entmax_width_class", TORCH_BOX(&fsla::entmax::width_class));
-  m.impl("fsla_union_forward_arms", TORCH_BOX(&fsla::entmax::union_forward_arms));
-  m.impl("fsla_union_backward_arms", TORCH_BOX(&fsla::entmax::union_backward_arms));
   m.impl("fsla_factor_forward_arms", TORCH_BOX(&fsla::entmax::factor_forward_arms));
   m.impl("fsla_factor_backward_arms", TORCH_BOX(&fsla::entmax::factor_backward_arms));
   m.impl("fsla_softmax_forward_arms", TORCH_BOX(&fsla::entmax::softmax_forward_arms));

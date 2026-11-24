@@ -1,10 +1,10 @@
 # The entmax kernels' matcher (`csrc/fsla/src/common/plan/entmax_launch.h`)
 
-One matcher for the six kernels of `csrc/fsla/src/entmax/` (`union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward`, `softmax_backward`), written as templates
-over the kernel's generated definition `K` the way [`planner.md`](planner.md) is, so one source serves six registries (`hardware/kernels/<kernel>/`, one for each kernel:
+One matcher for the four kernels of `csrc/fsla/src/entmax/` (`factor_forward`, `factor_backward`, `softmax_forward`, `softmax_backward`), written as templates
+over the kernel's generated definition `K` the way [`planner.md`](planner.md) is, so one source serves four registries (`hardware/kernels/<kernel>/`, one for each kernel:
 [`../../entmax/entmax.md#the-contract`](../../entmax/entmax.md#the-contract)). The owner's words, 2026-11-23: "the descriptor is runtime context derived from hardware facts and user input. the matchers
 contain our logic that distills that into an arm. anything that has any kind of logic for that mapping should be in a matcher". The facts it reads are the call's, in the caller's terms:
-`width` (the first level's width, a real width), `levels`, `alpha_tenths` (the four kernels with an alpha), `logit_dtype` and `value_dtype`.
+`width` (the first level's width, a real width), `levels`, `alpha_tenths` (the two kernels with an alpha), `logit_dtype` and `value_dtype`.
 
 THE LAW IT OWNS, each stated once:
 

@@ -19,7 +19,7 @@ hardware/kernels/<kernel>/parts/          the kernel's parts (a call part, a dep
 hardware/kernels/<kernel>/descriptors/    the kernel's descriptors, with dev/ (narrowed contracts) and owed/
 ```
 
-Eight kernels are registered: `decode` (built), `prefill` (OWED entire: its kernels are not built, so every descriptor of it is in `owed/` and its contract holds no context) and the producer's six solves, one registry for each kernel template (`union_forward`, `union_backward`, `factor_forward`, `factor_backward`, `softmax_forward`, `softmax_backward`: "One per kernel", the owner, 2026-11-23). A solve's call facts are `width`, `levels`, `alpha_tenths` (not the softmax kernels), `logit_dtype` and `value_dtype`; its one `call` part and its one Hopper descriptor state the contract ([`../entmax/entmax.md#the-contract`](../entmax/entmax.md#the-contract)).
+Six kernels are registered: `decode` (built), `prefill` (OWED entire: its kernels are not built, so every descriptor of it is in `owed/` and its contract holds no context) and the producer's four solves, one registry for each kernel template (`factor_forward`, `factor_backward`, `softmax_forward`, `softmax_backward`: "One per kernel", the owner, 2026-11-23). A solve's call facts are `width`, `levels`, `alpha_tenths` (not the softmax kernels), `logit_dtype` and `value_dtype`; its one `call` part and its one Hopper descriptor state the contract ([`../entmax/entmax.md#the-contract`](../entmax/entmax.md#the-contract)).
 
 <a id="schema"></a>
 
@@ -131,6 +131,6 @@ function and its arm are built (`docs/open-work.md` rows A-f and A-h).
 | reader | reads |
 |---|---|
 | `//hardware:<kernel>_facts` | the device table and the kernel's schema: `plan/<kernel>/facts.h` |
-| `//hardware:<family>_contexts` | the family's contract under the build's `--//:contract` (decode and the six entmax kernels, the `ARM_FAMILIES`), a line a context (`registry.contexts_text`): `arms_gen`'s input |
+| `//hardware:<family>_contexts` | the family's contract under the build's `--//:contract` (decode and the four entmax kernels, the `ARM_FAMILIES`), a line a context (`registry.contexts_text`): `arms_gen`'s input |
 | `//hardware:<kernel>_contract` | the kernel's contract and owed contexts as tables the run time holds, and its `Kernel` definition: `plan/<kernel>/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
 | `tools/supported.py` | each built kernel's contract: the README's support tables, a table a kernel with its call facts as columns |

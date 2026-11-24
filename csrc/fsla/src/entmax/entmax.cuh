@@ -1,5 +1,5 @@
-// THE PRODUCER'S UNION ENTMAX SOLVE -- host declarations. The implementation, both
-// kernels and the host dispatch, is `entmax.cu`.
+// THE PRODUCER'S ENTMAX SOLVES' SHARED VOCABULARY -- the warp-row block, the level table and the host
+// declarations. The solves are `factor.cu`; `entmax.cu` holds the host answers the matcher states.
 //
 // THE STRUCTURAL IDEA: ONE ROW PER (LOGICAL) WARP. Every collective in the solve runs
 // along one token's row, so all of them are warp-scope and shuffle-based -- which is
@@ -12,8 +12,8 @@
 // Why this is CUDA and not Triton, the measured occupancy history, and the whole
 // solve: docs/internals/entmax/entmax.md
 //
-// The device-side block below is the warp-row vocabulary the union solve and the
-// independent solves (`factor.cu`) both speak; the host declarations follow it.
+// The device-side block below is the warp-row vocabulary the solves (`factor.cu`) speak; the host
+// declarations follow it.
 #pragma once
 
 #include <cstdint>
@@ -209,27 +209,6 @@ __device__ __forceinline__ unsigned logical_warp_mask() {
                            : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
 }
 
-//: The overflow-free read-write difference: two opposite-sign finite extrema -- see docs/internals/entmax/entmax.md#overflow-free-delta-2
-__device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
-  const float kMax = 3.4028234663852886e38f;
-  const float kHalfMax = 1.7014117331926443e38f;
-  bool rneg = r < 0.0f;
-  bool opposite = rneg != (w < 0.0f);
-  float rmag = fabsf(r), wmag = fabsf(w);
-  float hi = fmaxf(rmag, wmag), lo = fminf(rmag, wmag);
-  float room = kMax - hi;
-  float mag = hi + fminf(lo, room);
-  float opp = rneg ? -mag : mag;
-  float same = (opposite ? 0.0f : r) - (opposite ? 0.0f : w);
-  if (saturated) *saturated = opposite && (hi > kHalfMax) && (lo > room);
-  return opposite ? opp : same;
-}
-
-//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf` -- see docs/internals/entmax/entmax.md#logwritegate
-__device__ __forceinline__ float log_write_gate(float delta) {
-  return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
-}
-
 //: THE ALPHA-ENTMAX THRESHOLD (alpha 1.5 or 2) of one row held striped: `valid` marks its `valid_count` members,
 //: shifted in place by the row max; tau is relative to that shift. -- see docs/internals/entmax/entmax.md#threshold
 template <int LW, int IPT, bool ALPHA15>
@@ -313,47 +292,6 @@ __device__ __forceinline__ float threshold(float (&z)[IPT], uint32_t valid, int 
   return chosen >= 0 ? __uint_as_float((uint32_t)(packed_key & 0xffffffffu)) : 0.0f;
 }
 
-//: THE UNION'S WRITE SIDE: `delta` in, the logit difference; out, the write weights -- the support's log-values plus
-//: the write gate, normalized over the row. -- see docs/internals/entmax/entmax.md#union-write
-//: `kFast`: the logarithms, exponentials and quotient on the special-function unit.
-template <int LW, int IPT, bool kFast = false>
-__device__ __forceinline__ void union_write(const float (&values)[IPT], float (&delta)[IPT],
-                                            uint32_t support, unsigned lmask) {
-  using WarpRedF = cub::WarpReduce<float, LW>;
-  typename WarpRedF::TempStorage red_store;
-  float local_lw = -INFINITY;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const bool sup = (support >> i) & 1u;
-    const float gate = kFast ? -(fmaxf(delta[i], 0.0f) + __logf(1.0f + __expf(-fabsf(delta[i]))))
-                             : log_write_gate(delta[i]);
-    delta[i] = sup ? (kFast ? __logf(values[i]) : logf(values[i])) + gate : -INFINITY;
-    if (sup) local_lw = fmaxf(local_lw, delta[i]);
-  }
-  float max_lw = WarpRedF(red_store).Reduce(local_lw, Max());
-  max_lw = __shfl_sync(lmask, max_lw, 0, LW);
-  const bool has_mass = max_lw > -INFINITY;
-  const float safe_max = has_mass ? max_lw : 0.0f;
-  float local_den = 0.0f;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const bool sup = (support >> i) & 1u;
-    const float shifted = delta[i] - safe_max;
-    delta[i] = (sup && has_mass) ? (kFast ? __expf(shifted) : expf(shifted)) : 0.0f;
-    local_den += delta[i];
-  }
-  float den = WarpRedF(red_store).Reduce(local_den, Sum());
-  den = __shfl_sync(lmask, den, 0, LW);
-  const bool has_weight = den > 0.0f;
-  const float safe_den = has_weight ? den : 1.0f;
-#pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const bool sup = (support >> i) & 1u;
-    delta[i] =
-        (sup && has_weight) ? (kFast ? __fdividef(delta[i], safe_den) : delta[i] / safe_den) : 0.0f;
-  }
-}
-
 //: THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448 -- see docs/internals/entmax/entmax.md#max-batched-levels
 constexpr int MAX_BATCHED_LEVELS = ::fsla::plan::kEntmaxMaxLevels;
 
@@ -361,8 +299,6 @@ struct LevelTable {
   int64_t logit_off[MAX_BATCHED_LEVELS];
   int64_t value_off[MAX_BATCHED_LEVELS];
   int64_t support_off[MAX_BATCHED_LEVELS];
-  //: The union solve's midpoint plane is packed over the UNION levels alone, so it does -- see docs/internals/entmax/entmax.md#near-line-202
-  int64_t midpoint_off[MAX_BATCHED_LEVELS];
   int width[MAX_BATCHED_LEVELS];
 };
 
@@ -398,8 +334,7 @@ T* ptr_or_null(const std::optional<Tensor>& t) {
 inline LevelTable build_table(const std::vector<int64_t>& logit_off,
                               const std::vector<int64_t>& value_off,
                               const std::vector<int64_t>& support_off,
-                              const std::vector<int64_t>& widths, int klass,
-                              const std::vector<int64_t>& midpoint_off = {}) {
+                              const std::vector<int64_t>& widths, int klass) {
   const int n = (int)widths.size();
   STD_TORCH_CHECK((int)logit_off.size() == n && (int)value_off.size() == n,
                   "level offset tables must match the width table");
@@ -412,7 +347,6 @@ inline LevelTable build_table(const std::vector<int64_t>& logit_off,
     table.logit_off[i] = logit_off[i];
     table.value_off[i] = value_off[i];
     table.support_off[i] = support_off.empty() ? 0 : support_off[i];
-    table.midpoint_off[i] = midpoint_off.empty() ? value_off[i] : midpoint_off[i];
     table.width[i] = (int)widths[i];
   }
   return table;
@@ -449,30 +383,6 @@ inline int64_t first_width(const std::vector<int64_t>& widths) {
 int64_t max_levels();
 
 int64_t width_class(int64_t width);
-
-//: THE ARMS THIS BINARY CARRIES, a row each: `[lw, ipt, alpha15, logit, value]`, the dtypes as the contract's codes
-std::vector<std::vector<int64_t>> union_forward_arms();
-
-std::vector<std::vector<int64_t>> union_backward_arms();
-
-//: ONE LAUNCH, MANY LEVELS: the entries take BASE tensors plus per-level COLUMN -- see docs/internals/entmax/entmax.md#union-forward
-void union_forward(const Tensor& read_logits, const Tensor& write_logits, Tensor& midpoint_values,
-                   Tensor& support_words, Tensor& read_values, Tensor& write_values,
-                   const std::vector<int64_t>& logit_offsets,
-                   const std::vector<int64_t>& value_offsets,
-                   const std::vector<int64_t>& midpoint_offsets,
-                   const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                   int64_t heads, double alpha);
-
-void union_backward(const Tensor& read_logits, const Tensor& write_logits,
-                    const Tensor& midpoint_values, const Tensor& support_words,
-                    const Tensor& read_values, const Tensor& write_values, const Tensor& d_read,
-                    const Tensor& d_write, Tensor& d_read_logits, Tensor& d_write_logits,
-                    const std::vector<int64_t>& logit_offsets,
-                    const std::vector<int64_t>& value_offsets,
-                    const std::vector<int64_t>& midpoint_offsets,
-                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
-                    int64_t heads, double alpha);
 
 }  // namespace entmax
 }  // namespace fsla

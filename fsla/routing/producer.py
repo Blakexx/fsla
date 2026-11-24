@@ -32,7 +32,6 @@ from fsla.routing.types import (
     SoftmaxActivation,
     TiedRouting,
     Topology,
-    UnionRouting,
 )
 
 __all__ = [
@@ -41,7 +40,6 @@ __all__ = [
     "split_routing",
     "tied_routing",
     "uniform",
-    "union_routing",
 ]
 
 
@@ -50,19 +48,11 @@ def dense_routing(width: int) -> IndependentRouting:
     return IndependentRouting(width=width, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
-def union_routing(width: int, alpha: float = 1.5) -> UnionRouting:  #: reserved: the solve's order (2.0: sparsemax)
-    """One exact entmax solve determining a shared support, split across duties. ``alpha`` is reserved: the solve's
-    order, 1.5 or 2.0 (sparsemax), a declaration's to choose."""
-    return UnionRouting(width=width, alpha=alpha)
-
-
 def tied_routing(width: int, activation: RoutingActivation = EntmaxActivation(1.5)) -> TiedRouting:
     """One activation, one solve -- the read factor IS the write factor, at ``width``.
 
-    Distinct from :func:`union_routing`: union routing splits ONE shared support
-    across two roles, so the read and write factors differ (a share each) even though
-    they came from one solve. Tied routing hands both duties the SAME tensor outright --
-    there is no split to perform, because there is only one duty's worth of output.
+    Tied routing hands both duties the SAME tensor outright -- there is no split to
+    perform, because there is only one duty's worth of output.
     """
     return TiedRouting(width=width, op=activation)
 
@@ -101,9 +91,8 @@ class Routing:
     """THE DECLARATION: the levels, the write gain and the projection bias. Data only.
 
     Args:
-        levels: one :class:`~fsla.routing.types.IndependentRouting`,
-            :class:`~fsla.routing.types.TiedRouting` or
-            :class:`~fsla.routing.types.UnionRouting` per routing level, outermost
+        levels: one :class:`~fsla.routing.types.IndependentRouting`
+            or :class:`~fsla.routing.types.TiedRouting` per routing level, outermost
             first. Each carries its own ``width``; :func:`uniform` builds a uniform
             stack. The tags name activations from the closed registry
             (``fsla/routing/activations.py``) -- users never supply property metadata.
@@ -125,7 +114,7 @@ class Routing:
     bias: bool = False
 
     def __post_init__(self) -> None:
-        if isinstance(self.levels, (IndependentRouting, TiedRouting, UnionRouting)):
+        if isinstance(self.levels, (IndependentRouting, TiedRouting)):
             raise TypeError(
                 "Routing takes a LIST of level configs, one per routing level, and got a single "
                 f"{type(self.levels).__name__}. A one-level model is `[level]`; a uniform stack is "
@@ -134,9 +123,9 @@ class Routing:
         if not levels:
             raise ValueError("Routing needs at least one routing level")
         for index, level in enumerate(levels):
-            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting):
+            if type(level) not in (IndependentRouting, TiedRouting):
                 raise TypeError(
-                    f"levels[{index}] must be an IndependentRouting, TiedRouting or UnionRouting "
+                    f"levels[{index}] must be an IndependentRouting or TiedRouting "
                     f"carrying its own width, got {level!r}")
         if type(self.gain) is not bool:
             raise TypeError(f"gain must be a bool, got {self.gain!r}")

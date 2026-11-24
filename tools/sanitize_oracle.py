@@ -97,9 +97,9 @@ _FAMILIES = {
         kernel="fsla::decode::fsla_decode_forward", present=True),
     #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
     "entmax": Family(
-        test="tests/oracle/test_entmax_cuda_gates.py::"
-             "test_teeth_B_values_reject_beyond_tolerance[1.5]",
-        kernel="fsla::entmax::union_forward", present=True),
+        test="tests/integration/test_production_levels.py::"
+             "test_cuda_tied_routing_read_factor_is_the_write_factor[1.5]",
+        kernel="fsla::entmax::factor_forward", present=True),
 }
 
 _FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}

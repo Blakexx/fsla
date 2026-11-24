@@ -20,7 +20,7 @@ caller owns (``fsla.growth_pending``, ``fsla.admit_growth``; ``fsla.pool_headroo
 width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
 bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
-    routing = Routing(uniform(2, union_routing(64, alpha=1.5)))
+    routing = Routing(uniform(2, split_routing(64, alpha=1.5)))
     layer = FSLA(routing, hidden_size=1024, num_heads=8, d_v=64,
                  decay=LearnedDecay(widths=routing.widths, num_heads=8))
 
@@ -35,12 +35,12 @@ and the op decides how it runs, inside the call.
 |---|---|---|
 | op | `prefill`, `decode_step_gated` | STABLE, semver-major to break |
 | decode growth | `growth_pending`, `admit_growth`, `pool_headroom`, `refill_pool` | STABLE |
-| feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
+| feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `FSLA`, `LayerContinuation` | STABLE |
 | state | `state()`, `FSLAState` | STABLE |
-| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting`, `UnionRouting` | STABLE |
+| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting` | STABLE |
 | oracle | `naive_fsla` | STABLE signature, EXACT semantics — it is the definition |
 """
 
@@ -63,7 +63,6 @@ from fsla.routing.producer import (
     split_routing,
     tied_routing,
     uniform,
-    union_routing,
 )
 from fsla.routing.types import (
     EntmaxActivation,
@@ -72,7 +71,6 @@ from fsla.routing.types import (
     SoftmaxActivation,
     TiedRouting,
     Topology,
-    UnionRouting,
     entmax,
     softmax,
 )
@@ -98,7 +96,6 @@ __all__ = [
     "split_routing",
     "tied_routing",
     "uniform",
-    "union_routing",
     # the decay-source slot — where the recurrence's rates come from
     "DecaySource",
     "ConstantDecay",
@@ -116,7 +113,6 @@ __all__ = [
     "Topology",
     "IndependentRouting",
     "TiedRouting",
-    "UnionRouting",
     "SoftmaxActivation",
     "EntmaxActivation",
     # tagged activation constructors — users write these, never property metadata

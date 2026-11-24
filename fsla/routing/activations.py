@@ -16,8 +16,8 @@ with a ROW, and the row is the only place the properties live.
   as the single source of truth. It is a plain serializable table, centrally
   auditable, and it is deliberately the same closed-world pattern as the arch table
   and the spill manifest: a thing either has a ratified row or it does not run.
-* *Every validator reads COLUMNS, never tags.* A rule says "union routing requires
-  `exact_zeros`", not "union routing requires entmax". **No case list over activations
+* *Every validator reads COLUMNS, never tags.* A rule says "independent routing refuses two
+  `exact_zeros` sides", not "independent routing refuses two entmax sides". **No case list over activations
   may exist anywhere outside this module** -- that is the invariant that makes adding a
   variant a one-row change instead of a hunt.
 * *An unknown tag is a hard panic at config construction*, not a default and not a
@@ -28,7 +28,7 @@ with a ROW, and the row is the only place the properties live.
 
 | column | question it answers | who reads it |
 |---|---|---|
-| `exact_zeros` | does it produce exact structural zeros, not merely small values? | the producer's walk rule (`fsla.ops.produce.activation_walks`: which levels a side walks by lists, carried by the call's descriptor), the resolved routing's can-zero levels, decode's dense innermost write level, union routing's precondition, independent routing's refusal of two exact-zero sides |
+| `exact_zeros` | does it produce exact structural zeros, not merely small values? | the producer's walk rule (`fsla.ops.produce.activation_walks`: which levels a side walks by lists, carried by the call's descriptor), the resolved routing's can-zero levels, decode's dense innermost write level, independent routing's refusal of two exact-zero sides |
 
 A column is kept only while something reads it. Whether a map's output sums to 1 is not
 a column: no level is required to (docs/CONSTITUTION.md#r23), so nothing asks.

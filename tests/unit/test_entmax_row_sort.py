@@ -30,7 +30,7 @@ import pytest
 import torch
 
 from fsla.routing.entmax.production import production_routing_levels
-from fsla.routing.types import ResolvedRouting, UnionRouting
+from fsla.routing.types import EntmaxActivation, ResolvedRouting, TiedRouting
 from tests.oracle.fixtures import assert_slots_close
 from tests.oracle.tolerances import ENTMAX_STORED_VALUES
 
@@ -43,7 +43,7 @@ BH, T = 2, 64
 
 
 def _routing(width: int, alpha: float) -> ResolvedRouting:
-    return ResolvedRouting((UnionRouting(width=width, alpha=alpha),))
+    return ResolvedRouting((TiedRouting(width=width, op=EntmaxActivation(alpha)),))
 
 
 def _rows(kind: str, width: int, seed: int) -> torch.Tensor:
@@ -145,7 +145,7 @@ def test_the_tie_fixtures_are_not_vacuous(family):
     """
     width = 64
     read, write = _rows(family, width, seed=width * 7 + 1), _rows(family, width, seed=width * 7 + 2)
-    mid = 0.5 * read.float() + 0.5 * write.float()
+    mid = write.float()
     z = mid - mid.amax(-1, keepdim=True)
     srt, _ = z.sort(-1, descending=True)
     tied = (srt[..., 1:] == srt[..., :-1]).float().mean().item()
@@ -171,7 +171,7 @@ def test_teeth_a_moved_k_star_would_change_the_support(family):
     reads, _, _support = production_routing_levels(read, write, _routing(width, 1.5))
     shipped = reads[0] != 0
 
-    mid = 0.5 * read.float() + 0.5 * write.float()
+    mid = write.float()
     z = mid - mid.amax(-1, keepdim=True)
     #: tau moved DOWN to the next distinct value below the realized boundary: exactly the
     #: support a `k*` one tie-cluster too large would produce.

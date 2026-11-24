@@ -16,8 +16,6 @@
 #include "plan/factor_forward/contract.h"
 #include "plan/softmax_backward/contract.h"
 #include "plan/softmax_forward/contract.h"
-#include "plan/union_backward/contract.h"
-#include "plan/union_forward/contract.h"
 
 namespace fsla::plan {
 
@@ -47,7 +45,7 @@ struct ArmFamily<decode::Kernel> {
   static bool launch_reflects(const Facts& d) { return decode_args_reflect(d, decode_launch(d)); }
 };
 
-//: the family of each of the six entmax kernels, over `entmax_launch.h`'s matcher
+//: the family of each of the four entmax kernels, over `entmax_launch.h`'s matcher
 template <typename K>
 struct EntmaxFamily {
   using Facts = typename K::Descriptor;
@@ -79,12 +77,6 @@ struct EntmaxFamily {
            && launch.klass == launch.arm.lw * launch.arm.ipt;
   }
 };
-
-template <>
-struct ArmFamily<union_forward::Kernel> : EntmaxFamily<union_forward::Kernel> {};
-
-template <>
-struct ArmFamily<union_backward::Kernel> : EntmaxFamily<union_backward::Kernel> {};
 
 template <>
 struct ArmFamily<factor_forward::Kernel> : EntmaxFamily<factor_forward::Kernel> {};

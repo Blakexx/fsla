@@ -61,19 +61,9 @@ def _flatten(**named) -> dict:
 def producer(record: dict, **_params) -> dict:
     """The routing reference on one producer cell: the solve, its support, and the VJP through the public entry."""
     from fsla.routing.entmax.reference import entmax, entmax_forward
-    from fsla.routing.reference import _union_split_with_support, union_split
 
     cell = build_cell(record)
     drawn = producer_cells.realize(cell)
-    if cell.pairs:
-        read_logits, write_logits, mask = drawn
-        read, write = union_split(read_logits=read_logits, write_logits=write_logits, alpha=cell.alpha, mask=mask)
-        #: THE PACKED SUPPORT through the private entry on purpose: it is the reference's wire format, and a packing
-        #: change the semantic outputs cannot see is exactly what the kernel would then be gated against
-        packed = _union_split_with_support(read_logits=read_logits, write_logits=write_logits, alpha=cell.alpha,
-                                           mask=mask)[2]
-        return {"read": read, "write": write, "packed": packed}
-
     logits, mask = drawn
     p, support, tau = entmax_forward(z=logits, alpha=cell.alpha, dim=-1, mask=mask)
     grad_in = logits.clone().requires_grad_(True)

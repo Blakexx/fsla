@@ -9,7 +9,7 @@ with the model key beside the facts. Each kernel's device descriptor is that one
 
 `descriptor_of<K>(device, call)` is the descriptor of a call of kernel `K` on a device; `checked_descriptor<K>(words, device)` re-checks the words an op carries
 against `K`'s contract and refuses a descriptor read on another device than the one the call runs on. Both are templates over a kernel's generated definition, instantiated in
-`environment.cu` for `decode` and `prefill` (`checked_descriptor`, `descriptor_of`) and, for the six entmax kernels, `descriptor_of`: each entry builds its kernel's facts from its own arguments, and the device read is settled against all eight contracts.
+`environment.cu` for `decode` and `prefill` (`checked_descriptor`, `descriptor_of`) and, for the four entmax kernels, `descriptor_of`: each entry builds its kernel's facts from its own arguments, and the device read is settled against all six contracts.
 
 <a id="entries"></a>
 ## The entries

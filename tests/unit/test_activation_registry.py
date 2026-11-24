@@ -33,7 +33,6 @@ from fsla.routing.types import (
     SoftmaxActivation,
     TiedRouting,
     Topology,
-    UnionRouting,
     entmax,
     softmax,
 )
@@ -87,8 +86,6 @@ def test_an_unknown_tag_is_a_hard_panic_at_config_construction():
         properties_for(("sigmoid_top_k", 8), owner="test")
     with pytest.raises(UnknownActivation):
         EntmaxActivation(1.25)
-    with pytest.raises(UnknownActivation):
-        UnionRouting(width=4, alpha=3.0)
 
 
 def test_the_admissible_alphas_are_read_off_the_registry_not_listed_twice():
@@ -173,16 +170,6 @@ def test_mass_decay_accepts_every_ratified_activation():
     for activation in (softmax(), entmax(1.5), entmax(2.0)):
         topology = _topology(activation, activation)
         LeafMassDecay(dials=(torch.full((1, 4), 0.5),)).validate_against(topology)
-
-
-def test_union_routing_demands_exact_zeros_for_the_intersection_guarantee():
-    tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=False)
-    try:
-        with pytest.raises(ValueError, match="exact_zeros"):
-            UnionRouting(width=4, alpha=1.75)
-    finally:
-        del ACTIVATION_REGISTRY[tag]
 
 
 def test_two_exact_zero_sides_still_require_one_shared_solve():

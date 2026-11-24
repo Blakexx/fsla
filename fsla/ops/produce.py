@@ -33,7 +33,7 @@ from fsla.routing.masks import DECODE, PREFILL, Masks, density_of_masks, pack_di
 from fsla.routing.producer import Routing
 from fsla.routing.projection import _packed_router_logits
 from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
-from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT, UnionRouting
+from fsla.routing.types import READ_SUPPORT, WRITE_SUPPORT
 from fsla.values import Values
 
 __all__ = ["ProducerWeights", "activation_walks", "hidden_contiguous", "level_facts",
@@ -175,10 +175,10 @@ def _masks(routing: Routing, consumer: str, read_levels, write_levels, support, 
 def _solve_words(resolved, index: int, side: int, support: torch.Tensor, *, B: int, H: int) -> torch.Tensor | None:
     """The CUDA solve's own ``support_words`` of ``side``'s level ``index`` as ``[B, H, ceil(T / 32), width]`` (a free
     view: the stream axis is ``B * H``, ``H`` inner), or ``None`` where the solve wrote none for this side -- a level with
-    no support slice, a union level (its one slice is the union's, not either side's), a side the level's support
+    no support slice, a side the level's support
     flags do not name."""
-    level, offset, width = resolved.levels[index], resolved.support_offsets[index], resolved.branches[index]
-    if offset < 0 or isinstance(level, UnionRouting):
+    offset, width = resolved.support_offsets[index], resolved.branches[index]
+    if offset < 0:
         return None
     if not resolved.support_side_flags[index] & (READ_SUPPORT if side == 0 else WRITE_SUPPORT):
         return None

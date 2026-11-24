@@ -28,7 +28,7 @@ load(":cuda.bzl", "CudaUnitInfo", "cuda_unit", "declaration", "kernel_pattern")
 
 #: THE FAMILIES A BUILD SHIPS, each `arm_family`'d in `csrc/fsla/BUILD.bazel` with its declaration beside its kernel
 #: (`csrc/fsla/src/<family>/arms.bzl`): the build rules read this list and no other
-ARM_FAMILIES = ["decode", "union_forward", "union_backward", "factor_forward", "factor_backward", "softmax_forward", "softmax_backward"]
+ARM_FAMILIES = ["decode", "factor_forward", "factor_backward", "softmax_forward", "softmax_backward"]
 
 #: the tool every family's generated files come from (bazel/arm_emit.py), and the interpreter that runs it
 _EMIT_ATTRS = {

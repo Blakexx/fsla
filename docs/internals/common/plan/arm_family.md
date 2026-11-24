@@ -5,7 +5,7 @@
 and `launch_reflects` (whether the launch function's arguments for a point are that point's facts). One specialization is written for each kernel whose arms the build generates:
 
 - decode's is its matcher's own names (`decode_reach`, `decode_arm`, `decode_args_reflect`; [`decode_launch.md`](decode_launch.md)), the key `(d_v, levels, decay)`.
-- the six entmax kernels' are one template, `EntmaxFamily<K>`, over [`entmax_launch.md`](entmax_launch.md)'s matcher: the key is the arm's (`lw`, `ipt`, `alpha15` where the kernel has an
+- the four entmax kernels' are one template, `EntmaxFamily<K>`, over [`entmax_launch.md`](entmax_launch.md)'s matcher: the key is the arm's (`lw`, `ipt`, `alpha15` where the kernel has an
   alpha, `logit`, `value`, the dtypes as codes).
 
 A family joins the generator by being specialized here and named in `ARM_FAMILIES` (`bazel/arms.bzl`); the generator picks it by the kernel the contexts file names. A key's field is an integer;

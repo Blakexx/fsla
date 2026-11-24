@@ -235,7 +235,7 @@ SUBJECTS = {
                        level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
                             "the producer's batched multi-level solve",
-                            level="kernel", symbol="(union|factor|softmax)_forward_kernel",
+                            level="kernel", symbol="(factor|softmax)_forward_kernel",
                             stamp="csrc_build_stamp"),
     "layer_prefill": Subject("layer_prefill", "layer", layer_prefill,
                              "the layer's stateless prefill, one segment: the producer and the op, the output "
