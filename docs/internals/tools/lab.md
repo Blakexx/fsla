@@ -393,7 +393,7 @@ Every item below cost a wrong number before the lab existed; each is now a guard
 
 ## <a id="parts"></a>Part harnesses
 
-An experiment may include the kernels' own headers (its compile has `csrc/fsla/src` on the include path, `//csrc/fsla:headers`, and the graph's
+An experiment may include the kernels' own headers (its compile has `csrc/fsla/src` on the include path. Every experiment depends on the harness's own kernel headers alone, `//csrc/fsla:harness_headers`; one that includes a kernel's header names the header set in `_DEPS`, `measure/lab/BUILD.bazel`, so an edit to a kernel's header rebuilds the experiments that name it and no other. It has the graph's
 CUDA rule's flags), so a component is measured as the kernel runs it, alone and on real inputs, before its
 cost is read in the composed ledger (KERNEL_STANDARDS section 19).
 

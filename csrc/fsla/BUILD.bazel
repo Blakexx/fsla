@@ -54,6 +54,19 @@ include_root(
     deps = [":hardware"],
 )
 
+#: THE HEADERS THE LAB'S HARNESS INCLUDES (`measure/lab/lab.cuh`): every experiment depends on these alone, so an edit to a kernel's
+#: own header rebuilds only the experiments that include it (docs/internals/tools/lab.md#graph)
+include_root(
+    name = "harness_headers",
+    hdrs = [
+        "src/common/arch_caps.cuh",
+        "src/common/atoms/warp.cuh",
+        "src/common/structure_switch.cuh",
+    ],
+    roots = ["src"],
+    deps = [":hardware"],
+)
+
 #: each arm family's selection header and Python table (docs/build-graph.md#arms)
 fsla_headers(
     name = "generated",

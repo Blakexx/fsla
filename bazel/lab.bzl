@@ -115,9 +115,10 @@ _lab_experiment = rule(
           "listings, the demangled names, the toolkit's version) and the compile's diagnostics; its checks are the target's validation.",
 )
 
-def lab_experiment(name, src, includes = []):
+def lab_experiment(name, src, includes = [], deps = []):
     """The lab experiment `name` (`src`, its source): its unit, its binary and the outputs the lab reads. `includes`: the sources of
-    other experiments it includes by name (`call_pair` is built of two others')."""
+    other experiments it includes by name (`call_pair` is built of two others'). `deps`: the kernels' headers it includes beyond the
+    harness's own (`//csrc/fsla:harness_headers`), so that an edit to a kernel's header rebuilds only the experiments that name it."""
     cuda_unit(
         name = name + "_unit",
         srcs = [src],
@@ -126,11 +127,11 @@ def lab_experiment(name, src, includes = []):
         copts = _COPTS,
         host_cc = "@host_cc//:identity.txt",
         deps = [
-            "//csrc/fsla:headers",
+            "//csrc/fsla:harness_headers",
             ":lab_headers",
             "@warpline//:host",
             "@warpline//:stamp",
-        ],
+        ] + deps,
     )
 
     #: the binary is named as its pack names it (`<name>.<arch>`)

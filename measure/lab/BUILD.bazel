@@ -10,7 +10,7 @@ package(default_visibility = ["//visibility:public"])
 #: this package's part of the tree the checks read
 tree_part()
 
-#: `lab.cuh`, which every experiment includes (the kernels' headers are `//csrc/fsla:headers`, warpline's `@warpline//:stamp`)
+#: `lab.cuh`, which every experiment includes (with the harness's own kernel headers, `//csrc/fsla:harness_headers`, and warpline's `@warpline//:stamp`)
 include_root(
     name = "lab_headers",
     hdrs = ["lab.cuh"],
@@ -22,10 +22,16 @@ _INCLUDES = {
     "call_pair": ["experiments/carry_window.cu", "experiments/intra_window.cu"],
 }
 
+#: the experiments that include a kernel's own headers: the header sets they name
+_DEPS = {
+    "mask_prepare_time": ["//csrc/fsla:headers"],
+}
+
 [lab_experiment(
     name = src[len("experiments/"):-len(".cu")],
     src = src,
     includes = _INCLUDES.get(src[len("experiments/"):-len(".cu")], []),
+    deps = _DEPS.get(src[len("experiments/"):-len(".cu")], []),
 ) for src in glob(["experiments/*.cu"])]
 
 #: THE GATE'S LAB BUILD (`//:gate`): every experiment's checked build -- its compile, its facts and its LabCheck -- so a commit that
