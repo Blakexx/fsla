@@ -194,7 +194,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 **The carry's work is partitioned by ONE descriptor, the carve**
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the call's densities: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
 a CARVE — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(their live digits a window, listed in the packets the gather pass writes -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, read from the words and counts the mask-preparation pass prepares -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -202,7 +202,7 @@ read overlaps every write -- an exact-zero pair, with its exact-zero gradient, c
 hard sparsity the kernels compact. A fold warp's tile is its side's lists by its operand rows; a readout warp holds
 every leaf for its channels, so where the two sides' carves differ the state reaches the readout through an image
 (on hopper where they are equal too, the image then laid along the fold's own lists: MEASURED 1.3% over the divergent cell's window, [`carry_window`](lab/carry_window.md); a readout on the fold's own registers is not built). Every kernel that
-depends on the geometry derives the carve with the one rule (`cta_carve.h`) from the level widths and the call's densities -- the gather pass groups its stream by it, the carry addresses by it -- so the kernels of a call agree by
+depends on the geometry derives the carve with the one rule (`cta_carve.h`) from the level widths and the call's densities -- the mask-preparation pass groups its words by it, the gather pass groups its stream by it, the carry addresses by it -- so the kernels of a call agree by
 construction and none states a rule of its own. The density is the one measured statistic a kernel keys on
 (CONSTITUTION R9): it chooses a layout among exact forms once a call and never a result, and the rule can change with
 every kernel still working for whatever it returns.
@@ -247,13 +247,14 @@ attribute is set. Residency is asserted at the seam from the launch size, as a r
 
 ## 6. The kernels
 
-Five kernel families, in one call's order: the producer writes the bundle; the gather pass reads it once and writes the carry its
-packets (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
+Six kernel families, in one call's order: the producer writes the bundle; the mask-preparation pass reads its masks once
+and writes the words and counts the gather and the carry read (section 6.2); the gather pass writes the carry its
+packets from them (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
 A buffer is judged by its LIFETIME before its size (Blake, 2026-10-15: two structures -- lifetimes pay for the
-primitives, which stay purposeful): the bundle, the facts and the lists are working memory, one layer at a time and
+primitives, which stay purposeful): the bundle, the prepared words and counts and the packets are working memory, one layer at a time and
 bounded by the segment and the heads in flight, where attention's KV cache is permanent. That pays for per-token bytes
 an attention layer does not have; it does not license waste, so a primitive's bytes are cut only where its purpose
 survives.
@@ -267,18 +268,22 @@ line (its hopper form: section 9); the solves are their own kernels
 ([`internals/entmax/entmax.md`](internals/entmax/entmax.md)), and the torch composition behind the same call is the
 fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 
-### 6.2 The gather pass
+### 6.2 The mask-preparation pass and the gather pass
 
-On hopper the gather pass reads a side's masks and planes and writes the carry's PACKETS (RULED 2026-11-18: the carry
+On hopper the MASK-PREPARATION PASS, run by the op before its gather and its carry, reads the call's masks and writes
+into the op's own workspace each group's word and its window counts, for both sides of every level that has a mask; the
+gather and the carry read those blind, and the mask's format is plain bits
+([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)). The gather pass reads a
+side's prepared write-side words and counts and its planes and writes the carry's PACKETS (RULED 2026-11-18: the carry
 consumes them blindly and the gather lays them out as is best): for a block of 16 digits a side walks by its lists, a
 window's live tokens' value lines -- a token once a group of digits it is live in (RULED 2026-11-19) -- with each
 membership's place, its byte and its token's index. The read side has no packet: a carry CTA lists its own readers
-from the read mask, whose format carries the counts the listing needs. A carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
-pass runs in its own CTAs beside the carry's, in one grid, the stream a ring read by a unit of 16 carry CTAs (RULED 2026-11-15 and
+from the prepared read-side words and counts. A carry CTA forms its own coefficients, loading each token's row on its box's other level itself (RULED 2026-11-23). The
+gather pass runs in its own CTAs beside the carry's, in one grid, the stream a ring read by a unit of 16 carry CTAs (RULED 2026-11-15 and
 2026-11-23); the card's split between the two and a unit's start are not designed ([`architecture/hopper-gather.md`](architecture/hopper-gather.md),
 [`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-packets)). A mask bit of 0 is the caller's guarantee that the entry's row is zero and a 1 guarantees nothing: the pass reads no
-row to decide what to skip. No gather kernel is built on this line. Where the factor products and the tile
-unions come from, and the masks' format on the surface, are open ([`open-work.md`](open-work.md), row A-e).
+row to decide what to skip. No gather kernel and no mask-preparation pass is built on this line. Where the factor
+products and the tile unions come from is open ([`open-work.md`](open-work.md), row A-e).
 
 ### 6.3 The carry — the inter-window term
 

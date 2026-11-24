@@ -807,14 +807,17 @@ method is a procedure with a gate, not a memory.
    the data's alone -- the liveness words and unions, each sparse level's lists (tokens in order, ranks, boundaries,
    totals), the per-token factor products -- and nothing of a card's: no exponent, no coefficient in an operand's
    format, no layout offset. What a card's step needs beyond the entry it forms where it expands the byte, once at
-   the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13, twice; 2026-11-15) NO PASS HANDS THE CARRY A LIST OR AN
-   OPERAND: the gather pass reads a sparse level's mask in its own CTAs and writes what a group of carry CTAs shares
+   the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13, twice; 2026-11-15; 2026-11-24) NO PASS HANDS THE CARRY A LIST OR AN
+   OPERAND: the mask-preparation pass reads each side's masks once and writes the group words and counts the gather
+   and the carry read blind (`docs/architecture/hopper-gather.md#the-mask-preparation-pass`); the gather pass reads a
+   sparse level's prepared words and counts in its own CTAs and writes what a group of carry CTAs shares
    -- a sparse block's live tokens once each, in token order, their values and sparse bytes, and the boundaries a
    CTA takes its view by (`docs/architecture/hopper-gather.md`). A coefficient is one carry CTA's alone, and that
    CTA forms it where it stages its step's operands (Blake, 2026-11-15: "the expansion is unique to each final cta,
-   not something shared. each final cta should own it"; the pass is the hopper op's own, its CTAs beside the
-   carry's in one grid, not the card-neutral indexer the heading rules). The read side's stream holds each entry's
-   token index, where the drain adds. Where the factor products
+   not something shared. each final cta should own it"; the gather pass is the hopper op's own, its CTAs beside the
+   carry's in one grid, not the card-neutral indexer the heading rules). The read side has no packet: a carry CTA
+   lists its readers from the prepared read-side words and counts, each entry's token index being where the drain
+   adds. Where the factor products
    and the tile unions then come from is OPEN. RULED AND NOT BUILT: the pass this tree builds emits the heading's
    form (`docs/open-work.md`, row A-e); blackwell's form is NOT STATED, no blackwell pass being designed.
 6. `[MACHINE]` CONVERSIONS RUN ON THE FMA PIPE: an fp32 to integer conversion is one FFMA adding 1.5 x 2^23 (the

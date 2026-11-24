@@ -58,22 +58,24 @@ form. What the carry is handed, a (CTA, window):
 - THE READ SIDE HAS NO PACKET. Fanned along the level the write side walks whole, a unit's CTAs each hold a different
   block of read digits, so a reader list is one CTA's alone, and that CTA makes it (Blake, 2026-11-23: "each cta read
   step just does the packet formation itself, since its largely going to be unique work per cta anyway"; "if the
-  repeated work is cheap and saves memory, then its worth doing"). A CARRY CTA LISTS ITS OWN READERS from the read
-  mask: a pass is 8 slots, a slot 16 readers of one read digit -- the digit's live tokens of the window, in order; a
-  reader's output line is its token's and a slot's tile its digit's, each one add from use; a slot no reader holds is
-  a pad, a zero byte. THE MASK'S FORMAT CARRIES THE COUNTS the listing needs, a word's count of its digit's live tokens
-  before it, written by the library's mask packing; a mask packed otherwise breaks it as a wrong mask does (Blake,
-  2026-11-23: "i think its fine to say just use our mask packing code or it will break").
+  repeated work is cheap and saves memory, then its worth doing"). A CARRY CTA LISTS ITS OWN READERS from the
+  prepared read-side words and counts: a pass is 8 slots, a slot 16 readers of one read digit -- the digit's live
+  tokens of the window, in order; a reader's output line is its token's and a slot's tile its digit's, each one add
+  from use; a slot no reader holds is a pad, a zero byte. THE CARRY READS NO MASK AND COUNTS NOTHING: a prepared
+  word's count is the group's live tokens of the window before it
+  ([the mask-preparation pass](hopper-gather.md#the-mask-preparation-pass)).
   MEASURED ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (i) to (l)): the lists consumed, with no read
   packet -- each fold warp listing two read digits' readers of the next window behind its image, the readout and the
-  drain taking a reader's line from the lists -- exact, 5,645 cycles a window at 132 CTAs and 5,110 at one, against
+  drain taking a reader's line from the lists, the listing reading a digit's own mask words with counts handed to
+  it -- exact, 5,645 cycles a window at 132 CTAs and 5,110 at one, against
   the fixed readout's 4,278 and 4,251 and the best packet-driven row's 4,945 and 4,871. NOT BUILT, each named on that
-  page: the fold's mask words loaded a window ahead (they are loaded and used at once, and the form is 10.5% dearer at
-  132 CTAs than at one); the drain's adds trimmed (its chunk is 181 instructions against the fixed drain's 63). NOT
-  MEASURED: a count of passes from the lists; a digit of more than 16 readers a window; a reader's byte on its digit
-  loaded.
-- NOT BUILT: the gather that writes the fold's packets ([`hopper-gather.md`](hopper-gather.md)); the lab's host played
-  it.
+  page: the fold's words and counts loaded a window ahead (the lab's listing loads and uses them at once, and the form
+  is 10.5% dearer at 132 CTAs than at one); the drain's adds trimmed (its chunk is 181 instructions against the fixed
+  drain's 63). NOT MEASURED: a count of passes from the lists; a digit of more than 16 readers a window; a reader's
+  byte on its digit loaded.
+- NOT BUILT: the mask-preparation pass; the gather that writes the fold's packets from the prepared write-side words
+  and counts ([`hopper-gather.md`](hopper-gather.md)); the carry's listing from prepared GROUP words; the lab's host
+  played the first two.
 
 ## The hand-off
 
@@ -83,8 +85,9 @@ a ring is possible ... so gather basically just becomes write side only"). A blo
 packets -- is A RING of a few windows (RULED 2026-11-15), written by gather CTAs beside the carry's in one grid and read
 by the unit's 16 CTAs, which are all of its readers; the gather advances when the slowest of them has ("isnt it
 basically just a ring and the ctas need to signal when the ring can continue"). No barrier crosses CTAs without a
-cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the ring: its size is the
-descriptor's, the same whatever the densities are, which the host never reads.
+cluster, so the signals are words in global memory a waiting CTA polls. The workspace is the op's own
+([the mask-preparation pass](hopper-gather.md#the-mask-preparation-pass)): it holds the ring and the prepared words and
+counts, and its size is the descriptor's, the same whatever the densities are, which the host never reads.
 
 NOT DESIGNED PAST THAT, and designed with the gather: the split of a card's multiprocessors between gather CTAs and
 units; how a unit's 16 CTAs start together on persistent CTAs; what the ring's waits cost where a unit's CTAs drift
@@ -98,7 +101,7 @@ at a token list's values, an eighth of the carry's work ([`lab/gather_pass.md`](
 
 | the role | threads | registers a thread | what it holds |
 |---|---|---|---|
-| a FOLD warpgroup a box, two | 128 each | 176 | the box's state, 16 accumulator sets of 8; it lands its packets, expands its entries' coefficients and steps them; behind its image a warp lists two read digits' readers of the next window |
+| a FOLD warpgroup a box, two | 128 each | 176 | the box's state, 16 accumulator sets of 8; it lands its packets, expands its entries' coefficients and steps them; behind its image a warp lists two read digits' readers of the next window from the prepared words and counts |
 | the READOUT warpgroup | 128 | 104 to 112 | a pass's 8 slots' sums, 64 a thread, and two passes of entries and rows on their way |
 | DRAIN warps, four | 32 each | 48 to 56 | a batch of the panel's lines; a reader's output line is the CTA's lists' |
 
@@ -153,17 +156,19 @@ its real signature, shared-memory tenants and barriers, the composition correct 
 time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
 1. The prefill launch function (its carve, units and window are built: [`internals/common/plan/prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the carve, the folds' split, the units, the window, the grid, the packets'
-   capacities, the ring's size and the workspace's layout, from the descriptor's facts alone; and the mask's counts in
-   the library's packing.
-2. The gather from the write masks: fold packets through the ring ([`hopper-gather.md`](hopper-gather.md)), and what
-   of [the hand-off](#the-hand-off) is not designed.
-3. The carry on real packets, the state zero at entry: `num` exact at the skeleton's cell; then the scales; then the
-   den.
-4. The intra beside it ([`lab/intra_window.md`](../lab/intra_window.md)), and the op's two halves against
-   `tests/oracle/test_prefill_vs_oracle.py`.
-5. The state at entry and exit, paged and dense.
-6. The contract's width: value widths, level widths, depth 3 and 4, every pattern of listed and whole levels (R10).
-7. The climb.
+   capacities and the ring's size, from the descriptor's facts alone, and the workspace's layout (where the prepared
+   words and counts sit in it is NOT DECIDED).
+2. The mask-preparation pass ([`hopper-gather.md`](hopper-gather.md#the-mask-preparation-pass)).
+3. The gather from the prepared write-side words and counts ("gather first isnt it simple and an easy confimration of
+   risk"): fold packets through the ring ([`hopper-gather.md`](hopper-gather.md)), and what of
+   [the hand-off](#the-hand-off) is not designed.
+4. The carry on real packets and prepared read-side words, the state zero at entry: `num` exact at the skeleton's
+   cell; then the scales; then the den.
+5. The intra beside it ([`lab/intra_window.md`](../lab/intra_window.md)), and the op's two halves against
+   `tests/oracle/test_prefill_vs_oracle.py`; then the producer.
+6. The state at entry and exit, paged and dense.
+7. The contract's width: value widths, level widths, depth 3 and 4, every pattern of listed and whole levels (R10).
+8. The climb.
 
 ## Answered in the kernel, not before it
 
@@ -171,9 +176,9 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
   wait-after-issue debt).
 - UNEVEN HALVES: what a fold waits where its box's lists are quiet and its neighbour's busy; the split along a level
   walked whole is its alternative (R20).
-- THE LISTING'S COSTS the lab left unbuilt: the fold's mask words loaded a window ahead, and the drain's adds at a
+- THE LISTING'S COSTS the lab left unbuilt: the fold's prepared words and counts loaded a window ahead, and the drain's adds at a
   load, a shift and an address an add; a count of passes from the lists; a denser mask. If the form cannot be brought
-  under the packet-driven one, reader lists the gather builds once a head and keeps are the fallback (Blake,
+  under the packet-driven one, the fallback is reader lists the gather would then write once a head and keep (Blake,
   2026-11-23: "I recommend the first, tuned in the real kernel, with the second as the fallback." "ok go") -- taken
   on his word alone ("if we run into that you need to stop nad let me know before doing it").
 - THE READ SIDE'S COEFFICIENT FORM (RULED 2026-11-14, chosen by measurement): a reader's byte on its digit multiplied

@@ -49,7 +49,8 @@ mathematics. Each call builds its own DESCRIPTOR -- the validated run-time conte
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
 call's steps: the prefill's holds the ring
-([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)) and its layout is owed ([`open-work.md`](open-work.md) A-g); decode needs
+([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-hand-off)) and the words and counts the
+mask-preparation pass prepares ([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)), and its layout is owed ([`open-work.md`](open-work.md) A-g); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 
 `decode_step_gated` has no host participation and is capturable in a CUDA graph. A batch-head whose write atoms the state can neither address nor
@@ -211,7 +212,7 @@ digit is an exact zero, with no floor under it; an all-zero row is a dead token 
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
 tensor per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
 row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
-intra and decode read rows, and the carry reads rows through the masks' words). The bundle carries NO liveness: which
+intra and decode read rows, and the carry reads rows through the words the masks are prepared into). The bundle carries NO liveness: which
 digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
 <a id="grouped-queries"></a>
 GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):

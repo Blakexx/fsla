@@ -64,5 +64,6 @@ other cases (a density of 128, four levels, two levels of 16 digits, one level o
 ## What is NOT here
 
 The grid's split between the gather and the carry CTAs, the ring's size, the workspace's layout and the segment length wait on
-[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The density input reaches the prefill's kernels once they are built: the call carries it
+[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and, for the workspace, on
+[the mask-preparation pass's open points](../../../architecture/hopper-gather.md#the-mask-preparation-pass), and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The density input reaches the prefill's kernels once they are built: the call carries it
 (`fsla/engine/prefill_call.py`, [`../../engine/prefill_call.md`](../../engine/prefill_call.md)) and no kernel reads it yet. `fsla.ops.prefill` keeps refusing by name.

@@ -4,16 +4,54 @@ STATUS: PROPOSED, NOT LOCKED. No gather kernel is built on this line; this page 
 from. A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet measured says so; where
 nothing is decided the page says OPEN.
 
-The gather is the hopper op's own kernel work (RULED 2026-11-15: a first-class kernel with an explicit design): it
-turns a side's masks and planes into the stream a group of carry CTAs shares
+The gather is the hopper op's own kernel work (RULED 2026-11-15: a first-class kernel with an explicit design): a
+VALUE RE-ORDERING KERNEL that turns a side's planes, by the words and counts the
+[mask-preparation pass](#the-mask-preparation-pass) prepared, into the stream a group of carry CTAs shares
 ([`hopper-carry.md`](hopper-carry.md#the-packets)). What one carry CTA alone uses, that CTA makes.
+
+## The mask-preparation pass
+
+RULED 2026-11-24. ONE MASK-PREPARATION PASS, run by the op before its gather and its carry, reads the call's masks and
+writes into the op's workspace, for BOTH SIDES (read and write) of every level that has a mask. The owner: "why not
+also prepare write side. if it does that, do we even need gather to do that for us. then gather can just read those
+and just be a value re-ordering machine just from the blind masks"; of the whole form: "it seems fine".
+- A GROUP'S WORD: a word of 32 tokens, the group's digits' mask words ORed -- a token's bit is set where it is live on
+  any digit of the group; at a group of one digit the word is the mask's own.
+- A WORD'S COUNT: the group's live tokens of the WINDOW before that word, counted from the window's start.
+- THE GATHER AND THE CARRY READ THEM BLIND: neither reads a mask its own way and neither counts. The gather reads the
+  prepared write-side words and counts and places each live token's values and coefficient bytes at its place, the
+  count before the token's word plus the popcount of the word's lower bits; it reads no mask and makes no list. The
+  carry takes its readers from the prepared read-side words and counts ([`hopper-carry.md`](hopper-carry.md#the-packets)).
+- THE MASK'S FORMAT IS PLAIN BITS: a bit a token, a digit, a side, a level. It carries no counts.
+- THE GROUP SIZES ARE NOT WRITTEN OUT: every kernel that needs a level-side's group size computes it from the call's
+  density by the one rule (`prefill_carve`, [`cta_carve.md`](../internals/common/plan/cta_carve.md)), as the pass does.
+  The density stays the call's input, which is why the pass is one read of the masks and not two.
+- THE WORKSPACE IS THE OP'S OWN (the owner: "the workspace jsut holds the workpsace, we own it and its op internal,
+  its whatever want"): it holds the gather's ring AND the prepared words and counts, and whatever else the op wants.
+- MEASURED ([`lab/mask_prep.md`](../lab/mask_prep.md), an H100, 132 CTAs, every word and count exact): the mask
+  once-read, 4.93, 3.46 and 2.60 SM-cycles a token a sparse level-side at groups of 1, 4 and 16 digits, at either
+  density measured; the mask in cache, about 1.0 at every group size, what bounds it there being open.
+- NOT BUILT: the pass in the library; the gather; the carry's listing from prepared GROUP words (the lab's listing,
+  [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
+  handed to it).
+- ITS PLACE IN THE WORKSPACE IS SIZED WITHOUT THE DENSITIES, which the host never reads
+  ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the host sizes it for the group size that needs
+  the most. At a word of 4 bytes and a count of 2 (the lab's widths), that is groups of one digit, where the word is
+  the mask's own and only the counts are stored: 2 bytes a mask word, half the level-side's mask. A group of 4 digits
+  or more stores a word and a count a group, at most 1.5 bytes a mask word. NOT BUILT.
+- NOT DECIDED: whether the pass is its own kernel or a role in the gather's launch; the layout of the prepared words
+  and counts inside that place; whether a window's total a group is stored beside the counts.
+- THE INTRA, in the owner's words, NOT YET CHECKED against the kernel: "the intra doesnt use makss, so it can start
+  alongisde that mask pass".
 
 ## What it is handed
 
 The bundle's planes as the producer wrote them ([`ARCHITECTURE.md` section 1](../ARCHITECTURE.md#1-what-the-kernel-computes)):
 a side's levels, u8 rows tile-major, each row's fp32 scale; the values, bf16 token-major, each token's fp32 scale; a
-sparse level's MASK, a bit a digit a token; and THE PLAN (CONSTITUTION R24), which says which levels a side walks
-by their lists and which are a box's operand -- the gather does what the plan says and reads no data to decide it. THE MASK'S ORDER IS OPEN: the lab reads it DIGIT-MAJOR -- a digit's
+sparse level's MASK, plain bits, a bit a digit a token, which the [mask-preparation pass](#the-mask-preparation-pass)
+turns into the words and counts the gather reads; and THE PLAN (CONSTITUTION R24), which says which levels a side
+walks by their lists and which are a box's operand -- the gather does what the plan says and reads no mask and no
+data to decide it. THE MASK'S ORDER IS OPEN: the lab reads it DIGIT-MAJOR -- a digit's
 bits of a window, 32 words -- so that a warp turns a digit around from one contiguous load; the public surface's
 order is the producer's readers' measured access, and this reader is the first measured.
 
@@ -30,26 +68,28 @@ distribute load"): a coefficient is one carry CTA's, and that CTA forms it.
   is padded on the coefficient side, a zero byte, never by zero value lines. With each membership: its place in its
   step's tile, its byte on its digit, its token's index. THE MERGE RULE (RULED 2026-11-19, the starting rule): never
   add a tensor step to save a line; among the layouts of fewest steps, the fewest lines.
-- A BOX'S ROWS ON ITS OTHER LEVEL are not the pass's: the carry loads them by the token's index (RULED 2026-11-23).
-- THE READ SIDE IS NOT THE PASS'S: a carry CTA lists its own readers from the read mask
+- A BOX'S ROWS ON ITS OTHER LEVEL are not the gather's: the carry loads them by the token's index (RULED 2026-11-23).
+- THE READ SIDE IS NOT THE GATHER'S: a carry CTA lists its own readers from the prepared read-side words and counts
   ([`hopper-carry.md`](hopper-carry.md#the-packets)).
 - A WINDOW'S COUNT of a block's packets is the call's own data, decided inside the call
-  ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)).
-- WHAT SAYS WHERE A TOKEN GOES is the input masks (2026-11-13); the pass reads no data to decide a walk.
+  ([`CONSTITUTION.md` R24](../CONSTITUTION.md#r24)); whether a window's total a group is stored beside the prepared
+  counts is NOT DECIDED.
+- WHAT SAYS WHERE A TOKEN GOES is the prepared write-side words and counts (2026-11-24): the count before the token's
+  word plus the popcount of the word's lower bits; the gather reads no mask and no data to decide a walk.
 - NOT THE FORM, each measured: a list a digit with its value runs, and coefficient runs in the step's format laid here
   -- the pass that made them cost as much as the carry ([`lab/gather_pass.md`](../lab/gather_pass.md)); a token-list
   stream the fold lays its own slots from ([`lab/carry_window.md`](../lab/carry_window.md)).
-- NOT MEASURED: the pass writing the packets from the write masks; its bytes a token in the packet form.
+- NOT MEASURED: the gather writing the packets from the prepared write-side words and counts; its bytes a token in the packet form.
 
 ## The CTA
 
 OPEN. What the labs ran is one CTA a window of 512 threads, every thread producing and its first thread issuing
 every copy. The carry's learnings, to be applied where a measurement shows this kernel bound by its own work:
-- A LOAD IS ISSUED A STAGE AHEAD OF ITS USE, two stages in flight (KERNEL_STANDARDS 32): a sparse block's mask and
-  rows a block ahead, a dense block's rows a dense block ahead.
+- A LOAD IS ISSUED A STAGE AHEAD OF ITS USE, two stages in flight (KERNEL_STANDARDS 32): a sparse block's prepared
+  words and counts and rows a block ahead, a dense block's rows a dense block ahead.
 - WHAT DOES NOT CHANGE IS MADE ONCE: which tokens a window's are depends on the window and the sparse block alone.
-- NO DECISION ON DATA IN A STEP'S PATH: a list is turned around in a fixed count of trips whatever is live; a token
-  not live goes to a spare place, not past a branch.
+- NO DECISION ON DATA IN A STEP'S PATH: a token's place is computed in a fixed count of trips whatever is live; a
+  token not live goes to a spare place, not past a branch.
 - NO WARP OF A GROUP THAT MEETS HOLDS THE GROUP'S LONE JOBS: the carry's fold warpgroup waited at its rendezvous
   for the one warp that issued its copies ([`lab/carry_window.md`](../lab/carry_window.md)); whether this kernel
   wants its issuing on warps of their own is OPEN, and KERNEL_STANDARDS 5 asks a measurement for it.
@@ -57,8 +97,8 @@ every copy. The carry's learnings, to be applied where a measurement shows this 
 
 ## Its order of work
 
-OPEN. The passes the labs ran moved a window's live tokens' lines from lists the host made; lists from the masks, as
-the digit lists' kernels make theirs, are not run for the packets. The lab kernels' timelines are their sources'
+OPEN. The passes the labs ran moved a window's live tokens' lines from lists the host made; a gather placing them
+from the prepared words and counts is not run for the packets. The lab kernels' timelines are their sources'
 headers ([`lab/gather_pass.md`](../lab/gather_pass.md)).
 
 ## Beside the carry
@@ -84,16 +124,17 @@ are [`lab/gather_pass.md`](../lab/gather_pass.md)'s and follow the card a sessio
   units take a sixth off. What binds that kernel is NOT ISOLATED.
 - MEASURED IN THE CARRY ([`lab/carry_window.md`](../lab/carry_window.md)): the fold placing a token view's value lines is a
   quarter over the block form's window, whose value runs land in place. NOT MEASURED: the boundaries' fields; the
-  scales; the hand-off; the pass making the packets from the masks; a denser cell in the carry.
+  scales; the hand-off; the gather making the packets from the prepared words and counts; a denser cell in the carry.
 
 ## To be ruled before it is built
 
 1. The ring where the card's memory binds the pass: the labs' ring rows ran on 8 and 16 CTAs, where a CTA's copies do.
 
-2. The mask's order on the public surface.
+2. The order of the mask's words on the public surface (the format is plain bits).
 3. The split of a card's multiprocessors between gather CTAs and the carry's units, and a unit's start.
 4. What the ring does on a card whose cache does not hold it: the token list cost the carry the same read before or
    not while its boxes read it together; a ring's waits and a denser cell's bytes are not measured.
+5. The mask-preparation pass's open points, listed in [its section](#the-mask-preparation-pass).
 
 ## Blackwell
 
