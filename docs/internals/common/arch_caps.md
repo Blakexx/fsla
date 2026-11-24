@@ -19,6 +19,8 @@ empty row (`tabulated` refuses it first).
 | <a id="bf16-simd-fma"></a>`bf16_simd_fma` | INSTRUCTION | `fma.rn.bf16x2`, available at sm_80 (measured 2026-08-28): a product is one instruction through a `-0.0` addend, bit-identical to `mul.rn.bf16x2` (one rounding of the exact product; the addend's sign keeps a signed zero) |
 | `cc` | FACT | the compute capability x 10 |
 | `regs_per_sm` | FACT | the SM's registers, which the plans read (the state's registers) |
+| `smem_per_sm` | FACT | the shared memory an SM holds, in bytes: what a kernel's shared-memory layout is serviced from ([`smem_layout.md`](smem_layout.md)) |
+| `smem_per_cta_optin` | FACT | the most shared memory one CTA may reserve, in bytes: the layout's budget is no more |
 
 AN INSTRUCTION FLAG is read by an atom, where only the instruction differs between architectures of one family
 (`docs/internals/common/atoms/math.md`'s bf16 pair arithmetic picks its form by `bf16_simd_arith` and `bf16_simd_fma`).

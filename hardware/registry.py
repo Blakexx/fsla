@@ -271,6 +271,8 @@ class Architecture:
     cc: int
     family: str
     regs_per_sm: int
+    smem_per_sm: int
+    smem_per_cta_optin: int
     instructions: tuple[str, ...]
 
 
@@ -288,7 +290,7 @@ def _point(data: dict, fname: str, path: Path) -> int:
 
 def architecture(name: str, root: Path = ROOT) -> Architecture:
     """The architecture the device part `name` states, or a RegistryError: a part names its `arch` and `family`, states `cc` (the compute capability its `arch` names),
-    `regs_per_sm` and `instructions`, each as one point or set."""
+    `regs_per_sm`, `smem_per_sm`, `smem_per_cta_optin` and `instructions`, each as one point or set."""
     data = part(name, root)
     path = root / "parts" / f"{name}.json"
     arch = data.get("arch")
@@ -297,13 +299,13 @@ def architecture(name: str, root: Path = ROOT) -> Architecture:
     family = data.get("family")
     if not isinstance(family, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", family):
         raise RegistryError(f"{path}: a device part names its family (`family`: `hopper`)")
-    cc, regs = (_point(data, f, path) for f in ("cc", "regs_per_sm"))
+    cc, regs, smem, optin = (_point(data, f, path) for f in ("cc", "regs_per_sm", "smem_per_sm", "smem_per_cta_optin"))
     if cc != cc_of(arch):
         raise RegistryError(f"{path}: cc is {cc}, which is not the compute capability {arch} names ({cc_of(arch)})")
     held = data["facts"].get("instructions", {}).get("value")
     if not isinstance(held, dict) or set(held) != {"set"}:
         raise RegistryError(f"{path}: a device part states instructions as one {{\"set\": [members]}}")
-    return Architecture(arch, name, cc, data["family"], regs, tuple(held["set"]))
+    return Architecture(arch, name, cc, data["family"], regs, smem, optin, tuple(held["set"]))
 
 
 def architectures(root: Path = ROOT) -> list[Architecture]:
@@ -621,6 +623,8 @@ CAPS = (
     ("bf16_simd_arith", "bool", "instruction", "elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith"),
     ("bf16_simd_fma", "bool", "instruction", "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"),
     ("regs_per_sm", "int", "fact", ""),
+    ("smem_per_sm", "int", "fact", "the shared memory an SM holds, in bytes. see docs/internals/common/smem_layout.md"),
+    ("smem_per_cta_optin", "int", "fact", "the most shared memory one CTA may reserve, in bytes"),
 )
 
 
@@ -631,7 +635,7 @@ def _camel_k(name: str) -> str:
 def arch_header(archs: list[Architecture]) -> str:
     """`common/hardware.cuh`'s text: the Caps row of every architecture a device part states, the families, the builds and each build's traits."""
     def cap(a: Architecture, name: str, kind: str) -> str:
-        value = {"cc": a.cc, "regs_per_sm": a.regs_per_sm}[name] if kind == "fact" else ("true" if name in a.instructions else "false")
+        value = getattr(a, name) if kind == "fact" else ("true" if name in a.instructions else "false")
         return f".{name} = {value}"
 
     #: a family is one a device part states, numbered in the architectures' order

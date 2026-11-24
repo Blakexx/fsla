@@ -121,9 +121,9 @@ def test_the_architecture_header_is_the_device_parts_one_row_an_architecture():
     assert "if (cc == 900)" in text and "if (b.cc == 900)" in text and "Traits{Family::kHopper, caps_of(900)}" in text
     #: a family is one a device part states: the header names no other
     assert "enum class Family : int { kHopper };" in text and 'kFamilyNames[] = {"hopper"};' in text
-    for gone in ("Mma", "kMmaRows", "smem_per_sm", "smem_per_cta_max", "max_threads_per_sm", "reg_transpose_b16", "window"):
+    for gone in ("Mma", "kMmaRows", "smem_per_cta_max", "max_threads_per_sm", "reg_transpose_b16", "window"):
         assert gone not in text
-    for kept in ("cc", "regs_per_sm", "bf16_cvt_packed", "bf16_simd_arith", "bf16_simd_fma"):
+    for kept in ("cc", "regs_per_sm", "smem_per_sm", "smem_per_cta_optin", "bf16_cvt_packed", "bf16_simd_arith", "bf16_simd_fma"):
         assert f" {kept};" in text
     assert ".bf16_simd_fma = true" in text and ".regs_per_sm = 65536" in text
 

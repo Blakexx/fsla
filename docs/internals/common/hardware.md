@@ -61,7 +61,7 @@ facts by the prefill launch function's matcher ([`window.md`](window.md)).
 
 ## Two consumers
 
-- COMPILE TIME reads a BUILD's traits (above): its architecture's capabilities. `hardware.cuh` carries every device part's `Caps` row (`cc`, `regs_per_sm`
+- COMPILE TIME reads a BUILD's traits (above): its architecture's capabilities. `hardware.cuh` carries every device part's `Caps` row (`cc`, `regs_per_sm`, `smem_per_sm`, `smem_per_cta_optin`
   and the three instruction flags the atoms select code on, the only fields a kernel source reads), `tabulated(cc)` and `caps_of(cc)`, the families
   and every build's `traits_of(Build)`; [`arch_caps.cuh`](arch_caps.md) includes it and names the compiling target's row, and
   [`arch_runtime.cu`](arch_runtime.md) admits the device by the planner's contract check (the driver's numbers lie in a registered
