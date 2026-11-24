@@ -158,7 +158,7 @@ def test_the_ops_byte_count_is_the_references_layout():
     assert workspace.numel() == reference.bytes_of(masks, window_words())
     widths, heads = [2] * reference.SIDES, [0] * reference.SIDES
     widths[0], heads[0], widths[5], heads[5] = 64, 6, 16, 4
-    assert extension().mask_prepare_bytes([w.bit_length() - 1 for w in widths], heads, window_words(), window_of()) == reference.layout(widths, heads, 1, window_words())[1]
+    assert extension().mask_prepare_bytes([w.bit_length() - 1 for w in widths], heads, window_words(), torch.cuda.current_device()) == reference.layout(widths, heads, 1, window_words())[1]
 
 
 @pytest.mark.parametrize(

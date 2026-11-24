@@ -65,7 +65,7 @@ _LAUNCHLESS = {
     "fsla_factor_backward_arms": "reads the built arm set out of compile-time constants",
     "fsla_softmax_forward_arms": "reads the built arm set out of compile-time constants",
     "fsla_softmax_backward_arms": "reads the built arm set out of compile-time constants",
-    "mask_prepare_bytes": "a host derivation over the call's shape (the prepared masks' layout); no device work",
+    "mask_prepare_bytes": "a host derivation over the call's shape and the device's card (the prepared masks' layout); it launches nothing",
     "entmax_max_levels": "returns the matcher's compile-time level bound",
     "entmax_width_class": "a host derivation over a width (the matcher's padded width); no device work",
     "fsla_decode_launch": "a host derivation over a descriptor, which was made against the contract (the device's read); no device work",

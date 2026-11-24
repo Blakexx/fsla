@@ -10,7 +10,6 @@ from __future__ import annotations
 import torch
 
 from fsla.ops._ext import extension
-from fsla.ops.window import window_of
 from fsla.routing.masks import PREFILL, Masks
 
 __all__ = ["prepare_masks"]
@@ -22,8 +21,7 @@ LEVELS = 4
 def prepare_masks(masks: Masks, density: torch.Tensor) -> torch.Tensor:
     """The workspace the pass wrote for ``masks``: uint8 on the masks' device, ``mask_prepare_bytes`` long. The slot of a present entry
     is ``side * 4 + level`` (side 0 the read side); a bundle with no present entry returns an empty tensor and launches nothing. A level-side whose
-    density byte is 255 is dense and is left as the workspace was made (uninitialised). The window is the card's (``fsla.ops.window.window_of``, tokens):
-    the op sizes the workspace for it."""
+    density byte is 255 is dense and is left as the workspace was made (uninitialised). The window is the card's, which the op derives from the masks' device."""
     if masks.consumer != PREFILL:
         raise ValueError(f"the mask-preparation pass is the prefill's: the masks are {masks.consumer!r}-layout, not {PREFILL!r}")
     present = [(side * LEVELS + level, mask)
@@ -38,6 +36,6 @@ def prepare_masks(masks: Masks, density: torch.Tensor) -> torch.Tensor:
         heads[slot] = int(mask.shape[0] * mask.shape[1])
     ext = extension()
     words = int(present[0][1].shape[2])
-    workspace = torch.empty(int(ext.mask_prepare_bytes(width_bits, heads, words, window_of())), dtype=torch.uint8, device=present[0][1].device)
+    workspace = torch.empty(int(ext.mask_prepare_bytes(width_bits, heads, words, present[0][1].device.index)), dtype=torch.uint8, device=present[0][1].device)
     ext.mask_prepare([mask for _, mask in present], [slot for slot, _ in present], density, workspace)
     return workspace

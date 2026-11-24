@@ -124,7 +124,7 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
 
   //: THE WALK'S LOADS HELD, issued before any is read: 16 words' at one digit a thread, 8 at four digits, 2 at more
   constexpr int kHeld = kUnit == 1 ? 16 : kUnit == 4 ? 8 : 2;
-  static_assert(WORDS % kHeld == 0 && WORDS * 32 <= 65536, "a window is whole trips");
+  static_assert(WORDS > 0 && WORDS % kHeld == 0 && WORDS * 32 <= 65536, "no window of trips");
   Raw<kUnit> held[kHeld];
   const std::uint32_t* row = at;
 #pragma unroll

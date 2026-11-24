@@ -108,13 +108,13 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
   });
 }
 
-//: the bytes `mask_prepare` writes for a call's level-sides: `width_bits[s]` and `heads[s]` of each of the 8, 0 heads where it has no mask, of masks `words` long, on a card whose window is `window` tokens
+//: the bytes `mask_prepare` writes for a call's level-sides: `width_bits[s]` and `heads[s]` of each of the 8, 0 heads where it has no mask, of masks `words` long, on the card `device`
 int64_t mask_prepare_bytes(const std::vector<int64_t>& width_bits,
-                           const std::vector<int64_t>& heads, int64_t words, int64_t window) {
+                           const std::vector<int64_t>& heads, int64_t words, int64_t device) {
   STD_TORCH_CHECK(width_bits.size() == detail::kSides && heads.size() == detail::kSides,
                   "mask_prepare_bytes takes the 8 level-sides' width bits and batch-heads");
-  STD_TORCH_CHECK(window >= 32 && window % 32 == 0, "a window is whole mask words of 32 tokens");
-  const int window_words = static_cast<int>(window / 32);
+  const int window_words = plan::window_of_cc(card_of(static_cast<int>(device)).cc) / 32;
+  STD_TORCH_CHECK(window_words > 0, "mask_prepare has no window for this card");
   int bits[detail::kSides];
   std::int64_t each[detail::kSides];
   for (int s = 0; s < detail::kSides; ++s) {
