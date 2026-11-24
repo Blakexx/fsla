@@ -462,7 +462,7 @@ token count and the shapes the masks are checked against, so a count that disagr
 to the nearest byte, a half up, in integer arithmetic (the library's rule): with `live` the set bits and `total` the level's (token, digit) pairs over
 the batch and the side's heads, `b = (2 * 255 * live + total) // (2 * total)`, no float entering. A level all live gives exactly 255 and a level all
 dead exactly 0. The prefill's kernels, which are not built, will read a byte `b` as the integer `b + 1` in 256ths of the level (so every byte is a valid
-density, and the kernels need no clamp, no rounding and no NaN case): the carve's own clamp of an integer outside 1..256 stays as it is
+density, and the kernels need no clamp, no rounding and no NaN case): the carve clamps an integer outside 1..256 into the range
 ([`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md)). The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
 solve, and the layer hands it to `prefill`; the masks are always made, for every activation, so that the producer's choice does not depend on what
 a consumer needs ("To decouple our mask production decision from the consumer logic on if it needs it").
