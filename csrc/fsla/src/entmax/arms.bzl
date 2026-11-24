@@ -53,11 +53,10 @@ ENTMAX_KERNEL = {
 }
 
 _PREDATES = "predates the rule; fixed at the family's Hopper rewrite: "
-#: THE ENTMAX BACKWARD AFTER ITS REWORK: what its trip loop still holds, inferred from the counts (4 an item where alpha is 1.5, 2 or 4 a
-#: kernel besides; the softmax backward, with the same guarded stores and no division or square root, holds none) --
-#: docs/internals/entmax/factor.md#backward-stages
+#: A FAMILY WHOSE DECLARATIONS HAVE THEIR OWN REASON: the entmax factor backward's trip loop holds convergence instructions whose cause is open
+#: (docs/internals/entmax/factor.md#backward-stages); every other family's are `_PREDATES`
 _REASON = {
-    "factor_backward": "the slow paths of the trip's division and, at alpha 1.5, of each item's square root: ",
+    "factor_backward": "cause open, the counts fit the slow paths of the trip's division and of each item's square root: ",
 }
 _FOUND = {
     "load_in_trip": "global loads whose value the same trip reads, in the solves' loops",
