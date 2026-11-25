@@ -113,7 +113,7 @@ constexpr CtaCarve cta_carve(const int* width_bits, const int* write_density,
 //: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_group_bits` and `read_group_bits` the groups derived from them;
 //: `write_order` and `read_order` are each side's loop order over the levels, outermost first (`carve_loop_order`); `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
 //: and `folds` their count; `fold_bits` a fold's bits of each level; `fold_set_leaves` and `fold_sets` the leaves a token is expanded over at once on the write side and the
-//: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_ctas` the CTAs inside one combination of write groups (they read one value stream)
+//: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_bits` the bits of a level's CTA index its write group spans, and `unit_ctas` the CTAs inside one combination of write groups (they see one token schedule and are taken together)
 struct PrefillCarve {
   int levels;
   int width_bits[kCarveMaxLevels];
@@ -133,6 +133,7 @@ struct PrefillCarve {
   int fold_sets;
   int read_set_leaves;
   int read_sets;
+  int unit_bits[kCarveMaxLevels];
   std::int64_t unit_ctas;
 };
 
@@ -183,8 +184,9 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
         c.read_group_bits[l] < c.carve_bits[l] ? c.read_group_bits[l] : c.carve_bits[l];
     c.fold_set_leaves <<= write_set;
     c.read_set_leaves <<= read_set;
-    c.unit_ctas <<=
-        c.write_group_bits[l] > c.carve_bits[l] ? c.write_group_bits[l] - c.carve_bits[l] : 0;
+    const int over = c.write_group_bits[l] - c.carve_bits[l];
+    c.unit_bits[l] = over > 0 ? over : 0;
+    c.unit_ctas <<= c.unit_bits[l];
   }
   c.fold_sets = c.fold_leaves / c.fold_set_leaves;
   c.read_sets = c.cta_leaves / c.read_set_leaves;
@@ -194,25 +196,17 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
 //: THE CTA AT A PLACE OF THE SCHEDULE (docs/internals/common/plan/cta_carve.md#schedule): `cta[l]` its index along level `l`, of the head's `ctas_per_head` CTAs in the order they are taken --
 //: the write side's groups in its loop order, the densest level's varying fastest, and inside a group its CTAs in the read side's, the read side's sparsest level varying fastest
 constexpr void prefill_cta_at(const PrefillCarve& c, std::int64_t place, int* cta) {
-  int along[kCarveMaxLevels] = {};
-  int shared[kCarveMaxLevels] = {};
-  for (int l = 0; l < c.levels; ++l) {
-    along[l] = c.width_bits[l] - c.carve_bits[l];
-    const int over = c.write_group_bits[l] - c.carve_bits[l];
-    shared[l] = over > 0 ? over : 0;
-    cta[l] = 0;
-  }
-  //: inside a group: the bits of a level its write group spans CTAs along
+  //: inside a group: the bits of a level its write group spans CTAs along (`unit_bits`)
   for (int i = 0; i < c.levels; ++i) {
     const int l = c.read_order[i];
-    cta[l] = static_cast<int>(place & ((std::int64_t{1} << shared[l]) - 1));
-    place >>= shared[l];
+    cta[l] = static_cast<int>(place & ((std::int64_t{1} << c.unit_bits[l]) - 1));
+    place >>= c.unit_bits[l];
   }
   //: the groups: the bits of a level above those
   for (int i = c.levels - 1; i >= 0; --i) {
     const int l = c.write_order[i];
-    const int bits = along[l] - shared[l];
-    cta[l] |= static_cast<int>(place & ((std::int64_t{1} << bits) - 1)) << shared[l];
+    const int bits = c.width_bits[l] - c.carve_bits[l] - c.unit_bits[l];
+    cta[l] |= static_cast<int>(place & ((std::int64_t{1} << bits) - 1)) << c.unit_bits[l];
     place >>= bits;
   }
 }

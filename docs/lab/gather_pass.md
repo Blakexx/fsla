@@ -30,7 +30,7 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 checked on every multiprocessor, each byte of the tables its own position's.
 
 THE STREAM, TOKEN-ORDERED (the design's stream --
-[`hopper-gather.md`](../architecture/hopper-gather.md#no-gather-kernel) -- its lists here the host's). The same
+[`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel) -- its lists here the host's). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the
 block's 16 sparse bytes, 9 lines a token -- that the block's CTAs share; the dense plane is the block-major one, so a
@@ -42,7 +42,7 @@ round: the same reads, eight times the planes' footprint (at the sparse cell 16 
 cache of 50 and their new regions 240; at 32 live digits neither fits).
 
 THE BLOCK STREAM, ITS LISTS THE PASS'S OWN (a list a digit: measured, not the design's stream --
-[`hopper-gather.md`](../architecture/hopper-gather.md#no-gather-kernel); 4 to 5 live digits a token, 512 threads).
+[`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel); 4 to 5 live digits a token, 512 threads).
 THE QUESTION: every row above is fed lists the host made, and the one pass that made its own cost twice the
 carry. What does the block stream cost when the pass is handed THE MASK ALONE and writes what the carry lands --
 a slot's tables, its lists' value runs as long as the lists, its sparse bytes, its plan? The mask is digit-major,
@@ -52,7 +52,7 @@ same mask. The lab's bounds: a list is at most 32 entries and a slot 150 (this c
 143). NOT IN THE ROW: the dense lines, a run a CTA's dense block.
 
 THE COEFFICIENT RUNS, IN THE STEP'S FORMAT (measured, not the design's stream: a carry CTA forms its own --
-[`hopper-gather.md`](../architecture/hopper-gather.md#no-gather-kernel); 4 to 5 live digits a token, 512 threads).
+[`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel); 4 to 5 live digits a token, 512 threads).
 THE QUESTION: the carry lands its coefficients made; what does the pass that makes them cost? A CTA takes a
 window a dense block at a time -- that block's rows of the window, 16 KB -- and for each slot writes its lists'
 entries' coefficients: an entry's 16 dense digits of the block by its sparse digit, rounded to bf16, a line a
@@ -62,7 +62,7 @@ token and its sparse byte, and every slot's layout once; a dense block's rows ar
 rounding. NOT IN THE ROW: the scales, the steps' operands' fields, the read side.
 
 THE SCALAR ON THE VALUES, measured and not the design's form
-([`hopper-gather.md`](../architecture/hopper-gather.md)): an entry's sparse byte on its VALUES and its coefficient
+([`mask-preparation.md`](../architecture/mask-preparation.md)): an entry's sparse byte on its VALUES and its coefficient
 line its dense digits WIDENED ALONE. Three rows more: the block stream's shared part
 with an entry's 64 values multiplied by its sparse byte as they are written (a value whose bits are no finite
 normal number is not compared); the coefficient runs FOUR SLOTS A TRIP, a buffer out their four rooms and its

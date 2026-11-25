@@ -21,7 +21,7 @@ counting sort of the window's live (token, digit) pairs by digit, in token order
   lab's pass turns the mask around and reads no row, and writes its lists to global memory; it is not the design's
   pass. In the design the gather hands the carry no list: it places a sparse block's live tokens with their sparse
   bytes from the prepared write-side words and counts
-  (KERNEL_STANDARDS 29, item 5; [`hopper-gather.md`](../architecture/hopper-gather.md#no-gather-kernel)).
+  (KERNEL_STANDARDS 29, item 5; [`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel)).
 Two forms find a token's live digits: the mask's 32 bytes as handed, or a value test of the token's 256 bytes read
 from the tile-major rows the bundle holds. A call is the window's COUNTS alone -- what sizes its lists before they
 are written -- or the LISTS too. Each is timed with every table in cache (a call's 16 rounds over the same

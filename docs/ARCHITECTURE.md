@@ -276,7 +276,7 @@ fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 On hopper the MASK-PREPARATION PASS, run by the op before its carry, reads the call's masks and writes into the op's own
 workspace each group's word and its window counts, for both sides of every level that has a mask; the carry's CTAs read
 those blind, and the mask's format is plain bits
-([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)). THERE IS NO GATHER KERNEL
+([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)). THERE IS NO GATHER KERNEL
 (RULED 2026-11-25): a carry CTA makes everything it uses, on both sides -- its lists from the prepared group words,
 ANDed across a side's masked levels and counted inline; its value lines, fetched by token index straight into shared
 memory; its coefficients, each token's row loaded by its index and expanded in registers

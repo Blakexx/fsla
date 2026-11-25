@@ -1,6 +1,6 @@
 # The prepared masks' place (`csrc/fsla/src/common/plan/mask_prepare_layout.h`)
 
-Where [the mask-preparation pass](../../mask_prepare/mask_prepare.md) writes a level-side's group words, counts and totals, and where the gather and the carry read them. Pure, constexpr and total, so the host sizes the workspace and the
+Where [the mask-preparation pass](../../mask_prepare/mask_prepare.md) writes a level-side's group words, counts and totals, and where the carry (its CTAs, both sides) reads them. Pure, constexpr and total, so the host sizes the workspace and the
 device addresses a block from the same arithmetic (`FSLA_CARVE_FN`, as `cta_carve.h`). It is sized from the call's shape alone, for the group size that needs the most: THE HOST NEVER READS A DENSITY
 ([`prefill_launch.md`](prefill_launch.md)).
 

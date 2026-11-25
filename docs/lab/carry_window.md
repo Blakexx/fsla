@@ -223,7 +223,7 @@ complete for its four warps at once: no lab measures that apart. In these rows t
 forming its coefficients is its wait on its tiles' bytes.
 THE OWN ROWS (the read-ready ready pair's form, with and without clocks): EVERY BOX LANDS ITS OWN STREAM, a copy
 of its column's, where the form's 16 boxes share a column's. In the design a box's coefficient part is its own
-and its values are its column's ([`hopper-gather.md`](../architecture/hopper-gather.md)): the form's rows and
+and its values are its column's ([`mask-preparation.md`](../architecture/mask-preparation.md)): the form's rows and
 these bracket what a box's own bytes cost its window. Checked as the form's rows are.
 
 THE TOKEN ROWS (the block form;

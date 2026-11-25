@@ -1,6 +1,6 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE PREPARED MASKS' PLACE (docs/internals/common/plan/mask_prepare_layout.md): where the mask-preparation pass writes and the gather and the carry read. Pure, constexpr, total.
+// THE PREPARED MASKS' PLACE (docs/internals/common/plan/mask_prepare_layout.md): where the mask-preparation pass writes and the carry reads. Pure, constexpr, total.
 #pragma once
 
 #include <cstdint>

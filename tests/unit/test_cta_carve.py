@@ -58,13 +58,15 @@ def test_a_writes_sparse_and_reads_whole_b_writes_whole_and_reads_sparse_carve_3
     # a level's weight is its write density plus its read density (each in 256ths): A 1 + 256, B 256 + 1, both 257; priority weight / (c + 1) is equal at every pair of equal holdings, and the larger READ density
     # (A's 256) takes the doubling, so A, B, A, B ... and the ninth is A's: 32 x 16. The groups follow from the densities (write: A 1 digit, B 256; read: A 256, B 1): the fold warpgroups split along A
     # (its write group, 1, is under its width), 16 x 16 digits each; a token on the write side spans A's 1 x B's 16 = 16 leaves of a fold, so a fold holds 16 sets; the read side spans A's 32 x B's 1 = 32
-    # leaves of the carve, 16 sets. 8 CTAs along A and 16 along B: 128 a head; B's whole write group spans 16 CTAs, so 16 CTAs read one value stream: 8 units.
+    # leaves of the carve, 16 sets. 8 CTAs along A and 16 along B: 128 a head; B's whole write group spans 16 CTAs, so those 16 CTAs see one token schedule and are taken together (the schedule): 8 units.
     out = _one(*_join(A, B))
     assert _sizes(out) == [32, 16] and out["cta_leaves"] == 512
     assert (out["write_group_bits"], out["read_group_bits"]) == ([0, 8], [8, 0])
     assert (out["split_level"], out["folds"], out["fold_bits"], out["fold_leaves"]) == (0, 2, [4, 4], 256)
     assert (out["fold_set_leaves"], out["fold_sets"], out["read_set_leaves"], out["read_sets"]) == (16, 16, 32, 16)
     assert (out["ctas_per_head"], out["unit_ctas"], out["units_per_head"]) == (128, 16, 8)
+    # the write side is sparse on level 0 and whole on level 1, so it loops 0 outside, 1 inside; the read side is the other way round; only level 1's write group (8 bits) exceeds its carve (4 bits)
+    assert (out["write_order"], out["read_order"], out["unit_bits"]) == ([0, 1], [1, 0], [0, 4])
 
 
 @pytest.mark.parametrize("groups, sizes", [
@@ -120,6 +122,11 @@ def _check(call, out) -> int:
     assert out["fold_sets"] * out["fold_set_leaves"] == out["fold_leaves"], call
     assert out["read_sets"] * out["read_set_leaves"] == out["cta_leaves"], call
     assert out["units_per_head"] * out["unit_ctas"] == out["ctas_per_head"], call
+    levels = range(len(widths))
+    for order, density in ((out["write_order"], call[1]), (out["read_order"], call[2])):
+        assert order == sorted(levels, key=lambda l: (density[l], l)), call
+    assert out["unit_bits"] == [max(0, out["write_group_bits"][l] - carve[l]) for l in levels], call
+    assert out["unit_ctas"] == 2 ** sum(out["unit_bits"]), call
     assert out["fold_leaves"] * out["folds"] == out["cta_leaves"] and out["fold_leaves"] == 1 << sum(out["fold_bits"]), call
     assert out["ctas_per_head"] == 1 << (sum(widths) - sum(carve)), call
     return out["cta_leaves"]

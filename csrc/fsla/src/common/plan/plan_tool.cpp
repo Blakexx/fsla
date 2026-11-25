@@ -82,6 +82,8 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   line("read_density", list(c.read_density));
   line("write_group_bits", list(c.write_group_bits));
   line("read_group_bits", list(c.read_group_bits));
+  line("write_order", list(c.write_order));
+  line("read_order", list(c.read_order));
   line("carve_bits", list(c.carve_bits));
   line("cta_leaves", n(c.cta_leaves));
   line("split_level", n(c.split_level));
@@ -92,6 +94,7 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   line("fold_sets", n(c.fold_sets));
   line("read_set_leaves", n(c.read_set_leaves));
   line("read_sets", n(c.read_sets));
+  line("unit_bits", list(c.unit_bits));
   line("unit_ctas", n(c.unit_ctas));
 }
 

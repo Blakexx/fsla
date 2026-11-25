@@ -1,7 +1,7 @@
 # The prefill's carve (`csrc/fsla/src/common/plan/cta_carve.h`)
 
 `prefill_carve(levels, width_bits, write_density, read_density)` is a function of the level widths and each side's densities ALONE: no descriptor, no hardware fact. It returns the densities' groups (`write_group_bits[l]`, `read_group_bits[l]`), `carve_bits[l]` (the log2 of the
-CTA's carve size on level `l`), `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `write_order`, `read_order` and `unit_ctas`. A density is a side's share of a level's digits a token is live on, in 256ths of the level;
+CTA's carve size on level `l`), `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `write_order`, `read_order`, `unit_bits[l]` (the bits of level `l`'s CTA index its write group spans, `max(0, write_group_bits - carve_bits)`) and `unit_ctas` (`2 ** sum(unit_bits)`). A density is a side's share of a level's digits a token is live on, in 256ths of the level;
 the densities are the prefill call's own input, `density [2, D]` uint8 (a byte `b` is read as `b + 1` in 256ths, [`prefill_launch.md`](prefill_launch.md)), built by the library's helpers from the rows or the masks (the owner, 2026-11-24: "I almost think weights should be outside the masks? They need not be coupled, and are independent variables really"), so the host never reads them ([`prefill_launch.md`](prefill_launch.md)). The kernels of the prefill call
 this same function: THE GROUP RULE (`prefill_group_bits`, with `carve_clamp`) is annotated for the device (`FSLA_CARVE_FN`: `__host__ __device__` where the file is compiled by the CUDA compiler, nothing in a host tool) and one kernel calls it, the mask-preparation pass's
 ([`../../mask_prepare/mask_prepare.md#the-kernel`](../../mask_prepare/mask_prepare.md#the-kernel)); the rest of the carve is host text no kernel includes yet. Host and device have one statement of the rule. It is `constexpr`, uses integers and fixed arrays alone (no `std::abort`, no allocation, no stream, no container), and is TOTAL: it has no failure path.
@@ -36,4 +36,4 @@ several CTAs (`write_group_bits - carve_bits` of them), and the bits above, whic
 digits fill the first part, level by level in the read side's loop order, so inside a group the read side's sparsest
 level varies fastest; its high digits fill the second, in the write side's loop order with its densest level varying
 fastest. The header's proof holds the measured cell: a carve of 32 by 16, a write group of 16 CTAs taken together
-along the level the read side lists, then the next group. `plan_tool` does not print the schedule.
+along the level the read side lists, then the next group. `plan_tool` does not print the schedule function; it prints the two orders (`write_order`, `read_order`) and `unit_bits` it is made from.

@@ -809,7 +809,7 @@ method is a procedure with a gate, not a memory.
    format, no layout offset. What a card's step needs beyond the entry it forms where it expands the byte, once at
    the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13, twice; 2026-11-15; 2026-11-24) NO PASS HANDS THE CARRY A LIST OR AN
    OPERAND: the mask-preparation pass reads each side's masks once and writes the group words the carry reads blind
-   (`docs/architecture/hopper-gather.md#the-mask-preparation-pass`), and THERE IS NO GATHER PASS (Blake, 2026-11-25: "if
+   (`docs/architecture/mask-preparation.md#the-mask-preparation-pass`), and THERE IS NO GATHER PASS (Blake, 2026-11-25: "if
    we can drop the gather that would be great. If it is actually possible to do the in cta scatter loads for both sides
    it's ideal"): a carry CTA lists its own groups' live tokens from the prepared words, fetches their value lines by
    token index straight into shared memory and loads their rows by it (`docs/architecture/hopper-carry.md`,

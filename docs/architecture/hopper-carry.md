@@ -57,7 +57,7 @@ then the fold of the window's writes into the state.
 THERE IS NO GATHER KERNEL (Blake, 2026-11-25: "if we can drop the gather that would be great. If it is actually
 possible to do the in cta scatter loads for both sides it's ideal"; "Today's thinking is my preferred design. Should we
 just build it for real"). A carry CTA makes everything it uses, on both sides, from the bundle's planes and the
-prepared group words ([the mask-preparation pass](hopper-gather.md#the-mask-preparation-pass)).
+prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-preparation-pass)).
 
 - ITS LISTS. For each of its groups, a side: the group's live tokens of the window, in order -- the group words ANDed
   across the side's masked levels and counted inline, a popcount and a running sum over the window's words. One form
@@ -118,7 +118,10 @@ and a group's steps a loop on its list's count whose test is a warp vote. The gr
    to its two lines of a coefficient tile; 16 steps, a slot's image tile by its coefficient tile on each box, into
    one accumulator; the sums to a panel as f16 pairs; the drain warps add each reader's line at its token's.
 3. THE FOLD, a group at a time: its list (made a window ahead); the wait on its value lines' landing; a thread's two
-   entries expanded; the group's steps; the next lines' copies issued.
+   entries expanded; the group's steps; the next lines' copies issued. A step tile is a tenant the copies write and
+   the steps read (R21): its completion edge is the wait on the landing, and its release edge the barrier behind the
+   last step that reads it, before which no copy into that tile is issued -- two tiles, so the next group's lines land
+   while this one's steps run. NOT BUILT.
 
 MEASURED of the composed window ([`lab/carry_token.md`](../lab/carry_token.md), the two readouts' timelines and the
 readout's pass by phases): the folds wait on the readout's read of their tile groups; with the fixed readout the drain
@@ -152,7 +155,7 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
 1. The prefill launch function (its carve, units and window are built: [`internals/common/plan/prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the carve, the folds' split, each side's loop order, the schedule, the window and
    the grid, from the descriptor's facts alone, and the workspace's layout.
-2. The mask-preparation pass ([`hopper-gather.md`](hopper-gather.md#the-mask-preparation-pass)), reduced to the group
+2. The mask-preparation pass ([`mask-preparation.md`](mask-preparation.md#the-mask-preparation-pass)), reduced to the group
    words and totals.
 3. The carry's skeleton at the cell, then its components, the state zero at entry: the lists; the value lines' fetch;
    the coefficients; the fold's steps; the image; the readout; the panel and the drain -- `num` exact at the skeleton's

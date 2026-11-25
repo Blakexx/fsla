@@ -49,7 +49,7 @@ mathematics. Each call builds its own DESCRIPTOR -- the validated run-time conte
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
 call's steps: the prefill's holds the words and counts the
-mask-preparation pass prepares ([`architecture/hopper-gather.md`](architecture/hopper-gather.md#the-mask-preparation-pass)), and its layout is [`mask_prepare_layout.h`](internals/common/plan/mask_prepare_layout.md); decode needs
+mask-preparation pass prepares ([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)), and its layout is [`mask_prepare_layout.h`](internals/common/plan/mask_prepare_layout.md); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 
 `decode_step_gated` has no host participation and is capturable in a CUDA graph. A batch-head whose write atoms the state can neither address nor

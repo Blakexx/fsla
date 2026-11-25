@@ -2,7 +2,7 @@
 
 Mirror doc for the liveness the masks state and the one fold over it that has a consumer: `atom_bits`, the per-atom READ and
 WRITTEN byte a stateful call's residency is keyed on (`tests/unit/test_atom_bits.py` gates it). The Hopper design reads
-the digits in its mask-preparation pass (`docs/architecture/hopper-gather.md#the-mask-preparation-pass`); this page holds the digits' statement, the row
+the digits in its mask-preparation pass (`docs/architecture/mask-preparation.md#the-mask-preparation-pass`); this page holds the digits' statement, the row
 alignment law, and the byte.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth;

@@ -1,6 +1,6 @@
 # The prefill's mask-preparation pass (`csrc/fsla/src/mask_prepare/mask_prepare.cu`, `mask_prepare.cuh`, `mask_prepare_kernel.cuh`)
 
-The pass the op runs before its gather and its carry ([`../../architecture/hopper-gather.md`](../../architecture/hopper-gather.md#the-mask-preparation-pass)): one launch over
+The pass the op runs before its carry ([`../../architecture/mask-preparation.md`](../../architecture/mask-preparation.md#the-mask-preparation-pass)): one launch over
 every level-side of the call that has a mask, writing each level-side's prepared words, counts and totals into the op's workspace at the layout of
 [`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md). The device code is `mask_prepare_kernel.cuh` ([`mask_prepare_kernel.md`](mask_prepare_kernel.md)), the host half (the op's checks, the grid, the place in the workspace, the launch) `mask_prepare.cu`. Hand CUDA, global loads and stores alone: no shared memory, no barrier, no tensor core. The Python face is
 `fsla/ops/mask_prepare.py` (`prepare_masks`, which passes the masks' device to `mask_prepare_bytes`; the op derives the card's window); its exactness is graded by `tests/oracle/test_mask_prepare.py` against the host reference `tests/oracle/mask_prepare_reference.py` (the words, counts and totals, bit for bit), and its host checks run without a GPU in `tests/unit/test_mask_prepare.py`; the registry of its contract is `hardware/kernels/mask_prepare/` ([`../hardware/registry.md`](../hardware/registry.md)).
