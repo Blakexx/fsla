@@ -4,7 +4,7 @@ Mirrors `measure/lab/experiments/facts_lists.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 A sparse level's liveness is RULED to be a mask the op is handed, a bit a digit a token, used blindly; the design's
-gather reads the words and counts the mask-preparation pass prepares and tests no row's value
+carry reads the group words the mask-preparation pass prepares and tests no row's value
 ([`ARCHITECTURE.md`](../ARCHITECTURE.md#62-the-mask-preparation-pass)). This
 lab prices the ruled form beside the access that tests the rows' values. The mask says, for a token, which digits are live; a
 carry CTA needs the opposite each window -- for each of its digits, WHICH TOKENS are live on it, the data it pulls.

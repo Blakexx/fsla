@@ -1,6 +1,6 @@
 # The mask-preparation pass
 
-STATUS: THE PASS IS BUILT as its own kernel, writing the group words and the totals alone; it was exact against its host reference on an H100 before the counts went, and as it is now it is NOT MEASURED. This page holds the pass alone: there is no gather kernel
+STATUS: THE PASS IS BUILT as its own kernel, writing the group words and the totals alone, exact against its host reference on an H100 and measured at each of its group sizes. This page holds the pass alone: there is no gather kernel
 ([No gather kernel](#no-gather-kernel)). A form a lab measured on an H100 quotes the lab's page; a form RULED and not
 yet built says so.
 
@@ -32,7 +32,7 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
   and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at each of its seven group sizes
-  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)); THOSE FIGURES ARE OF THE PASS WITH ITS COUNTS (the record at 0fb5eb86), and the pass as it is now is NOT MEASURED until the lab's record is replaced.
+  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)).
 - NOT BUILT: the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
   handed to it).

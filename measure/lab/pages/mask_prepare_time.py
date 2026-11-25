@@ -25,18 +25,17 @@ DIGITS, WORDS, TOKENS = 256, 32, 32
 #: the mask's bytes a token the pass reads: a 4-byte word a digit a word of 32 tokens
 READ = DIGITS * 4 / TOKENS
 #: THE RECORD THE PREDICTIONS ARE OF, by its experiment's commit
-PREDICTED_FOR = "0fb5eb86"
-#: THE RANGES PREDICTED FOR THIS FORM OF THE KERNEL before any run of it: 16 words' loads held at one digit and 8 at
-#: four (priced by the mask bytes a thread has in flight), the lab kernel's row at 16 digits, and the shuffle form at 32
-#: digits and above (priced as the row at 16 digits)
-PREDICTED = {1: (2.9, 3.9), 4: (2.6, 3.2), 16: (2.5, 2.9), 32: (2.4, 3.0), 64: (2.4, 3.0), 128: (2.4, 3.0), 256: (2.4, 3.0)}
+PREDICTED_FOR = "9c2a0f30"
+#: THE RANGES PREDICTED FOR THIS FORM OF THE KERNEL before any run of it: the bytes a token it reads and stores over the
+#: one rate the pass with a count a word had fit (11.8 to 12.9 bytes a cycle an SM, the experiment at 0fb5eb86), the row
+#: at one digit widened upward for its held loads, 8 words' where they were 16
+PREDICTED = {1: (2.5, 3.1), 4: (3.0, 3.5), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8), 256: (2.4, 2.7)}
 #: THE ROWS THE RUN MISSED, which the reading is of
-MISSED = {1, 4}
-READING = """WHAT THE MISSES SAY, AND WHAT IS NOT SHOWN. The ranges at groups of 1 and 4 digits priced the pass by the mask bytes a
-thread has in flight, counting the mask's read traffic alone: the rows say that price is wrong. What FITS the table
-above is the multiprocessor's total memory traffic, the stored counts and words included: every row's bytes a token
-over its cycles a token is one rate, the column on the right. It is a fit and no more. No counter was read and no
-form without the stores was run, so that the stores are what the two rows wait on is LIKELY, NOT SHOWN."""
+MISSED: set[int] = set()
+READING = """WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held. The ranges came from one rate over the bytes a token read
+and stored, fitted on the pass when it stored a count a word; this form stores fewer bytes and its rows fall where that
+rate puts them. It is two forms on one rate and no more: no counter was read, so that the multiprocessor's memory
+traffic is what bounds the pass is LIKELY, NOT SHOWN."""
 
 
 def name(group: int) -> str:
@@ -44,9 +43,9 @@ def name(group: int) -> str:
 
 
 def stored(group: int) -> float:
-    """The bytes a token the pass stores at `group`: a count a word and a total a group (2 bytes each), and a word a word (4) where the group is more than a digit."""
+    """The bytes a token the pass stores at `group`: a total a group (2 bytes), and a word a mask word (4) where the group is more than a digit."""
     groups = DIGITS // group
-    return groups * (2 * WORDS + 2 + (4 * WORDS if group > 1 else 0)) / (WORDS * TOKENS)
+    return groups * (2 + (4 * WORDS if group > 1 else 0)) / (WORDS * TOKENS)
 
 
 def _load(root: pathlib.Path, experiment: str) -> dict:
@@ -103,7 +102,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
         + rows
     )
     text = f"""MEASURED ({card(d['device'], instance)}, driver {d['driver']}; {d['date'][:10]}, the experiment at
-{d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every word, count and total of each group size's
+{d['git']['sha'][:8]}; {d['reps']} repetitions; the {checked} checked rows pass, every word and total of each group size's
 first round exact; the median). {UNIT[0].upper()}{UNIT[1:]}, the mask read once; the lab's kernel is [`mask_prep`](mask_prep.md)'s row at
 the same group size:
 
@@ -115,11 +114,10 @@ WHAT IT SHOWS.
 - ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is {min(rates):.1f} to {max(rates):.1f} bytes a cycle an SM
   at every group size.
 
-THE PREDICTIONS WRITTEN FOR THIS FORM OF THE KERNEL, AND THEIR BASIS. The lab's kernel had measured {L[lab_row[1]]:.2f}, {L[lab_row[4]]:.2f} and
-{L[lab_row[16]]:.2f} at groups of 1, 4 and 16 digits, with 8, 32 and 128 bytes of the mask in flight a thread. This kernel holds 16
-words' loads at one digit a thread (64 bytes in flight) and 8 at four digits (128): each was predicted between the
-lab's rows at the bytes in flight around it. A group of 16 digits was predicted as the lab's row; 32 digits and above,
-which no kernel had measured, as the row at 16 digits, a thread's mask traffic being the same.
+THE PREDICTIONS WRITTEN FOR THIS FORM OF THE KERNEL, AND THEIR BASIS. The pass when it stored a count a word, measured
+at the experiment's 0fb5eb86, fit one rate over the bytes a token it read and stored: 11.8 to 12.9 bytes a cycle an SM.
+Each row here was predicted as the bytes this form moves a token over that rate; the row at one digit was widened
+upward, its held loads being 8 words' where they were 16.
 {chr(10).join(verdicts)}
 
 {READING}

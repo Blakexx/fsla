@@ -1,6 +1,6 @@
 // THE PREFILL'S MASK-PREPARATION PASS -- hand CUDA, global loads and stores alone.
 // Design of record: docs/internals/mask_prepare/mask_prepare.md.
-// Gate: `tests/oracle/test_mask_prepare.py` (the host's words, counts and totals, exactly).
+// Gate: `tests/oracle/test_mask_prepare.py` (the host's words and totals, exactly).
 //
 // The op's host half: its operands checked, its grid and its place in the workspace, the launch.
 // The device half -- the kernel, the walk and the switch on the group -- is mask_prepare_kernel.cuh.
