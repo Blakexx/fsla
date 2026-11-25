@@ -69,22 +69,26 @@ def _tiny() -> Masks:
 
 
 @pytest.mark.parametrize(
-    ("window_words", "block_bytes_at_width_2", "block_bytes_at_width_4", "offsets", "total", "words_at"),
+    ("window_words", "block_bytes_at_width_2", "block_bytes_at_width_4", "offsets", "total"),
     [
-        #: 32 words (a window of 1,024 tokens): a digit's block 66 bytes, slot 0's blocks 132 each, slot 5's 264; the words start at (66 * groups + 3) & ~3
-        (32, 132, 264, [0, 396, 396, 396, 396, 396, 1980, 1980], 1980, (68, 132, 528)),
-        #: 16 words (a window of 512 tokens): a digit's block 34 bytes, slot 0's blocks 68 each, slot 5's 136; the words start at (34 * groups + 3) & ~3
-        (16, 68, 136, [0, 204, 204, 204, 204, 204, 1020, 1020], 1020, (36, 68, 272)),
+        #: 32 words (a window of 1,024 tokens). Width 2: a total a digit, words_at(2) = (2 * 2 + 3) & ~3 = 4 bytes (no group of 4 fits). Width 4: the larger of words_at(4) = (8 + 3) & ~3 = 8
+        #: and, one group of 4 digits, words_at(1) + 4 * 32 * 1 = 4 + 128 = 132 bytes. Slot 0: 1 batch-head, 3 windows of 4 bytes = 12; slots 1 to 4 have no heads;
+        #: slot 5: 2 batch-heads, 3 windows of 132 = 792 from offset 12; total 804
+        (32, 4, 132, [0, 12, 12, 12, 12, 12, 804, 804], 804),
+        #: 16 words (a window of 512 tokens): width 2 is 4 bytes; width 4 is max(8, 4 + 4 * 16 * 1 = 68) = 68. Slot 0: 3 * 4 = 12; slot 5: 6 * 68 = 408 from 12; total 420
+        (16, 4, 68, [0, 12, 12, 12, 12, 12, 420, 420], 420),
     ],
 )
-def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_bytes_at_width_2, block_bytes_at_width_4, offsets, total, words_at):
+def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_bytes_at_width_2, block_bytes_at_width_4, offsets, total):
     #: widths 2 and 4 on slots 0 and 5, 1 and 2 batch-heads, 3 windows
     widths, heads = [2, 2, 2, 2, 2, 4, 2, 2], [1, 0, 0, 0, 0, 2, 0, 0]
     assert (reference.block_bytes(2, window_words), reference.block_bytes(4, window_words)) == (block_bytes_at_width_2, block_bytes_at_width_4)
     assert reference.layout(widths, heads, 3, window_words) == (offsets, total)
-    assert reference.block_bytes(256, window_words) == 2 * (window_words + 1) * 256
-    assert (reference.counts_at(1), reference.counts_at(2), reference.counts_at(8)) == (2, 4, 16)
-    assert (reference.words_at(1, window_words), reference.words_at(2, window_words), reference.words_at(8, window_words)) == words_at
+    #: 256 digits: the total a digit is words_at(256) = 512 bytes; groups of 4: 64 groups, words_at(64) = (128 + 3) & ~3 = 128, plus 4 * words * 64
+    assert reference.block_bytes(256, window_words) == 128 + 256 * window_words
+    #: the words start after the totals, rounded up to 4: (2 * 1 + 3) & ~3 = 4, (2 * 2 + 3) & ~3 = 4, (2 * 8 + 3) & ~3 = 16
+    assert (reference.words_at(1), reference.words_at(2), reference.words_at(8)) == (4, 4, 16)
+    assert reference.block_bytes(256, 32) == 8320
 
 
 def test_the_reference_of_a_hand_computed_block():
@@ -97,8 +101,6 @@ def test_the_reference_of_a_hand_computed_block():
     assert block.group == 4
     assert block.totals.tolist() == [[3]]
     assert block.words[0, :3, 0].tolist() == [0x3, 0x1, 0x0]
-    #: the live tokens before each word: none before word 0, the 2 of word 0 before word 1, all 3 from word 2 on (the window's words past the mask are zero)
-    assert block.counts[0, :4, 0].tolist() == [0, 2, 3, 3] and block.counts[0, :, 0].max().item() == 3
     assert reference.bytes_of(masks, 32) == 1 * 1 * reference.block_bytes(4, 32)
 
 
@@ -108,31 +110,35 @@ def test_the_reference_reads_the_bytes_the_layout_names(window_words):
     groups, width = 1, 4
     block = bytearray(reference.block_bytes(width, window_words))
     struct.pack_into("<H", block, 0, 3)
-    for j, count in enumerate([0, 2] + [3] * (window_words - 2)):
-        struct.pack_into("<H", block, reference.counts_at(groups) + 2 * j, count)
     for j, word in enumerate([0x3, 0x1] + [0] * (window_words - 2)):
-        struct.pack_into("<I", block, reference.words_at(groups, window_words) + 4 * j, word)
+        struct.pack_into("<I", block, reference.words_at(groups) + 4 * j, word)
     got = reference.read(torch.frombuffer(block, dtype=torch.uint8).clone(), masks, 0, 4, window_words)
     want = reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), window_words)[0]
-    assert got.totals.tolist() == want.totals.tolist() and got.counts.tolist() == want.counts.tolist() and got.words.tolist() == want.words.tolist()
+    assert got.totals.tolist() == want.totals.tolist() and got.words.tolist() == want.words.tolist()
 
 
-def test_a_group_of_one_digit_keeps_no_words_and_its_counts_are_a_digits_own():
+def test_a_group_of_one_digit_keeps_no_words_and_its_totals_are_a_digits_own():
     masks = Masks(PREFILL, (torch.tensor([[[[0x5, 0x0]]]], dtype=torch.int32),), (None,))
     block = reference.blocks_of(masks.read[0], 1, 32)
-    assert block.words is None and block.totals.tolist() == [[2, 0]] and block.counts[0, 0].tolist() == [0, 0]
+    assert block.words is None and block.totals.tolist() == [[2, 0]]
 
 
 def test_the_references_block_formulas_are_the_layout_headers_at_both_windows():
     text = LAYOUT.read_text()
     assert "kMaskWindowWords" not in text
     assert re.search(r"prepared_block_bytes\(int width_bits, int words\)", text)
-    assert re.search(r"std::int64_t\{2\} \* \(words \+ 1\) << width_bits", text)
-    assert re.search(r"std::int64_t\{2\} \* groups", text)
-    assert re.search(r"\(std::int64_t\{2\} \* \(words \+ 1\) \* groups \+ 3\) & ~std::int64_t\{3\}", text)
+    assert re.search(r"prepared_words_at\(int groups\)", text)
+    assert "prepared_counts_at" not in text
+    assert re.search(r"\(std::int64_t\{2\} \* groups \+ 3\) & ~std::int64_t\{3\}", text)
+    assert re.search(r"prepared_words_at\(1 << width_bits\)", text)
+    assert re.search(r"prepared_words_at\(groups\) \+ std::int64_t\{4\} \* words \* groups", text)
     for window_words in (32, 16):
-        assert reference.block_bytes(1 << 3, window_words) == (2 * (window_words + 1)) << 3
-        assert reference.words_at(3, window_words) == (2 * (window_words + 1) * 3 + 3) & ~3
+        for bits in range(1, 9):
+            width = 1 << bits
+            ones = (2 * width + 3) & ~3
+            fours = ((2 * (width // 4) + 3) & ~3) + 4 * window_words * (width // 4) if width >= 4 else 0
+            assert reference.block_bytes(width, window_words) == max(ones, fours)
+        assert reference.words_at(3) == (2 * 3 + 3) & ~3
 
 
 # ---------------------------------------------------------------- the registry and the contract

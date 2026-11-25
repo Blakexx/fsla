@@ -194,7 +194,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 **The carry's work is partitioned by ONE descriptor, the carve**
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the call's densities: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
 a CARVE — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(their live digits a window, read from the words and counts the mask-preparation pass prepares -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, read from the words and totals the mask-preparation pass prepares -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -251,13 +251,13 @@ the tenant's capacity at the seam, as a refusal (decode's step: [`internals/deco
 ## 6. The kernels
 
 Four kernel families and one pass, in one call's order: the producer writes the bundle; the mask-preparation pass (its own
-kernel, built, section 6.2) reads its masks once and writes the words and counts the
+kernel, built, section 6.2) reads its masks once and writes the group words and totals the
 carry's CTAs read, and the carry's CTAs make everything else they use (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
 A buffer is judged by its LIFETIME before its size (Blake, 2026-10-15: two structures -- lifetimes pay for the
-primitives, which stay purposeful): the bundle and the prepared words and counts are working memory, one layer at a time and
+primitives, which stay purposeful): the bundle and the prepared words and totals are working memory, one layer at a time and
 bounded by the segment and the heads in flight, where attention's KV cache is permanent. That pays for per-token bytes
 an attention layer does not have; it does not license waste, so a primitive's bytes are cut only where its purpose
 survives.
@@ -274,7 +274,7 @@ fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 ### 6.2 The mask-preparation pass
 
 On hopper the MASK-PREPARATION PASS, run by the op before its carry, reads the call's masks and writes into the op's own
-workspace each group's word and its window counts, for both sides of every level that has a mask; the carry's CTAs read
+workspace each group's word and its window total, for both sides of every level that has a mask; the carry's CTAs read
 those blind, and the mask's format is plain bits
 ([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)). THERE IS NO GATHER KERNEL
 (RULED 2026-11-25): a carry CTA makes everything it uses, on both sides -- its lists from the prepared group words,

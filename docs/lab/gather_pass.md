@@ -29,7 +29,7 @@ kernels with CTAs on A QUARTER of the multiprocessors, and the dense plane with 
 (four copies out in flight where three buffers allow one). Every line and pad of each moved form's first round is
 checked on every multiprocessor, each byte of the tables its own position's.
 
-THE STREAM, TOKEN-ORDERED (the design's stream --
+THE STREAM, TOKEN-ORDERED (a gather pass's stream, a form the design does not take --
 [`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel) -- its lists here the host's). The same
 two kernels fed lists BY SPARSE BLOCK, not by digit: a block's live tokens once each, in token order, padded to 16
 only at the block's end. The values kernel writes RECORDS -- a token's 8 value lines and then its line of the

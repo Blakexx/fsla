@@ -82,16 +82,14 @@ __device__ __forceinline__ std::uint32_t word_of(const Raw<U>& raw) {
 //: A WORD FINISHED -- see docs/internals/mask_prepare/mask_prepare.md#finish
 template <int U, int LANES>
 __device__ __forceinline__ void finish(const Raw<U>& raw, std::uint32_t keep, bool store,
-                                       std::uint32_t* word, std::uint16_t* count,
-                                       std::uint32_t& before) {
+                                       std::uint32_t* word, std::uint32_t& live) {
   std::uint32_t w = word_of<U>(raw) & keep;
 #pragma unroll
   for (int d = 1; d < LANES; d <<= 1) w |= __shfl_xor_sync(0xffffffffu, w, d);
-  if (store) {
-    if constexpr (U * LANES > 1) word[0] = w;
-    count[0] = static_cast<std::uint16_t>(before);
+  if constexpr (U * LANES > 1) {
+    if (store) word[0] = w;
   }
-  before += static_cast<std::uint32_t>(__popc(w));
+  live += static_cast<std::uint32_t>(__popc(w));
 }
 
 //: A LEVEL-SIDE AT A GROUP OF `1 << GB` DIGITS -- see docs/internals/mask_prepare/mask_prepare.md#the-walk
@@ -117,33 +115,30 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   std::uint16_t* const totals = reinterpret_cast<std::uint16_t*>(block);
 
   const int groups = 1 << gb;
-  std::uint8_t* const counts = block + plan::prepared_counts_at(groups);
-  std::uint8_t* const words = block + plan::prepared_words_at(groups, WORDS);
-  std::uint16_t* count = reinterpret_cast<std::uint16_t*>(counts) + group;
+  std::uint8_t* const words = block + plan::prepared_words_at(groups);
   std::uint32_t* word = reinterpret_cast<std::uint32_t*>(words) + group;
 
-  //: THE WALK'S LOADS HELD, issued before any is read: 16 words' at one digit a thread, 8 at four digits, 2 at more
-  constexpr int kHeld = kUnit == 1 ? 16 : kUnit == 4 ? 8 : 2;
+  //: THE WALK'S LOADS HELD, issued before any is read: 8 words' at one digit a thread or at four, 2 at more
+  constexpr int kHeld = kUnit < 16 ? 8 : 2;
   static_assert(WORDS > 0 && WORDS % kHeld == 0 && WORDS * 32 <= 65536, "no window of trips");
   Raw<kUnit> held[kHeld];
   const std::uint32_t* row = at;
 #pragma unroll
   for (int i = 0; i < kHeld; ++i) load<kUnit>(held[i], i < have ? row + i * stride : at);
-  std::uint32_t before = 0;
+  std::uint32_t live = 0;
 #pragma unroll 1
   for (int j = 0; j < WORDS; j += kHeld) {
 #pragma unroll
     for (int i = 0; i < kHeld; ++i) {
       //: a word finished, and the load `kHeld` words on issued into the registers it left; a word past the mask's last reads as zero
       const std::uint32_t keep = j + i < have ? ~0u : 0u;
-      finish<kUnit, kLanes>(held[i], keep, store, word + i * groups, count + i * groups, before);
+      finish<kUnit, kLanes>(held[i], keep, store, word + i * groups, live);
       load<kUnit>(held[i], j + i + kHeld < have ? row + (i + kHeld) * stride : at);
     }
     row += kHeld * stride;
     word += kHeld * groups;
-    count += kHeld * groups;
   }
-  if (store) totals[group] = static_cast<std::uint16_t>(before);
+  if (store) totals[group] = static_cast<std::uint16_t>(live);
 }
 
 //: A CTA OF THE GRID, `cta` its index -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel

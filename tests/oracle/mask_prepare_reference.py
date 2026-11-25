@@ -33,17 +33,18 @@ def group_of(byte: int, width: int) -> int | None:
     return min((size for size in GROUP_SIZES if size <= width), key=lambda size: (abs(size * 256 - live), size))
 
 
+def words_at(groups: int) -> int:
+    """In a block of ``groups`` groups: the totals at 0 (uint16 a group), then the words (uint32, word-major; none at a group of one digit): the words start at the totals' bytes, rounded up to 4."""
+    return (2 * groups + 3) & ~3
+
+
 def block_bytes(width: int, window_words: int) -> int:
-    """A window's block of a level-side ``width`` digits wide, whatever its group, the window ``window_words`` mask words: a total and a count a word a digit, 2 bytes each."""
-    return 2 * (window_words + 1) * width
-
-
-def counts_at(groups: int) -> int:
-    return 2 * groups
-
-
-def words_at(groups: int, window_words: int) -> int:
-    return (2 * (window_words + 1) * groups + 3) & ~3
+    """A window's block of a level-side ``width`` digits wide, whatever its group, the window ``window_words`` mask words: the larger of ``words_at(width)`` (a total a digit) and,
+    where ``width >= 4``, ``words_at(width // 4) + 4 * window_words * (width // 4)`` (groups of 4 digits: the totals, then a word a mask word a group)."""
+    ones = words_at(width)
+    if width < 4:
+        return ones
+    return max(ones, words_at(width // 4) + 4 * window_words * (width // 4))
 
 
 def layout(widths: list[int], heads: list[int], windows: int, window_words: int) -> tuple[list[int], int]:
@@ -70,18 +71,17 @@ def _popcount(words: torch.Tensor) -> torch.Tensor:
 
 @dataclass(frozen=True)
 class Blocks:
-    """One level-side's blocks, every (batch-head, window): ``totals [N, groups]``, ``counts [N, window_words, groups]`` and ``words [N, window_words, groups]``
+    """One level-side's blocks, every (batch-head, window): ``totals [N, groups]`` and ``words [N, window_words, groups]``
     (``None`` at a group of one digit: it keeps none), ``N = heads * windows`` in (batch-head, window) order, all int64."""
 
     group: int
     totals: torch.Tensor
-    counts: torch.Tensor
     words: torch.Tensor | None
 
 
 def blocks_of(mask: torch.Tensor, group: int, window_words: int) -> Blocks:
     """The fields the rule gives a level-side's mask ``[B, H, ceil(T / 32), width]`` int32 at ``group``, in windows of ``window_words`` mask words: a window past the mask's last word reads as zero
-    words; ``words[j][g]`` the OR of the group's digits' words ``j``, ``counts[j][g]`` the group's live tokens of the window before word ``j``, ``totals[g]`` the window's."""
+    words; ``words[j][g]`` the OR of the group's digits' words ``j``, ``totals[g]`` the group's live tokens of the window."""
     B, H, words, width = mask.shape
     windows = -(-words // window_words)
     x = (mask.to(torch.int64) & 0xFFFFFFFF).cpu()
@@ -91,8 +91,7 @@ def blocks_of(mask: torch.Tensor, group: int, window_words: int) -> Blocks:
     for digit in range(group):
         ored |= x[..., digit]
     live = _popcount(ored)
-    counts = live.cumsum(dim=1) - live
-    return Blocks(group, live.sum(dim=1), counts, ored if group > 1 else None)
+    return Blocks(group, live.sum(dim=1), ored if group > 1 else None)
 
 
 def expected(masks: Masks, density: torch.Tensor, window_words: int) -> dict[int, Blocks]:
@@ -129,10 +128,8 @@ def read(workspace: torch.Tensor, masks: Masks, slot: int, group: int, window_wo
     width, groups = widths[slot], widths[slot] // group
     blocks = workspace.cpu()[offsets[slot]:offsets[slot] + heads[slot] * windows * block_bytes(width, window_words)].reshape(-1, block_bytes(width, window_words))
     totals = blocks[:, :2 * groups].clone(memory_format=torch.contiguous_format).view(torch.int16).to(torch.int64) & 0xFFFF
-    at = counts_at(groups)
-    counts = blocks[:, at:at + 2 * window_words * groups].clone(memory_format=torch.contiguous_format).view(torch.int16).to(torch.int64) & 0xFFFF
     words = None
     if group > 1:
-        at = words_at(groups, window_words)
+        at = words_at(groups)
         words = (blocks[:, at:at + 4 * window_words * groups].clone(memory_format=torch.contiguous_format).view(torch.int32).to(torch.int64) & 0xFFFFFFFF).reshape(-1, window_words, groups)
-    return Blocks(group, totals, counts.reshape(-1, window_words, groups), words)
+    return Blocks(group, totals, words)

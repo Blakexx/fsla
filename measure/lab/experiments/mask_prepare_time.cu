@@ -5,11 +5,11 @@
 // clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
 // level-side of 4 to 5 live digits a token, a window the hopper card's (1,024 tokens). A round is the CTA's own windows (4 at a group of
 // one digit, 16 at 4, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows.
-// The density byte selects the group as it does in the library. Every word, count and total of the first round is
+// The density byte selects the group as it does in the library. Every word and total of the first round is
 // checked against the host's, in the library's layout.
-// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (16 words' at one digit, 8 at four, 2 at more), a trip
+// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (8 words' at one digit or four, 2 at more), a trip
 // finishes the held words and issues the loads that many words on; at 32 digits and above a word's finish is a warp
-// shuffle across the group's lanes. Live: the held loads (16 words, 8 lines, or 2 words of 4 lines) and the running count.
+// shuffle across the group's lanes. Live: the held loads (8 words, 8 lines, or 2 words of 4 lines) and the running total.
 // see docs/internals/tools/lab.md#mask-prepare-time
 #include "lab.cuh"
 #include "mask_prepare/mask_prepare_kernel.cuh"
@@ -86,34 +86,31 @@ int main(int argc, char** argv) {
     //: a thread's digits, so a CTA's windows a round and its rounds a call
     const int unit = g < 16 ? g : 16, per = pass::kThreads / (kDigits / unit), rounds = kCtaWindows / per;
     const std::string name = "groups of " + std::to_string(g) + (g == 1 ? " digit" : " digits");
-    //: the first round's windows, checked in the library's layout: every group's words, the count before each and the window's total
+    //: the first round's windows, checked in the library's layout: every group's words and the window's total
     const size_t checked = static_cast<size_t>(ctas) * per;
     LAB_CHECK(cudaMemset(dwork, 0xff, checked * block));
     timed<<<ctas, pass::kThreads>>>(b.times, args, ddensity, dwork, 1, 0);
     LAB_CHECK(cudaDeviceSynchronize());
     std::vector<uint8_t> got(checked * block);
     LAB_CHECK(cudaMemcpy(got.data(), dwork, checked * block, cudaMemcpyDeviceToHost));
-    long long wrong_words = 0, wrong_counts = 0, wrong_totals = 0;
+    long long wrong_words = 0, wrong_totals = 0;
     for (size_t w = 0; w < checked; ++w) {
       const uint8_t* const at = got.data() + w * block;
       const uint16_t* const totals = reinterpret_cast<const uint16_t*>(at);
-      const uint16_t* const counts = reinterpret_cast<const uint16_t*>(at + plan::prepared_counts_at(groups));
-      const uint32_t* const words = reinterpret_cast<const uint32_t*>(at + plan::prepared_words_at(groups, kWords));
+      const uint32_t* const words = reinterpret_cast<const uint32_t*>(at + plan::prepared_words_at(groups));
       for (int q = 0; q < groups; ++q) {
-        uint32_t before = 0;
+        uint32_t live = 0;
         for (int j = 0; j < kWords; ++j) {
           uint32_t want = 0;
           for (int d = 0; d < g; ++d) want |= mask[(w * kWords + j) * kDigits + q * g + d];
           wrong_words += g > 1 && words[j * groups + q] != want;
-          wrong_counts += counts[j * groups + q] != before;
-          before += static_cast<uint32_t>(__builtin_popcount(want));
+          live += static_cast<uint32_t>(__builtin_popcount(want));
         }
-        wrong_totals += totals[q] != before;
+        wrong_totals += totals[q] != live;
       }
     }
-    b.check(name, wrong_words == 0 && wrong_counts == 0 && wrong_totals == 0,
-            std::to_string(wrong_words) + " words, " + std::to_string(wrong_counts) + " counts and "
-                + std::to_string(wrong_totals) + " totals differ over " + std::to_string(checked) + " windows of "
+    b.check(name, wrong_words == 0 && wrong_totals == 0,
+            std::to_string(wrong_words) + " words and " + std::to_string(wrong_totals) + " totals differ over " + std::to_string(checked) + " windows of "
                 + std::to_string(groups) + " groups");
     const lab::Samples cycles = b.variant(
         [&] { timed<<<ctas, pass::kThreads>>>(b.times, args, ddensity, dwork, rounds, ctas); },

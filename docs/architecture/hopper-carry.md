@@ -73,8 +73,11 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   8 MB. NOT MEASURED: the fetch while the CTA folds.
 - ITS COEFFICIENTS. A token's rows on the CTA's digits, loaded by the token's index into registers and expanded there,
   on both sides (RULED 2026-11-23: "the reason that coefficnets can afford to scatter is because we already need to load
-  them into registers to expand them anyway"). MEASURED ([`lab/carry_token.md`](../lab/carry_token.md)): the row's own
-  load 6 to 10% of the grouped window over a packed line.
+  them into registers to expand them anyway"). The fold then stores a thread's expanded lines into its step's
+  coefficient tile in shared memory, at lines the list's order fixes: the step's two operands are both shared memory,
+  the value lines on the 64 channels and the coefficient tile on the leaves, as the lab's composed fold ran; a step fed
+  from registers is the climb's. MEASURED ([`lab/carry_token.md`](../lab/carry_token.md)): the row's own load 6 to 10%
+  of the grouped window over a packed line.
 - A STEP is 16 tokens by up to 64 of a group's leaves (R25); a group wider than a step is more steps on the same value
   lines, and a short step is padded on the coefficient side, a zero byte, never by zero value lines (RULED 2026-11-19).
 - THE READ SIDE'S RESULTS. A reader's sums are stored once, in the list's order, into a PANEL a read group in shared

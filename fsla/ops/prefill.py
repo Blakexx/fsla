@@ -30,7 +30,7 @@ def prefill(launch, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
 
 def _build_workspace(descriptor: Descriptor) -> torch.Tensor:
     """THE WORKSPACE of a prefill call, laid out by the prefill launch function (``common/plan/``): one CUDA uint8 buffer of
-    the size the layout states: the mask-preparation pass's prepared words (and counts and totals, as built today) and whatever the carry's kernel needs. It is the op's own and internal to the call. It REFUSES BY NAME (:class:`~fsla.ops._ext.KernelNotBuilt`, kernel ``prefill``):
+    the size the layout states: the mask-preparation pass's prepared group words and totals and whatever the carry's kernel needs. It is the op's own and internal to the call. It REFUSES BY NAME (:class:`~fsla.ops._ext.KernelNotBuilt`, kernel ``prefill``):
     the workspace's layout is owed with the carry's kernel (docs/open-work.md rows A-f and A-g)."""
     not_built("prefill")
 

@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE MASK-PREPARATION PASS AGAINST ITS HOST REFERENCE, exactly (csrc/fsla/src/mask_prepare/mask_prepare.cu, docs/internals/mask_prepare/mask_prepare.md): every group's words, the counts of live
-tokens before each word and each window's total are integers, so the comparison is bit for bit (`tests/oracle/mask_prepare_reference.py`, written from the rule). The bytes of a block
+"""THE MASK-PREPARATION PASS AGAINST ITS HOST REFERENCE, exactly (csrc/fsla/src/mask_prepare/mask_prepare.cu, docs/internals/mask_prepare/mask_prepare.md): every group's words and each group's total of live
+tokens of the window are integers, so the comparison is bit for bit (`tests/oracle/mask_prepare_reference.py`, written from the rule). The bytes of a block
 the layout does not use at the level-side's group are unspecified and never compared; a level-side at density byte 255 is dense and its region is left as it was.
 
 DEVICE TIER: it launches the kernel, so it runs where a GPU is (`bazel test //tests:oracle`); the CPU tier holds the reference's own checks (`tests/unit/test_mask_prepare.py`).
@@ -76,7 +76,6 @@ def check(masks: Masks, density: torch.Tensor, workspace: torch.Tensor) -> None:
     for slot, blocks in want.items():
         got = reference.read(workspace, masks, slot, blocks.group, window_words())
         assert torch.equal(got.totals, blocks.totals), f"slot {slot}: totals at group {blocks.group}"
-        assert torch.equal(got.counts, blocks.counts), f"slot {slot}: counts at group {blocks.group}"
         if blocks.words is not None:
             assert torch.equal(got.words, blocks.words), f"slot {slot}: words at group {blocks.group}"
 

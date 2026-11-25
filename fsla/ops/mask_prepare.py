@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE PREFILL'S MASK-PREPARATION PASS, its Python face (csrc/fsla/src/mask_prepare/mask_prepare.cu, docs/internals/mask_prepare/mask_prepare.md).
 
-:func:`prepare_masks` writes, for every level-side of a PREFILL-layout :class:`fsla.routing.masks.Masks` bundle that has a mask, its group words,
-counts and totals into one uint8 workspace, at the layout of ``csrc/fsla/src/common/plan/mask_prepare_layout.h`` (docs/internals/common/plan/mask_prepare_layout.md).
+:func:`prepare_masks` writes, for every level-side of a PREFILL-layout :class:`fsla.routing.masks.Masks` bundle that has a mask, its group words
+and totals into one uint8 workspace, at the layout of ``csrc/fsla/src/common/plan/mask_prepare_layout.h`` (docs/internals/common/plan/mask_prepare_layout.md).
 """
 from __future__ import annotations
 
