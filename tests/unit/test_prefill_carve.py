@@ -74,7 +74,7 @@ def test_the_carve_of_the_owners_cases(widths, write, read, want):
     assert got == want
 
 
-@pytest.mark.parametrize("density, group", [(1, 1), (2, 1), (3, 4), (5, 4), (10, 4), (11, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
+@pytest.mark.parametrize("density, group", [(1, 1), (2, 1), (3, 4), (6, 4), (7, 8), (12, 8), (13, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
 def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_to_the_smaller(density, group):
     out = _out(_carve([8], [density], [density]))
     assert out["write_group_bits"] == out["read_group_bits"] == [group.bit_length() - 1]

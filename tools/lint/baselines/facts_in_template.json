@@ -111,12 +111,6 @@
   },
   {
    "path": "csrc/fsla/src/common/plan/cta_carve.h",
-   "message": "kGroupSizes is the number 7: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "21c8a6d41464883e",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/common/plan/cta_carve.h",
    "message": "kLeastDensity is the number 1: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
    "line_sha256": "1b7b2d0f39803308",
    "count": 1

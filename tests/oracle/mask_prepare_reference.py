@@ -19,7 +19,7 @@ from fsla.routing.masks import PREFILL, Masks
 LEVELS = 4
 SIDES = 2 * LEVELS
 #: the group sizes a level-side may take, and the density whose byte is the dense flag
-GROUP_SIZES = (1, 4, 16, 32, 64, 128, 256)
+GROUP_SIZES = (1, 4, 8, 16, 32, 64, 128, 256)
 DENSE_BYTE = 255
 
 

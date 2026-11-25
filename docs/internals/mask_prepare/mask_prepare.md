@@ -6,7 +6,7 @@ every level-side of the call that has a mask, writing each level-side's prepared
 `fsla/ops/mask_prepare.py` (`prepare_masks`, which passes the masks' device to `mask_prepare_bytes`; the op derives the card's window); its exactness is graded by `tests/oracle/test_mask_prepare.py` against the host reference `tests/oracle/mask_prepare_reference.py` (the words and totals, bit for bit), and its host checks run without a GPU in `tests/unit/test_mask_prepare.py`; the registry of its contract is `hardware/kernels/mask_prepare/` ([`../hardware/registry.md`](../hardware/registry.md)).
 
 Symbols: `T` tokens, a window is the card's (`plan::window_of_cc`, [`../common/plan/levels.md`](../common/plan/levels.md); tokens), `words` mask words of 32 tokens (the hopper card's: 1,024 tokens, 32 words); a level-side is a side (0 reads, 1 writes) and a level, `slot = side * 4 + level`; `width` its digits (a power of two, 2 to 256), `width_bits` its log2; `g` its
-group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width / g`.
+group in digits (1, 4, 8, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width / g`.
 
 ## <a id="the-kernel"></a>The kernel
 
@@ -27,10 +27,10 @@ group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width /
 
 `prepare<GB, WORDS>` is a level-side at a group of `1 << GB` digits. A thread's UNIT is the digits it loads of one word, `min(GB, 4)` bits of them:
 
-- a thread a (window, group) at groups of 1, 4 and 16 digits: its unit is the group, 1, 4 or 16 digits, `Raw<U>` holding them as loaded (a word at one digit, 16-byte lines from 4);
+- a thread a (window, group) at groups of 1, 4, 8 and 16 digits: its unit is the group, 1, 4, 8 or 16 digits, `Raw<U>` holding them as loaded (a word at one digit, 16-byte lines from 4);
 - a thread a (window, 16 digits) at groups of 32 to 256: its unit is 16 digits and the group's `1 << (GB - 4)` lanes (2 to 16, adjacent threads of a warp) OR their words by warp shuffle, in `finish`.
 
-A thread walks its window's `WORDS` words in order with ITS LOADS HELD AHEAD: `kHeld` words' loads are issued before any is read -- 8 at one digit a thread or at four digits, 2 at more -- and each trip finishes `kHeld` words, issuing as it finishes one the load `kHeld` words on into the registers that word left, so
+A thread walks its window's `WORDS` words in order with ITS LOADS HELD AHEAD: `kHeld` words' loads are issued before any is read -- 8 at one digit a thread or at four digits, 4 at eight, 2 at more -- and each trip finishes `kHeld` words, issuing as it finishes one the load `kHeld` words on into the registers that word left, so
 `kHeld` loads are in flight through the walk (`#pragma unroll 1` over the trips). Per word it stores, at its group's place in the block, the group's word (where the group is more than one digit) and adds the word's popcount to its running total (`live`); at the end it stores the window's total, the group's live tokens of the window.
 
 - A word past the mask's last (the window is the mask's last and ragged, `have < WORDS`) is read as zero: its load re-reads the thread's first word (an address inside the mask) and the word's `keep` is zero, so there is no branch and no read past the mask.
@@ -42,6 +42,6 @@ A thread walks its window's `WORDS` words in order with ITS LOADS HELD AHEAD: `k
 
 ## Its time
 
-Measured on an H100 at each of its seven group sizes, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
-NOT MEASURED: a level narrower than 256 digits, several level-sides in one launch, and a call short enough that the launch itself is most of its time.
+Measured on an H100 at seven of its eight group sizes, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
+NOT MEASURED: a group of 8 digits, a level narrower than 256 digits, several level-sides in one launch, and a call short enough that the launch itself is most of its time.
 

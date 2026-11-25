@@ -29,7 +29,7 @@ struct Args {
 };
 
 //: the index of a group's bits among `plan::kGroupSizeBits`
-__host__ __device__ constexpr int group_index(int bits) { return bits < 4 ? bits / 2 : bits - 2; }
+__host__ __device__ constexpr int group_index(int bits) { return bits < 2 ? 0 : bits - 1; }
 
 constexpr bool group_index_inverts_the_sizes() {
   for (int i = 0; i < kGroupSizes; ++i) {
@@ -119,7 +119,7 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   std::uint32_t* word = reinterpret_cast<std::uint32_t*>(words) + group;
 
   //: THE WALK'S LOADS HELD, issued before any is read: 8 words' at one digit a thread or at four, 2 at more
-  constexpr int kHeld = kUnit < 16 ? 8 : 2;
+  constexpr int kHeld = kUnit < 8 ? 8 : kUnit < 16 ? 4 : 2;
   static_assert(WORDS > 0 && WORDS % kHeld == 0 && WORDS * 32 <= 65536, "no window of trips");
   Raw<kUnit> held[kHeld];
   const std::uint32_t* row = at;

@@ -45,7 +45,8 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the library's CTA dispatches once -- its level-side, its switch on the group, a surplus CTA's return -- outside its own
   //: loops; here that dispatch sits inside the lab's loop over rounds, which the library's kernel does not have
-  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 22);
+  //: the switch has an arm a group size, eight of them
+  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 24);
   if (b.expect_only) return 0;
   //: every group covers the same windows a call, 256 a CTA
   constexpr int kCtaWindows = 256;

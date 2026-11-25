@@ -23,7 +23,7 @@ then the fold of the window's writes into the state.
 - A SIDE'S DENSITY on a level is its share of live digit-token pairs there, the prefill call's own input beside the
   masks (the library's helpers measure it from a level-side's mask; a level-side whose activation cannot make exact
   zeros has no mask, is dense, and its byte is 255 by the declaration: [`api.md`](../api.md) section 2.6); ITS GROUP
-  SIZE is the density times the level's digits, rounded to 1, 4, 16,
+  SIZE is the density times the level's digits, rounded to 1, 4, 8, 16,
   32, 64, 128 or 256 (R10). The kernels read the densities, derive the groups, the carve and the split with
   that one rule, and switch once a call to the code compiled for the pattern (`uniform_switch`; R9). The host reads no density: its half of the launch is the grid's counts and the window
   ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md); R24; [`open-work.md`](../open-work.md) row A-f).

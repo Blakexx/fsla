@@ -52,8 +52,8 @@ def test_a_level_side_at_byte_255_is_whole_its_group_the_level_itself_at_every_w
 
 
 def test_below_byte_255_a_level_side_is_whole_only_where_the_level_is_an_allowed_size():
-    assert not any(reference.whole(byte, width) for byte in range(255) for width in (2, 8))
-    assert all(any(reference.whole(byte, width) for byte in range(255)) for width in (4, 16, 32, 64, 128, 256))
+    assert not any(reference.whole(byte, 2) for byte in range(255))
+    assert all(any(reference.whole(byte, width) for byte in range(255)) for width in (4, 8, 16, 32, 64, 128, 256))
 
 
 def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_digits_and_a_narrow_width_takes_only_what_it_holds():
@@ -63,8 +63,8 @@ def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_
 
 
 def test_a_tie_goes_to_the_smaller_size():
-    #: width 256, byte 9 (d = 10): 10 digits live, 6 from 4 and 6 from 16 (1,536 256ths from each): a tie
-    assert reference.group_of(9, 256) == 4
+    #: width 256, byte 11 (d = 12): 12 digits live, 4 from 8 and 4 from 16 (1,024 256ths from each): a tie
+    assert reference.group_of(11, 256) == 8
 
 
 def _tiny() -> Masks:

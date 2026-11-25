@@ -31,12 +31,13 @@ inline constexpr int kCtaLeaves = 1 << kCtaLeafBits;
 inline constexpr int kWholeDensity = 256;
 inline constexpr int kLeastDensity = 1;
 
-//: the allowed group sizes in digits, as log2: 1, 4, 16, 32, 64, 128, 256 (those no larger than a level's width are allowed on it)
-inline constexpr int kGroupSizeBits[] = {0, 2, 4, 5, 6, 7, 8};
-inline constexpr int kGroupSizes = 7;
+//: the allowed group sizes in digits, as log2: 1, 4, 8, 16, 32, 64, 128, 256 (those no larger than a level's width are allowed on it; a density of the whole is the level itself, on a level of 2 digits too)
+inline constexpr int kGroupSizeBits[] = {0, 2, 3, 4, 5, 6, 7, 8};
+inline constexpr int kGroupSizes =
+    static_cast<int>(sizeof(kGroupSizeBits) / sizeof(kGroupSizeBits[0]));
 
 //: `kGroupSizeBits[i]` as arithmetic: a kernel evaluates it where it cannot read the table
-FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i < 3 ? 2 * i : i + 2; }
+FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i < 1 ? 0 : i + 1; }
 
 constexpr bool group_size_bits_is_the_table() {
   for (int i = 0; i < kGroupSizes; ++i) {
