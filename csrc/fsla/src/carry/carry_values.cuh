@@ -26,7 +26,7 @@ constexpr int kRowBytes = 2 * CHANNELS;
 template <int CHANNELS>
 constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 
-//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group: `tokens` the round's 32 places of the warp's list, a token's line `stride` bytes on from the token before's; `tiles` on a 1,024-byte boundary -- see docs/internals/carry/carry_values.md#fetch
+//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, left uncommitted for the stage that issues them; a place copies nothing and its row is written zero where `live` is false: `tokens` the round's 32 places of the warp's list, a token's line `stride` bytes on from the token before's; `tiles` on a 1,024-byte boundary -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
                                             std::int64_t stride, const std::uint16_t* tokens,

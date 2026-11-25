@@ -49,16 +49,18 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)), as [`../../lab/value_fetch.md`](../../lab/value_fetch.md)
   found of copies whose lanes do not move a whole row. NOT SHOWN: that it is the 32 different source lines of an
   instruction. THE PLAN IS FORMED APART FROM THE COPIES (`stage_plan`, a lane's token, where its blocks are read and
-  its slot) so that a stage's loads and arithmetic stand before all of its copies, and the bytes' copies last: what is
-  issued behind such a copy waits on it ([`carry_kernel.md`](carry_kernel.md#supply)); the widest stage of the classes built is 5
+  its slot) so that a stage's loads and arithmetic stand before all of its copies, and the bytes' copies last: a profile's reading is that what is
+  issued behind such a copy waits on it, and the order's record is 8 percent of the cell's window
+  ([`carry_kernel.md`](carry_kernel.md#supply)); the widest stage of the classes built is 5
   lines a token, 2,560 bytes (`kStageMost`, which every class's stage is asserted to fit where its windows are
   compiled). THE EXPANSION'S READS of a slot are a 16-byte load a block, or, of a position of fewer than 16 digits,
   the word or the pair of its block the digits lie in, at the same place in every lane's slot: with the odd pitch the
   32 lanes' words fall on the banks at most four to a bank, as the copies do. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
   into registers took about 700 cycles to land and held the warp there, a set's first round 1,237 cycles in its
   coefficient phase where its later rounds were about 500
-  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy holds no warp where a load did. AS MEASURED
-  the staged form's window is not the faster of the two, its copies' issue costing what the loads' stall did.
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's own result is waited for once, at the stage's wait, where a load's was at its first use. AS MEASURED the
+  staged form's window was not the faster of the two as first built, and is by a little once a stage's bytes are
+  issued last ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
 - <a id="expand"></a>`expand_round<levels, bits a position>(source, tokens, stage, tile)`, `position_floats`: A LANE A
   TOKEN. Lane `i` reads its token's staged bytes a position -- a block a 16-byte load, fewer digits the word or the
   pair of the block they lie in -- converts them to fp32, multiplies positions 1 on

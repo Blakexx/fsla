@@ -24,8 +24,27 @@ lines in the step's swizzle order, a dead place's row zero, on its boundary; the
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
-MEASURED WITH THE COEFFICIENTS' BYTES STAGED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07;
-2026-11-25, the experiment at fc999aad; 7 repetitions; every call's check exact, every coefficient with it; cycles a
+MEASURED WITH A STAGE'S BYTES ISSUED LAST (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07;
+2026-11-25, the experiment at 0691c521; 7 repetitions; every call's check exact, every coefficient with it; cycles a
+window a CTA, the median):
+
+| the call | timed | stamped | the bytes' copies issued first, timed |
+|---|---:|---:|---:|
+| the cell | 5,066 | 6,416 | 5,487 |
+| the write side masked on both levels | 5,046 | 6,411 | 5,107 |
+| the write side whole on both levels | 29,638 | 32,117 | 29,751 |
+| one digit a token on each level | 4,881 | 7,059 | 4,913 |
+| both levels, the read side's densities crossed | 3,079 | 4,070 | 3,274 |
+
+PREDICTED, before the run, FROM THE PROFILE BELOW (timed, and stamped): the cell 4,750 to 5,250 (5,950 to 6,450); both
+levels 4,650 to 5,000 (6,020 to 6,370); whole 28,900 to 29,900 (31,100 to 32,100); one digit 4,600 to 4,900 (6,700 to
+7,000); crossed 2,950 to 3,230 (3,840 to 4,120) -- the record before less a third to nine tenths of the stalls the
+profile put behind the two byte copies, 790 cycles of the cell's window. SIX OF TEN HELD, the cell's two among them;
+the four misses are each within 1 percent above their range (both levels 5,046, and three stamped rows). WHAT IT
+SAYS: the order recovered about 420 cycles of the cell's 790, and 195 of the crossed call's; the calls whose stages
+are mostly bytes alone, or mostly empty, keep their windows.
+
+THE BYTES' COPIES ISSUED FIRST, the staged form as first built (the same card and day, the experiment at fc999aad; 7 repetitions; every call's check exact, every coefficient with it; cycles a
 window a CTA, the median):
 
 | the call | its step, chunks a set | timed | stamped | the bytes loaded into registers, timed | the supply alone, timed |

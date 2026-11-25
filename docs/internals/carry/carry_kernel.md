@@ -89,10 +89,11 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   ([`carry_coefs.md`](carry_coefs.md#expand)) -- two groups in flight, the newer one's latency under this stage's work.
   Where a set has no round after, the next stage's copies are predicated off and its group is committed empty: no
   branch, and the wait is the same instruction. A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
-  COPIES, THEN THE BYTES': a byte copy's lanes ask for 32 different lines, and the profiler found what is issued
-  behind one waiting on it -- the next token's load and its first use, about a seventh of a fold warp's window
-  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)) -- so the bytes' copies go last, under the wait for the
-  stage that is landing. The positions' rows are formed once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
+  COPIES, THEN THE BYTES', under the wait for the stage that is landing. MEASURED: with the bytes' copies first the
+  cell's window was 5,487 cycles a CTA and with them last 5,066, the crossed call's 3,274 and 3,079
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). WHY IS ONE PROFILE'S READING, not on record: its largest
+  stalls in a stage's issue were the first uses of tokens loaded from the list behind the two byte copies, whose
+  lanes ask for 32 different lines each. The positions' rows are formed once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
   ([`carry_coefs.md`](carry_coefs.md#class)) -- the call's levels and its step's shape -- and each arm is
   `fold_windows<CLASS>`, the warp's windows COMPILED FOR THAT DEPTH AND THAT STEP SHAPE: a level the call has not has
   no word, no row and no instruction, and a column's digits are picked as the code is compiled. WHICH OF THE CALL'S

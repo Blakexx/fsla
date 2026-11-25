@@ -15,16 +15,16 @@ hangs or leaves early fails the check. Its second row stamps every warp's hand-o
 tracer (64 windows), and the record holds two CTAs' timelines of it.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-fc999aad; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
+0691c521; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
 
 | the carry on a call of no tokens | cycles |
 |---|---:|
 | as the library compiles it, its tracer nothing | 749 |
-| every warp's hand-offs and phases stamped | 1673 |
+| every warp's hand-offs and phases stamped | 1669 |
 
-PREDICTED, before the run: the plain row 630 to 720 and the stamped row 1,400 to 1,580 (660 and 1,469 at 05b6fec2, on
-the call of no levels) -- BOTH MISSED HIGH: the range took the call's two whole levels as free. NOT EXPLAINED: which
-of their work the 89 cycles are. A
+PREDICTED, before the run: the plain row 720 to 780 and the stamped row 1,620 to 1,730 (749 and 1,673 at fc999aad) --
+BOTH HELD. NOT EXPLAINED: what of the call's two whole levels is the 89 cycles over the call of no levels (660 at
+05b6fec2). A
 STAMPED ROW OF THIS CALL IS A TIMELINE'S ORDER, NOT ITS DURATIONS: on a window that is nothing but 16 hand-offs the
 stamps are the larger cost.
 
