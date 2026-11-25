@@ -62,6 +62,7 @@ constexpr int kCoefsAlign = 128;
 struct FoldRows;
 struct FoldTokens;
 struct FoldCoefs;
+struct FoldStaged;
 
 //: the window's mask words on the build's card
 template <class Bt>
@@ -71,7 +72,8 @@ template <class Bt>
 using Smem = SmemLayout<
     Bt, 1, Aligned<FoldRows, std::uint8_t, kRowsBytes, kRowsAlign>,
     Fixed<FoldTokens, std::uint16_t, kFolds * kGroupWarps * kListPlaces<kWindowWords<Bt>>>,
-    Aligned<FoldCoefs, std::uint8_t, kFolds * kGroupWarps * kWarpCoefs, kCoefsAlign>>;
+    Aligned<FoldCoefs, std::uint8_t, kFolds * kGroupWarps * kWarpCoefs, kCoefsAlign>,
+    Aligned<FoldStaged, std::uint8_t, kFolds * kGroupWarps * kHeld * kStageMost, kCoefsAlign>>;
 
 //: A FOLD WARP'S LIST of the tokens of the set it is on
 template <class Bt>
@@ -90,6 +92,12 @@ __device__ __forceinline__ std::uint8_t* fold_rows(int fold, int warp) {
 template <class Bt>
 __device__ __forceinline__ std::uint8_t* fold_coefs(int fold, int warp) {
   return Smem<Bt>::template get<FoldCoefs>() + (fold * kGroupWarps + warp) * kWarpCoefs;
+}
+
+//: A FOLD WARP'S STAGED BYTES: two stages' in flight, a stage the widest's -- see docs/internals/carry/carry_kernel.md#smem
+template <class Bt>
+__device__ __forceinline__ std::uint8_t* fold_staged(int fold, int warp) {
+  return Smem<Bt>::template get<FoldStaged>() + (fold * kGroupWarps + warp) * (kHeld * kStageMost);
 }
 
 //: A ROLE'S REGISTERS A THREAD: `FOLD` and `READ` are the arm's, the drain's what the multiprocessor's file leaves -- see docs/internals/carry/carry_kernel.md#registers
@@ -156,6 +164,8 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
   constexpr int kB0 = kClass.bits[0], kB1 = kClass.bits[1], kB2 = kClass.bits[2];
   constexpr int kB3 = kClass.bits[3], kChunkBits = kClass.chunk_bits;
   constexpr int kSetChunks = 1 << kChunkBits;
+  static_assert(StageShape<kDepth, kB0, kB1, kB2, kB3>::kBytes <= kStageMost,
+                "a stage fits its tile");
   using Shape = StepShape<kB0, kB1, kB2, kB3>;
   static_assert(kWords == ops::kBallotLanes, "a lane a word of a window");
   const int thread = static_cast<int>(threadIdx.x), fold = thread / kGroup;
@@ -173,6 +183,7 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
   const std::uint8_t* const lines = o.values + p.slice * kRowBytes<kChannels>;
   const ops::SmemAddr rows = ops::smem_addr(fold_rows<Bt>(fold, warp));
   const ops::SmemAddr coefs = ops::smem_addr(fold_coefs<Bt>(fold, warp));
+  const ops::SmemAddr staged = ops::smem_addr(fold_staged<Bt>(fold, warp));
   //: the positions' rows a window on: a window is a whole number of the rows' tiles
   FoldPositions at = positions;
   constexpr int kWindowTiles = (kWords * 32) >> kRowTileBits;
@@ -204,7 +215,6 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
                                      reads[l] && mine > 0, ~0u);
   }
   std::uint32_t whose = mine > 0 ? ours : 0u;
-  int issued = 0;
 
 #pragma unroll 1
   for (int w = 0; w < o.windows; ++w) {
@@ -245,35 +255,51 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
       const int set = first_set + (i << shared_bits);
       int round = 0;
       if (ops::lane_ballot(kWords * round < s.total) != 0u) {
-        //: A CHUNK'S BYTES ARE LOADED A CHUNK AHEAD, the first round's before its copies: a load read where it is issued holds the warp until it lands
-        CoefBytes<kB0, kB1, kB2, kB3> next = load_round<kDepth, kB0, kB1, kB2, kB3>(
-            coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), list, kWindowTiles);
+        //: A STAGE IS A CHUNK OF A ROUND, its copies one committed group: the chunk's bytes, and with a round's first chunk the round's value lines. The set's first stage is issued here, and each stage issues the one after it -- see docs/internals/carry/carry_kernel.md#supply
+        stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+            coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), list, staged, true);
+        fetch_round<kChannels>(rows, from, o.line_bytes, list, true);
 #pragma unroll 1
         do {
-          tr.phase(kSiteFetch);
           const std::uint16_t* const tokens = list + kWords * round;
-          const int slot = issued & (kHeld - 1);
-          const ops::SmemAddr to = rows + static_cast<ops::SmemAddr>(slot * kRoundBytes<kChannels>);
-          fetch_round<kChannels>(to, from, o.line_bytes, tokens);
-          tr.phase(kSiteCoefs);
+          const ops::SmemAddr to =
+              rows + static_cast<ops::SmemAddr>((round & (kHeld - 1)) * kRoundBytes<kChannels>);
+          //: whether the set has a round after this one, a value every lane holds: where it has none the copies of one are predicated off and its group is committed empty
+          const bool more = ops::lane_ballot(kWords * (round + 1) < s.total) != 0u;
 #pragma unroll
           for (int chunk = 0; chunk < kSetChunks; ++chunk) {
-            const CoefBytes<kB0, kB1, kB2, kB3> now = next;
-            //: the chunk after: this round's next, or the round after's first, whose places past the set's last hold no token of it and are made nothing of
-            const bool turns = chunk + 1 == kSetChunks;
-            next = load_round<kDepth, kB0, kB1, kB2, kB3>(
-                coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, turns ? 0 : chunk + 1),
-                tokens + (turns ? kWords : 0), kWindowTiles);
-            expand_round<kDepth, kB0, kB1, kB2, kB3>(now, coefs);
+            tr.phase(kSiteFetch);
+            //: the stage's slot and the next's: a chunk's turn where a set has several, a round's where it has one
+            const int turn = (kSetChunks > 1 ? chunk : round) & (kHeld - 1);
+            const ops::SmemAddr here = staged + static_cast<ops::SmemAddr>(turn * kStageMost);
+            const ops::SmemAddr there =
+                staged + static_cast<ops::SmemAddr>((turn ^ 1) * kStageMost);
+            if (chunk + 1 < kSetChunks) {
+              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+                  coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, chunk + 1), tokens,
+                  there, true);
+              ops::stage_commit();
+            } else {
+              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+                  coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), tokens + kWords,
+                  there, more);
+              fetch_round<kChannels>(rows
+                                         + static_cast<ops::SmemAddr>(((round + 1) & (kHeld - 1))
+                                                                      * kRoundBytes<kChannels>),
+                                     from, o.line_bytes, tokens + kWords, more);
+            }
+            tr.phase(kSiteIssued);
+            ops::stage_wait<kHeld - 1>();
+            tr.phase(kSiteCoefs);
+            expand_round<kDepth, kB0, kB1, kB2, kB3>(
+                coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, chunk), tokens, here,
+                coefs);
             tr.coefs(fold, set, w, round, chunk, tokens, coefs, kCoefRoundBytes<Shape>);
             //: NOT BUILT: the fold's meet and the chunk's steps
           }
-          tr.phase(kSiteIssued);
-          ops::stage_wait<kHeld - 1>();
           tr.phase(kSiteLanded);
           tr.round(fold, set, w, round, tokens, to);
           ++round;
-          ++issued;
         } while (ops::lane_ballot(kWords * round < s.total) != 0u);
       }
     }

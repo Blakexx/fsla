@@ -3,12 +3,13 @@
 Mirrors `csrc/fsla/src/carry/carry_kernel.cuh`. THE SKELETON
 ([`KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)) of the design
 [`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md): every role with its registers, its
-hand-offs and its order of work, and ONE COMPONENT BUILT IN IT, the fold warpgroups' supply ([below](#supply)); every
-other component is a stub named where it goes. It has no host half and no op: the lab runs it, on a call's real
+hand-offs and its order of work, and TWO COMPONENTS BUILT IN IT, the fold warpgroups' supply and their coefficients
+([below](#supply)); every other component is a stub named where it goes. It has no host half and no op: the lab runs it, on a call's real
 operands ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)) and on a call of no tokens, where a window is its
 hand-offs ([`../../lab/carry_skeleton.md`](../../lab/carry_skeleton.md)). The supply is the listing
 ([`carry_list.md`](carry_list.md)) and the value lines' fetch ([`carry_values.md`](carry_values.md)) on the call's
-groups ([`carry_groups.md`](carry_groups.md)).
+groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's bytes staged and expanded
+([`carry_coefs.md`](carry_coefs.md)).
 
 - <a id="roles"></a>THE ROLES. A CTA is 512 threads, four warpgroups of 128 (a warpgroup is the tensor step's unit):
   two FOLD warpgroups (`kFolds`), the READOUT's (`kReadAt`), and the DRAIN's four warps (`kDrainAt`).
@@ -62,7 +63,10 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a slot's rows are overwritten by the round issued two later, and that issue stands behind the tracer's call for the
   round whose rows they were -- where the wait of that round's steps will stand (NOT BUILT: the steps). And the fold
   warps' COEFFICIENT TILES (`FoldCoefs`, [`carry_coefs.md`](carry_coefs.md#tile)): a warp one tile, a round's two
-  steps at the widest step's 64 columns, 4 KB, the eight 32 KB, on a boundary of the banks' 128 bytes; its warp
+  steps at the widest step's 64 columns, 4 KB, the eight 32 KB, on a boundary of the banks' 128 bytes; and their
+  STAGED BYTES (`FoldStaged`, [`carry_coefs.md`](carry_coefs.md#stage)): a warp two stages in flight at the widest
+  stage's 2,560 bytes, the eight 40 KB, a slot written by its stage's copies and read by its expansion, and written
+  again by the stage two later, which is issued behind that expansion. A coefficient tile's warp
   writes it a chunk of a round and the chunk's steps read it, so the next expansion stands behind those steps' wait
   (NOT BUILT: the steps; the one tile is the form the owner took,
   [`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#what-a-cta-makes)).
@@ -78,9 +82,12 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
   to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
   ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
-  nothing. THE ROUND'S COEFFICIENTS are expanded behind its copies' issue, a chunk at a time
-  ([`carry_coefs.md`](carry_coefs.md#expand)): a lane a token, into the warp's tile; the positions' rows are formed
-  once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
+  nothing. A STAGE IS A CHUNK OF A ROUND, and its copies one committed group: the chunk's coefficient bytes
+  ([`carry_coefs.md`](carry_coefs.md#stage)) and, with a round's first chunk, the round's value lines. A set's first
+  stage is issued behind its lay; then each stage ISSUES THE STAGE AFTER IT, WAITS FOR ITS OWN, AND EXPANDS
+  ([`carry_coefs.md`](carry_coefs.md#expand)) -- two groups in flight, the newer one's latency under this stage's work.
+  Where a set has no round after, the next stage's copies are predicated off and its group is committed empty: no
+  branch, and the wait is the same instruction. The positions' rows are formed once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
   ([`carry_coefs.md`](carry_coefs.md#class)) -- the call's levels and its step's shape -- and each arm is
   `fold_windows<CLASS>`, the warp's windows COMPILED FOR THAT DEPTH AND THAT STEP SHAPE: a level the call has not has
   no word, no row and no instruction, and a column's digits are picked as the code is compiled. WHICH OF THE CALL'S
@@ -92,8 +99,7 @@ groups ([`carry_groups.md`](carry_groups.md)).
   switch on depth and runtime on listed pattern?", and to that form laid out in answer with its estimate, "Ok" -- the switch he ruled the day before ("switching uniformly to
   precomputed things defined for those patterns ... We are just templating in the code instead of at the arm") stays,
   on the pattern that changes the most code. WHAT THE FLAGS COST is about 3 instructions a set for a level of the call
-  that is not listed -- NOT MEASURED APART: the run that has them has the coefficients too, and its stamped set, in the
-  cell, is 610 cycles where the switch on the listed patterns had 690; the form before it, which tested every one of four levels at every set by a
+  that is not listed -- NOT MEASURED APART (the runs that have them have the coefficients too); the form before it, which tested every one of four levels at every set by a
   branch, was 6 to 10 percent of a window slower than the switch on the listed patterns
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
   value lines start is a step on, and THE CALL'S OWN TOKENS a lane -- all 32 of its word, or the first of them where the call ends inside it, which a set's AND starts from so that a side whose levels are all whole lists no place past the call's last -- are the windows its word is whole in, then one word,
@@ -101,7 +107,8 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a vote, a warp reduction) ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
   NOT BUILT: sides of different head counts (one head index reads both); the steps that consume a round and its
   coefficients. THE COEFFICIENTS' BUDGET, stated before the code: a round a warp, a chunk -- a lane a shared load of
-  its token, a load a position (two at two levels of 16 and 4 digits), a conversion a byte (20), a multiplication a
+  its token, a copy a block a position and then a shared load of it (two each at two levels of 16 and 4 digits), a
+  conversion a byte (20), a multiplication a
   column and its high bits' few (68), a packed rounding a pair of columns (32) and 8 stores of 16 bytes: about 180
   instructions a lane at 64 columns, 2.8 a column; its floor is the columns', 64 multiplications and 32 roundings a
   lane. THE BUDGET, stated before the code
@@ -114,7 +121,7 @@ groups ([`carry_groups.md`](carry_groups.md)).
   round's 8 loads and 8 copies 180 to 390 cycles of its warp whatever number of its 32 places are live, then a wait of up
   to 580 for the round before's copies; a set's sums and lay 420 to 930
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
-- WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists, the coefficients, the steps,
+- WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists and coefficients, the steps,
   the sums' stores and the adds, and the tiles they add to the CTA's shared memory.
 - <a id="the-cta"></a>`carry_cta<Bt, FOLD, READ, Tr>(operands, tracer)`: each role's whole body runs in its own branch,
   its registers set at the branch's head. A fold thread derives the call's carve and its CTA's place there, once

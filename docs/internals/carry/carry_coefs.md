@@ -34,18 +34,28 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   [`carry_groups.md`](carry_groups.md#sets)). A position the call has no level for holds nothing and is never read. EACH OF THE CARVE'S ARRAYS IS READ BEFORE THE LEVEL IS COMPARED WITH ANYTHING, as in
   `fold_levels`. It runs on the host as it does in a thread: the lab forms a call's positions with it.
 - <a id="source"></a>`CoefSource`, `coef_source<levels, bits a position, chunk bits>(positions, set, chunk)`: where a chunk of
-  a set is read -- a position's pointer at token 0's line of the block its first digit lies in, on that digit. The
-  digit is the fold's first, the set's group on, the chunk on at position 0.
-- <a id="expand"></a>`load_round<levels, bits a position>(source, tokens, tiles)`, `expand_round<levels, bits a position>(bytes, tile)`: A LANE A TOKEN. Lane
-  `i` takes place `i` of the round's 32 in its warp's list and loads each position's bytes of that token
-  (`load_round`, `CoefBytes`); A CHUNK'S BYTES ARE LOADED A CHUNK AHEAD -- a load read where it is issued holds the
-  warp until it lands -- so the fold loads a set's first round's behind its lay, and each chunk's as it expands the
-  one before ([`carry_kernel.md`](carry_kernel.md#supply)); a place past a set's last round holds what an earlier set
-  left, and its token is kept inside the window and made nothing of. `expand_round` converts the bytes to fp32, multiplies positions 1 on
+  a set is read -- a position's pointer at token 0's line of the block its first digit lies in, and that digit's place
+  inside the block. The digit is the fold's first, the set's group on, the chunk on at position 0.
+- <a id="stage"></a>`stage_bytes<levels, bits a position>(source, tokens, stage, live)`, `StageShape`, `kStageMost`: THE
+  BYTES ARRIVE AS THE VALUE LINES DO, by asynchronous copies into shared memory (the owner, 2026-11-25: "I thought we
+  were losing coefficents to smem async like values, and then expanding them from smem into operand areas? Why not?"
+  -- and to the form laid out in answer, "Ok go"). Lane `i` takes place `i` of the round's 32 and copies its token's
+  16-digit blocks a position, whole, 16 bytes a copy, into its slot of the stage; the copies are left uncommitted so
+  that they join the round's value lines' group. A SLOT'S PITCH IS ODD in 16-byte lines (the blocks' count, made odd),
+  so an instruction's 32 lanes write each of the banks' eight 16-byte places four times
+  ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)); the widest stage of the classes built is 5
+  lines a token, 2,560 bytes. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
+  into registers took about 700 cycles to land and held the warp there, a set's first round 1,237 cycles in its
+  coefficient phase where its later rounds were about 500
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's latency rides the wait on the round's landing,
+  which the warp has anyway.
+- <a id="expand"></a>`expand_round<levels, bits a position>(source, tokens, stage, tile)`, `position_floats`: A LANE A
+  TOKEN. Lane `i` reads its token's staged bytes a position -- a block a 16-byte load, fewer digits the word or the
+  pair of the block they lie in -- converts them to fp32, multiplies positions 1 on
   into the columns' high bits once, and then a column is one multiplication, rounded to bf16 as the packed pair is
   formed ([`../../architecture/precision.md`](../../architecture/precision.md#components): multiplied in fp32,
-  rounded once). A position of one digit is a factor of the whole line. A PLACE WITH NO TOKEN STORES ZEROS: a short
-  step is padded on the coefficient side
+  rounded once). A position of one digit is a factor of the whole line. A PLACE WITH NO TOKEN STORES ZEROS, whatever
+  its slot of the stage holds: a short step is padded on the coefficient side
   ([`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#what-a-cta-makes)), and the tile is used
   again a round, so nothing in it is left from the round before. NOT BUILT: the rows' scales.
 - <a id="tile"></a>THE TILE, `coef_step<Shape>(tile, step)`: a round's two steps, a step its bricks one after another

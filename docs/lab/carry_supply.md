@@ -38,8 +38,9 @@ CTA, the median):
 | one digit a token on each level | 4 x 4, 1 | 4,350 | 6,639 | 3,626 |
 | both levels, the read side's densities crossed | 16 x 4, 1 | 2,732 | 3,794 | 1,339 |
 
-PREDICTED, before the run (timed): the cell 2,650 to 3,150; both levels 2,420 to 2,700; whole 12,500 to 17,500; one
-digit 3,650 to 3,800; crossed 1,450 to 1,700 -- the supply's row and a round's expansion at an instruction count (170
+PREDICTED, before the run (timed, and stamped): the cell 2,650 to 3,150 (4,200 to 4,800); both levels 2,420 to 2,700
+(3,950 to 4,350); whole 12,500 to 17,500 (14,000 to 19,100); one digit 3,650 to 3,800 (5,200 to 5,420); crossed 1,450
+to 1,700 (2,680 to 2,950) -- a stamped range its timed one and the stamps' cost in the record before -- the supply's row and a round's expansion at an instruction count (170
 a lane a chunk of 64 columns at 2.1 cycles an instruction), less what was taken to hide under the supply's waits on
 its copies. ALL TEN ROWS MISSED HIGH, by 1.2 to 1.9 times. THE WRONG PRICES, by the stamped rows (a fold warp, CTA 0):
 - THE BYTES' LOADS WERE PRICED AS FREE AND ARE NOT. A token's bytes are register loads from global memory, scattered by
@@ -98,6 +99,10 @@ window, so these are shares):
 A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 180 to 390 cycles stamped whatever number of its
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
+
+SINCE THE RECORD the bytes arrive by asynchronous copies into shared memory in the round's own group, and the
+expansion reads them there ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#stage)). NOT RUN on
+record in that form.
 
 WHAT IT IS NOT: the fold. No step runs and no accumulator is held; the other roles are stubs; the rows carry no
 scale; the call is one head and its values are the cache's.

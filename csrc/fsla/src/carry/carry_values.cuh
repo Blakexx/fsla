@@ -29,7 +29,8 @@ constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 //: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group: `tokens` the round's 32 places of the warp's list, a token's line `stride` bytes on from the token before's; `tiles` on a 1,024-byte boundary -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
-                                            std::int64_t stride, const std::uint16_t* tokens) {
+                                            std::int64_t stride, const std::uint16_t* tokens,
+                                            bool live) {
   constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kPieceChannels;
   constexpr int kTokens = kLanes / kPieces;
   static_assert(kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
@@ -54,7 +55,8 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
     const int from = listed[i];
     const auto on = static_cast<ops::SmemAddr>((i / 2) * 2 * kTokens * kRowBytes<CHANNELS>);
     const ops::SmemAddr to = ((i & 1) != 0 ? odd : even) + on;
-    ops::stage_tile_if(to, lines + static_cast<std::uint32_t>(from * line), from != kNoToken);
+    ops::stage_tile_if(to, lines + static_cast<std::uint32_t>(from * line),
+                       live && from != kNoToken);
   }
   ops::stage_commit();
 }

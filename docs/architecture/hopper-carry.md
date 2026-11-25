@@ -82,25 +82,32 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   piece of 32 lines an instruction. SO A LINE LANDS WHOLE, a row of the step's tile with its pieces in the order the
   step's 128-byte swizzle reads ([`internals/carry/carry_values.md`](../internals/carry/carry_values.md#tile)). NOT
   MEASURED: the fetch while the CTA folds.
-- ITS COEFFICIENTS. A token's rows on the CTA's digits, loaded by the token's index into registers and expanded there,
+- ITS COEFFICIENTS. A token's rows on the CTA's digits, read by the token's index and expanded by the CTA,
   on both sides (RULED 2026-11-23: "the reason that coefficnets can afford to scatter is because we already need to load
   them into registers to expand them anyway"). The fold then stores a thread's expanded lines into its step's
   coefficient tile in shared memory, at lines the list's order fixes: the step's two operands are both shared memory,
   the value lines on the 64 channels and the coefficient tile on the leaves, as the lab's composed fold ran; a step fed
   from registers is the climb's. MEASURED ([`lab/carry_token.md`](../lab/carry_token.md)): the row's own load 6 to 10%
   of the grouped window over a packed line. THE FORM (laid out for the owner, 2026-11-25, who answered "1 A 2 sounds
-  fine"): a lane takes one token of its warp's round, loads its bytes on the set's digits by the token's index,
-  multiplies them out and stores one line in its warp's coefficient tile; A WARP HAS ONE TILE, a round's 32 tokens by
-  64 leaves, and a set wider than 64 leaves is done 64 leaves at a time on the same value lines, the tile used again --
-  tiles holding the widest set whole would be 128 KB for the eight fold warps. A SECOND TILE A WARP, the next round expanded under the steps of this one, is not taken
-  now, and it is not ruled out: with it the fold warps' rows (64 KB), lists (16.5), coefficient tiles (64) and the two
-  images (64) are 208.5 of the card's 227 KB, which leaves 18.5 for the readout's tiles and the panels, whose sizes
-  are not designed; with one it is 176.5. What one tile costs is the steps' own time a meet with nothing of the fold's
-  expanded under it -- 8 steps of 32 cycles in the cell. NOT MEASURED; the second tile is the climb's once the read
-  side's shared memory is known (what the fold idles there is to be priced: [`KERNEL_STANDARDS.md` section 28](../KERNEL_STANDARDS.md#s28)). BUILT ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md)) and exact on a
-  device; MEASURED ([`lab/carry_supply.md`](../lab/carry_supply.md)): the bytes' loads take about 700 cycles to land and
-  a chunk's expansion about 500, so the cell's window with the supply and the coefficients is 5,136 cycles a CTA and
-  the dense call's 25,158 -- NOT YET THE FORM THAT HOLDS: how the bytes arrive is open.
+  fine"): a lane takes one token of its warp's round, multiplies its bytes on the set's digits out and stores one
+  line in its warp's coefficient tile; A WARP HAS ONE TILE, a round's 32 tokens by 64 leaves, and a set wider than 64
+  leaves is done 64 leaves at a time on the same value lines, the tile used again -- tiles holding the widest set whole
+  would be 128 KB for the eight fold warps. THE BYTES ARRIVE AS THE VALUE LINES DO (the owner, 2026-11-25: "I thought we
+  were losing coefficents to smem async like values, and then expanding them from smem into operand areas? Why not?"):
+  asynchronous copies into a staging area in shared memory, in the round's own group, and the expansion reads them
+  there ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#stage)). Loaded into registers from
+  global memory, as they first were, they held a fold warp about 700 cycles a set's first round
+  ([`lab/carry_supply.md`](../lab/carry_supply.md)). SHARED MEMORY SO: the fold warps' rows (64 KB), lists (16.5),
+  coefficient tiles (32), staged bytes (40) and the two images (64) are 216.5 of the card's 227 KB, which leaves 10.5
+  for the readout's tiles and the panels, whose sizes are not designed -- THE FOLD'S TILES ARE SIZED FOR THE WIDEST
+  CLASS AND THE READ SIDE IS NOT YET FITTED BESIDE THEM. A second coefficient tile a warp, the next round expanded
+  under the steps of this one, is 32 KB more and does not fit so; what one tile costs is the steps' own time a meet
+  with nothing of the fold's expanded under it -- 8 steps of 32 cycles in the cell -- NOT MEASURED (what the fold idles
+  there is to be priced: [`KERNEL_STANDARDS.md` section 28](../KERNEL_STANDARDS.md#s28)). BUILT
+  ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md)); the register-loaded form was exact on a
+  device and MEASURED ([`lab/carry_supply.md`](../lab/carry_supply.md)): the cell's window with the supply and the
+  coefficients 5,136 cycles a CTA and the dense call's 25,158, a chunk's expansion about 500 cycles. THE STAGED FORM IS
+  NOT RUN.
 - A STEP is 16 tokens by up to 64 of a group's leaves (R25); a group wider than a step is more steps on the same value
   lines, and a short step is padded on the coefficient side, a zero byte, never by zero value lines (RULED 2026-11-19).
 - THE READ SIDE'S RESULTS. A reader's sums are stored once, in the list's order, into a PANEL a read group in shared

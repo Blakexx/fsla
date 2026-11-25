@@ -17,10 +17,11 @@
 // TIMELINE: no MMA. A fold warp, a window: the folds' hand-offs, then each of its sets -- the set's word a lane (the
 // levels' group words ANDed, loaded a set ahead), the listing's running sums, the set's tokens laid in the warp's list (a
 // trip a token of the fullest word), and a round of 32 places at a time its 8 shared loads and 8 asynchronous copies a
-// lane into the warp's rows, two rounds in flight; then a chunk of the round at a time, a lane its token's bytes a
-// level (loaded a chunk ahead), their conversion, a multiplication a column, a packed rounding a pair and a 16-byte
-// store a brick into the warp's coefficient tile. Live: the next set's word, the listing's four, a round's 8 tokens,
-// the next chunk's bytes.
+// lane into the warp's rows; a chunk of a round is a STAGE, its copies one group -- the chunk's bytes a level, a
+// lane a token, and with a round's first chunk its value lines -- and a stage issues the next one's copies, waits
+// for its own, then expands: a lane its staged bytes' shared loads, their conversion, a multiplication a column, a
+// packed rounding a pair and a 16-byte store a brick into the warp's coefficient tile. Two groups in flight. Live:
+// the next set's word, the listing's four, a round's 8 tokens.
 // see docs/internals/tools/lab.md#carry-supply
 #include <algorithm>
 #include <cstring>
@@ -577,12 +578,6 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
 int main(int argc, char** argv) {
   using namespace carry_supply;
   lab::Bench b(argc, argv);
-  //: a set's first round's coefficient bytes are loaded behind its lay and read behind its round's copies' issue, in the
-  //: set's own trip: the list they are indexed by is made in that trip; and a set of several chunks loads a chunk's
-  //: bytes a chunk ahead, inside its round's trip. The count is over the 24 classes the windows are compiled for
-  b.expect("carry_supply::timed", "LOAD_IN_TRIP", "<=", 98);
-  //: the same loads in the checking kernel, whose tracer's waits stand between them and their reads
-  b.expect("carry_supply::kept", "LOAD_IN_TRIP", "<=", 98);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
