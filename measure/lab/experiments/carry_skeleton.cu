@@ -32,6 +32,7 @@ struct Stamps {
   __device__ __forceinline__ void arrive(int id) { row.stamp(warpline::kArrive, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void phase(int site) { row.mark(warpline::kPhaseBegin, kPhases + static_cast<uint32_t>(site)); }
   __device__ __forceinline__ void round(int, int, int, int, const uint16_t*, uint32_t) {}
+  __device__ __forceinline__ void coefs(int, int, int, int, int, const uint16_t*, uint32_t, int) {}
 };
 
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's

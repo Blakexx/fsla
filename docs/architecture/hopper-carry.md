@@ -92,8 +92,12 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   fine"): a lane takes one token of its warp's round, loads its bytes on the set's digits by the token's index,
   multiplies them out and stores one line in its warp's coefficient tile; A WARP HAS ONE TILE, a round's 32 tokens by
   64 leaves, and a set wider than 64 leaves is done 64 leaves at a time on the same value lines, the tile used again --
-  tiles holding the widest set whole would be 128 KB for the eight fold warps. A second tile a warp, the next round expanded under the steps
-  of this one, is not taken: the eight fold warps' tiles are 32 KB so. NOT BUILT.
+  tiles holding the widest set whole would be 128 KB for the eight fold warps. A SECOND TILE A WARP, the next round expanded under the steps of this one, is not taken
+  now, and it is not ruled out: with it the fold warps' rows (64 KB), lists (16.5), coefficient tiles (64) and the two
+  images (64) are 208.5 of the card's 227 KB, which leaves 18.5 for the readout's tiles and the panels, whose sizes
+  are not designed; with one it is 176.5. What one tile costs is the steps' own time a meet with nothing of the fold's
+  expanded under it -- 8 steps of 32 cycles in the cell. NOT MEASURED; the second tile is the climb's once the read
+  side's shared memory is known (what the fold idles there is to be priced: [`KERNEL_STANDARDS.md` section 28](../KERNEL_STANDARDS.md#s28)). NOT BUILT.
 - A STEP is 16 tokens by up to 64 of a group's leaves (R25); a group wider than a step is more steps on the same value
   lines, and a short step is padded on the coefficient side, a zero byte, never by zero value lines (RULED 2026-11-19).
 - THE READ SIDE'S RESULTS. A reader's sums are stored once, in the list's order, into a PANEL a read group in shared

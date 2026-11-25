@@ -36,8 +36,10 @@ their row bytes, the sets tiling the leaf space; cycles a window a CTA, the medi
 
 PREDICTED, before the run (timed and stamped): the cell 2,300 to 2,450 and 3,730 to 3,970; both levels 2,270 to 2,410
 and 3,700 to 3,930; whole 5,400 to 5,810 and 6,620 to 7,030; one digit 3,520 to 3,740 and 5,010 to 5,320; crossed 1,300
-to 1,390 and 2,430 to 2,590 -- each 3 percent about an unrecorded held session's reading of the same form on another
-box. ALL TEN HELD.
+to 1,390 and 2,430 to 2,590 -- each 3 percent about a held session's reading of the same form on another
+box, a reading no record holds. ALL TEN HELD, which says that a reading of this form repeats from box to box within
+3 percent and nothing of a model: the form's own prediction was the session's, made before it from the disassembly,
+and it missed (the switch gained more than its instruction count gave on four of the five calls).
 
 THE FORM BEFORE IT tested the pattern of listed levels a level a set inside its loops and formed a window's place in
 the value lines and the call's own tokens with 64-bit multiplications a window (the record at 34b9a08d, the same card
@@ -61,6 +63,14 @@ window, so these are shares):
 A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 180 to 390 cycles stamped whatever number of its
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
+
+SINCE THE RECORD the fold expands a round's coefficients into its warp's tile
+([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#expand)), its one switch a call is on the call's
+levels and its step's shape, and which levels are listed is read as it runs
+([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)); the experiment hands the write side's
+rows as operands and checks, through the kernel's tracer, every coefficient of every kept round's chunks -- a column
+its levels' bytes multiplied in fp32 and rounded to bf16 once, a place with no token zeros -- and that a set's chunks'
+columns are its leaves, each once. NOT RUN on record in that form.
 
 WHAT IT IS NOT: the fold. No coefficient is expanded and no step runs; the other roles are stubs; the call is one
 head and its values are the cache's.

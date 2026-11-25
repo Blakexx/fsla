@@ -64,6 +64,17 @@ __device__ __forceinline__ uint32_t load_shared_u32_if(SmemAddr a, bool live) {
   return v;
 }
 
+//: THE SAME from global memory: where `live` is false no address is read, and the word is `otherwise`
+__device__ __forceinline__ uint32_t load_global_u32_if(const uint32_t* p, bool live,
+                                                       uint32_t otherwise) {
+  uint32_t v = otherwise;
+  asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %2, 0;\n@p ld.global.u32 %0, [%1];\n}\n"
+               : "+r"(v)
+               : "l"(p), "r"(static_cast<int>(live))
+               : "memory");
+  return v;
+}
+
 __device__ __forceinline__ uint2 load_shared_u64_if(SmemAddr a, bool live) {
   uint2 v = make_uint2(0u, 0u);
   asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %3, 0;\n@p ld.shared.v2.u32 {%0, %1}, [%2];\n}\n"

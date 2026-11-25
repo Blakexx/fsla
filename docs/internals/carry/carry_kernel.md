@@ -60,7 +60,12 @@ groups ([`carry_groups.md`](carry_groups.md)).
   is where a step's operand of rows starts ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). ITS EDGES
   (R21): a round's copies are one committed group, and the warp waits for the group before it, so two are in flight;
   a slot's rows are overwritten by the round issued two later, and that issue stands behind the tracer's call for the
-  round whose rows they were -- where the wait of that round's steps will stand (NOT BUILT: the steps).
+  round whose rows they were -- where the wait of that round's steps will stand (NOT BUILT: the steps). And the fold
+  warps' COEFFICIENT TILES (`FoldCoefs`, [`carry_coefs.md`](carry_coefs.md#tile)): a warp one tile, a round's two
+  steps at the widest step's 64 columns, 4 KB, the eight 32 KB, on a boundary of the banks' 128 bytes; its warp
+  writes it a chunk of a round and the chunk's steps read it, so the next expansion stands behind those steps' wait
+  (NOT BUILT: the steps; the one tile is the form the owner took,
+  [`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#what-a-cta-makes)).
 - <a id="supply"></a>THE FOLD'S SUPPLY, built: a fold warp lists its sets' live tokens and fetches their value lines.
   A SET is one leaf group of the fold's box, a group a level ([`carry_groups.md`](carry_groups.md#sets)); a fold holds
   `fold_sets` of them, a power of two. THE WARPS' SHARES ARE THE CARVE'S, NOT THE DATA'S: with four sets or more a
@@ -73,15 +78,32 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
   to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
   ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
-  nothing. ONE SWITCH A CALL: `fold_role` is a `uniform_switch` over the 16 patterns of levels the side lists, and each
-  arm is `fold_windows<LISTED>`, the warp's windows COMPILED FOR THAT PATTERN -- a level that is not listed has no word,
-  no row and no instruction in it (the owner, 2026-11-24: "switching uniformly to precomputed things defined for those
-  patterns ... We are just templating in the code instead of at the arm"). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
-  value lines start is a step on, and the call's own tokens a lane are the windows its word is whole in, then one word,
+  nothing. THE ROUND'S COEFFICIENTS are expanded behind its copies' issue, a chunk at a time
+  ([`carry_coefs.md`](carry_coefs.md#expand)): a lane a token, into the warp's tile; the positions' rows are formed
+  once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
+  ([`carry_coefs.md`](carry_coefs.md#class)) -- the call's levels and its step's shape -- and each arm is
+  `fold_windows<CLASS>`, the warp's windows COMPILED FOR THAT DEPTH AND THAT STEP SHAPE: a level the call has not has
+  no word, no row and no instruction, and a column's digits are picked as the code is compiled. WHICH OF THE CALL'S
+  LEVELS ITS SIDE LISTS IS READ AS IT RUNS, WITH NO BRANCH: a flag a level, set once a call; a level that is not listed
+  has its word's load predicated off (`load_global_u32_if`: no address is read) and ANDs all ones, its row a step of
+  nothing a window. THE OWNER'S, 2026-11-25, when a switch on the 16 listed patterns nested with the class's made 304
+  copies of these windows and the compiler ran the host out of memory: "The tensor step is basically coupled to group
+  size right, up to a max of 64? I think that's the more important thing to switch on, for the listing should we
+  switch on depth and runtime on listed pattern?" -- the switch he ruled the day before ("switching uniformly to
+  precomputed things defined for those patterns ... We are just templating in the code instead of at the arm") stays,
+  on the pattern that changes the most code. WHAT THE FLAGS COST is about 3 instructions a set for a level of the call
+  that is not listed -- NOT MEASURED; the form before it, which tested every one of four levels at every set by a
+  branch, was 6 to 10 percent of a window slower than the switch on the listed patterns
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
+  value lines start is a step on, and THE CALL'S OWN TOKENS a lane -- all 32 of its word, or the first of them where the call ends inside it, which a set's AND starts from so that a side whose levels are all whole lists no place past the call's last -- are the windows its word is whole in, then one word,
   then none -- no multiplication and no division a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
   a vote, a warp reduction) ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
-  NOT BUILT: sides of different head counts (one head index reads both); the coefficients and the steps that consume
-  a round. THE BUDGET, stated before the code
+  NOT BUILT: sides of different head counts (one head index reads both); the steps that consume a round and its
+  coefficients. THE COEFFICIENTS' BUDGET, stated before the code: a round a warp, a chunk -- a lane a shared load of
+  its token, a load a position (two at two levels of 16 and 4 digits), a conversion a byte (20), a multiplication a
+  column and its high bits' few (68), a packed rounding a pair of columns (32) and 8 stores of 16 bytes: about 180
+  instructions a lane at 64 columns, 2.8 a column; its floor is the columns', 64 multiplications and 32 roundings a
+  lane. THE BUDGET, stated before the code
   ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- one load a
   lane for each level the side lists, the listing's running sums (5 shuffles, about 20 instructions a lane) and an AND
   a level; the lay, about 15 instructions a lane a trip of the fullest word's tokens; a round of 32 places -- 8 shared loads and

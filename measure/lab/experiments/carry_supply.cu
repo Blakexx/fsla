@@ -18,6 +18,7 @@
 // lane into the warp's rows, two rounds in flight. Live: the next set's word, the listing's four, a round's 8 tokens.
 // see docs/internals/tools/lab.md#carry-supply
 #include <algorithm>
+#include <cstring>
 #include <map>
 #include <tuple>
 
@@ -40,6 +41,8 @@ constexpr int kLine = 2 * carry::kChannels, kRound = carry::kRoundBytes<carry::k
 constexpr int kFoldWarps = carry::kFolds * carry::kGroupWarps;
 //: a kept round: a head (its set, window, round, whether its rows are off their boundary; its 32 tokens), then its rows
 constexpr int kHead = 256, kTokensAt = 64, kEntry = kHead + kRound, kKept = 24;
+//: a kept round's coefficient tile, a chunk: the widest step's
+constexpr int kCoefs = carry::kWarpCoefs;
 //: the digits a token is live on, on the level masked second: a run from a start its own
 constexpr int kRun = 40;
 
@@ -47,10 +50,22 @@ constexpr int kRun = 40;
 constexpr int live_of(uint32_t x) { return 4 + (x % 3 == 0); }
 constexpr uint32_t digit_of(uint32_t x, int i) { return (x * 5u + (x >> 3) + static_cast<uint32_t>(i) * 37u) & 255u; }
 inline uint8_t value_byte(size_t i) { return static_cast<uint8_t>((i * 2654435761ull >> 13) | 1u); }
+//: a live digit's byte of a level's row: never zero
+constexpr uint8_t row_byte(size_t token, int digit, int level) {
+  return static_cast<uint8_t>((token * 131u + static_cast<size_t>(digit) * 31u + static_cast<size_t>(level) * 17u) % 255u + 1u);
+}
+//: where token `x`'s byte on `digit` lies in a level's rows, tile-major: a tile of 64 tokens, its 16-digit blocks one after another, a token's 16 bytes a line
+constexpr size_t row_at(size_t x, int digit) {
+  return (x >> carry::kRowTileBits) * (static_cast<size_t>(kDigits) << carry::kRowTileBits)
+         + static_cast<size_t>(digit >> carry::kRowBlockBits) * carry::kRowBlockBytes
+         + ((x & ((1u << carry::kRowTileBits) - 1)) << carry::kRowBlockBits) + (digit & ((1 << carry::kRowBlockBits) - 1));
+}
 
 //: THE CHECK'S TRACER: a round's copies waited for, then its tokens and rows copied out, a lane its 4 bytes of a row
 struct Keep {
   uint8_t* out;
+  uint8_t* tiles;
+  int chunks;
   int n;
   __device__ __forceinline__ void wait_begin(int) {}
   __device__ __forceinline__ void wait_end(int) {}
@@ -61,34 +76,47 @@ struct Keep {
     //: every lane's copies have landed before any lane reads a row
     __syncwarp();
     const int lane = lab::lane_id(), warp = lab::warp_id();
-    if (ops::lane_ballot(n < kKept) != 0u) {
-      uint8_t* const to = out + ((static_cast<size_t>(blockIdx.x) * kFoldWarps + warp) * kKept + n) * kEntry;
-      const uint8_t* const base = carry::Smem<Bt>::template get<carry::FoldRows>();
-      const uint8_t* const from = base + (rows - ops::smem_addr(base));
-      if (lane == 0) {
-        int* const head = reinterpret_cast<int*>(to);
-        head[0] = set;
-        head[1] = window;
-        head[2] = round;
-        head[3] = static_cast<int>((rows & 1023u) != 0u);
-      }
-      const int listed = tokens[lane];
-      reinterpret_cast<int*>(to + kTokensAt)[lane] = listed == carry::kNoToken ? -1 : listed;
+    //: no branch on the count: a round past the kept ones is written over the last, and the count fails the check
+    const int slot = n < kKept ? n : kKept - 1;
+    uint8_t* const to = out + ((static_cast<size_t>(blockIdx.x) * kFoldWarps + warp) * kKept + slot) * kEntry;
+    const uint8_t* const base = carry::Smem<Bt>::template get<carry::FoldRows>();
+    const uint8_t* const from = base + (rows - ops::smem_addr(base));
+    int* const head = reinterpret_cast<int*>(to);
+    //: the head's four words, each written alike by the lanes of its turn
+    const int which = lane & 3;
+    head[which] = which == 0 ? set : which == 1 ? window : which == 2 ? round : static_cast<int>((rows & 1023u) != 0u);
+    const int listed = tokens[lane];
+    reinterpret_cast<int*>(to + kTokensAt)[lane] = listed == carry::kNoToken ? -1 : listed;
 #pragma unroll 1
-      for (int k = 0; k < kRound / kLine; ++k) {
-        const int i = kLine * k + 4 * lane;
-        *reinterpret_cast<uint32_t*>(to + kHead + i) = *reinterpret_cast<const uint32_t*>(from + i);
-      }
+    for (int k = 0; k < kRound / kLine; ++k) {
+      const int i = kLine * k + 4 * lane;
+      *reinterpret_cast<uint32_t*>(to + kHead + i) = *reinterpret_cast<const uint32_t*>(from + i);
     }
     ++n;
+    __syncwarp();
+  }
+  //: a chunk's coefficient tile copied out as its warp stored it, a lane its 4 bytes of a line of the banks
+  __device__ __forceinline__ void coefs(int, int, int, int, int chunk, const uint16_t*, uint32_t tile, int bytes) {
+    __syncwarp();
+    const int lane = lab::lane_id(), warp = lab::warp_id();
+    const int slot = n < kKept ? n : kKept - 1;
+    const size_t entry = (static_cast<size_t>(blockIdx.x) * kFoldWarps + warp) * kKept + slot;
+    uint8_t* const to = tiles + (entry * chunks + chunk) * kCoefs;
+    const uint8_t* const base = carry::Smem<Bt>::template get<carry::FoldCoefs>();
+    const uint8_t* const from = base + (tile - ops::smem_addr(base));
+#pragma unroll 1
+    for (int k = 0; k < bytes / 128; ++k) {
+      const int i = 128 * k + 4 * lane;
+      *reinterpret_cast<uint32_t*>(to + i) = *reinterpret_cast<const uint32_t*>(from + i);
+    }
     __syncwarp();
   }
 };
 
 //: THE LIBRARY'S CTA, its rounds kept
 __global__ void __launch_bounds__(carry::kThreads, 1)
-    kept(const __grid_constant__ carry::Operands o, uint8_t* out, int* count) {
-  Keep tr{out, 0};
+    kept(const __grid_constant__ carry::Operands o, uint8_t* out, uint8_t* tiles, int chunks, int* count) {
+  Keep tr{out, tiles, chunks, 0};
   carry::carry_cta<Bt, kFoldRegs, kReadRegs, Keep>(o, tr);
   if (lab::lane_id() == 0 && lab::warp_id() < kFoldWarps) count[blockIdx.x * kFoldWarps + lab::warp_id()] = tr.n;
 }
@@ -105,6 +133,7 @@ struct Stamps {
   __device__ __forceinline__ void arrive(int id) { row.stamp(warpline::kArrive, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void phase(int site) { row.mark(warpline::kPhaseBegin, kPhases + static_cast<uint32_t>(site)); }
   __device__ __forceinline__ void round(int, int, int, int, const uint16_t*, uint32_t) {}
+  __device__ __forceinline__ void coefs(int, int, int, int, int, const uint16_t*, uint32_t, int) {}
 };
 
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's; its warps' timelines stamped where `TRACE`
@@ -126,6 +155,8 @@ struct Call {
   size_t tokens = 0;
   std::vector<uint32_t> mask[kLevels];
   std::vector<uint8_t> values;
+  //: the write side's rows a level
+  std::vector<uint8_t> level[kLevels];
   uint8_t density[2 * kLevels] = {};
   plan::PrefillCarve carve{};
   int ctas = 1;
@@ -180,6 +211,15 @@ inline Call make(Shape shape, int windows) {
   for (int l = 0; l < kLevels; ++l) c.ctas <<= kWidthBits - c.carve.carve_bits[l];
   c.values.resize(c.tokens * kLine);
   for (size_t i = 0; i < c.values.size(); ++i) c.values[i] = value_byte(i);
+  //: a level's rows: a digit the mask has live a byte that is not zero, any other zero; a level with no mask every digit
+  for (int l = 0; l < kLevels; ++l) {
+    c.level[l].assign(c.tokens * kDigits, 0);
+    for (size_t x = 0; x < c.tokens; ++x)
+      for (int digit = 0; digit < kDigits; ++digit) {
+        const bool live = c.mask[l].empty() || (c.mask[l][(x / 32) * kDigits + digit] >> (x % 32) & 1u) != 0;
+        if (live) c.level[l][row_at(x, digit)] = row_byte(x, digit, l);
+      }
+  }
   return c;
 }
 
@@ -230,6 +270,8 @@ inline Device up(const Call& c) {
   d.o.workspace = work;
   d.o.density = density;
   d.o.values = static_cast<const uint8_t*>(put(c.values.data(), c.values.size()));
+  for (int l = 0; l < kLevels; ++l)
+    d.o.rows[pass::kSides / 2 + l] = static_cast<const uint8_t*>(put(c.level[l].data(), c.level[l].size()));
   d.o.tokens = static_cast<std::int64_t>(c.tokens);
   d.o.ctas = c.ctas;
   d.o.line_bytes = kLine;
@@ -285,14 +327,41 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
   }
   Device d = up(c);
   const size_t entries = static_cast<size_t>(c.ctas) * kFoldWarps * kKept;
+  //: the call's class, as a fold thread derives it: its step's columns a position and its sets' chunks
+  carry::Operands host{};
+  for (int l = 0; l < kLevels; ++l) {
+    host.rows[pass::kSides / 2 + l] = c.level[l].data();
+    host.width_bits[l] = kWidthBits;
+  }
+  host.tokens = static_cast<std::int64_t>(c.tokens);
+  int none[plan::kCarveMaxLevels] = {};
+  const carry::Place origin{};
+  const int fold_class = carry::fold_positions(host, cv, origin, 0, none, none).fold_class;
+  if (fold_class >= carry::kFoldClassCount) {
+    std::fprintf(stderr, "the call's fold has no class\n");
+    std::exit(1);
+  }
+  const carry::FoldClass folded = carry::kFoldClasses[fold_class];
+  const int chunks = 1 << folded.chunk_bits;
+  int columns = 1, column_at[kLevels + 1] = {};
+  for (int at = 0; at < kLevels; ++at) {
+    column_at[at + 1] = column_at[at] + folded.bits[at];
+    columns <<= folded.bits[at];
+  }
+  const int step_bytes = columns / carry::kBrickColumns * carry::kBrickBytes;
   uint8_t* dout = nullptr;
+  uint8_t* dtiles = nullptr;
   int* dcount = nullptr;
   LAB_CHECK(cudaMalloc(&dout, entries * kEntry));
+  LAB_CHECK(cudaMalloc(&dtiles, entries * chunks * kCoefs));
   LAB_CHECK(cudaMalloc(&dcount, static_cast<size_t>(c.ctas) * kFoldWarps * sizeof(int)));
   LAB_CHECK(cudaMemset(dout, 0xff, entries * kEntry));
-  kept<<<c.ctas, carry::kThreads>>>(d.o, dout, dcount);
+  LAB_CHECK(cudaMemset(dtiles, 0xff, entries * chunks * kCoefs));
+  kept<<<c.ctas, carry::kThreads>>>(d.o, dout, dtiles, chunks, dcount);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint8_t> got(entries * kEntry);
+  std::vector<uint8_t> tiles(entries * chunks * kCoefs);
+  LAB_CHECK(cudaMemcpy(tiles.data(), dtiles, tiles.size(), cudaMemcpyDeviceToHost));
   std::vector<int> count(static_cast<size_t>(c.ctas) * kFoldWarps);
   LAB_CHECK(cudaMemcpy(got.data(), dout, got.size(), cudaMemcpyDeviceToHost));
   LAB_CHECK(cudaMemcpy(count.data(), dcount, count.size() * sizeof(int), cudaMemcpyDeviceToHost));
@@ -308,11 +377,43 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
   }
   std::vector<int> tiled(static_cast<size_t>(kDigits) * kDigits, 0);
   long long wrong_tokens = 0, wrong_bytes = 0, unknown = 0, twice = 0, missing = 0, off = 0, spilled = 0, rounds = 0;
+  long long wrong_coefs = 0, misplaced = 0;
   for (int cta = 0; cta < c.ctas; ++cta) {
     int at[plan::kCarveMaxLevels] = {};
     plan::prefill_cta_at(cv, cta, at);
     for (int fold = 0; fold < carry::kFolds; ++fold) {
       const int sets = fold < cv.folds ? cv.fold_sets : 0;
+      //: the fold's positions as its threads form them, and which level a position is
+      carry::Place place{};
+      for (int l = 0; l < kLevels; ++l) place.cta[l] = at[l];
+      int base[plan::kCarveMaxLevels], shift[plan::kCarveMaxLevels], mask[plan::kCarveMaxLevels];
+      carry::fold_levels(cv, place, fold, base, shift, mask);
+      const carry::FoldPositions positions = carry::fold_positions(host, cv, place, fold, shift, mask);
+      int level_of[kLevels];
+      for (int i = 0; i < kLevels; ++i) level_of[i] = positions.rows[i] == c.level[0].data() ? 0 : 1;
+      //: a chunk's first digit a position, and a set's chunks' columns its leaves, each once
+      const auto digit_of_chunk = [&](int set, int chunk, int i) {
+        const int extent = folded.bits[i] + (i == 0 ? folded.chunk_bits : 0);
+        return positions.first[i] + (((set >> positions.shift[i]) & positions.mask[i]) << extent)
+               + (i == 0 ? chunk << folded.bits[0] : 0);
+      };
+      for (int set = 0; set < sets; ++set) {
+        const Set box = set_of(cv, at, fold, set);
+        std::map<std::pair<int, int>, int> leaves;
+        for (int chunk = 0; chunk < chunks; ++chunk)
+          for (int n = 0; n < columns; ++n) {
+            int digit[kLevels];
+            for (int i = 0; i < kLevels; ++i)
+              digit[level_of[i]] = digit_of_chunk(set, chunk, i) + ((n >> column_at[i]) & ((1 << folded.bits[i]) - 1));
+            ++leaves[{digit[0], digit[1]}];
+          }
+        for (int x = 0; x < box.count[0]; ++x)
+          for (int y = 0; y < box.count[1]; ++y) {
+            const auto it = leaves.find({box.first[0] + x, box.first[1] + y});
+            misplaced += it == leaves.end() || it->second != 1;
+          }
+        misplaced += static_cast<int>(leaves.size()) != box.count[0] * box.count[1];
+      }
       //: each set's list a window, from the masks
       std::vector<std::vector<std::vector<int>>> lists(sets, std::vector<std::vector<int>>(c.windows));
       for (int set = 0; set < sets; ++set) {
@@ -374,6 +475,28 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
                 wrong_bytes += entry[kHead + place * kLine + turned * carry::kPieceBytes + k] != want;
               }
             }
+            //: the place's coefficient line a chunk: a column its levels' bytes multiplied in fp32, rounded to bf16 once; no token, zeros
+            const size_t x = static_cast<size_t>(window) * kWindow + static_cast<size_t>(token < 0 ? 0 : token);
+            for (int chunk = 0; chunk < chunks; ++chunk) {
+              const uint8_t* const tile = tiles.data() + ((mine * kKept + e) * chunks + chunk) * kCoefs;
+              for (int n = 0; n < columns; ++n) {
+                float product = token < 0 ? 0.0f : 1.0f;
+                for (int i = 0; i < kLevels; ++i) {
+                  const int digit = digit_of_chunk(set, chunk, i) + ((n >> column_at[i]) & ((1 << folded.bits[i]) - 1));
+                  product *= static_cast<float>(c.level[level_of[i]][row_at(x, digit)]);
+                }
+                uint32_t bits;
+                std::memcpy(&bits, &product, sizeof(bits));
+                const uint16_t want = static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+                const size_t byte = static_cast<size_t>(place / carry::kStepTokens) * step_bytes
+                                    + static_cast<size_t>(n / carry::kBrickColumns) * carry::kBrickBytes
+                                    + static_cast<size_t>(place % carry::kStepTokens) * 2 * carry::kBrickColumns
+                                    + static_cast<size_t>(n % carry::kBrickColumns) * 2;
+                uint16_t have;
+                std::memcpy(&have, tile + byte, sizeof(have));
+                wrong_coefs += have != want;
+              }
+            }
           }
         }
       }
@@ -392,18 +515,20 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
   }
   long long untiled = 0;
   for (const int v : tiled) untiled += v != 1;
-  const bool ok = wrong_tokens == 0 && wrong_bytes == 0 && unknown == 0 && twice == 0 && missing == 0 && off == 0
-                  && spilled == 0 && untiled == 0 && rounds > 0;
+  const bool ok = wrong_tokens == 0 && wrong_bytes == 0 && wrong_coefs == 0 && misplaced == 0 && unknown == 0 && twice == 0
+                  && missing == 0 && off == 0 && spilled == 0 && untiled == 0 && rounds > 0;
   b.check(name, ok,
           std::to_string(rounds) + " rounds of " + std::to_string(c.ctas) + " CTAs: " + std::to_string(missing) + " missing, "
               + std::to_string(twice) + " twice, " + std::to_string(unknown) + " not a set's, " + std::to_string(wrong_tokens)
-              + " tokens and " + std::to_string(wrong_bytes) + " row bytes differ, " + std::to_string(off)
+              + " tokens, " + std::to_string(wrong_bytes) + " row bytes and " + std::to_string(wrong_coefs)
+              + " coefficients differ, " + std::to_string(misplaced) + " leaves not once in their set's columns, " + std::to_string(off)
               + " rows off a boundary, " + std::to_string(spilled) + " warps past the kept rounds; " + std::to_string(untiled)
               + " leaves not in one set; the carve " + std::to_string(1 << cv.carve_bits[0]) + " x "
               + std::to_string(1 << cv.carve_bits[1]) + ", write groups " + std::to_string(1 << cv.write_group_bits[0])
               + " and " + std::to_string(1 << cv.write_group_bits[1]) + ", " + std::to_string(cv.fold_sets) + " sets a fold");
   down(d);
   LAB_CHECK(cudaFree(dout));
+  LAB_CHECK(cudaFree(dtiles));
   LAB_CHECK(cudaFree(dcount));
   const Call t = make(shape, kTimed);
   Device dt = up(t);
@@ -438,7 +563,8 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
                                {kPhases + carry::kSiteWindow, "window"}, {kPhases + carry::kSiteSet, "set"},
                                {kPhases + carry::kSiteListed, "listed"}, {kPhases + carry::kSiteWord, "word"},
                                {kPhases + carry::kSiteFetch, "fetch"}, {kPhases + carry::kSiteIssued, "issued"},
-                               {kPhases + carry::kSiteLanded, "landed"}});
+                               {kPhases + carry::kSiteLanded, "landed"},
+                               {kPhases + carry::kSiteCoefs, "coefficients"}});
   b.trace(stamped, rows, kWarps, {0, t.ctas / 2}, roles, legend);
   down(dt);
 }
@@ -446,9 +572,10 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
 int main(int argc, char** argv) {
   using namespace carry_supply;
   lab::Bench b(argc, argv);
-  //: the keeping tracer reads other lanes' copies behind a vote, two joins a round; the fold's windows are compiled once
-  //: a pattern of listed levels, 16 arms, each with the tracer's round in it
-  b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 32);
+  //: a set's first round's coefficient bytes are loaded behind its lay and read behind its round's copies' issue, in the
+  //: set's own trip: the list they are indexed by is made in that trip; and a set of several chunks loads a chunk's
+  //: bytes a chunk ahead, inside its round's trip. The count is over the 24 classes the windows are compiled for
+  b.expect("carry_supply::timed", "LOAD_IN_TRIP", "<=", 98);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
@@ -457,11 +584,11 @@ int main(int argc, char** argv) {
   //: the second call has 2 sets a warp a window, a set a round and seldom 2: its check keeps 2 windows, about 4 rounds a warp of the 24 kept
   //: the whole call has 8 full rounds a warp a window; the sparse call's sets are mostly empty
   using carry_supply::Shape;
-  run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", Shape::kCell, 4);
-  run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", Shape::kBoth, 2);
-  run(b, rows, "the write side whole on both levels: the folds' supply, the rest stubs", Shape::kWhole, 2);
-  run(b, rows, "the write side one digit a token on each level: the folds' supply, the rest stubs", Shape::kSparse, 4);
-  run(b, rows, "the write side masked on both levels, the read side's densities crossed with it: the folds' supply, the rest stubs",
+  run(b, rows, "the cell, the write side masked on level 0: the folds' supply and coefficients, the rest stubs", Shape::kCell, 4);
+  run(b, rows, "the write side masked on both levels: the folds' supply and coefficients, the rest stubs", Shape::kBoth, 2);
+  run(b, rows, "the write side whole on both levels: the folds' supply and coefficients, the rest stubs", Shape::kWhole, 2);
+  run(b, rows, "the write side one digit a token on each level: the folds' supply and coefficients, the rest stubs", Shape::kSparse, 4);
+  run(b, rows, "the write side masked on both levels, the read side's densities crossed with it: the folds' supply and coefficients, the rest stubs",
       Shape::kCrossed, 4);
   return 0;
 }

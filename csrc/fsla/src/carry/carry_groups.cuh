@@ -20,6 +20,7 @@ struct Operands {
   std::int64_t prepared[kSides];
   const std::uint8_t* density;
   const std::uint8_t* values;
+  const std::uint8_t* rows[kSides];
   std::int64_t tokens;
   std::int64_t ctas;
   int line_bytes;
@@ -78,8 +79,8 @@ __device__ __forceinline__ Place place_of(const Operands& o, const plan::Prefill
 }
 
 //: A FOLD'S LEVELS, formed once: a set's group on level `l` is `base[l] + ((set >> shift[l]) & mask[l])` -- see docs/internals/carry/carry_groups.md#sets
-__device__ __forceinline__ void fold_levels(const plan::PrefillCarve& c, const Place& p, int fold,
-                                            int* base, int* shift, int* mask) {
+__host__ __device__ __forceinline__ void fold_levels(const plan::PrefillCarve& c, const Place& p,
+                                                     int fold, int* base, int* shift, int* mask) {
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     const int fold_bits = c.fold_bits[l], carve_bits = c.carve_bits[l];

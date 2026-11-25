@@ -3,12 +3,14 @@
 
 #include <cstdint>
 
+#include "carry/carry_coefs.cuh"
 #include "carry/carry_groups.cuh"
 #include "carry/carry_list.cuh"
 #include "carry/carry_values.cuh"
 #include "common/atoms/address.cuh"
 #include "common/atoms/barrier.cuh"
 #include "common/atoms/copy.cuh"
+#include "common/atoms/memory.cuh"
 #include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 #include "common/smem_layout.cuh"
@@ -51,9 +53,15 @@ constexpr int kWarpRows = kHeld * kRoundBytes<kChannels>;
 constexpr int kRowsAlign = 1024;
 constexpr int kRowsBytes = kFolds * kGroupWarps * kWarpRows;
 
-//: THE CTA'S SHARED MEMORY: the fold warps' rows, and their lists of a set's tokens -- see docs/internals/carry/carry_kernel.md#smem
+//: A FOLD WARP'S COEFFICIENT TILE: a round's two steps at the widest step's 64 columns -- see docs/internals/carry/carry_kernel.md#smem
+constexpr int kWarpCoefs = kCoefRoundBytes<StepShape<kStepColumnBits, 0, 0, 0>>;
+//: FIXED by the tile's stores: a lane's 16 bytes at a time, and a step's bricks whole lines of the banks
+constexpr int kCoefsAlign = 128;
+
+//: THE CTA'S SHARED MEMORY: the fold warps' rows, their lists of a set's tokens and their coefficient tiles -- see docs/internals/carry/carry_kernel.md#smem
 struct FoldRows;
 struct FoldTokens;
+struct FoldCoefs;
 
 //: the window's mask words on the build's card
 template <class Bt>
@@ -62,7 +70,8 @@ constexpr int kWindowWords = plan::window_of_cc(Bt::build.cc) / kWordTokens;
 template <class Bt>
 using Smem = SmemLayout<
     Bt, 1, Aligned<FoldRows, std::uint8_t, kRowsBytes, kRowsAlign>,
-    Fixed<FoldTokens, std::uint16_t, kFolds * kGroupWarps * kListPlaces<kWindowWords<Bt>>>>;
+    Fixed<FoldTokens, std::uint16_t, kFolds * kGroupWarps * kListPlaces<kWindowWords<Bt>>>,
+    Aligned<FoldCoefs, std::uint8_t, kFolds * kGroupWarps * kWarpCoefs, kCoefsAlign>>;
 
 //: A FOLD WARP'S LIST of the tokens of the set it is on
 template <class Bt>
@@ -75,6 +84,12 @@ __device__ __forceinline__ std::uint16_t* fold_tokens(int fold, int warp) {
 template <class Bt>
 __device__ __forceinline__ std::uint8_t* fold_rows(int fold, int warp) {
   return Smem<Bt>::template get<FoldRows>() + (fold * kGroupWarps + warp) * kWarpRows;
+}
+
+//: A FOLD WARP'S COEFFICIENT TILE
+template <class Bt>
+__device__ __forceinline__ std::uint8_t* fold_coefs(int fold, int warp) {
+  return Smem<Bt>::template get<FoldCoefs>() + (fold * kGroupWarps + warp) * kWarpCoefs;
 }
 
 //: A ROLE'S REGISTERS A THREAD: `FOLD` and `READ` are the arm's, the drain's what the multiprocessor's file leaves -- see docs/internals/carry/carry_kernel.md#registers
@@ -95,7 +110,8 @@ enum Site {
   kSiteWord,
   kSiteFetch,
   kSiteIssued,
-  kSiteLanded
+  kSiteLanded,
+  kSiteCoefs
 };
 
 //: THE LIBRARY'S TRACER: nothing -- see docs/internals/carry/carry_kernel.md#trace
@@ -109,6 +125,9 @@ struct NoTrace {
   __device__ __forceinline__ void phase(int) {}
 
   __device__ __forceinline__ void round(int, int, int, int, const std::uint16_t*, ops::SmemAddr) {}
+
+  __device__ __forceinline__ void coefs(int, int, int, int, int, const std::uint16_t*,
+                                        ops::SmemAddr, int) {}
 };
 
 //: A HAND-OFF BETWEEN ROLES: the producer arrives, the waiter syncs -- see docs/internals/carry/carry_kernel.md#handoff
@@ -125,11 +144,19 @@ __device__ __forceinline__ void take(Tr& tr, int id, int threads) {
   tr.wait_end(id);
 }
 
-//: A FOLD WARP'S WINDOWS, compiled for the levels its side lists (`LISTED`, a bit a level): a level that is not listed has no word, no row and no instruction here -- see docs/internals/carry/carry_kernel.md#supply
-template <class Bt, class Tr, int LISTED>
+//: A FOLD WARP'S WINDOWS, compiled for its fold's class (`CLASS`): the call's levels and a step's shape; which of the levels its side lists (`listed`, a bit a level) is read as it runs, a level that is not listed loading nothing -- see docs/internals/carry/carry_kernel.md#supply
+template <class Bt, class Tr, int CLASS>
 __device__ __forceinline__ void fold_windows(const Operands& o, const plan::PrefillCarve& c,
-                                             const Place& p, Tr& tr) {
+                                             const Place& p, const FoldPositions& positions,
+                                             const int* base, const int* shift, const int* mask,
+                                             int listed, Tr& tr) {
   constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
+  constexpr FoldClass kClass = kFoldClasses[CLASS];
+  constexpr int kDepth = kClass.levels;
+  constexpr int kB0 = kClass.bits[0], kB1 = kClass.bits[1], kB2 = kClass.bits[2];
+  constexpr int kB3 = kClass.bits[3], kChunkBits = kClass.chunk_bits;
+  constexpr int kSetChunks = 1 << kChunkBits;
+  using Shape = StepShape<kB0, kB1, kB2, kB3>;
   static_assert(kWords == ops::kBallotLanes, "a lane a word of a window");
   const int thread = static_cast<int>(threadIdx.x), fold = thread / kGroup;
   const int warp = thread % kGroup / ops::kBallotLanes, lane = thread % ops::kBallotLanes;
@@ -145,9 +172,10 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
 
   const std::uint8_t* const lines = o.values + p.slice * kRowBytes<kChannels>;
   const ops::SmemAddr rows = ops::smem_addr(fold_rows<Bt>(fold, warp));
-  //: A SET'S WORD, its parts formed outside the loop over sets: a level's three once a fold, a level's row a step on a window -- see docs/internals/carry/carry_kernel.md#supply
-  int base[kLevels], shift[kLevels], mask[kLevels];
-  fold_levels(c, p, fold, base, shift, mask);
+  const ops::SmemAddr coefs = ops::smem_addr(fold_coefs<Bt>(fold, warp));
+  //: the positions' rows a window on: a window is a whole number of the rows' tiles
+  FoldPositions at = positions;
+  constexpr int kWindowTiles = (kWords * 32) >> kRowTileBits;
   const std::uint32_t* row[kLevels];
   std::int64_t step[kLevels];
   //: THE CALL'S OWN TOKENS a lane a window, without a window's arithmetic: the windows its word is whole in, then one word of the call's last tokens, then none
@@ -159,22 +187,21 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
   std::uint32_t ours = whole_windows > 0 ? ~0u : last_word;
   const std::int64_t window_bytes = std::int64_t{kWords} * 32 * o.line_bytes;
   const std::uint8_t* from = lines + p.head * o.tokens * o.line_bytes;
+  //: A LEVEL IS LISTED OR NOT FOR THE WHOLE CALL, a flag every lane holds: no branch is taken on it
+  bool reads[kLevels] = {};
 #pragma unroll
-  for (int l = 0; l < kLevels; ++l) {
-    if ((LISTED >> l & 1) != 0) {
-      const int s = side_at(false) + l;
-      row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
-      step[l] = level_step<kWords>(o, s, c.write_group_bits[l]);
-    }
+  for (int l = 0; l < kDepth; ++l) {
+    const int s = side_at(false) + l;
+    reads[l] = (listed >> l & 1) != 0;
+    row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
+    step[l] = reads[l] ? level_step<kWords>(o, s, c.write_group_bits[l]) : 0;
   }
   //: THE WORDS A SET IS LISTED FROM ARE LOADED A SET AHEAD AND ANDed AT THEIR USE: ANDed where they are loaded, the warp waits there for them
   std::uint32_t got[kLevels];
 #pragma unroll
-  for (int l = 0; l < kLevels; ++l) {
-    got[l] = ~0u;
-    if ((LISTED >> l & 1) != 0 && mine > 0) {
-      got[l] = row[l][base[l] + ((first_set >> shift[l]) & mask[l])];
-    }
+  for (int l = 0; l < kDepth; ++l) {
+    got[l] = ops::load_global_u32_if(row[l] + (base[l] + ((first_set >> shift[l]) & mask[l])),
+                                     reads[l] && mine > 0, ~0u);
   }
   std::uint32_t whose = mine > 0 ? ours : 0u;
   int issued = 0;
@@ -194,9 +221,7 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
       tr.phase(kSiteSet);
       std::uint32_t word = whose & part;
 #pragma unroll
-      for (int l = 0; l < kLevels; ++l) {
-        if ((LISTED >> l & 1) != 0) word &= got[l];
-      }
+      for (int l = 0; l < kDepth; ++l) word &= got[l];
       const Listing s = listing_of<kWords>(word);
       lay_tokens<kWords>(s, list);
       tr.phase(kSiteListed);
@@ -207,22 +232,22 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
         ours = w + 1 < whole_windows ? ~0u : w + 1 == whole_windows ? last_word : 0u;
         //: a lane past the mask's last word keeps its row: the call's own tokens count its word for nothing
 #pragma unroll
-        for (int l = 0; l < kLevels; ++l) {
-          if ((LISTED >> l & 1) != 0) row[l] += at < o.words ? step[l] : 0;
-        }
+        for (int l = 0; l < kDepth; ++l) row[l] += at < o.words ? step[l] : 0;
       }
       const int set_after = first_set + ((turn ? 0 : i + 1) << shared_bits);
       whose = ours;
 #pragma unroll
-      for (int l = 0; l < kLevels; ++l) {
-        if ((LISTED >> l & 1) != 0) {
-          got[l] = row[l][base[l] + ((set_after >> shift[l]) & mask[l])];
-        }
+      for (int l = 0; l < kDepth; ++l) {
+        got[l] = ops::load_global_u32_if(row[l] + (base[l] + ((set_after >> shift[l]) & mask[l])),
+                                         reads[l], ~0u);
       }
       tr.phase(kSiteWord);
       const int set = first_set + (i << shared_bits);
       int round = 0;
       if (ops::lane_ballot(kWords * round < s.total) != 0u) {
+        //: A CHUNK'S BYTES ARE LOADED A CHUNK AHEAD, the first round's before its copies: a load read where it is issued holds the warp until it lands
+        CoefBytes<kB0, kB1, kB2, kB3> next = load_round<kDepth, kB0, kB1, kB2, kB3>(
+            coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), list, kWindowTiles);
 #pragma unroll 1
         do {
           tr.phase(kSiteFetch);
@@ -230,6 +255,19 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
           const int slot = issued & (kHeld - 1);
           const ops::SmemAddr to = rows + static_cast<ops::SmemAddr>(slot * kRoundBytes<kChannels>);
           fetch_round<kChannels>(to, from, o.line_bytes, tokens);
+          tr.phase(kSiteCoefs);
+#pragma unroll
+          for (int chunk = 0; chunk < kSetChunks; ++chunk) {
+            const CoefBytes<kB0, kB1, kB2, kB3> now = next;
+            //: the chunk after: this round's next, or the round after's first, whose places past the set's last hold no token of it and are made nothing of
+            const bool turns = chunk + 1 == kSetChunks;
+            next = load_round<kDepth, kB0, kB1, kB2, kB3>(
+                coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, turns ? 0 : chunk + 1),
+                tokens + (turns ? kWords : 0), kWindowTiles);
+            expand_round<kDepth, kB0, kB1, kB2, kB3>(now, coefs);
+            tr.coefs(fold, set, w, round, chunk, tokens, coefs, kCoefRoundBytes<Shape>);
+            //: NOT BUILT: the fold's meet and the chunk's steps
+          }
           tr.phase(kSiteIssued);
           ops::stage_wait<kHeld - 1>();
           tr.phase(kSiteLanded);
@@ -238,22 +276,30 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
           ++issued;
         } while (ops::lane_ballot(kWords * round < s.total) != 0u);
       }
-      //: NOT BUILT: the round's entries expanded into its coefficient tile, and its steps
     }
     take(tr, kFoldId + fold, kGroup);
     //: NOT BUILT: the groups' steps, behind their fence, committed and waited for
     take(tr, kFoldId + fold, kGroup);
     from += window_bytes;
+#pragma unroll
+    for (int i = 0; i < kDepth; ++i) at.rows[i] += kWindowTiles * at.tile_bytes[i];
   }
   ops::stage_wait<0>();
 }
 
-//: A FOLD WARPGROUP: ONE SWITCH A CALL on the levels its side lists, to the windows compiled for them -- see docs/internals/carry/carry_kernel.md#fold
+//: A FOLD WARPGROUP: ONE SWITCH A CALL on its fold's class, to the windows compiled for the call's levels and its step's shape -- see docs/internals/carry/carry_kernel.md#fold
 template <class Bt, class Tr>
 __device__ __forceinline__ void fold_role(const Operands& o, const plan::PrefillCarve& c,
                                           const Place& p, Tr& tr) {
-  uniform_switch<1 << kLevels>(listed_levels(c, false), [&](auto member) {
-    fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, tr);
+  const int fold = static_cast<int>(threadIdx.x) / kGroup;
+  //: A SET'S WORD AND ITS DIGITS, their parts formed outside the loop over sets: a level's three once a fold -- see docs/internals/carry/carry_kernel.md#supply
+  int base[kLevels], shift[kLevels], mask[kLevels];
+  fold_levels(c, p, fold, base, shift, mask);
+  const FoldPositions positions = fold_positions(o, c, p, fold, shift, mask);
+  const int listed = listed_levels(c, false);
+  uniform_switch<kFoldClassCount>(positions.fold_class, [&](auto member) {
+    fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, positions, base, shift, mask, listed,
+                                                  tr);
   });
 }
 

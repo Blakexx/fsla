@@ -6,7 +6,7 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
 - <a id="operands"></a>`Operands`: the call as the kernel is handed it -- each level-side's mask (null where it has
   none: in the bundle's slot order, the read side's four, then the write side's, `side_at`), the workspace and each level-side's place in it for
   the prepared words ([`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md)), the density
-  bytes, the values (a head's tokens' lines one after another, `line_bytes` a token), the call's tokens a head, the leaf
+  bytes, the values (a head's tokens' lines one after another, `line_bytes` a token), each level-side's rows (`rows`, in the masks' slot order; a head's tiles one after another: [`carry_coefs.md`](carry_coefs.md#rows)), the call's tokens a head, the leaf
   CTAs a head (`ctas`, the host's count), the levels' width bits, and the mask's words and windows. The host fills it from the call's shape and reads
   no density.
 - <a id="carve"></a>`carve_of(operands)`: THE KERNEL DERIVES THE CARVE, from the densities as the mask-preparation
@@ -23,11 +23,6 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
   density, a byte of 255 by the declaration ([`../../api.md`](../../api.md) section 2.6); a density below the whole
   with a mask of all ones is read as it is given. IT IS THE CALL'S FACT, asked once a level-side a call: a role's
   AND runs over the levels that are not whole.
-- <a id="window-word"></a>THE CALL'S OWN TOKENS in a word of a window: all 32, or the first of them where the call
-  ends inside it. A role's AND starts from that word, so that a side whose levels are all whole lists the call's tokens
-  and no place past its last. No helper computes it a window: a lane's word is whole for the windows before the call's
-  end, then one word of the call's last tokens, then nothing, which the fold forms once a call
-  ([`carry_kernel.md`](carry_kernel.md#supply)).
 - <a id="word"></a>`level_row<WORDS>(operands, level-side, group bits, head, window, word)`: A LANE'S ROW of a
   level-side's words in a window -- `row[group]` is its word of the group, the mask's own word of the digit at one
   digit and the prepared word otherwise
