@@ -15,13 +15,13 @@ every public tensor a VIEW of the solve's packed layout with zero copy. Padding 
 would break both pins for no reason: nothing downstream of the producer needs a padded
 `RouteFactors` to exist as an object.
 
-**KERNEL CONTRACT.** The two padding seams -- the prefill's carry leg (`fsla.ops.prefill`)
-and the decode step (`fsla.ops.decode._decode_step`) -- receive the
-caller's logical tensors and widths and pad INTERNALLY, once, before any launch-facing
+**KERNEL CONTRACT.** A padding seam -- the decode step (`fsla.ops.decode._decode_step`), the one that is built, and
+the prefill's carry leg when its kernel is (`fsla.ops.prefill` refuses by name until then) -- receives the
+caller's logical tensors and widths and pads INTERNALLY, once, before any launch-facing
 derivation. The kernel itself is never handed a width other than its own; `y` is sliced
 back to the caller's own `d_v` before it leaves the op.
 
-`fsla/ops/padding.py`'s primitives, used identically by both seams:
+`fsla/ops/padding.py`'s primitives, one set for every seam:
 
 * `pad_routes(levels, padded_widths)` -- per level, `[..., b_l] -> [..., B_l]`, the
   trailing columns exact `0.0`.
@@ -47,10 +47,13 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 
 ## Per-op scope: not every op pads every axis
 
-* **the prefill's carry leg** (`fsla.ops.prefill`'s `_padded_shape`/`_pack_operands`) pads
-  BOTH axes: every level to `fsla.routing.topology.padded_level_width` (next power of two
-  >= 16, the register-shape floor), and `v` to the smallest shipped value width that
-  admits it.
+* **the prefill's carry leg** is NOT BUILT, and what its seam pads is decided with its kernel. THE VALUE AXIS IS RULED:
+  a carry CTA takes 64 value channels, the tensor step's own, and a wider value is carved across CTAs (the owner:
+  "i think its fine initially to say we are doing start always 64, and we will then we will be able to support higher
+  d_v by carving accross ctas"), so `v` pads to a whole number of 64-channel slices
+  ([`../architecture/hopper-carry.md`](../architecture/hopper-carry.md)). THE LEVELS ARE OPEN: the floor of 16 digits
+  (`fsla.routing.topology.padded_level_width`) is the state format's and the intra's granule, not the carry's -- its
+  carve and the mask-preparation pass take a level from 2 digits -- and whether the seam pads to it is not decided.
 * **decode** (`fsla.ops.decode._decode_step`) pads ONLY
   `d_v` -> the `DV` of the arm the planner's launch function
   (`fsla.ops.decode.decode_launch`, [`common/plan/decode_launch.md`](common/plan/decode_launch.md)) maps it to: the narrowest arm that holds it. Its
@@ -69,10 +72,8 @@ Decode's value widths are the launch function's: it maps a call's `d_v` into the
 contract bounds it (`hardware/kernels/decode/parts/call.json`), so no literal tuple here can drift from what the binary carries. The intra reads one
 value width, `fsla.ops.intra.VALUE_WIDTH`.
 
-The prefill's carry leg pads nothing either: the carry (designed, not built) takes the value width as
-runtime addressing over the carve's channel extent, which the prefill launch function derives
-([`engine/rules.md#carve`](engine/rules.md#carve)); the prefill is refused by name until it is built. The arena's allocation
-extent is the launch function's too ([`docs/open-work.md`](../open-work.md) A-c and A-f).
+The prefill's carry takes its value channels 64 a CTA (above); the arena's allocation extent is the prefill launch
+function's ([`engine/rules.md#carve`](engine/rules.md#carve); [`docs/open-work.md`](../open-work.md) A-c and A-f).
 
 ## What this does not do
 

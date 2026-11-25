@@ -48,6 +48,12 @@ then the fold of the window's writes into the state.
   ([`lab/drain_rate.md`](../lab/drain_rate.md)): a line of adds is 19.2 cycles into a CTA's own rows, 24.8 spread over a
   window, 46.7 with every CTA on the same 64 rows. NOT BUILT: the schedule.
 - THE WINDOW is the card's (1,024 tokens on hopper, provisional), global to every CTA.
+- A CTA'S VALUE CHANNELS ARE 64, the tensor step's own, and A WIDER VALUE IS CARVED ACROSS CTAs: more CTAs over
+  64-channel slices of the same leaves (Blake, 2026-11-26: "i think its fine initially to say we are doing start always
+  64, and we will then we will be able to support higher d_v by carving accross ctas, i think that is reasonable as
+  the first thing"). The slices of one leaf carve have one token schedule, so they are scheduled as a unit's CTAs
+  are. The other policy he named -- "we always use the largest possible", the two fold warpgroups splitting across
+  the channel halves of 128 and sharing one box -- is not built. NOT BUILT: the carve states no channel extent yet.
 - THE SKELETON'S CELL: two levels of 256 digits, each side walking one level by its lists and the other whole, 64
   value channels, a segment a whole number of windows, the state zero at entry and not stored. What a wider contract
   needs beyond it is under [The order of the build](#the-order-of-the-build).
