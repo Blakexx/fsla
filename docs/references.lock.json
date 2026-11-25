@@ -1369,6 +1369,7 @@
   {"doc": "docs/internals/padding.md", "pinned_at": "cdb60b537ac8", "reviewed": true, "sha256": "1ed8672ff0c8db29", "target": "fsla/ops/produce.py::_decode_descriptor"},
   {"doc": "docs/internals/padding.md", "pinned_at": "c69361c8f8d8", "reviewed": true, "sha256": "b256a61517151e75", "target": "fsla/routing/topology.py::padded_level_width"},
   {"doc": "docs/internals/padding.md", "pinned_at": "c06f08dda0f2", "reviewed": true, "sha256": "", "target": "hardware/kernels/decode/parts/call.json"},
+  {"doc": "docs/internals/padding.md", "pinned_at": "652fcc4ff90e", "reviewed": true, "sha256": "", "target": "hardware/kernels/prefill/parts"},
   {"doc": "docs/internals/padding.md", "pinned_at": "c69361c8f8d8", "reviewed": true, "sha256": "", "target": "tests/oracle/test_padding_seam.py"},
   {"doc": "docs/internals/padding.md", "pinned_at": "c69361c8f8d8", "reviewed": true, "sha256": "", "target": "tests/unit/test_api_contract.py"},
   {"doc": "docs/internals/paging/paging.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "12a50b1b37eca82e", "target": "docs/internals/common/state_page.md#geometry"},

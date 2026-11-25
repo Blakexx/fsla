@@ -164,8 +164,8 @@ are stated apart.
 
 | | what it accepts | what it does with the rest |
 |---|---|---|
-| **the API** (this page: `prefill`, `FSLA`, `fsla.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` to the next shipped `DV` with zero columns |
-| **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
+| **the API** (this page: `prefill`, `FSLA`, `fsla.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` with zero columns to a width its kernel takes (the decode: the next shipped `DV`; the prefill's carry: a whole number of 64-channel slices) |
+| **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a value width its kernel takes (the decode: a shipped `DV`; the carry: 64-channel slices), `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
 
 **The seam is the only translator.** A padded digit gets amplitude *exactly* zero
 (`-inf` before the entmax or softmax solve), so it is never live, never read, never

@@ -2,7 +2,8 @@
 
 `fsla/ops/padding.py` is the ONE translator between a caller's LOGICAL shape (any
 level width `b_l >= 1`, any value width `d_v`) and an op's kernel-facing, PADDED shape
-(a level width a power of two at or above 16, a shipped value width). The two
+(a level width a power of two at or above 16; a value width the op's kernel takes -- a compiled form's for the
+decode, a whole number of 64-channel slices for the prefill's carry). The two
 rulings ("PADDING AT THE PRODUCER", "d_v PADDING IS ALSO HOST-SIDE") name the
 mechanism; this page states where it lives and why.
 
@@ -51,9 +52,11 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   a carry CTA takes 64 value channels, the tensor step's own, and a wider value is carved across CTAs (the owner:
   "i think its fine initially to say we are doing start always 64, and we will then we will be able to support higher
   d_v by carving accross ctas"), so `v` pads to a whole number of 64-channel slices
-  ([`../architecture/hopper-carry.md`](../architecture/hopper-carry.md)). THE LEVELS ARE OPEN: the floor of 16 digits
-  (`fsla.routing.topology.padded_level_width`) is the state format's and the intra's granule, not the carry's -- its
-  carve and the mask-preparation pass take a level from 2 digits -- and whether the seam pads to it is not decided.
+  ([`../architecture/hopper-carry.md`](../architecture/hopper-carry.md)). THE LEVELS PAD AS THE DESCRIPTOR HAS THEM
+  (CONSTITUTION R13): every level to `fsla.routing.topology.padded_level_width`, the next power of two at or above 16,
+  a padded digit dead; the prefill's contract declares that floor (`hardware/kernels/prefill/parts/`, a level's width
+  bits from 4). The carry's carve and the mask-preparation pass would take a narrower level, and the contract hands
+  them none.
 * **decode** (`fsla.ops.decode._decode_step`) pads ONLY
   `d_v` -> the `DV` of the arm the planner's launch function
   (`fsla.ops.decode.decode_launch`, [`common/plan/decode_launch.md`](common/plan/decode_launch.md)) maps it to: the narrowest arm that holds it. Its
