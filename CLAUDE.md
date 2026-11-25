@@ -22,6 +22,11 @@ The rules most often violated by newcomers, restated:
 - DOCS ARE STATE: current truth written fresh; past states appear only as
   design rationale ("why it is shaped this way"), never narrative. The map of
   the docs: docs/README.md.
+- WHILE A RULE IS STILL BEING DISCUSSED, ANSWER AND DO NOT BUILD (Blake, 2026-11-26: "STOP BUILDING AND ANSWER MY
+  QUESTIONS ID DI NOT APPROVE YOUR WORK"). "idk", "i guess", "thoughts?", "is there a better way?" and a sentence that
+  ends in a question mean the discussion is open: answer what was asked, fully, and stop. No build (not CPU-only, not
+  "reversibly"), no ruling recorded from it, no "I am building this, say if you would rather". A refinement the agent
+  prefers is a proposal for the owner to accept, never a default to start on.
 - The fp64 oracle (`fsla/ops/naive.py`) is the executable spec — crown jewels;
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes

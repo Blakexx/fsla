@@ -12,6 +12,7 @@
 #include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 #include "common/smem_layout.cuh"
+#include "common/structure_switch.cuh"
 #include "plan/levels.h"
 
 namespace fsla {
@@ -124,10 +125,10 @@ __device__ __forceinline__ void take(Tr& tr, int id, int threads) {
   tr.wait_end(id);
 }
 
-//: A FOLD WARPGROUP -- see docs/internals/carry/carry_kernel.md#fold
-template <class Bt, class Tr>
-__device__ __forceinline__ void fold_role(const Operands& o, const plan::PrefillCarve& c,
-                                          const Place& p, Tr& tr) {
+//: A FOLD WARP'S WINDOWS, compiled for the levels its side lists (`LISTED`, a bit a level): a level that is not listed has no word, no row and no instruction here -- see docs/internals/carry/carry_kernel.md#supply
+template <class Bt, class Tr, int LISTED>
+__device__ __forceinline__ void fold_windows(const Operands& o, const plan::PrefillCarve& c,
+                                             const Place& p, Tr& tr) {
   constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
   static_assert(kWords == ops::kBallotLanes, "a lane a word of a window");
   const int thread = static_cast<int>(threadIdx.x), fold = thread / kGroup;
@@ -141,8 +142,6 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   std::uint16_t* const list = fold_tokens<Bt>(fold, warp);
   //: the warp's sets a window, a value every lane holds: the loops below are bounded by it
   const int mine = ops::lane_broadcast(fold < c.folds ? 1 << (set_bits - shared_bits) : 0, 0);
-  //: the levels the write side lists, a value every lane holds: a set's word branches on it
-  const int listed = ops::lane_broadcast(listed_levels(c, false), 0);
 
   const std::uint8_t* const lines = o.values + p.slice * kRowBytes<kChannels>;
   const ops::SmemAddr rows = ops::smem_addr(fold_rows<Bt>(fold, warp));
@@ -151,19 +150,29 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   fold_levels(c, p, fold, base, shift, mask);
   const std::uint32_t* row[kLevels];
   std::int64_t step[kLevels];
-  std::uint32_t ours = window_word<kWords>(o, 0, lane);
+  //: THE CALL'S OWN TOKENS a lane a window, without a window's arithmetic: the windows its word is whole in, then one word of the call's last tokens, then none
+  const std::int64_t mine_on = o.tokens - std::int64_t{lane} * 32;
+  const int whole_windows =
+      mine_on >= 32 ? static_cast<int>((mine_on - 32) / (kWords * 32)) + 1 : 0;
+  const std::int64_t left_on = mine_on - std::int64_t{whole_windows} * (kWords * 32);
+  const std::uint32_t last_word = left_on > 0 ? (1u << static_cast<int>(left_on)) - 1u : 0u;
+  std::uint32_t ours = whole_windows > 0 ? ~0u : last_word;
+  const std::int64_t window_bytes = std::int64_t{kWords} * 32 * o.line_bytes;
+  const std::uint8_t* from = lines + p.head * o.tokens * o.line_bytes;
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
-    const int s = side_at(false) + l;
-    row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
-    step[l] = level_step<kWords>(o, s, c.write_group_bits[l]);
+    if ((LISTED >> l & 1) != 0) {
+      const int s = side_at(false) + l;
+      row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
+      step[l] = level_step<kWords>(o, s, c.write_group_bits[l]);
+    }
   }
   //: THE WORDS A SET IS LISTED FROM ARE LOADED A SET AHEAD AND ANDed AT THEIR USE: ANDed where they are loaded, the warp waits there for them
   std::uint32_t got[kLevels];
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     got[l] = ~0u;
-    if ((listed >> l & 1) != 0 && mine > 0) {
+    if ((LISTED >> l & 1) != 0 && mine > 0) {
       got[l] = row[l][base[l] + ((first_set >> shift[l]) & mask[l])];
     }
   }
@@ -180,14 +189,14 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
       hand(tr, kTilesReadyId + k, kTilesThreads);
     }
 
-    const std::uint8_t* const from =
-        lines + (p.head * o.tokens + std::int64_t{w} * kWords * 32) * o.line_bytes;
 #pragma unroll 1
     for (int i = 0; i < mine; ++i) {
       tr.phase(kSiteSet);
       std::uint32_t word = whose & part;
 #pragma unroll
-      for (int l = 0; l < kLevels; ++l) word &= got[l];
+      for (int l = 0; l < kLevels; ++l) {
+        if ((LISTED >> l & 1) != 0) word &= got[l];
+      }
       const Listing s = listing_of<kWords>(word);
       lay_tokens<kWords>(s, list);
       tr.phase(kSiteListed);
@@ -195,16 +204,18 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
       const bool turn = i + 1 == mine, on = turn && w + 1 < o.windows;
       if (on) {
         const std::int64_t at = (std::int64_t{w} + 1) * kWords + lane;
-        ours = window_word<kWords>(o, w + 1, lane);
+        ours = w + 1 < whole_windows ? ~0u : w + 1 == whole_windows ? last_word : 0u;
         //: a lane past the mask's last word keeps its row: the call's own tokens count its word for nothing
 #pragma unroll
-        for (int l = 0; l < kLevels; ++l) row[l] += at < o.words ? step[l] : 0;
+        for (int l = 0; l < kLevels; ++l) {
+          if ((LISTED >> l & 1) != 0) row[l] += at < o.words ? step[l] : 0;
+        }
       }
       const int set_after = first_set + ((turn ? 0 : i + 1) << shared_bits);
       whose = ours;
 #pragma unroll
       for (int l = 0; l < kLevels; ++l) {
-        if ((listed >> l & 1) != 0) {
+        if ((LISTED >> l & 1) != 0) {
           got[l] = row[l][base[l] + ((set_after >> shift[l]) & mask[l])];
         }
       }
@@ -232,8 +243,18 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
     take(tr, kFoldId + fold, kGroup);
     //: NOT BUILT: the groups' steps, behind their fence, committed and waited for
     take(tr, kFoldId + fold, kGroup);
+    from += window_bytes;
   }
   ops::stage_wait<0>();
+}
+
+//: A FOLD WARPGROUP: ONE SWITCH A CALL on the levels its side lists, to the windows compiled for them -- see docs/internals/carry/carry_kernel.md#fold
+template <class Bt, class Tr>
+__device__ __forceinline__ void fold_role(const Operands& o, const plan::PrefillCarve& c,
+                                          const Place& p, Tr& tr) {
+  uniform_switch<1 << kLevels>(listed_levels(c, false), [&](auto member) {
+    fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, tr);
+  });
 }
 
 //: THE READOUT'S WARPGROUP -- see docs/internals/carry/carry_kernel.md#readout

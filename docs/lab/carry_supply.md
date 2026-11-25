@@ -60,6 +60,10 @@ A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 300 to 360 cycl
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
 
+SINCE THE RECORD the fold's windows are compiled once a pattern of listed levels behind one switch a call, and a
+window's own arithmetic is kept from window to window ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)).
+NOT RUN on record in that form.
+
 WHAT IT IS NOT: the fold. No coefficient is expanded and no step runs; the other roles are stubs; the call is one
 head and its values are the cache's.
 

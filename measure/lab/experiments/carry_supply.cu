@@ -446,8 +446,9 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
 int main(int argc, char** argv) {
   using namespace carry_supply;
   lab::Bench b(argc, argv);
-  //: the check's tracer writes a kept round's head from lane 0, inside the fold's loop over rounds
-  b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 2);
+  //: the keeping tracer reads other lanes' copies behind a vote, two joins a round; the fold's windows are compiled once
+  //: a pattern of listed levels, 16 arms, each with the tracer's round in it
+  b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 32);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;

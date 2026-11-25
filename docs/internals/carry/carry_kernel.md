@@ -70,8 +70,13 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
   to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
   ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
-  nothing. The loops are bounded by values every lane holds (a shuffle from lane 0, a vote) and the levels the side
-  lists are decided once a call, outside them ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
+  nothing. ONE SWITCH A CALL: `fold_role` is a `uniform_switch` over the 16 patterns of levels the side lists, and each
+  arm is `fold_windows<LISTED>`, the warp's windows COMPILED FOR THAT PATTERN -- a level that is not listed has no word,
+  no row and no instruction in it (the owner, 2026-11-24: "switching uniformly to precomputed things defined for those
+  patterns ... We are just templating in the code instead of at the arm"). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
+  value lines start is a step on, and the call's own tokens a lane are the windows its word is whole in, then one word,
+  then none -- no 64-bit arithmetic a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
+  a vote, a warp reduction) ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
   NOT BUILT: sides of different head counts (one head index reads both); the coefficients and the steps that consume
   a round. THE BUDGET, stated before the code
   ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- one load a
