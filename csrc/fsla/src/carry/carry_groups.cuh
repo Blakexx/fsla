@@ -19,6 +19,7 @@ struct Operands {
   const std::uint8_t* workspace;
   std::int64_t prepared[kSides];
   const std::uint8_t* density;
+  std::int64_t tokens;
   int width_bits[kLevels];
   int levels;
   int words;
@@ -41,14 +42,28 @@ __device__ __forceinline__ plan::PrefillCarve carve_of(const Operands& o) {
   return plan::prefill_carve(o.levels, o.width_bits, write, read);
 }
 
+//: WHETHER A LEVEL-SIDE IS WHOLE: it has no mask, or its density byte is the dense flag and its mask is never read -- see docs/internals/carry/carry_groups.md#whole
+__device__ __forceinline__ bool whole(const Operands& o, int s) {
+  //: FIXED by the density's format: a byte of 255 is every digit live
+  constexpr int kDense = 255;
+  const int byte = static_cast<int>(o.density[(s / kLevels) * o.levels + s % kLevels]);
+  return o.mask[s] == nullptr || byte == kDense;
+}
+
+//: THE CALL'S TOKENS IN A WORD of a window: all 32, or the first of them where the call ends in it -- see docs/internals/carry/carry_groups.md#window-word
+template <int WORDS>
+__device__ __forceinline__ std::uint32_t window_word(const Operands& o, int window, int word) {
+  const std::int64_t left = o.tokens - (std::int64_t{window} * WORDS + word) * 32;
+  return left >= 32 ? ~0u : left <= 0 ? 0u : (1u << static_cast<int>(left)) - 1u;
+}
+
 //: A LANE'S WORD of a group's window on one level-side -- see docs/internals/carry/carry_groups.md#word
 template <int WORDS>
 __device__ __forceinline__ std::uint32_t group_word(const Operands& o, int s, int group_bits,
                                                     std::int64_t head, int window, int word,
                                                     int group) {
   const int wb = o.width_bits[s % kLevels];
-  //: a level-side with no mask is whole: every token of the call is live in its one group
-  if (o.mask[s] == nullptr) return ~0u;
+  if (whole(o, s)) return ~0u;
   if (window * WORDS + word >= o.words) return 0u;
   if (group_bits == 0) {
     const std::int64_t at = head * o.words + std::int64_t{window} * WORDS + word;
