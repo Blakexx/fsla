@@ -52,13 +52,6 @@ __device__ __forceinline__ bool whole(const plan::PrefillCarve& c, bool read, in
   return group == c.width_bits[level];
 }
 
-//: THE CALL'S TOKENS IN A WORD of a window: all 32, or the first of them where the call ends in it -- see docs/internals/carry/carry_groups.md#window-word
-template <int WORDS>
-__device__ __forceinline__ std::uint32_t window_word(const Operands& o, int window, int word) {
-  const std::int64_t left = o.tokens - (std::int64_t{window} * WORDS + word) * 32;
-  return left >= 32 ? ~0u : left <= 0 ? 0u : (1u << static_cast<int>(left)) - 1u;
-}
-
 //: THE LEVELS A SIDE LISTS, a bit a level: those that are not whole -- see docs/internals/carry/carry_groups.md#whole
 __device__ __forceinline__ int listed_levels(const plan::PrefillCarve& c, bool read) {
   int listed = 0;

@@ -10,6 +10,11 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
 - CORRECTNESS INSTRUMENTS: the fp64 oracle is the truth, and bit-identity is the refactor instrument
   (`docs/testing.md`).
 - EFFICIENCY IS CORRECTNESS: a design is built in its best form, never correct first and fast later.
+- QUESTIONS ARE ANSWERED BEFORE ANYTHING IS BUILT (Blake, 2026-11-26: "STOP BUILDING AND ANSWER MY QUESTIONS ID DI NOT
+  APPROVE YOUR WORK"): while a rule is still being discussed -- "idk", "i guess", "thoughts?", "is there a better
+  way?", a sentence that ends in a question -- an agent answers what was asked, fully, and stops. Nothing is built,
+  and nothing is recorded as ruled, until he has said the rule in settled words; a refinement the agent prefers is a
+  proposal for him to accept.
 - THE PERFORMANCE TARGETS (Blake, 2026-09-30): "at dense we are at the tensor floor, at sparse we are significantly
   below FA, down to basically the overhead floor which is ideally small"; decode the same, "such that our latency
   nearly falls exactly with sparsity"; the intra may be a constant cost at every density, as long as it is low. Every

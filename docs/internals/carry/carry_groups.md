@@ -23,16 +23,18 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
   density, a byte of 255 by the declaration ([`../../api.md`](../../api.md) section 2.6); a density below the whole
   with a mask of all ones is read as it is given. IT IS THE CALL'S FACT, asked once a level-side a call: a role's
   AND runs over the levels that are not whole.
-- <a id="window-word"></a>`window_word<WORDS>(operands, window, word)`: the call's own tokens in a word of a window,
-  the first of 32 where the call ends inside it. A role's AND starts from it, so that a side whose levels are all whole
-  lists the call's tokens and no place past its last.
+- <a id="window-word"></a>THE CALL'S OWN TOKENS in a word of a window: all 32, or the first of them where the call
+  ends inside it. A role's AND starts from that word, so that a side whose levels are all whole lists the call's tokens
+  and no place past its last. No helper computes it a window: a lane's word is whole for the windows before the call's
+  end, then one word of the call's last tokens, then nothing, which the fold forms once a call
+  ([`carry_kernel.md`](carry_kernel.md#supply)).
 - <a id="word"></a>`level_row<WORDS>(operands, level-side, group bits, head, window, word)`: A LANE'S ROW of a
   level-side's words in a window -- `row[group]` is its word of the group, the mask's own word of the digit at one
   digit and the prepared word otherwise
   ([`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md)), so a role reads either with one
   form and no branch. `level_step<WORDS>` is the row a window on, in words: a role forms a level's row once and
   advances it by its step a window. A lane whose word is past the mask's last keeps its row (nothing is read past the
-  mask) and the call's own tokens (`window_word`) count its word for nothing.
+  mask) and the call's own tokens count its word for nothing.
 - `listed_levels(carve, read)`: the levels a side lists, a bit a level -- those that are not whole. A role takes it
   once a call as a value every lane holds and branches on that.
 - <a id="place"></a>`place_of(operands, carve, at, slices)`: A CTA'S PLACE IN THE CALL from its index in the grid: its

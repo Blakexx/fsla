@@ -16,7 +16,10 @@ groups ([`carry_groups.md`](carry_groups.md)).
   template parameters of `carry_cta`): a split the climb tunes, so the kernel states no number for them. A drain
   thread takes what the multiprocessor's register file leaves (`Registers<Bt, FOLD, READ>::kDrain`, from `regs_per_sm`
   of the build's caps; a split that leaves it under the instruction's least does not compile). A role's count is set
-  once, at the head of its branch: two counts in one warpgroup hang the CTA.
+  once, at the head of its branch: two counts in one warpgroup hang the CTA. WHERE A ROLE'S STATE DOES NOT FIT ITS
+  COUNT the remedies are taken in the owner's order (2026-11-25: "If we hit register issues we should first try loop re
+  ordering, uniform switches, etc  and then try seeing if we can save registers from other phases, before going to
+  smem"): a per-call value moves to shared memory last.
 - <a id="handoff"></a>A HAND-OFF between roles is a NAMED BARRIER of the two roles' threads: the producer's warps
   arrive and go on (`hand`), the waiter's sync (`take`). There are twelve -- a tile group's "published" (the folds to
   the readout) and "read" (the readout to the folds), a panel's "filled" (the readout to the drain) and "drained" --
@@ -75,7 +78,7 @@ groups ([`carry_groups.md`](carry_groups.md)).
   no row and no instruction in it (the owner, 2026-11-24: "switching uniformly to precomputed things defined for those
   patterns ... We are just templating in the code instead of at the arm"). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
   value lines start is a step on, and the call's own tokens a lane are the windows its word is whole in, then one word,
-  then none -- no 64-bit arithmetic a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
+  then none -- no multiplication and no division a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
   a vote, a warp reduction) ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
   NOT BUILT: sides of different head counts (one head index reads both); the coefficients and the steps that consume
   a round. THE BUDGET, stated before the code
@@ -85,8 +88,8 @@ groups ([`carry_groups.md`](carry_groups.md)).
   8 copy instructions (about 35). THE FLOOR is the copies' own: 2.1 to 3.0 cycles
   a line a CTA with 16 warps issuing ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)), 5.8 with 4
   ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. MEASURED in the composed CTA, stamped: a
-  round's 8 loads and 8 copies 290 to 360 cycles of its warp whatever number of its 32 places are live, then a wait of up
-  to 560 for the round before's copies; a set's sums and lay 460 to 1,000
+  round's 8 loads and 8 copies 180 to 390 cycles of its warp whatever number of its 32 places are live, then a wait of up
+  to 580 for the round before's copies; a set's sums and lay 420 to 930
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
 - WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists, the coefficients, the steps,
   the sums' stores and the adds, and the tiles they add to the CTA's shared memory.

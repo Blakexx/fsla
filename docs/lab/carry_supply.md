@@ -23,46 +23,44 @@ once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-34b9a08d; 7 repetitions; every call's check exact -- 12,288, 4,096, 16,384, 3,920 and 4,096 rounds, their tokens and
+05b6fec2; 7 repetitions; every call's check exact -- 12,288, 4,096, 16,384, 3,920 and 4,096 rounds, their tokens and
 their row bytes, the sets tiling the leaf space; cycles a window a CTA, the median):
 
 | the call | its carve, sets a fold | timed | every warp's timeline stamped |
 |---|---|---:|---:|
-| the cell | 32 x 16, 4 | 2,655 | 4,086 |
-| the write side masked on both levels | 64 x 8, 8 | 2,614 | 4,144 |
-| the write side whole on both levels | 128 x 4, 1 | 6,185 | 7,623 |
-| one digit a token on each level | 128 x 4, 16 | 4,007 | 5,506 |
-| both levels, the read side's densities crossed | 32 x 16, 4 | 1,540 | 2,724 |
+| the cell | 32 x 16, 4 | 2,377 | 3,833 |
+| the write side masked on both levels | 64 x 8, 8 | 2,340 | 3,817 |
+| the write side whole on both levels | 128 x 4, 1 | 5,577 | 6,824 |
+| one digit a token on each level | 128 x 4, 16 | 3,626 | 5,161 |
+| both levels, the read side's densities crossed | 32 x 16, 4 | 1,339 | 2,514 |
 
-PREDICTED, before the run (timed and stamped): the cell 2,500 to 2,800 and 3,950 to 4,300; both levels 2,200 to 2,700
-and 3,600 to 4,300; whole 5,900 to 6,500 and 7,300 to 7,900; one digit 4,000 to 4,450 and 5,800 to 6,300; crossed 1,420
-to 1,570 and 2,600 to 2,850 -- each about an unrecorded held session's reading of the same form, the both-levels call's
-a window and two of the crossed call's sets under the carve the rule now gives it. NINE HELD. The one-digit call's
-stamped row MISSED LOW: its range was that session's figure under the carve the call had then (256 x 2), and under
-128 x 4 its timed row fell 5 percent and its stamped one 8 -- a stamped window's own cost was taken as the same across
-a change of carve.
+PREDICTED, before the run (timed and stamped): the cell 2,300 to 2,450 and 3,730 to 3,970; both levels 2,270 to 2,410
+and 3,700 to 3,930; whole 5,400 to 5,810 and 6,620 to 7,030; one digit 3,520 to 3,740 and 5,010 to 5,320; crossed 1,300
+to 1,390 and 2,430 to 2,590 -- each 3 percent about an unrecorded held session's reading of the same form on another
+box. ALL TEN HELD.
+
+THE FORM BEFORE IT tested the pattern of listed levels a level a set inside its loops and formed a window's place in
+the value lines and the call's own tokens with 64-bit multiplications a window (the record at 34b9a08d, the same card
+and calls): 2,655, 2,614, 6,185, 4,007 and 1,540 timed. One switch a call to windows compiled for the pattern, and that
+arithmetic kept from window to window, is 9 to 13 percent of every call.
 
 WHAT A FOLD WARP'S WINDOW IS MADE OF, by the stamped rows (the stamps themselves add 1,100 to 1,500 cycles to a
 window, so these are shares):
-- THE CELL, a set a window of 3,935: the folds' hand-offs 740; the set's running sums and its tokens laid 690 (69 of
-  them); the next set's words asked for 274 and had 123; then three rounds, each 298 to 318 for its 8 loads and 8
-  copies, a wait for the round before of 58, 516 and 91, and 70 to 84 to its end.
-- BOTH LEVELS, two sets a window of 4,018: a set's sums and lay 561 and 457; its words 356 and 114; ONE round a set, 353
-  to 357, and 52 to 103 waiting.
-- WHOLE, one set a fold shared by its four warps, a window of 7,480: the set's sums and a quarter of every word laid
-  1,000; eight rounds of 288 to 325, and between them a wait for the round before of 75 to 557 -- 2,119 of the window
-  waiting on copies with two rounds in flight, against 2,382 issuing them.
-- ONE DIGIT, four sets a window of 5,649, most of them empty: a set 422 to 677, 2,250 a window; the words 1,266, which
-  holds the wait at the window's end for the fold's slowest warp; about one round a window. NOT EXPLAINED: what an
-  empty set's 400 to 700 cycles are.
+- THE CELL, a set a window of 3,674: the folds' hand-offs 660; the set's running sums and its tokens laid 690 (69 of
+  them); the next set's words asked for 119 and had 106; then three rounds, each 234 to 272 for its 8 loads and 8
+  copies, a wait for the round before of 103, 579 and 139, and 70 to 365 to its end.
+- BOTH LEVELS, two sets a window of 3,746: a set's sums and lay 546 and 456; its words 370 and 179; ONE round a set, 250
+  to 392, and 130 to 143 waiting.
+- WHOLE, one set a fold shared by its four warps, a window of 6,666: the set's sums and a quarter of every word laid
+  928; eight rounds of 179 to 274, and between them a wait for the round before of 53 to 574 -- 2,337 of the window
+  waiting on copies with two rounds in flight, against 1,699 issuing them.
+- ONE DIGIT, four sets a window of 5,238, most of them empty: a set 417 to 694, 2,357 a window; the words 1,510, which
+  holds the wait at the window's end for the fold's slowest warp; about one round a window. An empty set runs every
+  instruction a full one does -- its sums, its lay's tail, its words -- and nothing skips it.
 
-A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 300 to 360 cycles stamped whatever number of its
+A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 180 to 390 cycles stamped whatever number of its
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
-
-SINCE THE RECORD the fold's windows are compiled once a pattern of listed levels behind one switch a call, and a
-window's own arithmetic is kept from window to window ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)).
-NOT RUN on record in that form.
 
 WHAT IT IS NOT: the fold. No coefficient is expanded and no step runs; the other roles are stubs; the call is one
 head and its values are the cache's.

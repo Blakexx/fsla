@@ -88,7 +88,12 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   coefficient tile in shared memory, at lines the list's order fixes: the step's two operands are both shared memory,
   the value lines on the 64 channels and the coefficient tile on the leaves, as the lab's composed fold ran; a step fed
   from registers is the climb's. MEASURED ([`lab/carry_token.md`](../lab/carry_token.md)): the row's own load 6 to 10%
-  of the grouped window over a packed line.
+  of the grouped window over a packed line. THE FORM (laid out for the owner, 2026-11-25, who answered "1 A 2 sounds
+  fine"): a lane takes one token of its warp's round, loads its bytes on the set's digits by the token's index,
+  multiplies them out and stores one line in its warp's coefficient tile; A WARP HAS ONE TILE, a round's 32 tokens by
+  64 leaves, and a set wider than 64 leaves is done 64 leaves at a time on the same value lines, the tile used again --
+  tiles holding the widest set whole would be 128 KB for the eight fold warps. A second tile a warp, the next round expanded under the steps
+  of this one, is not taken: the eight fold warps' tiles are 32 KB so. NOT BUILT.
 - A STEP is 16 tokens by up to 64 of a group's leaves (R25); a group wider than a step is more steps on the same value
   lines, and a short step is padded on the coefficient side, a zero byte, never by zero value lines (RULED 2026-11-19).
 - THE READ SIDE'S RESULTS. A reader's sums are stored once, in the list's order, into a PANEL a read group in shared
@@ -131,11 +136,15 @@ and a group's steps a loop on its list's count whose test is a warp vote. The gr
    its lists' count (a warp vote). A pass: a thread expands a reader's 16 bytes on a box by its byte on its digit
    to its two lines of a coefficient tile; 16 steps, a slot's image tile by its coefficient tile on each box, into
    one accumulator; the sums to a panel as f16 pairs; the drain warps add each reader's line at its token's.
-3. THE FOLD, a group at a time: its list (made a window ahead); the wait on its value lines' landing; a thread's two
-   entries expanded; the group's steps; the next lines' copies issued. A step tile is a tenant the copies write and
-   the steps read (R21): its completion edge is the wait on the landing, and its release edge the barrier behind the
-   last step that reads it, before which no copy into that tile is issued -- two tiles, so the next group's lines land
-   while this one's steps run. NOT BUILT.
+3. THE FOLD. EACH WARP KEEPS ITS OWN SETS, a round of 32 tokens at a time: its list, its round's copies issued, the
+   round before's coefficients expanded, the wait on that round's landing. THE WARPGROUP MEETS A ROUND: a tensor step
+   is a warpgroup's instruction and its accumulator the 128 threads', so after each round the fold's four warps meet
+   at the fold's barrier and issue the steps of all four warps' tiles (the form the owner took of two, 2026-11-25: "1 A
+   2 sounds fine"; the other, all four warps on one set at a time, leaves a small set's tiles mostly empty, each warp
+   holding a quarter of a few tokens, and runs up to four times the steps). A tile of rows is a tenant the copies write
+   and the steps read (R21): its completion edge is the wait on the landing, and its release edge the barrier behind
+   the last step that reads it, before which no copy into it is issued -- two rounds of rows a warp, so the next
+   round's lines land while this one's steps run. NOT BUILT: the coefficients and the steps.
 
 MEASURED of the composed window ([`lab/carry_token.md`](../lab/carry_token.md), the two readouts' timelines and the
 readout's pass by phases): the folds wait on the readout's read of their tile groups; with the fixed readout the drain
