@@ -58,7 +58,6 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
     ops::stage_tile_if(to, lines + static_cast<std::uint32_t>(from * line),
                        live && from != kNoToken);
   }
-  ops::stage_commit();
 }
 
 //: STEP `step` OF A ROUND'S TILE as the tensor step's operand: its 16 rows; `tiles` is on a 1,024-byte boundary

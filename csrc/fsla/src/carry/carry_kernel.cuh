@@ -256,9 +256,12 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
       int round = 0;
       if (ops::lane_ballot(kWords * round < s.total) != 0u) {
         //: A STAGE IS A CHUNK OF A ROUND, its copies one committed group: the chunk's bytes, and with a round's first chunk the round's value lines. The set's first stage is issued here, and each stage issues the one after it -- see docs/internals/carry/carry_kernel.md#supply
-        stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+        //: A STAGE'S ORDER: its tokens' loads and its addresses, then the round's value lines' copies, then the bytes' -- a copy whose lanes ask for 32 different lines holds what is issued behind it, so the bytes' go last, under the wait
+        const StagePlan first = stage_plan<kDepth, kB0, kB1, kB2, kB3>(
             coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), list, staged, true);
         fetch_round<kChannels>(rows, from, o.line_bytes, list, true);
+        stage_bytes<kDepth, kB0, kB1, kB2, kB3>(first);
+        ops::stage_commit();
 #pragma unroll 1
         do {
           const std::uint16_t* const tokens = list + kWords * round;
@@ -275,19 +278,20 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
             const ops::SmemAddr there =
                 staged + static_cast<ops::SmemAddr>((turn ^ 1) * kStageMost);
             if (chunk + 1 < kSetChunks) {
-              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(stage_plan<kDepth, kB0, kB1, kB2, kB3>(
                   coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, chunk + 1), tokens,
-                  there, true);
-              ops::stage_commit();
+                  there, true));
             } else {
-              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(
+              const StagePlan next = stage_plan<kDepth, kB0, kB1, kB2, kB3>(
                   coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, set, 0), tokens + kWords,
                   there, more);
               fetch_round<kChannels>(rows
                                          + static_cast<ops::SmemAddr>(((round + 1) & (kHeld - 1))
                                                                       * kRoundBytes<kChannels>),
                                      from, o.line_bytes, tokens + kWords, more);
+              stage_bytes<kDepth, kB0, kB1, kB2, kB3>(next);
             }
+            ops::stage_commit();
             tr.phase(kSiteIssued);
             ops::stage_wait<kHeld - 1>();
             tr.phase(kSiteCoefs);

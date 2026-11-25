@@ -196,27 +196,49 @@ __device__ __forceinline__ void stage_position(ops::SmemAddr to, const std::uint
   }
 }
 
-//: THE COPIES OF A CHUNK'S BYTES, uncommitted: lane `i` takes place `i` of `tokens` and copies its token's blocks a position into its slot of `stage`; none where `live` is false or the place holds no token -- see docs/internals/carry/carry_coefs.md#stage
+//: WHERE A LANE'S TOKEN'S BLOCKS ARE COPIED FROM AND TO, a chunk: formed apart from the copies, so that a stage's loads and arithmetic all stand before its copies -- see docs/internals/carry/carry_coefs.md#stage
+struct StagePlan {
+  const std::uint8_t* from[kLevels];
+  ops::SmemAddr to;
+  bool on;
+};
+
+//: lane `i` takes place `i` of `tokens`; nothing is copied where `live` is false or the place holds no token
 template <int LEVELS, int B0, int B1, int B2, int B3>
-__device__ __forceinline__ void stage_bytes(const CoefSource& c, const std::uint16_t* tokens,
-                                            ops::SmemAddr stage, bool live) {
+__device__ __forceinline__ StagePlan stage_plan(const CoefSource& c, const std::uint16_t* tokens,
+                                                ops::SmemAddr stage, bool live) {
   using G = StageShape<LEVELS, B0, B1, B2, B3>;
   const int lane = static_cast<int>(threadIdx.x) & (ops::kBallotLanes - 1);
   const int listed = tokens[lane];
-  const bool on = live && listed != kNoToken;
-  const int token = on ? listed : 0;
+  StagePlan plan{};
+  plan.on = live && listed != kNoToken;
+  const int token = plan.on ? listed : 0;
   const int line = (token & ((1 << kRowTileBits) - 1)) << kRowBlockBits;
   const int tile_of = token >> kRowTileBits;
-  const ops::SmemAddr to = stage + static_cast<ops::SmemAddr>(lane * (G::kPitch << kRowBlockBits));
-  const std::uint8_t* from[kLevels] = {};
+  plan.to = stage + static_cast<ops::SmemAddr>(lane * (G::kPitch << kRowBlockBits));
 #pragma unroll
   for (int p = 0; p < LEVELS; ++p) {
-    from[p] = c.block[p] + static_cast<std::uint32_t>(tile_of * c.tile_bytes[p] + line);
+    plan.from[p] = c.block[p] + static_cast<std::uint32_t>(tile_of * c.tile_bytes[p] + line);
   }
-  if constexpr (LEVELS > 0) stage_position<B0>(to + (G::kAt[0] << kRowBlockBits), from[0], on);
-  if constexpr (LEVELS > 1) stage_position<B1>(to + (G::kAt[1] << kRowBlockBits), from[1], on);
-  if constexpr (LEVELS > 2) stage_position<B2>(to + (G::kAt[2] << kRowBlockBits), from[2], on);
-  if constexpr (LEVELS > 3) stage_position<B3>(to + (G::kAt[3] << kRowBlockBits), from[3], on);
+  return plan;
+}
+
+//: THE COPIES OF A CHUNK'S BYTES, uncommitted: a lane's token's blocks a position into its slot of the stage -- see docs/internals/carry/carry_coefs.md#stage
+template <int LEVELS, int B0, int B1, int B2, int B3>
+__device__ __forceinline__ void stage_bytes(const StagePlan& plan) {
+  using G = StageShape<LEVELS, B0, B1, B2, B3>;
+  if constexpr (LEVELS > 0) {
+    stage_position<B0>(plan.to + (G::kAt[0] << kRowBlockBits), plan.from[0], plan.on);
+  }
+  if constexpr (LEVELS > 1) {
+    stage_position<B1>(plan.to + (G::kAt[1] << kRowBlockBits), plan.from[1], plan.on);
+  }
+  if constexpr (LEVELS > 2) {
+    stage_position<B2>(plan.to + (G::kAt[2] << kRowBlockBits), plan.from[2], plan.on);
+  }
+  if constexpr (LEVELS > 3) {
+    stage_position<B3>(plan.to + (G::kAt[3] << kRowBlockBits), plan.from[3], plan.on);
+  }
 }
 
 //: A POSITION'S BYTES of a lane's token, from its blocks in the stage, as fp32 a digit: `inside` its first digit's place in its block -- see docs/internals/carry/carry_coefs.md#expand

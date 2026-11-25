@@ -53,6 +53,20 @@ register-loaded one on every call, by 7 to 20 percent. THE WRONG PRICES, by the 
 - THE WHOLE CALL IS LATENCY-BOUND A STAGE: its 32 stages a window are each about 390 of expansion, 260 of issue and
   217 of waiting -- a group asked one stage ahead does not land under one chunk's work.
 
+A PROFILE OF THE CELL'S TIMED LAUNCH (the same card class, a session of its own on the experiment at ace683c8, the
+kernel's code as recorded above; the pinned profiler's source counters and warp samples; its dump is not kept in the
+repository, so this is one reading and NOT ON RECORD). A fold warp EXECUTES 996 INSTRUCTIONS A WINDOW and is issuing
+one 19 percent of the time. Its samples in its window loop, by what holds it: a shared-memory load's result 22
+percent; global memory (its copies) 19; a fixed-latency result 17; another warp chosen 7; a hand-off's barrier 7; the
+memory queue full 4. By its code: a round's issue of the next stage 34 percent, its expansion 30, the set's first
+stage's issue 14, the listing and the lay 11, the hand-offs 10. IN THE EXPANSION 28 percent of the samples are on one
+instruction, the first load of the staged bytes, which is where the wait for the stage's landing is counted. IN THE
+ISSUE the largest are the instructions that first use a token loaded from the list behind the two byte copies, and
+those behind each copy. SHARED WAVEFRONTS are 42 percent over the conflict-free count, nearly all on the byte copies
+(about 14 an execution where their lanes' places count 4). WHAT IT WITHDRAWS: that a fold warp's instruction costs
+two cycles because eight warps share the issue -- another warp is chosen 7 percent of the time, and the warp waits on
+its own results 62.
+
 carry_skeleton's rows MISSED too (749 and 1,673 against 630 to 720 and 1,400 to 1,580): its call now has two whole
 levels where it had none, and the range took that as free. NOT EXPLAINED: which of the call's levels' work the 89
 cycles are.

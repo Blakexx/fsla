@@ -15,7 +15,7 @@ The fold's supply calls it ([`carry_kernel.md`](carry_kernel.md#supply)); the la
   bricks ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)). A step of the round is 16
   consecutive rows (`round_step`), and THE TILE STARTS ON A 1,024-BYTE BOUNDARY, the condition of the step's operand
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)).
-- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, stride, tokens)` copies a round of the warp's list (`tokens`, its 32 places, [`carry_list.md`](carry_list.md#lay)) into its 32 rows -- a token's
+- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, stride, tokens, live)` issues, uncommitted and only where `live` (a set with no round after issues none: [`carry_kernel.md`](carry_kernel.md#supply), whose stage commits them with its bytes'), the copies of a round of the warp's list (`tokens`, its 32 places, [`carry_list.md`](carry_list.md#lay)) into its 32 rows -- a token's
   line `stride` bytes on from the token before's, its first 128 bytes copied, so a CTA's slice of a wider value starts
   `values` at its slice -- 4
   consecutive tokens an instruction, so every instruction moves 4 whole rows. A PLACE PAST THE LIST'S TOTAL COPIES

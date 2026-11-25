@@ -36,22 +36,29 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
 - <a id="source"></a>`CoefSource`, `coef_source<levels, bits a position, chunk bits>(positions, set, chunk)`: where a chunk of
   a set is read -- a position's pointer at token 0's line of the block its first digit lies in, and that digit's place
   inside the block. The digit is the fold's first, the set's group on, the chunk on at position 0.
-- <a id="stage"></a>`stage_bytes<levels, bits a position>(source, tokens, stage, live)`, `StageShape`, `kStageMost`: THE
+- <a id="stage"></a>`stage_plan<levels, bits a position>(source, tokens, stage, live)`, `stage_bytes<levels, bits a position>(plan)`, `StagePlan`, `StageShape`, `kStageMost`: THE
   BYTES ARRIVE AS THE VALUE LINES DO, by asynchronous copies into shared memory (the owner, 2026-11-25: "I thought we
   were losing coefficents to smem async like values, and then expanding them from smem into operand areas? Why not?"
   -- and to the form laid out in answer, "Ok go"). Lane `i` takes place `i` of the round's 32 and copies its token's
   16-digit blocks a position, whole, 16 bytes a copy, into its slot of the stage; the copies are left uncommitted so
   that they join the round's value lines' group. A SLOT'S PITCH IS ODD in 16-byte lines (the blocks' count, made odd),
-  so an instruction's 32 lanes write each of the banks' eight 16-byte places four times
-  ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)); the widest stage of the classes built is 5
+  so an instruction's 32 lanes fall on each of the banks' eight 16-byte places four times
+  ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)) -- THE COUNT A THREAD'S OWN STORE WOULD
+  HAVE, AND NOT WHAT A COPY'S WRITES COST: the profiler counts about 14 shared wavefronts an execution of a byte copy
+  where that count is 4, the kernel's excess wavefronts nearly all there
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)), as [`../../lab/value_fetch.md`](../../lab/value_fetch.md)
+  found of copies whose lanes do not move a whole row. NOT SHOWN: that it is the 32 different source lines of an
+  instruction. THE PLAN IS FORMED APART FROM THE COPIES (`stage_plan`, a lane's token, where its blocks are read and
+  its slot) so that a stage's loads and arithmetic stand before all of its copies, and the bytes' copies last: what is
+  issued behind such a copy waits on it ([`carry_kernel.md`](carry_kernel.md#supply)); the widest stage of the classes built is 5
   lines a token, 2,560 bytes (`kStageMost`, which every class's stage is asserted to fit where its windows are
   compiled). THE EXPANSION'S READS of a slot are a 16-byte load a block, or, of a position of fewer than 16 digits,
   the word or the pair of its block the digits lie in, at the same place in every lane's slot: with the odd pitch the
   32 lanes' words fall on the banks at most four to a bank, as the copies do. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
   into registers took about 700 cycles to land and held the warp there, a set's first round 1,237 cycles in its
   coefficient phase where its later rounds were about 500
-  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's latency rides the wait on the round's landing,
-  which the warp has anyway.
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy holds no warp where a load did. AS MEASURED
+  the staged form's window is not the faster of the two, its copies' issue costing what the loads' stall did.
 - <a id="expand"></a>`expand_round<levels, bits a position>(source, tokens, stage, tile)`, `position_floats`: A LANE A
   TOKEN. Lane `i` reads its token's staged bytes a position -- a block a 16-byte load, fewer digits the word or the
   pair of the block they lie in -- converts them to fp32, multiplies positions 1 on
