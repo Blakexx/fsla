@@ -17,45 +17,45 @@ the mask is read once. The density byte selects the group as it does in the libr
 the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
 own loops; here that dispatch sits inside the lab's loop over rounds, which the experiment declares.
 
-THE RECORD BELOW IS OF THE FORM BEFORE: it holds no row at 2 or at 8 digits, which are NOT MEASURED, and a row at 256
-digits, which the pass no longer prepares.
-
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM pxfjwwmx, driver 580.196.07; 2026-11-25, the experiment at
-9c2a0f30; 7 repetitions; the 7 checked rows pass, every word and total of each group size's
+MEASURED (NVIDIA H100 80GB HBM3, vast.ai instance hgrdycm0, driver 580.196.07; 2026-11-25, the experiment at
+4dca551b; 7 repetitions; the 8 checked rows pass, every word and total of each group size's
 first round exact; the median). SM-cycles a token, the mask read once; the lab's kernel is [`mask_prep`](mask_prep.md)'s row at
 the same group size:
 
 | a group, digits | the library's pass | the lab's kernel | bytes a token, read + stored | bytes a cycle an SM |
 |---:|---:|---:|---:|---:|
-| 1 | 2.74 | 4.93 | 32 + 0.50 | 11.9 |
-| 4 | 3.09 | 3.46 | 32 + 8.12 | 13.0 |
-| 16 | 2.64 | 2.60 | 32 + 2.03 | 12.9 |
+| 1 | 2.77 | 4.93 | 32 + 0.50 | 11.7 |
+| 2 | 3.69 | not measured | 32 + 16.25 | 13.1 |
+| 4 | 3.12 | 3.46 | 32 + 8.12 | 12.9 |
+| 8 | 2.79 | not measured | 32 + 4.06 | 12.9 |
+| 16 | 2.65 | 2.60 | 32 + 2.03 | 12.9 |
 | 32 | 2.67 | not measured | 32 + 1.02 | 12.4 |
-| 64 | 2.66 | not measured | 32 + 0.51 | 12.2 |
-| 128 | 2.61 | not measured | 32 + 0.25 | 12.4 |
-| 256 | 2.53 | not measured | 32 + 0.13 | 12.7 |
+| 64 | 2.67 | not measured | 32 + 0.51 | 12.2 |
+| 128 | 2.60 | not measured | 32 + 0.25 | 12.4 |
 
 WHAT IT SHOWS.
-- THE COST BY GROUP SIZE: 2.74 at a group of one digit; the highest 3.09, at a group of 4; the lowest 2.53, at a group of 256.
-- THE SHUFFLE FORM (32 digits and above): 2.53 to 2.67, beside 2.64 at 16 digits, where a thread is a group.
-- ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is 11.9 to 13.0 bytes a cycle an SM
+- THE COST BY GROUP SIZE: 2.77 at a group of one digit; the highest 3.69, at a group of 2; the lowest 2.60, at a group of 128.
+- THE SHUFFLE FORM (32 digits and above): 2.60 to 2.67, beside 2.65 at 16 digits, where a thread is a group.
+- ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is 11.7 to 13.1 bytes a cycle an SM
   at every group size.
 
-THE PREDICTIONS WRITTEN FOR THIS FORM OF THE KERNEL, AND THEIR BASIS. The pass when it stored a count a word, measured
-at the experiment's 0fb5eb86, fit one rate over the bytes a token it read and stored: 11.8 to 12.9 bytes a cycle an SM.
-Each row here was predicted as the bytes this form moves a token over that rate; the row at one digit was widened
-upward, its held loads being 8 words' where they were 16.
-- a group of 1: predicted 2.5 to 3.1, measured 2.74 -- HELD.
-- a group of 4: predicted 3 to 3.5, measured 3.09 -- HELD.
-- a group of 16: predicted 2.6 to 2.9, measured 2.64 -- HELD.
+THE PREDICTIONS WRITTEN FOR THIS RUN, AND THEIR BASIS. The pass's two runs before (the experiment at 0fb5eb86, when it
+stored a count a word, and at 9c2a0f30) fit one rate over the bytes a token it read and stored: 11.8 to 13.0 bytes a
+cycle an SM. Each row here was predicted as the bytes its form moves a token over that rate: the six sizes the run
+before held kept its ranges, and 2 and 8 digits, forms no run had, took theirs from the same rate.
+- a group of 1: predicted 2.5 to 3.1, measured 2.77 -- HELD.
+- a group of 2: predicted 3.6 to 4.2, measured 3.69 -- HELD.
+- a group of 4: predicted 3 to 3.5, measured 3.12 -- HELD.
+- a group of 8: predicted 2.7 to 3.15, measured 2.79 -- HELD.
+- a group of 16: predicted 2.6 to 2.9, measured 2.65 -- HELD.
 - a group of 32: predicted 2.6 to 2.9, measured 2.67 -- HELD.
-- a group of 64: predicted 2.5 to 2.85, measured 2.66 -- HELD.
-- a group of 128: predicted 2.5 to 2.8, measured 2.61 -- HELD.
-- a group of 256: predicted 2.4 to 2.7, measured 2.53 -- HELD.
+- a group of 64: predicted 2.5 to 2.85, measured 2.67 -- HELD.
+- a group of 128: predicted 2.5 to 2.8, measured 2.60 -- HELD.
 
-WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held. The ranges came from one rate over the bytes a token read
-and stored, fitted on the pass when it stored a count a word; this form stores fewer bytes and its rows fall where that
-rate puts them. It is two forms on one rate and no more: no counter was read, so that the multiprocessor's memory
-traffic is what bounds the pass is LIKELY, NOT SHOWN.
+WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held, the two new forms' with the rest (a pair a thread at 2
+digits, two lines a thread at 8). The ranges came from one rate over the bytes a token read and stored, which the two runs
+before had fit, and every row falls where that rate puts it: the pass is dearest at 2 digits, where it stores the most.
+It is three runs on one rate and no more: no counter was read, so that the multiprocessor's memory traffic is what
+bounds the pass is LIKELY, NOT SHOWN.
 
 Record: `measure/lab/results/mask_prepare_time/sm_90a.json`; the lab kernel's: `measure/lab/results/mask_prep/sm_90a.json`.

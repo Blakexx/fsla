@@ -42,6 +42,6 @@ A thread walks its window's `WORDS` words in order with ITS LOADS HELD AHEAD: `k
 
 ## Its time
 
-Measured on an H100 at six of the eight group sizes it prepares, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
-NOT MEASURED: a group of 2 or of 8 digits, a level narrower than 256 digits, several level-sides in one launch, and a call short enough that the launch itself is most of its time.
+Measured on an H100 at each of the eight group sizes it prepares, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
+NOT MEASURED: a level narrower than 256 digits, several level-sides in one launch, and a call short enough that the launch itself is most of its time.
 
