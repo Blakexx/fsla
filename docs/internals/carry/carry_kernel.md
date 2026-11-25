@@ -72,10 +72,14 @@ groups ([`carry_groups.md`](carry_groups.md)).
   lists are decided once a call, outside them ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
   NOT BUILT: sides of different head counts (one head index reads both); the coefficients and the steps that consume
   a round. THE BUDGET, stated before the code
-  ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- a load a lane
-  for each level the side lists and the listing's running sums; a round -- the select and 8 copy instructions a lane.
-  A ROUND IS PAID WHOLE whatever number of its 32 places are live. What a warp's window is made of, by its stamps:
-  [`../../lab/carry_supply.md`](../../lab/carry_supply.md).
+  ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- one load a
+  lane for each level the side lists, the listing's running sums (5 shuffles, about 20 instructions a lane) and an AND
+  a level; a round of 32 places -- the select (7 shuffles and the bit's place, about 60 instructions a lane) and 8
+  copy instructions, each behind a shuffle and an address (about 50). THE FLOOR is the copies' own: 2.1 to 3.0 cycles
+  a line a CTA with 16 warps issuing ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)), 5.8 with 4
+  ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. MEASURED in the composed CTA: a
+  round 825 to 950 cycles of its warp, paid whole whatever number of its 32 places are live; a set's sums and words
+  500 to 700 ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
 - WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists, the coefficients, the steps,
   the sums' stores and the adds, and the tiles they add to the CTA's shared memory.
 - <a id="the-cta"></a>`carry_cta<Bt, FOLD, READ, Tr>(operands, tracer)`: each role's whole body runs in its own branch,

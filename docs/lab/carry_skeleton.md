@@ -14,16 +14,17 @@ hangs or leaves early fails the check. Its second row stamps every warp's hand-o
 tracer (64 windows), and the record holds two CTAs' timelines of it.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-107a693f; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
+b64785d8; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
 
 | the carry on a call of no tokens | cycles |
 |---|---:|
-| as the library compiles it, its tracer nothing | 591 |
-| every warp's hand-offs and windows stamped | 1364 |
+| as the library compiles it, its tracer nothing | 596 |
+| every warp's hand-offs and phases stamped | 1408 |
 
-PREDICTED, before the run: the plain row 520 to 720, the skeleton's hand-offs alone having read 517 and a fold warp
-now taking an empty listing a window -- HELD. The stamped row 1,300 to 1,700 -- HELD. A STAMPED ROW OF THIS CALL IS
-A TIMELINE'S ORDER, NOT ITS DURATIONS: on a window that is nothing but 16 hand-offs the stamps are the larger cost.
+PREDICTED, before the run: the plain row 560 to 760 (591 at 107a693f, a fold warp's empty listing the same work) --
+HELD. The stamped row 1,380 to 1,800 (1,364 at 107a693f, a fold warp now stamping its set's phases too) -- HELD. A
+STAMPED ROW OF THIS CALL IS A TIMELINE'S ORDER, NOT ITS DURATIONS: on a window that is nothing but 16 hand-offs the
+stamps are the larger cost.
 
 THE HAND-OFF'S FORM was chosen on the experiment at 819a33c0, which held two (the same card, the same day): a
 window's 16 hand-offs 849 cycles as shared barriers (`mbarrier`) with suspending waits, 528 as named barriers of the
