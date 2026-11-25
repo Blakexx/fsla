@@ -32,8 +32,8 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
   and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at each of the eight group sizes it prepares
-  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)). Both are of the pass that took a level-side's group from its own density; the pass as it stands derives the call's
-  carve, whose least set of 16 leaves raises a group, and is NOT RUN on a device.
+  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)). The pass derives the call's carve a CTA, whose least set of 16 leaves
+  raises a group: 3.63 SM-cycles a token at a group of one digit, 2.67 to 3.85 at the others.
 - NOT BUILT: the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
   handed to it).

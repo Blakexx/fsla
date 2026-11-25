@@ -11,7 +11,7 @@ namespace carry_select {
 namespace carry = fsla::carry::detail;
 namespace ops = ::denseref::ops;
 
-//: THE TOKEN AT A PLACE of the listing: lane `p` of round `r` takes place `WORDS r + p`; -1 past the total -- this experiment's own: the library's supply lays its tokens (`carry_supply`)
+//: THE TOKEN AT A PLACE of the listing: lane `p` of round `r` takes place `WORDS r + p`; -1 past the total -- the lab's own, shared by `carry_list` and `carry_fetch`: the library's supply lays its tokens (`carry_supply`)
 template <int WORDS>
 __device__ __forceinline__ int listed_token(const carry::Listing& s, int round) {
   const int place = WORDS * round + static_cast<int>(threadIdx.x & (WORDS - 1));

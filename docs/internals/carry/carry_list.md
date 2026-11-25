@@ -15,8 +15,9 @@ token of every mask word at once, which is what makes a set cheap to lay (a trip
 makes ITS STORES' PLACES THE DATA'S: they are NOT conflict-free by construction, the one exception section 30 names (the
 owner, 2026-11-26: "list as built seems fine then right? the conflicts are minor, its not a lot of traffic, and a small portion of the window? ok, fine"). The forms that are conflict-free store 32 consecutive places an instruction and cost more instructions: a lane a
 place, each lane finding its place's token (about 65 instructions a lane a round; the lab's `carry_list` and
-`carry_fetch` measure that form as their own code), or a word a trip (a trip a non-empty word). The access table is
-below. NOT RECORDED: the list's time against either.
+`carry_fetch` measure that form, the lab's own code in `measure/lab/carry_select.cuh`), or a word a trip (a trip a non-empty word). The access table is
+below. MEASURED in the supply ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)): the cell's window 2,655 cycles a CTA with the list, where the same call
+and carve was 3,323 with the select ([`../DELETIONS.md`](../DELETIONS.md)). NOT RECORDED: a word a trip.
 
 - <a id="listing"></a>`listing_of<WORDS>(word)`: the window as the warp holds it -- a lane's word, the live tokens
   before it and through it (a popcount and a running sum across the lanes, 5 shuffles), and the window's total, the

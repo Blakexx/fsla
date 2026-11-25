@@ -1,8 +1,8 @@
 // measure/lab/experiments/carry_list.cu -- QUESTION: what does the LIBRARY's listing cost -- a warp turning a group's
 // window of mask words into its live tokens in order, 32 places a round, counting inline -- by how many tokens are
 // live, and where the words are two levels' ANDed?
-// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`: the listing; the select is this
-// file's own, the form its record measured -- the library's supply lays its tokens). A CTA an SM of 16 warps, each warp a
+// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`: the listing; the select is the
+// lab's, `carry_select.cuh`, the form its record measured -- the library's supply lays its tokens). A CTA an SM of 16 warps, each warp a
 // group's windows: a lane loads its word of each of two tables a window ahead, ANDs them, and the warp lists the
 // window a round at a time into its 32 consecutive words of shared memory. Rows: 64 live tokens a window from one
 // table (the other all ones); every token live; 64 live in both of two tables of a quarter live. The first windows'

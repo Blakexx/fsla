@@ -14,15 +14,16 @@ hangs or leaves early fails the check. Its second row stamps every warp's hand-o
 tracer (64 windows), and the record holds two CTAs' timelines of it.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-b64785d8; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
+34b9a08d; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
 
 | the carry on a call of no tokens | cycles |
 |---|---:|
-| as the library compiles it, its tracer nothing | 596 |
-| every warp's hand-offs and phases stamped | 1408 |
+| as the library compiles it, its tracer nothing | 653 |
+| every warp's hand-offs and phases stamped | 1460 |
 
-PREDICTED, before the run: the plain row 560 to 760 (591 at 107a693f, a fold warp's empty listing the same work) --
-HELD. The stamped row 1,380 to 1,800 (1,364 at 107a693f, a fold warp now stamping its set's phases too) -- HELD. A
+PREDICTED, before the run: the plain row 560 to 640 (596 at b64785d8) -- MISSED, 13 over: the range took the code as
+unchanged, and a fold warp's window runs its set's listing, which now lays the set's tokens in its list too, a list of
+none here. The stamped row 1,330 to 1,480 (1,408 at b64785d8) -- HELD. A
 STAMPED ROW OF THIS CALL IS A TIMELINE'S ORDER, NOT ITS DURATIONS: on a window that is nothing but 16 hand-offs the
 stamps are the larger cost.
 

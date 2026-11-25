@@ -79,9 +79,10 @@ groups ([`carry_groups.md`](carry_groups.md)).
   a level; the lay, about 15 instructions a lane a trip of the fullest word's tokens; a round of 32 places -- 8 shared loads and
   8 copy instructions (about 35). THE FLOOR is the copies' own: 2.1 to 3.0 cycles
   a line a CTA with 16 warps issuing ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)), 5.8 with 4
-  ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. MEASURED in the composed CTA, in the select's form (the record is of it; the laid form is NOT RUN on record): a
-  round 825 to 950 cycles of its warp, paid whole whatever number of its 32 places are live; a set's sums and words
-  500 to 700 ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
+  ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. MEASURED in the composed CTA, stamped: a
+  round's 8 loads and 8 copies 290 to 360 cycles of its warp whatever number of its 32 places are live, then a wait of up
+  to 560 for the round before's copies; a set's sums and lay 460 to 1,000
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
 - WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists, the coefficients, the steps,
   the sums' stores and the adds, and the tiles they add to the CTA's shared memory.
 - <a id="the-cta"></a>`carry_cta<Bt, FOLD, READ, Tr>(operands, tracer)`: each role's whole body runs in its own branch,

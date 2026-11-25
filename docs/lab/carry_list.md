@@ -34,6 +34,6 @@ reads is work the compiler drops.
 
 Record: `measure/lab/results/carry_list/sm_90a.json`.
 
-SINCE THE RECORD: the select (`listed_token`) are this experiment's own code. The library's supply lays a set's
+SINCE THE RECORD: the select (`listed_token`) is the lab's own code (`measure/lab/carry_select.cuh`), shared with `carry_fetch`. The library's supply lays a set's
 tokens in a list ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)), which
 [`carry_supply`](carry_supply.md) measures; the rows above are of the select.

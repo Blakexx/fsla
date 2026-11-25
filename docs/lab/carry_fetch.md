@@ -36,6 +36,6 @@ holds; a table it cannot hold is NOT MEASURED here (the copies alone: 3.79 again
 
 Record: `measure/lab/results/carry_fetch/sm_90a.json`.
 
-SINCE THE RECORD: the select (`listed_token`) and the copies it feeds are this experiment's own code. The library's supply lays a set's
+SINCE THE RECORD: the select (`listed_token`) is the lab's own code (`measure/lab/carry_select.cuh`, shared with `carry_list`) and the copies it feeds are this experiment's. The library's supply lays a set's
 tokens in a list ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)), which
 [`carry_supply`](carry_supply.md) measures; the rows above are of the select.

@@ -28,19 +28,19 @@ DIGITS, WORDS, TOKENS = 256, 32, 32
 #: the mask's bytes a token the pass reads: a 4-byte word a digit a word of 32 tokens
 READ = DIGITS * 4 / TOKENS
 #: THE RECORD THE PREDICTIONS ARE OF, by its experiment's commit
-PREDICTED_FOR = "4dca551b"
-#: THE RANGES PREDICTED FOR THIS RUN before it: the bytes a token each form reads and stores over the one rate the two
-#: runs before had fit (11.8 to 13.0 bytes a cycle an SM, the experiment at 0fb5eb86 and at 9c2a0f30); the six sizes the
-#: run before held keep its ranges
-#: groups of 2 and of 8 are forms the run before did not have (a pair a thread; two lines a thread, 4 words' loads held): the same rate over their bytes
-PREDICTED = {1: (2.5, 3.1), 2: (3.6, 4.2), 4: (3.0, 3.5), 8: (2.7, 3.15), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8)}
+PREDICTED_FOR = "34b9a08d"
+#: THE RANGES PREDICTED FOR THIS RUN before it: each row about an unrecorded reading of it on a held box with the carve
+#: derived a CTA, the group of one digit moved down for the carve's leaner form since that reading
+PREDICTED = {1: (3.35, 3.75), 2: (3.80, 3.90), 4: (3.05, 3.12), 8: (2.76, 2.82), 16: (2.64, 2.70), 32: (2.67, 2.73), 64: (2.65, 2.72), 128: (2.59, 2.66)}
 #: THE ROWS THE RUN MISSED, which the reading is of
-MISSED: set[int] = set()
-READING = """WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held, the two new forms' with the rest (a pair a thread at 2
-digits, two lines a thread at 8). The ranges came from one rate over the bytes a token read and stored, which the two runs
-before had fit, and every row falls where that rate puts it: the pass is dearest at 2 digits, where it stores the most.
-It is three runs on one rate and no more: no counter was read, so that the multiprocessor's memory traffic is what
-bounds the pass is LIKELY, NOT SHOWN."""
+MISSED: set[int] = {4, 8, 16, 32, 64, 128}
+READING = """WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. A CTA's first warp now derives the call's carve and hands its group to the rest
+behind a barrier, once a round here. AT ONE DIGIT, where a round is 4 windows, that shows whole: the row is the dearest
+but one. THE SIX ROWS FROM 4 DIGITS UP MISSED HIGH, by 0.01 to 0.04, at most 1.3 percent: each range was 0.06 to 0.07 wide
+about one box's unrecorded reading, and these rows follow a rate that moves more than that from one rented box to the
+next. THE WRONG PRICE: the spread between boxes, taken as nothing. NOT SHOWN: what the carve costs a CTA at each size
+(the record holds no row without it), and that the multiprocessor's memory traffic is what bounds the rows from 2
+digits up (no counter was read)."""
 
 
 def name(group: int) -> str:
@@ -118,13 +118,12 @@ the same group size:
 WHAT IT SHOWS.
 - THE COST BY GROUP SIZE: {R[name(1)]:.2f} at a group of one digit; the highest {R[name(high)]:.2f}, at a group of {high}; the lowest {R[name(low)]:.2f}, at a group of {low}.
 - THE SHUFFLE FORM (32 digits and above): {min(R[name(g)] for g in SHUFFLED):.2f} to {max(R[name(g)] for g in SHUFFLED):.2f}, beside {R[name(16)]:.2f} at 16 digits, where a thread is a group.
-- ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is {min(rates):.1f} to {max(rates):.1f} bytes a cycle an SM
-  at every group size.
+- ONE RATE FROM 2 DIGITS UP: the bytes a token a row moves, read and stored, over its cycles a token is {min(rates[1:]):.1f} to {max(rates[1:]):.1f} bytes a cycle an SM;
+  at one digit, where a CTA is 4 windows and its first warp's carve stands beside so short a walk, {rates[0]:.1f}.
 
-THE PREDICTIONS WRITTEN FOR THIS RUN, AND THEIR BASIS. The pass's two runs before (the experiment at 0fb5eb86, when it
-stored a count a word, and at 9c2a0f30) fit one rate over the bytes a token it read and stored: 11.8 to 13.0 bytes a
-cycle an SM. Each row here was predicted as the bytes its form moves a token over that rate: the six sizes the run
-before held kept its ranges, and 2 and 8 digits, forms no run had, took theirs from the same rate.
+THE PREDICTIONS WRITTEN FOR THIS RUN, AND THEIR BASIS. Each row was predicted about an unrecorded reading of it on a
+held box, the pass deriving the carve a CTA as it does here; the group of one digit was moved down for the carve's
+leaner form since that reading.
 {chr(10).join(verdicts)}
 
 {READING}

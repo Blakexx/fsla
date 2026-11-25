@@ -17,47 +17,46 @@ the mask is read once. The density byte selects the group as it does in the libr
 the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
 own loops; here that dispatch sits inside the lab's loop over rounds, which the experiment declares.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM hgrdycm0, driver 580.196.07; 2026-11-25, the experiment at
-4dca551b; 7 repetitions; the 8 checked rows pass, every word and total of each group size's
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM 02z2f0yn, driver 580.196.07; 2026-11-25, the experiment at
+34b9a08d; 7 repetitions; the 8 checked rows pass, every word and total of each group size's
 first round exact; the median). SM-cycles a token, the mask read once; the lab's kernel is [`mask_prep`](mask_prep.md)'s row at
 the same group size:
 
 | a group, digits | the library's pass | the lab's kernel | bytes a token, read + stored | bytes a cycle an SM |
 |---:|---:|---:|---:|---:|
-| 1 | 2.77 | 4.93 | 32 + 0.50 | 11.7 |
-| 2 | 3.69 | not measured | 32 + 16.25 | 13.1 |
-| 4 | 3.12 | 3.46 | 32 + 8.12 | 12.9 |
-| 8 | 2.79 | not measured | 32 + 4.06 | 12.9 |
-| 16 | 2.65 | 2.60 | 32 + 2.03 | 12.9 |
-| 32 | 2.67 | not measured | 32 + 1.02 | 12.4 |
-| 64 | 2.67 | not measured | 32 + 0.51 | 12.2 |
-| 128 | 2.60 | not measured | 32 + 0.25 | 12.4 |
-
-THE RECORD IS OF THE PASS BEFORE IT DERIVED THE CARVE: at 4dca551b a CTA took its group from its level-side's density byte alone and the call was one level. As the experiment stands -- a CTA's first warp computes the call's carve and hands the group to the rest behind a CTA barrier, once a round here -- it is NOT RUN.
+| 1 | 3.63 | 4.93 | 32 + 0.50 | 8.9 |
+| 2 | 3.85 | not measured | 32 + 16.25 | 12.5 |
+| 4 | 3.14 | 3.46 | 32 + 8.12 | 12.8 |
+| 8 | 2.85 | not measured | 32 + 4.06 | 12.6 |
+| 16 | 2.73 | 2.60 | 32 + 2.03 | 12.5 |
+| 32 | 2.76 | not measured | 32 + 1.02 | 12.0 |
+| 64 | 2.74 | not measured | 32 + 0.51 | 11.9 |
+| 128 | 2.67 | not measured | 32 + 0.25 | 12.1 |
 
 WHAT IT SHOWS.
-- THE COST BY GROUP SIZE: 2.77 at a group of one digit; the highest 3.69, at a group of 2; the lowest 2.60, at a group of 128.
-- THE SHUFFLE FORM (32 digits and above): 2.60 to 2.67, beside 2.65 at 16 digits, where a thread is a group.
-- ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is 11.7 to 13.1 bytes a cycle an SM
-  at every group size.
+- THE COST BY GROUP SIZE: 3.63 at a group of one digit; the highest 3.85, at a group of 2; the lowest 2.67, at a group of 128.
+- THE SHUFFLE FORM (32 digits and above): 2.67 to 2.76, beside 2.73 at 16 digits, where a thread is a group.
+- ONE RATE FROM 2 DIGITS UP: the bytes a token a row moves, read and stored, over its cycles a token is 11.9 to 12.8 bytes a cycle an SM;
+  at one digit, where a CTA is 4 windows and its first warp's carve stands beside so short a walk, 8.9.
 
-THE PREDICTIONS WRITTEN FOR THIS RUN, AND THEIR BASIS. The pass's two runs before (the experiment at 0fb5eb86, when it
-stored a count a word, and at 9c2a0f30) fit one rate over the bytes a token it read and stored: 11.8 to 13.0 bytes a
-cycle an SM. Each row here was predicted as the bytes its form moves a token over that rate: the six sizes the run
-before held kept its ranges, and 2 and 8 digits, forms no run had, took theirs from the same rate.
-- a group of 1: predicted 2.5 to 3.1, measured 2.77 -- HELD.
-- a group of 2: predicted 3.6 to 4.2, measured 3.69 -- HELD.
-- a group of 4: predicted 3 to 3.5, measured 3.12 -- HELD.
-- a group of 8: predicted 2.7 to 3.15, measured 2.79 -- HELD.
-- a group of 16: predicted 2.6 to 2.9, measured 2.65 -- HELD.
-- a group of 32: predicted 2.6 to 2.9, measured 2.67 -- HELD.
-- a group of 64: predicted 2.5 to 2.85, measured 2.67 -- HELD.
-- a group of 128: predicted 2.5 to 2.8, measured 2.60 -- HELD.
+THE PREDICTIONS WRITTEN FOR THIS RUN, AND THEIR BASIS. Each row was predicted about an unrecorded reading of it on a
+held box, the pass deriving the carve a CTA as it does here; the group of one digit was moved down for the carve's
+leaner form since that reading.
+- a group of 1: predicted 3.35 to 3.75, measured 3.63 -- HELD.
+- a group of 2: predicted 3.8 to 3.9, measured 3.85 -- HELD.
+- a group of 4: predicted 3.05 to 3.12, measured 3.14 -- MISSED.
+- a group of 8: predicted 2.76 to 2.82, measured 2.85 -- MISSED.
+- a group of 16: predicted 2.64 to 2.7, measured 2.73 -- MISSED.
+- a group of 32: predicted 2.67 to 2.73, measured 2.76 -- MISSED.
+- a group of 64: predicted 2.65 to 2.72, measured 2.74 -- MISSED.
+- a group of 128: predicted 2.59 to 2.66, measured 2.67 -- MISSED.
 
-WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held, the two new forms' with the rest (a pair a thread at 2
-digits, two lines a thread at 8). The ranges came from one rate over the bytes a token read and stored, which the two runs
-before had fit, and every row falls where that rate puts it: the pass is dearest at 2 digits, where it stores the most.
-It is three runs on one rate and no more: no counter was read, so that the multiprocessor's memory traffic is what
-bounds the pass is LIKELY, NOT SHOWN.
+WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. A CTA's first warp now derives the call's carve and hands its group to the rest
+behind a barrier, once a round here. AT ONE DIGIT, where a round is 4 windows, that shows whole: the row is the dearest
+but one. THE SIX ROWS FROM 4 DIGITS UP MISSED HIGH, by 0.01 to 0.04, at most 1.3 percent: each range was 0.06 to 0.07 wide
+about one box's unrecorded reading, and these rows follow a rate that moves more than that from one rented box to the
+next. THE WRONG PRICE: the spread between boxes, taken as nothing. NOT SHOWN: what the carve costs a CTA at each size
+(the record holds no row without it), and that the multiprocessor's memory traffic is what bounds the rows from 2
+digits up (no counter was read).
 
 Record: `measure/lab/results/mask_prepare_time/sm_90a.json`; the lab kernel's: `measure/lab/results/mask_prep/sm_90a.json`.

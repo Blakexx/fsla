@@ -2,7 +2,7 @@
 // cost -- the LIBRARY's listing of a window's live tokens, and the copies of their 128-byte value lines by token index
 // straight into the steps' tiles in shared memory -- by how many tokens are live?
 // METHOD: this file compiles the library's device code (`carry/carry_list.cuh`, `carry/carry_values.cuh`: the listing and the
-// rows; the select and the copies it feeds are this file's own, the form its record measured). A CTA an SM
+// rows; the select is the lab's, `carry_select.cuh`, and the copies it feeds this file's own: the form its record measured). A CTA an SM
 // of 16 warps, each warp a group's windows: a lane loads its mask word a window ahead; the warp lists the window a
 // round of 32 places at a time and issues the round's copies, 8 instructions of 4 tokens, into the round's 32 rows --
 // each a token's 128 bytes whole, its pieces in the order the step's swizzle reads -- two rounds in flight; a warp's
