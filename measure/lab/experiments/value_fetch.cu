@@ -15,6 +15,10 @@ namespace value_fetch {
 
 constexpr int kPer = 4, kBatch = 2 * kPer, kRing = 2 * kBatch, kRowWords = 32, kRowBytes = 4 * kRowWords;
 constexpr int kUnit = 16;
+//: THE FORMS of a row beside the plain one: the copy's size a register (the form that zero-fills a dead copy), and
+//: the ring a tensor step's tile -- a row's 8 pieces in 8 bricks 17 lines apart
+constexpr int kSized = 1, kBricks = 2;
+constexpr int kTileLines = 8 * 17, kTileWords = kTileLines * 4;
 
 //: the table's word `w`, and the row an (owner, warp, fetch) takes of `rows` (a power of two)
 constexpr uint32_t table_of(uint32_t w) { return w * 2246822519u + 1u; }
@@ -22,15 +26,16 @@ constexpr uint32_t row_of(uint32_t owner, uint32_t warp, uint32_t k, uint32_t ro
   return (((owner * 16 + warp) * 2654435761u + k * 40503u) * 2246822519u >> 8) & (rows - 1);
 }
 
-template <int WARPS>
+template <int WARPS, int FORM>
 __global__ void __launch_bounds__(32 * WARPS, 1)
     fetch(long long* times, const uint32_t* table, uint32_t* out, int rows, int fetches, int shared) {
-  __shared__ alignas(128) uint32_t ring[WARPS * kRing * kRowWords];
+  __shared__ alignas(128) uint32_t ring[WARPS * kTileWords];
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
   const uint32_t owner = shared != 0 ? blockIdx.x / kUnit : blockIdx.x;
   //: a lane's 16 bytes of its row: the row of an instruction's four the lane is in, and its place in that row
   const uint32_t within = static_cast<uint32_t>(lane & 7) * 16u;
-  const uint32_t base = static_cast<uint32_t>(__cvta_generic_to_shared(ring + warp * kRing * kRowWords)) + within;
+  const uint32_t base = static_cast<uint32_t>(__cvta_generic_to_shared(ring + warp * kTileWords));
+  const uint32_t size = lab::held(16u);
   const uint8_t* const bytes = reinterpret_cast<const uint8_t*>(table) + within;
   const auto issue = [&](int batch) {
 #pragma unroll
@@ -38,7 +43,13 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
       const int slot = (batch & 1) * kBatch + i * kPer + (lane >> 3);
       const uint32_t row = row_of(owner, warp, batch * kBatch + i * kPer + (lane >> 3), rows);
       const uint8_t* const src = bytes + static_cast<long long>(row) * kRowBytes;
-      asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(base + slot * kRowBytes), "l"(src) : "memory");
+      const uint32_t piece = static_cast<uint32_t>(lane & 7);
+      const uint32_t to = base + ((FORM & kBricks) != 0 ? (piece * 17u + slot) * 16u : slot * kRowBytes + within);
+      if constexpr ((FORM & kSized) != 0) {
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::"r"(to), "l"(src), "r"(size) : "memory");
+      } else {
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(to), "l"(src) : "memory");
+      }
     }
     asm volatile("cp.async.commit_group;" ::: "memory");
   };
@@ -56,21 +67,23 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
   __syncthreads();
   //: the ring, for the host
 #pragma unroll 1
-  for (int i = threadIdx.x; i < WARPS * kRing * kRowWords; i += 32 * WARPS)
-    out[static_cast<long long>(blockIdx.x) * (16 * kRing * kRowWords) + i] = ring[i];
+  for (int i = threadIdx.x; i < WARPS * kTileWords; i += 32 * WARPS)
+    out[static_cast<long long>(blockIdx.x) * (16 * kTileWords) + i] = ring[i];
 }
 
 }  // namespace value_fetch
 
-template <int WARPS>
+template <int WARPS, int FORM = 0>
 void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shared) {
   using namespace value_fetch;
   constexpr int kFetches = 8192;
   const std::string name = std::to_string(WARPS) + " warps, a table of " + std::to_string(rows) + " rows, "
-                           + (shared != 0 ? "a unit's 16 CTAs the same rows" : "a CTA its own rows");
-  fetch<WARPS><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches, shared);
+                           + (shared != 0 ? "a unit's 16 CTAs the same rows" : "a CTA its own rows")
+                           + ((FORM & kSized) != 0 ? ", the copy's size a register" : "")
+                           + ((FORM & kBricks) != 0 ? ", a row's pieces in bricks 17 lines apart" : "");
+  fetch<WARPS, FORM><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches, shared);
   LAB_CHECK(cudaDeviceSynchronize());
-  const size_t per = 16 * kRing * kRowWords;
+  const size_t per = 16 * kTileWords;
   std::vector<uint32_t> got(static_cast<size_t>(b.sms) * per);
   LAB_CHECK(cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost));
   long long wrong = 0;
@@ -80,14 +93,16 @@ void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shar
         //: the ring's slot holds the last batch pair's row of that slot
         const uint32_t owner = shared != 0 ? blk / kUnit : blk;
         const uint32_t row = row_of(owner, w, kFetches - kRing + slot, rows);
-        for (int i = 0; i < kRowWords; ++i)
-          wrong += got[blk * per + (static_cast<size_t>(w) * kRing + slot) * kRowWords + i]
-                   != table_of(row * kRowWords + i);
+        for (int i = 0; i < kRowWords; ++i) {
+          //: word `i` of the row: in the plain ring at the row's place, in the tile in piece `i / 4`'s brick
+          const size_t at = (FORM & kBricks) != 0 ? ((i / 4) * 17 + slot) * 4 + i % 4 : slot * kRowWords + i;
+          wrong += got[blk * per + static_cast<size_t>(w) * kTileWords + at] != table_of(row * kRowWords + i);
+        }
       }
   b.check(name, wrong == 0,
           std::to_string(wrong) + " of " + std::to_string(b.sms * WARPS * kRing * kRowWords) + " ring words differ");
   const lab::Samples cycles = b.variant(
-      [&] { fetch<WARPS><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches, shared); },
+      [&] { fetch<WARPS, FORM><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches, shared); },
       [&] { return b.span(WARPS) / (static_cast<double>(kFetches) * WARPS); });
   b.record(name, "cycles a 128-byte row a CTA", cycles);
 }
@@ -95,7 +110,7 @@ void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shar
 int main(int argc, char** argv) {
   using namespace value_fetch;
   lab::Bench b(argc, argv);
-  for (int warps : {4, 16}) b.expect(lab::kernel("fetch", {warps}), "LDGSTS", ">=", 2);
+  for (int warps : {4, 16}) b.expect(lab::kernel("fetch", {warps, 0}), "LDGSTS", ">=", 2);
   if (b.expect_only) return 0;
   constexpr int kWindow = 1024, kSmall = 65536, kLarge = 1048576;
   std::vector<uint32_t> host(static_cast<size_t>(kLarge) * kRowWords);
@@ -103,12 +118,15 @@ int main(int argc, char** argv) {
   uint32_t *table = nullptr, *out = nullptr;
   LAB_CHECK(cudaMalloc(&table, host.size() * 4));
   LAB_CHECK(cudaMemcpy(table, host.data(), host.size() * 4, cudaMemcpyHostToDevice));
-  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 16 * kRing * kRowWords * 4));
+  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 16 * kTileWords * 4));
   run<4>(b, table, out, kSmall, 0);
   run<16>(b, table, out, kSmall, 0);
   run<4>(b, table, out, kLarge, 0);
   run<16>(b, table, out, kLarge, 0);
   run<16>(b, table, out, kWindow, 0);
   run<16>(b, table, out, kWindow, 1);
+  run<16, kSized>(b, table, out, kWindow, 0);
+  run<16, kBricks>(b, table, out, kWindow, 0);
+  run<16, kSized | kBricks>(b, table, out, kWindow, 0);
   return 0;
 }

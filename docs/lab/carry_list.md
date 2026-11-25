@@ -13,4 +13,23 @@ its 32 consecutive words of shared memory. Rows: 64 live tokens a window from on
 token live; 64 live in both of two tables of a quarter live each. The first four windows' places and totals of every
 group are checked against the host's.
 
-NOT MEASURED: no run of it is recorded.
+MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
+ded43e54; 7 repetitions; every place and total of the
+checked windows exact in all three rows -- 539,874, 8,650,752 and 540,301 places; cycles a listed token a CTA, the
+median):
+
+| a group's window | cycles a token |
+|---|---:|
+| 64 live tokens, one level's words | 2.00 |
+| every token live | 1.01 |
+| 64 live tokens, two levels' words ANDed, each a quarter live | 2.00 |
+
+PREDICTED, before the run, from the page's budget (about 60 instructions a lane a round, 20 a window, 16 warps sharing
+an SM's issue): 0.4 to 2.5, 0.2 to 1.5 and 0.4 to 2.6 -- all three HELD.
+
+WHAT IT SHOWS. A full round lists a token a cycle; a window of 64 tokens, whose second round is partly full, two.
+A second level's words ANDed in cost nothing measurable: the intersected case is the one-level case. AN EARLIER RUN'S
+TIMING (the experiment at 19d2b0b0) WAS NO MEASUREMENT: its timed kernel's only output was a shared-memory store no
+instruction read, and the compiler dropped the listing; the timed kernel now folds every token into a sunk word.
+
+Record: `measure/lab/results/carry_list/sm_90a.json`.

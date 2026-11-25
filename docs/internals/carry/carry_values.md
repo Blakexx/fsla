@@ -14,12 +14,13 @@ No role calls it yet; the lab checks and times it with the listing
   one instruction's 32 lanes copying 4 consecutive tokens, the 17-line pitch puts exactly four of them on every bank
   -- what 512 contiguous bytes would ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)). Whether
   an asynchronous copy's write pays for a bank it shares is NOT MEASURED; the layout does not depend on it.
-- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)`: a round of the listing is 32 places, two steps'
-  tiles one after the other at `tiles`. A lane is one piece of one of 4 tokens; instruction `i` of the round's 8
-  takes places `4 i` to `4 i + 3`, each lane reading its place's token from the lane that holds it (one shuffle) and
-  copying its 16 bytes from that token's line of `values` (the window's first token's line; token-major, `2 CHANNELS`
-  bytes a token). A place past the list's total copies nothing and its lines are ZERO (`stage_tile_if`), so a short
-  step needs no clearing and no branch. The round's copies are one committed group: the caller waits for it.
+- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing, 32 places, into two
+  steps' tiles. A PLACE PAST THE LIST'S TOTAL COPIES NOTHING AND ITS LINES ARE ZERO (`stage_tile_if`), so a short step
+  needs no clearing and no branch, and a pad's value is finite whatever the tile held. THE ROUND IS ONE COMMITTED
+  GROUP: its caller waits for it, and may hold a second round in flight in the tiles beside it.
+- THE LAYOUT'S BANKS ARE HELD BY A TEST (`tests/unit/test_carry_values_layout.py`): every instruction of a round puts
+  exactly four of its 32 lanes on each bank, at this pitch and not at a pitch of 16 lines. What the layout costs on a
+  device is the lab's ([`../../lab/value_fetch.md`](../../lab/value_fetch.md), its row of bricks 17 lines apart).
 
 THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a round
 of 32 tokens, a warp -- 8 copy instructions a lane, each behind a shuffle and an address, about 50 instructions a

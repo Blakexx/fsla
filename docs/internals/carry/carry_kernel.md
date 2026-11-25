@@ -41,8 +41,8 @@ yet called by a role, is the listing ([`carry_list.md`](carry_list.md)); its sec
   a panel's turn waits on the drain's arrival of its turn before, which is what holds the readout back when the
   drain's adds are the slower (R22: no cliff, the readout waits).
 - <a id="drain"></a>`drain_role` follows the readout a panel behind and frees each panel as it has added it.
-- WHAT IS NOT BUILT is named in the code where it goes: the image, the lists' use, the value lines' fetch, the
-  coefficients, the steps, the sums' stores and the adds; with them, the CTA's shared memory through the one layout
+- WHAT IS NOT BUILT is named in the code where it goes: the image, the roles' use of the lists and of the value lines'
+  fetch, the coefficients, the steps, the sums' stores and the adds; with them, the CTA's shared memory through the one layout
   ([`../common/smem_layout.md`](../common/smem_layout.md)).
 - <a id="the-cta"></a>`carry_cta<Bt, FOLD, READ, Tr>(args, tracer)`: each role's whole body runs in its own branch,
   its registers set at the branch's head.
