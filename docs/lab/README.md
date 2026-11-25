@@ -42,6 +42,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`value_gather`](value_gather.md) | experiment |
 | [`value_fetch`](value_fetch.md) | experiment |
 | [`carry_skeleton`](carry_skeleton.md) | experiment |
+| [`carry_list`](carry_list.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
 | [`value_cast`](value_cast.md) | experiment |
 | [`pool_fill`](pool_fill.md) | experiment |

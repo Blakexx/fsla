@@ -3,24 +3,36 @@
 Mirrors `measure/lab/experiments/carry_skeleton.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-Does the LIBRARY's carry skeleton ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md)) -- its three roles at
-their registers, their barriers and their order of work, every component a stub -- run a call's windows to the end on
-every multiprocessor, and what does a window of nothing but its barriers cost?
+Does the LIBRARY's carry skeleton ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md)) -- its
+three roles at their registers, their hand-offs and their order of work, every component a stub -- run a call's
+windows to the end on every multiprocessor, and what does a window of nothing but its hand-offs cost?
 
 THE FORM. This file compiles the library's device code and puts a clock around `carry_cta`: a CTA an SM of 512
 threads, a call 256 windows. Every warp adds its windows to its CTA's word when its role has returned; a CTA that
-hangs or leaves early fails the check.
+hangs or leaves early fails the check. Its second row stamps every warp's hand-offs and windows through the kernel's
+tracer; that row is NOT RUN yet.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-2ec94cc6; 7 repetitions): every warp of all 132 CTAs returned from its role after 256 windows, and
-a window of the skeleton's barriers alone is 849 cycles a CTA (the median).
+819a33c0, which held the hand-offs in two forms; 7 repetitions, every warp of all 132 CTAs
+returning in both; cycles a window a CTA, the median):
 
-PREDICTED, before the run: 150 to 3,000 cycles, wide because no lab row prices a suspended wait's wake -- HELD.
+| a window's 16 hand-offs as | cycles |
+|---|---:|
+| shared barriers (`mbarrier`), their waits suspending | 849 |
+| named barriers of the two roles' threads, the producer arriving, the waiter syncing | 528 |
 
-WHAT IT SHOWS. The roles' protocol runs to the end on every multiprocessor at the registers of the lab's split
-(176, 104 and 56 a thread). A window's 16 waits and arrivals, with no work between them, cost about a sixth of the
-lab's composed window ([`carry_token`](carry_token.md): some 5,400 cycles): the chain of suspended waits is no
-free edge. WHAT IT IS NOT: a floor for the built kernel -- there a role arrives while the one that waits on it is
-still at work, and the waits overlap that work.
+THE PREDICTIONS, before the run. The suspending row at 760 to 940, the same kernel's first run (849 at 2ec94cc6)
+within a tenth: HELD. The named row at 650 to 1,050: MISSED, 528. THE WRONG PRICE: it took
+[`carry_window`](carry_window.md)'s finding, a fold warp's wait at its own warpgroup's rendezvous the same at a named
+barrier and at a shared one, for a hand-off between roles. There the waiter of a shared barrier is suspended and
+woken, and the named barrier's sync is not; how much of the 321 cycles is the wake is NOT SHOWN, no row
+parting it.
+
+WHAT IT DECIDES. The kernel keeps the named form and the other is gone from it (the owner, 25 November 2026: "I
+don't want to maintain two forms, so we need to pick one after the barrier result comes in"). A WAIT THAT SPINS was
+not run (the owner, the same day: "the spinning will look free until it contends with real work, so probably the only
+worth doing now for sure if it's better is named barriers, and otherwise just keep spin in mind as something we can
+try if we see barriers as a problem in the final kernel"). WHAT IT IS NOT: a floor for the built kernel -- there a
+role arrives while the one that waits on it is still at work, and the waits overlap that work.
 
 Record: `measure/lab/results/carry_skeleton/sm_90a.json`.

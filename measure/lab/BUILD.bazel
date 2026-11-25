@@ -24,6 +24,7 @@ _INCLUDES = {
 
 #: the experiments that include a kernel's own headers: the header sets they name
 _DEPS = {
+    "carry_list": ["//csrc/fsla:headers"],
     "carry_skeleton": ["//csrc/fsla:headers"],
     "mask_prepare_time": ["//csrc/fsla:headers"],
 }

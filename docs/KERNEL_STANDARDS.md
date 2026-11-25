@@ -107,7 +107,10 @@ Primitives (a matrix load, an asynchronous copy, an MMA, a reduction) are wrappe
   operand `:283-286`; the invariant is documented where it bites (`:787`).
 RULE: overlap requires two stages in flight in ANY form: the second stage is a second SMEM slot (a ring's next
 stage), or registers where the operand is register-resident. Sync carries exactly two facts, "landed" and "drained",
-by mbarrier: a stage's full and empty barriers (`docs/CONSTITUTION.md#r21`). No pipeline state is implicit in loop
+by mbarrier: a stage's full and empty barriers (`docs/CONSTITUTION.md#r21`); or, where the fact is one role's
+hand-off to another and both are whole warps of the CTA, by a NAMED BARRIER of the two roles' threads, the producer
+arriving and the waiter syncing (`[MACHINE]` MEASURED, H100, 2026-11-25, `docs/lab/carry_skeleton.md`: an idle window's
+16 hand-offs 528 cycles so against 849 as shared barriers with suspending waits). A copy's landing stays the copy's own. No pipeline state is implicit in loop
 parity without a comment naming the invariant.
 
 ## <a id="s5"></a>5. Warp specialization only as register economy
