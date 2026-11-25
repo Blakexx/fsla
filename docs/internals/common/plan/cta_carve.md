@@ -37,3 +37,13 @@ digits fill the first part, level by level in the read side's loop order, so ins
 level varies fastest; its high digits fill the second, in the write side's loop order with its densest level varying
 fastest. The header's proof holds the measured cell: a carve of 32 by 16, a write group of 16 CTAs taken together
 along the level the read side lists, then the next group. `plan_tool` does not print the schedule function; it prints the two orders (`write_order`, `read_order`) and `unit_bits` it is made from.
+
+<a id="register-shaped"></a>NO ARRAY OF THE CARVE IS INDEXED AT RUN TIME. A kernel derives the carve from the call's
+densities, and in a kernel an array indexed by a run-time value is a stack frame, which the assembler gate refuses. So
+every loop here runs over the four levels a call may have (`kCarveMaxLevels`) with the call's own count as a guard,
+unrolled in a kernel (`FSLA_CARVE_UNROLL`); the level that takes a doubling is carried as its weight, its holdings
+and its read density, and its increment is a select over the levels; a side's loop order is each level's place (the
+levels sparser than it, and the lower levels as sparse); and a place of the schedule is taken level by level with a
+select on the order. The results are what the hand-worked cases and the properties over every call hold
+(`tests/unit/test_cta_carve.py`, `tests/unit/test_prefill_carve.py`).
+

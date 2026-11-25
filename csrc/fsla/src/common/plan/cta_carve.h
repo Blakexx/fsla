@@ -7,10 +7,13 @@
 #include <cstdint>
 
 //: what a kernel calls of the carve is the device's too; a host tool compiles the same text
+//: a loop over the levels is unrolled in a kernel, so that no array of the carve is indexed at run time there -- see docs/internals/common/plan/cta_carve.md#register-shaped
 #if defined(__CUDACC__)
 #define FSLA_CARVE_FN __host__ __device__
+#define FSLA_CARVE_UNROLL _Pragma("unroll")
 #else
 #define FSLA_CARVE_FN
+#define FSLA_CARVE_UNROLL
 #endif
 
 namespace fsla::plan {
@@ -69,13 +72,21 @@ FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
 }
 
 //: A SIDE'S LOOP ORDER over `levels` levels (docs/internals/common/plan/cta_carve.md#loop-order): `order[0]` the outermost, the side's sparsest level, to the densest innermost; equal densities keep the lower level outside
-constexpr void carve_loop_order(const int* density, int levels, int* order) {
-  for (int l = 0; l < levels; ++l) order[l] = l;
-  for (int i = 1; i < levels; ++i) {
-    for (int j = i; j > 0 && density[order[j]] < density[order[j - 1]]; --j) {
-      const int held = order[j];
-      order[j] = order[j - 1];
-      order[j - 1] = held;
+FSLA_CARVE_FN constexpr void carve_loop_order(const int* density, int levels, int* order) {
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) order[l] = l;
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
+    //: a level's place: the levels sparser than it, and the lower levels as sparse
+    int place = 0;
+    FSLA_CARVE_UNROLL
+    for (int m = 0; m < kCarveMaxLevels; ++m) {
+      const bool sparser = density[m] < density[l] || (density[m] == density[l] && m < l);
+      place += m < levels && sparser ? 1 : 0;
+    }
+    FSLA_CARVE_UNROLL
+    for (int p = 0; p < kCarveMaxLevels; ++p) {
+      if (l < levels && p == place) order[p] = l;
     }
   }
 }
@@ -85,27 +96,28 @@ struct CtaCarve {
   int carve_bits[kCarveMaxLevels];
 };
 
-//: whether level `l` takes the doubling before level `best` (`best < l`): higher priority (a level's WEIGHT, the sum of its two densities, over its holdings plus one), then larger read density, then the lower index
-constexpr bool carve_takes_doubling(const CtaCarve& a, const int* write_density,
-                                    const int* read_density, int best, int l) {
-  const int lhs = (write_density[l] + read_density[l]) * (a.carve_bits[best] + 1);
-  const int rhs = (write_density[best] + read_density[best]) * (a.carve_bits[l] + 1);
-  if (lhs != rhs) return lhs > rhs;
-  return read_density[l] > read_density[best];
-}
-
-//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each side's densities (in 1..256)
-constexpr CtaCarve cta_carve(const int* width_bits, const int* write_density,
-                             const int* read_density, int levels) {
+//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each side's densities (in 1..256).
+//: A doubling goes to the level of highest priority that can take it: a level's WEIGHT, the sum of its two densities, over its holdings plus one; then the larger read density; then the lower level
+FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* write_density,
+                                           const int* read_density, int levels) {
   CtaCarve a{levels, {}};
+  FSLA_CARVE_UNROLL
   for (int step = 0; step < kCtaLeafBits; ++step) {
-    int best = -1;
-    for (int l = 0; l < levels; ++l) {
-      if (a.carve_bits[l] + 1 > width_bits[l]) continue;
-      if (best < 0 || carve_takes_doubling(a, write_density, read_density, best, l)) best = l;
+    int best = -1, best_weight = 0, best_bits = 0, best_read = 0;
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      const bool open = l < levels && a.carve_bits[l] + 1 <= width_bits[l];
+      const int weight = write_density[l] + read_density[l];
+      const int lhs = weight * (best_bits + 1), rhs = best_weight * (a.carve_bits[l] + 1);
+      const bool ahead = lhs != rhs ? lhs > rhs : read_density[l] > best_read;
+      const bool takes = open && (best < 0 || ahead);
+      best = takes ? l : best;
+      best_weight = takes ? weight : best_weight;
+      best_bits = takes ? a.carve_bits[l] : best_bits;
+      best_read = takes ? read_density[l] : best_read;
     }
-    if (best < 0) break;
-    ++a.carve_bits[best];
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) a.carve_bits[l] += l == best ? 1 : 0;
   }
   return a;
 }
@@ -139,33 +151,40 @@ struct PrefillCarve {
 
 //: THE CARVE of a call, from `levels` (0 to 4) levels' width bits (0 to 8) and each side's densities, `width_bits[0 .. levels)`, `write_density[0 .. levels)` and `read_density[0 .. levels)`;
 //: TOTAL: a density outside 1..256 (256ths of a level's digits) is CLAMPED into 1..256, `levels` into 0..4 and a width into 0..8; it has no failure path
-constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const int* write_density,
-                                     const int* read_density) {
+FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_bits,
+                                                   const int* write_density,
+                                                   const int* read_density) {
   PrefillCarve c{};
   levels = carve_clamp(levels, 0, kCarveMaxLevels);
   c.levels = levels;
-  for (int l = 0; l < levels; ++l) {
-    c.width_bits[l] = carve_clamp(width_bits[l], 0, kCarveMaxWidthBits);
-    c.write_density[l] = carve_clamp(write_density[l], kLeastDensity, kWholeDensity);
-    c.read_density[l] = carve_clamp(read_density[l], kLeastDensity, kWholeDensity);
-    c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
-    c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
+    if (l < levels) {
+      c.width_bits[l] = carve_clamp(width_bits[l], 0, kCarveMaxWidthBits);
+      c.write_density[l] = carve_clamp(write_density[l], kLeastDensity, kWholeDensity);
+      c.read_density[l] = carve_clamp(read_density[l], kLeastDensity, kWholeDensity);
+      c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
+      c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
+    }
   }
   carve_loop_order(c.write_density, levels, c.write_order);
   carve_loop_order(c.read_density, levels, c.read_order);
   const CtaCarve a = cta_carve(c.width_bits, c.write_density, c.read_density, levels);
   c.cta_leaves = 1;
-  for (int l = 0; l < levels; ++l) {
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
     c.carve_bits[l] = a.carve_bits[l];
     c.cta_leaves <<= a.carve_bits[l];
   }
 
   //: the fold warpgroups split along the first level the write side does not walk whole that the carve holds 2 digits of, else the first level the carve holds 2 digits of
   c.split_level = -1;
-  for (int l = levels - 1; l >= 0; --l) {
+  FSLA_CARVE_UNROLL
+  for (int l = kCarveMaxLevels - 1; l >= 0; --l) {
     if (c.carve_bits[l] >= 1) c.split_level = l;
   }
-  for (int l = levels - 1; l >= 0; --l) {
+  FSLA_CARVE_UNROLL
+  for (int l = kCarveMaxLevels - 1; l >= 0; --l) {
     if (c.carve_bits[l] >= 1 && c.write_group_bits[l] < c.width_bits[l]) {
       c.split_level = l;
     }
@@ -176,7 +195,8 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
   c.fold_set_leaves = 1;
   c.read_set_leaves = 1;
   c.unit_ctas = 1;
-  for (int l = 0; l < levels; ++l) {
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
     c.fold_bits[l] = c.carve_bits[l] - (l == c.split_level ? 1 : 0);
     const int write_set =
         c.write_group_bits[l] < c.fold_bits[l] ? c.write_group_bits[l] : c.fold_bits[l];
@@ -195,19 +215,35 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
 
 //: THE CTA AT A PLACE OF THE SCHEDULE (docs/internals/common/plan/cta_carve.md#schedule): `cta[l]` its index along level `l`, of the head's `ctas_per_head` CTAs in the order they are taken --
 //: the write side's groups in its loop order, the densest level's varying fastest, and inside a group its CTAs in the read side's, the read side's sparsest level varying fastest
-constexpr void prefill_cta_at(const PrefillCarve& c, std::int64_t place, int* cta) {
+FSLA_CARVE_FN constexpr void prefill_cta_at(const PrefillCarve& c, std::int64_t place, int* cta) {
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) cta[l] = 0;
   //: inside a group: the bits of a level its write group spans CTAs along (`unit_bits`)
-  for (int i = 0; i < c.levels; ++i) {
-    const int l = c.read_order[i];
-    cta[l] = static_cast<int>(place & ((std::int64_t{1} << c.unit_bits[l]) - 1));
-    place >>= c.unit_bits[l];
+  FSLA_CARVE_UNROLL
+  for (int i = 0; i < kCarveMaxLevels; ++i) {
+    int taken = 0;
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      const bool here = i < c.levels && c.read_order[i] == l;
+      const std::int64_t low = place & ((std::int64_t{1} << c.unit_bits[l]) - 1);
+      cta[l] = here ? static_cast<int>(low) : cta[l];
+      taken += here ? c.unit_bits[l] : 0;
+    }
+    place >>= taken;
   }
   //: the groups: the bits of a level above those
-  for (int i = c.levels - 1; i >= 0; --i) {
-    const int l = c.write_order[i];
-    const int bits = c.width_bits[l] - c.carve_bits[l] - c.unit_bits[l];
-    cta[l] |= static_cast<int>(place & ((std::int64_t{1} << bits) - 1)) << c.unit_bits[l];
-    place >>= bits;
+  FSLA_CARVE_UNROLL
+  for (int i = kCarveMaxLevels - 1; i >= 0; --i) {
+    int taken = 0;
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      const bool here = i < c.levels && c.write_order[i] == l;
+      const int bits = c.width_bits[l] - c.carve_bits[l] - c.unit_bits[l];
+      const std::int64_t low = place & ((std::int64_t{1} << bits) - 1);
+      cta[l] |= here ? static_cast<int>(low) << c.unit_bits[l] : 0;
+      taken += here ? bits : 0;
+    }
+    place >>= taken;
   }
 }
 
