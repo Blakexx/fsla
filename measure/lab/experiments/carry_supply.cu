@@ -5,7 +5,8 @@
 // METHOD: this file compiles the library's device code (`carry/carry_kernel.cuh`, and the mask-preparation pass's
 // kernel, which it launches first). A call of one head: two levels of 256 digits, 64 value channels, the write side
 // masked on level 0 at 4 to 5 live digits a token and whole on level 1 (THE CELL), or masked on both (level 1 a run of
-// 40 digits a token); the read side's densities the cell's mirror, its masks never read (its role is a stub). The grid
+// 40 digits a token), or whole on both (no mask of its own: every token live in a fold's one set), or one digit a
+// token on each level (sets that are mostly empty); the read side's densities the cell's mirror, its masks never read (its role is a stub). The grid
 // is the head's CTAs. CHECKED through the kernel's tracer, which waits for a round's copies and copies its tokens and
 // rows out: every round of every set of every fold is there once, its tokens the set's list in order, its rows their
 // value lines in the step's swizzle order, a dead place's row zero; and on the host, the sets' leaves tile the leaf
@@ -128,18 +129,30 @@ struct Call {
   int ctas = 1;
 };
 
-inline Call make(bool both, int windows) {
+//: THE CALLS, by the write side's masks: the cell (level 0 at 4 to 5 live digits a token, level 1 whole); both levels (level 1
+//: a run of `kRun` digits too); whole (no mask: the dense end); one digit a token on each level (the sparse end)
+enum class Shape { kCell, kBoth, kWhole, kSparse };
+
+inline Call make(Shape shape, int windows) {
   Call c;
   c.windows = windows;
   c.tokens = static_cast<size_t>(windows) * kWindow;
   const size_t words = c.tokens / 32;
-  c.mask[0].assign(words * kDigits, 0);
-  if (both) c.mask[1].assign(words * kDigits, 0);
+  //: the cell's level-0 mask, whose byte is the read side's density on level 1 in every call
+  std::vector<uint32_t> cell(words * kDigits, 0);
+  if (shape != Shape::kWhole) c.mask[0].assign(words * kDigits, 0);
+  if (shape == Shape::kBoth || shape == Shape::kSparse) c.mask[1].assign(words * kDigits, 0);
+  const int run = shape == Shape::kSparse ? 1 : kRun;
+
   for (size_t x = 0; x < c.tokens; ++x) {
     const uint32_t t = static_cast<uint32_t>(x), bit = 1u << (x % 32);
-    for (int i = 0; i < live_of(t); ++i) c.mask[0][(x / 32) * kDigits + digit_of(t, i)] |= bit;
-    if (both)
-      for (int i = 0; i < kRun; ++i) c.mask[1][(x / 32) * kDigits + ((t * 7u + static_cast<uint32_t>(i)) & 255u)] |= bit;
+    const size_t at = (x / 32) * kDigits;
+    for (int i = 0; i < live_of(t); ++i) {
+      cell[at + digit_of(t, i)] |= bit;
+      if (!c.mask[0].empty() && (i == 0 || shape != Shape::kSparse)) c.mask[0][at + digit_of(t, i)] |= bit;
+    }
+    if (!c.mask[1].empty())
+      for (int i = 0; i < run; ++i) c.mask[1][at + ((t * 7u + static_cast<uint32_t>(i)) & 255u)] |= bit;
   }
   //: a level-side's byte as the library's helpers count it: the live (token, digit) pairs over all, in 255ths, rounded
   const auto byte = [&](const std::vector<uint32_t>& m) {
@@ -148,12 +161,11 @@ inline Call make(bool both, int windows) {
     const long long total = static_cast<long long>(c.tokens) * kDigits;
     return static_cast<uint8_t>((2 * 255 * live + total) / (2 * total));
   };
-  const uint8_t sparse = byte(c.mask[0]);
-  //: row 0 the read side's, the cell's mirror (whole on level 0, sparse on level 1); row 1 the write side's
+  //: row 0 the read side's, the cell's mirror (whole on level 0, sparse on level 1); row 1 the write side's, a level with no mask whole
   c.density[0] = 255;
-  c.density[1] = sparse;
-  c.density[kLevels] = sparse;
-  c.density[kLevels + 1] = both ? byte(c.mask[1]) : 255;
+  c.density[1] = byte(cell);
+  c.density[kLevels] = c.mask[0].empty() ? 255 : byte(c.mask[0]);
+  c.density[kLevels + 1] = c.mask[1].empty() ? 255 : byte(c.mask[1]);
   const int width_bits[kLevels] = {kWidthBits, kWidthBits};
   const int read[kLevels] = {c.density[0] + 1, c.density[1] + 1};
   const int write[kLevels] = {c.density[kLevels] + 1, c.density[kLevels + 1] + 1};
@@ -255,10 +267,10 @@ inline Set set_of(const plan::PrefillCarve& c, const int* at, int fold, int set)
 }  // namespace carry_supply
 
 //: a call's rows: its supply checked over `checked` windows, then timed at 64, plain and with every warp's timeline stamped
-void run(lab::Bench& b, unsigned long long* rows, const std::string& name, bool both, int checked) {
+void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry_supply::Shape shape, int checked) {
   using namespace carry_supply;
   constexpr int kTimed = 64, kWarps = carry::kThreads / 32;
-  const Call c = make(both, checked);
+  const Call c = make(shape, checked);
   const plan::PrefillCarve& cv = c.carve;
   if (c.ctas > b.sms) {
     std::fprintf(stderr, "the call's %d CTAs a head are more than the card's %d multiprocessors\n", c.ctas, b.sms);
@@ -369,7 +381,7 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, bool 
   down(d);
   LAB_CHECK(cudaFree(dout));
   LAB_CHECK(cudaFree(dcount));
-  const Call t = make(both, kTimed);
+  const Call t = make(shape, kTimed);
   Device dt = up(t);
   const std::string plain = name + ", timed", stamped = name + ", every warp's timeline stamped";
   b.unchecked(plain, "the row above checks this kernel's supply through its tracer; this is its time with the library's tracer");
@@ -418,7 +430,11 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
   LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
   //: the second call has 4 sets a warp a window, a set 2 rounds and seldom 3: its check keeps 2 windows, 16 rounds a warp of the 24 kept
-  run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", false, 4);
-  run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", true, 2);
+  //: the whole call has 8 full rounds a warp a window; the sparse call's sets are mostly empty
+  using carry_supply::Shape;
+  run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", Shape::kCell, 4);
+  run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", Shape::kBoth, 2);
+  run(b, rows, "the write side whole on both levels: the folds' supply, the rest stubs", Shape::kWhole, 2);
+  run(b, rows, "the write side one digit a token on each level: the folds' supply, the rest stubs", Shape::kSparse, 4);
   return 0;
 }

@@ -1,4 +1,4 @@
-// THE PREFILL'S MASK-PREPARATION PASS -- hand CUDA, global loads and stores alone.
+// THE PREFILL'S MASK-PREPARATION PASS -- hand CUDA: global loads and stores, and for the group one shared word behind a CTA barrier.
 // Design of record: docs/internals/mask_prepare/mask_prepare.md.
 // Gate: `tests/oracle/test_mask_prepare.py` (the host's words and totals, exactly).
 //
@@ -39,7 +39,7 @@ void check_operand(const Tensor& t, Dtype dtype, int device, const char* name) {
 template <class Bt>
 void launch_at(const Args& args, const Tensor& density, Tensor& workspace) {
   auto stream = current_stream();
-  mask_prepare_kernel<Bt><<<args.first_cta[kSides], kThreads, 0, stream>>>(
+  mask_prepare_kernel<Bt><<<args.first_cta[kSides], kThreads, Smem<Bt>::bytes, stream>>>(
       args, static_cast<const std::uint8_t*>(density.data_ptr()),
       static_cast<std::uint8_t*>(workspace.data_ptr()));
   FSLA_CUDA_LAUNCH_CHECK();

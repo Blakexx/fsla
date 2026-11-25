@@ -80,8 +80,14 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   line("width_bits", list(c.width_bits));
   line("write_density", list(c.write_density));
   line("read_density", list(c.read_density));
-  line("write_size_bits", list(c.write_size_bits));
-  line("read_size_bits", list(c.read_size_bits));
+  //: a level's size, the group its density gives before a set's least raises it
+  int write_size[fsla::plan::kCarveMaxLevels] = {}, read_size[fsla::plan::kCarveMaxLevels] = {};
+  for (int l = 0; l < c.levels; ++l) {
+    write_size[l] = fsla::plan::prefill_group_bits(c.write_density[l], c.width_bits[l]);
+    read_size[l] = fsla::plan::prefill_group_bits(c.read_density[l], c.width_bits[l]);
+  }
+  line("write_size_bits", list(write_size));
+  line("read_size_bits", list(read_size));
   line("write_group_bits", list(c.write_group_bits));
   line("read_group_bits", list(c.read_group_bits));
   line("write_order", list(c.write_order));

@@ -20,6 +20,8 @@ namespace pass = fsla::mask_prepare::detail;
 namespace plan = fsla::plan;
 
 constexpr int kWindow = plan::window_of_cc(plan::kHopperCc), kWords = kWindow / 32, kWidthBits = 8, kDigits = 1 << kWidthBits;
+//: every group covers the same windows a call, 256 a CTA; a call's rounds at most, those of a group of one digit
+constexpr int kCtaWindows = 256, kRoundsMost = kCtaWindows / (pass::kThreads / kDigits);
 
 //: token `x` has 4 or 5 live digits, a stride apart from a start its own
 constexpr int live_of(uint32_t x) { return 4 + (x % 3 == 0); }
@@ -29,13 +31,13 @@ constexpr uint32_t digit_of(uint32_t x, int i) { return (x * 5u + (x >> 3) + sta
 __global__ void __launch_bounds__(pass::kThreads, 1)
     timed(long long* times, const __grid_constant__ pass::Args a, const uint8_t* density, uint8_t* workspace, int rounds,
           int stride) {
-  //: the word the library's kernel takes from its layout
-  __shared__ int handed;
+  //: the word the library's kernel takes from its layout, one a round: no round's is written under another's readers
+  __shared__ int handed[kRoundsMost];
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
   for (int round = 0; round < rounds; ++round) {
-    pass::mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride, &handed);
+    pass::mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride, handed + round);
   }
   clock.stop(times);
 }
@@ -51,8 +53,6 @@ int main(int argc, char** argv) {
   //: the switch has an arm a group size the pass prepares, eight of them; the first warp's branch and its join are two more
   b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 26);
   if (b.expect_only) return 0;
-  //: every group covers the same windows a call, 256 a CTA
-  constexpr int kCtaWindows = 256;
   const int ctas = b.sms;
   const size_t windows = static_cast<size_t>(ctas) * kCtaWindows, mask_words = windows * kWords * kDigits;
   const size_t block = static_cast<size_t>(plan::prepared_block_bytes(kWidthBits, kWords)), bytes = windows * block;

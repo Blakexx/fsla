@@ -137,7 +137,7 @@ FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* wri
   return a;
 }
 
-//: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_size_bits` and `read_size_bits` each level's size from its density, `write_group_bits` and `read_group_bits` the groups a kernel reads (the sizes, raised where a set would hold fewer than 16 leaves);
+//: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_group_bits` and `read_group_bits` the groups a kernel reads (the sizes, raised where a set would hold fewer than 16 leaves);
 //: `write_order` and `read_order` are each side's loop order over the levels, outermost first (`carve_loop_order`); `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
 //: and `folds` their count; `fold_bits` a fold's bits of each level; `fold_set_leaves` and `fold_sets` the leaves a token is expanded over at once on the write side and the
 //: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_bits` the bits of a level's CTA index its write group spans, and `unit_ctas` the CTAs inside one combination of write groups (they see one token schedule and are taken together)
@@ -146,8 +146,6 @@ struct PrefillCarve {
   int width_bits[kCarveMaxLevels];
   int write_density[kCarveMaxLevels];
   int read_density[kCarveMaxLevels];
-  int write_size_bits[kCarveMaxLevels];
-  int read_size_bits[kCarveMaxLevels];
   int write_group_bits[kCarveMaxLevels];
   int read_group_bits[kCarveMaxLevels];
   int write_order[kCarveMaxLevels];
@@ -180,10 +178,9 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
       c.width_bits[l] = carve_clamp(width_bits[l], 0, kCarveMaxWidthBits);
       c.write_density[l] = carve_clamp(write_density[l], kLeastDensity, kWholeDensity);
       c.read_density[l] = carve_clamp(read_density[l], kLeastDensity, kWholeDensity);
-      c.write_size_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
-      c.read_size_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
-      c.write_group_bits[l] = c.write_size_bits[l];
-      c.read_group_bits[l] = c.read_size_bits[l];
+      //: a level's size from its density, which a set's least may raise below
+      c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
+      c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
     }
   }
   carve_loop_order(c.write_density, levels, c.write_order);

@@ -9,12 +9,14 @@ operands -- the masks, the mask-preparation pass's prepared words, the densities
 their value lines in its rows, exactly; and what does a window cost a CTA with that supply running?
 
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
-of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its two calls: THE CELL, the write
+of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its four calls: THE CELL, the write
 side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
 write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2; level 0's write group of 4 digits is raised to 8,
-a set's least of 16 leaves, which makes 16 sets a fold). The read side's densities are the cell's mirror and its masks are never read (its role is a
+a set's least of 16 leaves, which makes 16 sets a fold); THE WRITE SIDE WHOLE on both levels, no mask of its own (a fold is
+one set and every token is live in it: the dense end); and ONE DIGIT A TOKEN on each level (sets of 16 leaves that are
+mostly empty: the sparse end). The last two are NOT RUN. The read side's densities are the cell's mirror and its masks are never read (its role is a
 stub). The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
-cell, 2 of the second call): the tracer waits for a round's copies and copies its tokens and rows out, and on the
+cell and of the sparse call, 2 of the others): the tracer waits for a round's copies and copies its tokens and rows out, and on the
 host every round of every set of every fold is there once, its tokens the set's list in order, its rows their value
 lines in the step's swizzle order, a dead place's row zero, on its boundary; the sets' leaves tile the leaf space
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's

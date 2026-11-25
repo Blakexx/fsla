@@ -16,6 +16,8 @@ namespace detail {
 constexpr int kThreads = 1024;
 constexpr int kSides = plan::kLevelSides;
 constexpr int kLevels = plan::kCarveMaxLevels;
+//: FIXED by the walk's loads: a thread holds a group's digits, 16 at most, as log2
+constexpr int kUnitBitsMost = 4;
 
 //: THE PASS'S SHARED MEMORY: one word, the group a CTA's first warp hands to the rest -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
 struct Handed;
@@ -98,14 +100,22 @@ __device__ __forceinline__ void finish(const Raw<U>& raw, std::uint32_t keep, bo
   live += static_cast<std::uint32_t>(__popc(w));
 }
 
+//: whether CTA `cta` of level-side `s` holds no window at a group of `1 << bits` digits: its first thread's window is past the last -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+__device__ __forceinline__ bool surplus(const Args& a, int s, int bits, int cta) {
+  const int unit_bits = bits < kUnitBitsMost ? bits : kUnitBitsMost;
+  const std::int64_t first = (std::int64_t{cta} * kThreads) >> (a.width_bits[s] - unit_bits);
+  return first >= std::int64_t{a.heads[s]} * a.windows;
+}
+
 //: A LEVEL-SIDE AT A GROUP OF `1 << GB` DIGITS -- see docs/internals/mask_prepare/mask_prepare.md#the-walk
 template <int GB, int WORDS>
 __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, int s, int cta) {
-  constexpr int kUnitBits = GB < 4 ? GB : 4, kUnit = 1 << kUnitBits, kLanes = 1 << (GB - kUnitBits);
+  constexpr int kUnitBits = GB < kUnitBitsMost ? GB : kUnitBitsMost, kUnit = 1 << kUnitBits;
+  constexpr int kLanes = 1 << (GB - kUnitBits);
   const int wb = a.width_bits[s], ub = wb - kUnitBits, gb = wb - GB;
   const std::int64_t windows = std::int64_t{a.heads[s]} * a.windows;
   const std::int64_t unit = std::int64_t{cta} * kThreads + threadIdx.x;
-  if ((std::int64_t{cta} * kThreads) >> ub >= windows) return;
+  if (surplus(a, s, GB, cta)) return;
 
   //: a thread past the level-side's last window walks its first and stores nothing; of a group's lanes the first stores
   const std::int64_t at_window = (unit >> ub) < windows ? unit >> ub : 0;
@@ -145,15 +155,6 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
     word += kHeld * groups;
   }
   if (store) totals[group] = static_cast<std::uint16_t>(live);
-}
-
-//: whether CTA `cta` of level-side `s` holds no window at a group of `1 << bits` digits: its first thread's window is past the last -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
-__device__ __forceinline__ bool surplus(const Args& a, int s, int bits, int cta) {
-  //: FIXED by `prepare`: a thread holds a group's digits, 16 at most
-  constexpr int kUnitBitsMost = 4;
-  const int unit_bits = bits < kUnitBitsMost ? bits : kUnitBitsMost;
-  const std::int64_t first = (std::int64_t{cta} * kThreads) >> (a.width_bits[s] - unit_bits);
-  return first >= std::int64_t{a.heads[s]} * a.windows;
 }
 
 //: A LEVEL-SIDE'S GROUP, as log2, from the call's carve; a density byte `b` is `b + 1` 256ths -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel

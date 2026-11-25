@@ -30,8 +30,8 @@ HOPPER = registry.device_point()
 LAYOUT = ROOT / "csrc" / "fsla" / "src" / "common" / "plan" / "mask_prepare_layout.h"
 
 
-def _carved_groups(width_bits: int) -> list[int]:
-    """The carve's size of one level of ``width_bits`` at each density 1..256 (read side), in digits: what the pass prepares at, before a set's least raises a group."""
+def _planner_sizes(width_bits: int) -> list[int]:
+    """The size of one level of ``width_bits`` at each density 1..256 (read side), in digits, as the planner's tool prints it: the group the density gives, before a set's least raises it (the pass prepares at the raised group)."""
     densities = range(1, 257)
     run = subprocess.run([str(TOOL), "--cta-carve", ";".join(str(width_bits) for _ in densities), "--write-density", ";".join("256" for _ in densities),
                           "--read-density", ";".join(str(d) for d in densities)], capture_output=True, text=True, timeout=300)
@@ -42,9 +42,9 @@ def _carved_groups(width_bits: int) -> list[int]:
 
 
 @pytest.mark.parametrize("width_bits", range(1, 9))
-def test_the_references_group_is_the_carves_for_every_density_byte(width_bits):
+def test_the_references_size_is_the_planners_for_every_density_byte(width_bits):
     width = 1 << width_bits
-    assert [reference.group_of(byte, width) for byte in range(256)] == _carved_groups(width_bits)
+    assert [reference.group_of(byte, width) for byte in range(256)] == _planner_sizes(width_bits)
 
 
 @pytest.mark.parametrize("width", [2, 4, 8, 16, 32, 64, 128, 256])
