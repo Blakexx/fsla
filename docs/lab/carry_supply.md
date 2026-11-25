@@ -24,30 +24,51 @@ lines in the step's swizzle order, a dead place's row zero, on its boundary; the
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
-MEASURED WITH THE COEFFICIENTS (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the
-experiment at ac5fc941, its first run on a device; 7 repetitions; every call's check exact -- its rounds, tokens and
-row bytes as below, and every coefficient of every kept round's chunks, a column its levels' bytes multiplied in fp32
-and rounded to bf16 once, a place with no token zeros, a set's chunks' columns its leaves each once; cycles a window a
-CTA, the median):
+MEASURED WITH THE COEFFICIENTS' BYTES STAGED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07;
+2026-11-25, the experiment at fc999aad; 7 repetitions; every call's check exact, every coefficient with it; cycles a
+window a CTA, the median):
 
-| the call | its step, chunks a set | timed | every warp's timeline stamped | the supply alone, timed |
-|---|---|---:|---:|---:|
-| the cell | 16 x 4, 1 | 5,136 | 6,792 | 2,377 |
-| the write side masked on both levels | 8 x 4, 1 | 4,381 | 5,764 | 2,340 |
-| the write side whole on both levels | 16 x 4, 4 | 25,158 | 28,151 | 5,577 |
-| one digit a token on each level | 4 x 4, 1 | 4,350 | 6,639 | 3,626 |
-| both levels, the read side's densities crossed | 16 x 4, 1 | 2,732 | 3,794 | 1,339 |
+| the call | its step, chunks a set | timed | stamped | the bytes loaded into registers, timed | the supply alone, timed |
+|---|---|---:|---:|---:|---:|
+| the cell | 16 x 4, 1 | 5,487 | 6,690 | 5,136 | 2,377 |
+| the write side masked on both levels | 8 x 4, 1 | 5,107 | 6,478 | 4,381 | 2,340 |
+| the write side whole on both levels | 16 x 4, 4 | 29,751 | 31,970 | 25,158 | 5,577 |
+| one digit a token on each level | 4 x 4, 1 | 4,913 | 7,029 | 4,350 | 3,626 |
+| both levels, the read side's densities crossed | 16 x 4, 1 | 3,274 | 4,162 | 2,732 | 1,339 |
 
-PREDICTED, before the run (timed, and stamped): the cell 2,650 to 3,150 (4,200 to 4,800); both levels 2,420 to 2,700
-(3,950 to 4,350); whole 12,500 to 17,500 (14,000 to 19,100); one digit 3,650 to 3,800 (5,200 to 5,420); crossed 1,450
-to 1,700 (2,680 to 2,950) -- a stamped range its timed one and the stamps' cost in the record before -- the supply's row and a round's expansion at an instruction count (170
+PREDICTED, before the run (timed, and stamped): the cell 3,000 to 3,700 (4,600 to 5,400); both levels 3,600 to 4,500
+(4,950 to 5,900); whole 23,000 to 31,000 (25,900 to 34,000); one digit 4,200 to 4,900 (6,450 to 7,200); crossed 2,500
+to 3,000 (3,550 to 4,070) -- from the register-loaded record's stamped phases and a latency of 950 cycles. THE WHOLE
+CALL'S TWO ROWS AND ONE DIGIT'S STAMPED ROW HELD; SEVEN MISSED HIGH, and the staged form is slower than the
+register-loaded one on every call, by 7 to 20 percent. THE WRONG PRICES, by the stamped rows (a fold warp, CTA 0):
+- ISSUING A STAGE'S BYTES WAS PRICED AT TWO COPY INSTRUCTIONS AND IS 170 TO 280 CYCLES: in the cell a stage's issue is
+  397 to 715 cycles where the round's value lines alone were 209 to 435, and in the whole call a stage of bytes alone
+  is 170 to 207; the set's first stage, issued behind its words, takes that phase from 274 to 815.
+- THE TWO RECORDS DO NOT WAIT FOR THE SAME THINGS. The register-loaded form never waited for a round's value lines to
+  land -- nothing read them -- and this one waits for every stage's group, lines and bytes, before it expands, as the
+  steps will have to in either form: 466, 114 and 87 cycles a round in the cell, and 6,934 of the whole call's window.
+  So this run prices a wait the earlier one left out, and the two are not a comparison of the bytes' two ways alone.
+- WHAT DID HOLD: the expansion is about 400 cycles a chunk of 64 columns with its bytes in shared memory (397 to 419),
+  where it was about 500 with a register load's stall in it; no phase of a warp grows behind a round's landing.
+- THE WHOLE CALL IS LATENCY-BOUND A STAGE: its 32 stages a window are each about 390 of expansion, 260 of issue and
+  217 of waiting -- a group asked one stage ahead does not land under one chunk's work.
+
+carry_skeleton's rows MISSED too (749 and 1,673 against 630 to 720 and 1,400 to 1,580): its call now has two whole
+levels where it had none, and the range took that as free. NOT EXPLAINED: which of the call's levels' work the 89
+cycles are.
+
+THE BYTES LOADED INTO REGISTERS, the form before (the same card and day, the experiment at ac5fc941, its first run on
+a device; every check exact; the rows the table above repeats). PREDICTED then (timed, and stamped): the cell 2,650
+to 3,150 (4,200 to 4,800); both levels 2,420 to 2,700 (3,950 to 4,350); whole 12,500 to 17,500 (14,000 to 19,100); one
+digit 3,650 to 3,800 (5,200 to 5,420); crossed 1,450 to 1,700 (2,680 to 2,950) -- a stamped range its timed one and the
+stamps' cost in the record before -- the supply's row and a round's expansion at an instruction count (170
 a lane a chunk of 64 columns at 2.1 cycles an instruction), less what was taken to hide under the supply's waits on
 its copies. ALL TEN ROWS MISSED HIGH, by 1.2 to 1.9 times. THE WRONG PRICES, by the stamped rows (a fold warp, CTA 0):
 - THE BYTES' LOADS WERE PRICED AS FREE AND ARE NOT. A token's bytes are register loads from global memory, scattered by
   token, and take about 700 cycles to land. In the cell a set's first round is 1,237 cycles in its coefficient phase
   and its later rounds 519 and 481; and the phase behind each round's landing, where the next chunk's bytes are first
   read, is 346 to 734 where it was 70 to 365. "Loaded a chunk ahead" is not ahead enough, and a set's first round's
-  are read in the trip that loads them (the checker's `LOAD_IN_TRIP`, declared here, is that cost).
+  are read in the trip that loads them (the checker's `LOAD_IN_TRIP`, which that experiment declared, is that cost).
 - THE EXPANSION'S OWN WORK IS ABOUT 500 CYCLES A CHUNK OF 64 COLUMNS, stamped, where the count gave 360: the cell's
   later rounds, and 655 a chunk in the whole call (2,620 a round of four chunks).
 - THE WHOLE CALL: a fold warp is 21,526 of its 28,004-cycle window in the coefficient phase -- a window's 262,144
@@ -100,11 +121,7 @@ A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 180 to 390 cycl
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
 
-SINCE THE RECORD the bytes arrive by asynchronous copies into shared memory in the round's own group, and the
-expansion reads them there ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#stage)). NOT RUN on
-record in that form.
-
 WHAT IT IS NOT: the fold. No step runs and no accumulator is held; the other roles are stubs; the rows carry no
 scale; the call is one head and its values are the cache's.
 
-Record: `measure/lab/results/carry_supply/sm_90a.json` (the run with the coefficients), the five stamped rows' timelines beside it.
+Record: `measure/lab/results/carry_supply/sm_90a.json` (the run with the bytes staged), the five stamped rows' timelines beside it.

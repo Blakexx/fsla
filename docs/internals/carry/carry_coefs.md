@@ -44,7 +44,10 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   that they join the round's value lines' group. A SLOT'S PITCH IS ODD in 16-byte lines (the blocks' count, made odd),
   so an instruction's 32 lanes write each of the banks' eight 16-byte places four times
   ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)); the widest stage of the classes built is 5
-  lines a token, 2,560 bytes. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
+  lines a token, 2,560 bytes (`kStageMost`, which every class's stage is asserted to fit where its windows are
+  compiled). THE EXPANSION'S READS of a slot are a 16-byte load a block, or, of a position of fewer than 16 digits,
+  the word or the pair of its block the digits lie in, at the same place in every lane's slot: with the odd pitch the
+  32 lanes' words fall on the banks at most four to a bank, as the copies do. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
   into registers took about 700 cycles to land and held the warp there, a set's first round 1,237 cycles in its
   coefficient phase where its later rounds were about 500
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's latency rides the wait on the round's landing,

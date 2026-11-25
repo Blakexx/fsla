@@ -60,8 +60,9 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   fold warps 64 KB, on a 1,024-byte boundary ([`../common/smem_layout.md`](../common/smem_layout.md#aligned)), which
   is where a step's operand of rows starts ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). ITS EDGES
   (R21): a round's copies are one committed group, and the warp waits for the group before it, so two are in flight;
-  a slot's rows are overwritten by the round issued two later, and that issue stands behind the tracer's call for the
-  round whose rows they were -- where the wait of that round's steps will stand (NOT BUILT: the steps). And the fold
+  a round's rows go to the slot of its index's turn in its set, so they are written over by the set's round two later,
+  or by the next set's first round where the set ends -- and either issue stands behind the tracer's call for the round
+  whose rows they were, at its trip's end, where the wait of that round's steps will stand (NOT BUILT: the steps). And the fold
   warps' COEFFICIENT TILES (`FoldCoefs`, [`carry_coefs.md`](carry_coefs.md#tile)): a warp one tile, a round's two
   steps at the widest step's 64 columns, 4 KB, the eight 32 KB, on a boundary of the banks' 128 bytes; and their
   STAGED BYTES (`FoldStaged`, [`carry_coefs.md`](carry_coefs.md#stage)): a warp two stages in flight at the widest
