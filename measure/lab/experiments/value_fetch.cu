@@ -5,7 +5,10 @@
 // request (`state_move`: 32.8)?
 // METHOD: a CTA an SM of 4 or 16 warps; a warp's instruction copies 4 rows, 8 lanes a row, into the warp's 16-row
 // ring in shared memory. The table is 1,024 rows (a window's values, 128 KB), 65,536 (8 MB) or 1,048,576 (128 MB); a
-// CTA takes its own rows, or its unit's (16 CTAs the same rows). The ring's last rows are checked exactly.
+// CTA takes its own rows, or its unit's (16 CTAs the same rows). The ring's last rows are checked exactly. FORMS, at 16
+// warps on the window's table: the copy's size a register (the form that zero-fills a dead copy); the ring a tensor
+// step's tile, a row's 8 pieces in bricks 17 lines apart; both; and BY BRICK -- a lane a row, an instruction one piece
+// of the warp's 32 rows into that piece's run of 32 consecutive lines.
 // TIMELINE: a warp's trip is a batch of 8 rows: two copy instructions, a commit, and a wait for the batch before it
 // -- two batches in flight. Live: nothing of the data.
 // see docs/internals/tools/lab.md#value-fetch
@@ -71,6 +74,45 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
     out[static_cast<long long>(blockIdx.x) * (16 * kTileWords) + i] = ring[i];
 }
 
+//: THE FORM BY BRICK: a lane a row, an instruction ONE PIECE of the warp's 32 rows into that piece's run -- the tile a
+//: tensor step reads, brick `i`'s 32 rows consecutive lines, so an instruction's 32 writes are 512 contiguous bytes
+//: where its 32 reads are 16 bytes of 32 rows. A batch is 32 rows, 8 instructions; two batches in flight
+constexpr int kPieces = 8, kRunRows = 32, kRunWords = kPieces * kRunRows * 4;
+
+template <int WARPS>
+__global__ void __launch_bounds__(32 * WARPS, 1)
+    fetch_runs(long long* times, const uint32_t* table, uint32_t* out, int rows, int fetches) {
+  __shared__ alignas(128) uint32_t ring[WARPS * 2 * kRunWords];
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const uint32_t base = static_cast<uint32_t>(__cvta_generic_to_shared(ring + warp * 2 * kRunWords));
+  const uint8_t* const bytes = reinterpret_cast<const uint8_t*>(table);
+  const auto issue = [&](int batch) {
+    const uint32_t row = row_of(blockIdx.x, warp, batch * kRunRows + lane, rows);
+    const uint8_t* const src = bytes + static_cast<long long>(row) * kRowBytes;
+    const uint32_t to = base + static_cast<uint32_t>((batch & 1) * kRunWords * 4 + lane * 16);
+#pragma unroll
+    for (int i = 0; i < kPieces; ++i) {
+      asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(to + i * kRunRows * 16), "l"(src + 16 * i) : "memory");
+    }
+    asm volatile("cp.async.commit_group;" ::: "memory");
+  };
+  issue(0);
+
+  lab::WarpSpan clock;
+  clock.start();
+#pragma unroll 1
+  for (int b = 1; b < fetches / kRunRows; ++b) {
+    issue(b);
+    asm volatile("cp.async.wait_group 1;" ::: "memory");
+  }
+  asm volatile("cp.async.wait_group 0;" ::: "memory");
+  clock.stop(times);
+  __syncthreads();
+#pragma unroll 1
+  for (int i = threadIdx.x; i < WARPS * 2 * kRunWords; i += 32 * WARPS)
+    out[static_cast<long long>(blockIdx.x) * (16 * 2 * kRunWords) + i] = ring[i];
+}
+
 }  // namespace value_fetch
 
 template <int WARPS, int FORM = 0>
@@ -107,6 +149,36 @@ void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shar
   b.record(name, "cycles a 128-byte row a CTA", cycles);
 }
 
+template <int WARPS>
+void run_runs(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows) {
+  using namespace value_fetch;
+  constexpr int kFetches = 8192, kBatches = kFetches / kRunRows;
+  const std::string name = std::to_string(WARPS) + " warps, a table of " + std::to_string(rows)
+                           + " rows, a CTA its own rows, an instruction one piece of 32 rows into its brick's run";
+  fetch_runs<WARPS><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches);
+  LAB_CHECK(cudaDeviceSynchronize());
+  const size_t per = 16 * 2 * kRunWords;
+  std::vector<uint32_t> got(static_cast<size_t>(b.sms) * per);
+  LAB_CHECK(cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost));
+  long long wrong = 0;
+  for (int blk = 0; blk < b.sms; ++blk)
+    for (int w = 0; w < WARPS; ++w)
+      for (int batch = kBatches - 2; batch < kBatches; ++batch)
+        for (int lane = 0; lane < kRunRows; ++lane) {
+          const uint32_t row = row_of(blk, w, batch * kRunRows + lane, rows);
+          for (int i = 0; i < kRowWords; ++i) {
+            const size_t at = static_cast<size_t>(batch & 1) * kRunWords + ((i / 4) * kRunRows + lane) * 4 + i % 4;
+            wrong += got[blk * per + static_cast<size_t>(w) * 2 * kRunWords + at] != table_of(row * kRowWords + i);
+          }
+        }
+  b.check(name, wrong == 0,
+          std::to_string(wrong) + " of " + std::to_string(b.sms * WARPS * 2 * kRunWords) + " ring words differ");
+  const lab::Samples cycles = b.variant(
+      [&] { fetch_runs<WARPS><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches); },
+      [&] { return b.span(WARPS) / (static_cast<double>(kFetches) * WARPS); });
+  b.record(name, "cycles a 128-byte row a CTA", cycles);
+}
+
 int main(int argc, char** argv) {
   using namespace value_fetch;
   lab::Bench b(argc, argv);
@@ -118,7 +190,7 @@ int main(int argc, char** argv) {
   uint32_t *table = nullptr, *out = nullptr;
   LAB_CHECK(cudaMalloc(&table, host.size() * 4));
   LAB_CHECK(cudaMemcpy(table, host.data(), host.size() * 4, cudaMemcpyHostToDevice));
-  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 16 * kTileWords * 4));
+  LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 16 * 2 * kRunWords * 4));
   run<4>(b, table, out, kSmall, 0);
   run<16>(b, table, out, kSmall, 0);
   run<4>(b, table, out, kLarge, 0);
@@ -128,5 +200,6 @@ int main(int argc, char** argv) {
   run<16, kSized>(b, table, out, kWindow, 0);
   run<16, kBricks>(b, table, out, kWindow, 0);
   run<16, kSized | kBricks>(b, table, out, kWindow, 0);
+  run_runs<16>(b, table, out, kWindow);
   return 0;
 }

@@ -19,8 +19,10 @@ No role calls it yet; the lab checks and times it with the listing
   needs no clearing and no branch, and a pad's value is finite whatever the tile held. THE ROUND IS ONE COMMITTED
   GROUP: its caller waits for it, and may hold a second round in flight in the tiles beside it.
 - THE LAYOUT'S BANKS ARE HELD BY A TEST (`tests/unit/test_carry_values_layout.py`): every instruction of a round puts
-  exactly four of its 32 lanes on each bank, at this pitch and not at a pitch of 16 lines. What the layout costs on a
-  device is the lab's ([`../../lab/value_fetch.md`](../../lab/value_fetch.md), its row of bricks 17 lines apart).
+  exactly four of its 32 lanes on each bank, at this pitch and not at a pitch of 16 lines. ON A DEVICE THE LAYOUT IS SIX TIMES THE
+  CONTIGUOUS ROW'S COST ([`../../lab/value_fetch.md`](../../lab/value_fetch.md): 16.56 cycles a line against 2.70):
+  the banks an asynchronous copy's lanes fall on are not what its write costs. THIS LAYOUT IS NOT THE FORM; the form
+  by brick, an instruction one piece of 32 tokens into that piece's contiguous run, is the lab's next row.
 
 THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a round
 of 32 tokens, a warp -- 8 copy instructions a lane, each behind a shuffle and an address, about 50 instructions a

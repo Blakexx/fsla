@@ -28,8 +28,8 @@ PREDICTED, before the run, from the page's budget (about 60 instructions a lane 
 an SM's issue): 0.4 to 2.5, 0.2 to 1.5 and 0.4 to 2.6 -- all three HELD.
 
 WHAT IT SHOWS. A full round lists a token a cycle; a window of 64 tokens, whose second round is partly full, two.
-A second level's words ANDed in cost nothing measurable: the intersected case is the one-level case. AN EARLIER RUN'S
-TIMING (the experiment at 19d2b0b0) WAS NO MEASUREMENT: its timed kernel's only output was a shared-memory store no
-instruction read, and the compiler dropped the listing; the timed kernel now folds every token into a sunk word.
+A second level's words ANDed in cost nothing measurable: the intersected case is the one-level case. THE TIMED KERNEL
+FOLDS EVERY TOKEN IT LISTS INTO A SUNK WORD: a listing whose only output is a shared-memory store no instruction
+reads is work the compiler drops.
 
 Record: `measure/lab/results/carry_list/sm_90a.json`.
