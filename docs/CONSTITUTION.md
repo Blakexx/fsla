@@ -258,11 +258,11 @@ read dense allocation than fold, but once thats set, we can partition fold how w
 walks by groups smaller than the level first, otherwise along one it walks whole ("take any write sparse level first,
 otherwise write dense"). A group and the carve nest on every level and a group may be the larger ("the more important thing
 is the multiple rule, which we can guarantee via padding"): the CTAs inside one combination of the write side's groups
-read one value stream. A smaller carve is the last resort under shared memory ("A box need not be 256 leaves we will scale
+see one token schedule and are taken together. A smaller carve is the last resort under shared memory ("A box need not be 256 leaves we will scale
 them down if we are forced to"). What a split along another level would share, and what uneven halves cost, are not
 measured. The rule is one function the kernels call on the call's densities
-([`cta_carve.md`](internals/common/plan/cta_carve.md), [`prefill_launch.md`](internals/common/plan/prefill_launch.md); the grid's split, the
-ring and the kernels are owed: [`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its carve at entry and
+([`cta_carve.md`](internals/common/plan/cta_carve.md), [`prefill_launch.md`](internals/common/plan/prefill_launch.md); the
+kernels are owed: [`open-work.md`](open-work.md#the-surface), row A-f). A CTA loads and stores its carve at entry and
 exit, so its read-side warps' union and its write-side warps' union are the same leaves; the CTA's carve is the SM's at one
 CTA per SM, the goal (R15). Where the accumulator lives (registers, tensor memory) changes how a warp touches its
 share, never who owns what.

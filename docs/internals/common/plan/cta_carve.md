@@ -1,7 +1,7 @@
 # The prefill's carve (`csrc/fsla/src/common/plan/cta_carve.h`)
 
 `prefill_carve(levels, width_bits, write_density, read_density)` is a function of the level widths and each side's densities ALONE: no descriptor, no hardware fact. It returns the densities' groups (`write_group_bits[l]`, `read_group_bits[l]`), `carve_bits[l]` (the log2 of the
-CTA's carve size on level `l`), `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets` and `unit_ctas`. A density is a side's share of a level's digits a token is live on, in 256ths of the level;
+CTA's carve size on level `l`), `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, `fold_set_leaves`, `fold_sets`, `read_set_leaves`, `read_sets`, `write_order`, `read_order` and `unit_ctas`. A density is a side's share of a level's digits a token is live on, in 256ths of the level;
 the densities are the prefill call's own input, `density [2, D]` uint8 (a byte `b` is read as `b + 1` in 256ths, [`prefill_launch.md`](prefill_launch.md)), built by the library's helpers from the rows or the masks (the owner, 2026-11-24: "I almost think weights should be outside the masks? They need not be coupled, and are independent variables really"), so the host never reads them ([`prefill_launch.md`](prefill_launch.md)). The kernels of the prefill call
 this same function: THE GROUP RULE (`prefill_group_bits`, with `carve_clamp`) is annotated for the device (`FSLA_CARVE_FN`: `__host__ __device__` where the file is compiled by the CUDA compiler, nothing in a host tool) and one kernel calls it, the mask-preparation pass's
 ([`../../mask_prepare/mask_prepare.md#the-kernel`](../../mask_prepare/mask_prepare.md#the-kernel)); the rest of the carve is host text no kernel includes yet. Host and device have one statement of the rule. It is `constexpr`, uses integers and fixed arrays alone (no `std::abort`, no allocation, no stream, no container), and is TOTAL: it has no failure path.
@@ -23,3 +23,17 @@ The fold's 64 columns are no limit on the carve (the owner: "The fold limit of 6
 prints the carve's full result from the width bits and densities; `tests/unit/test_cta_carve.py` holds the hand-worked cases and the properties over every call of depth 1 to 3 and a sample of depth 4.
 
 THE GROUPS, THE FOLDS' SPLIT, THE SETS and THE UNITS are the rules R1, R3, R4 and R5 of [`prefill_launch.md`](prefill_launch.md#the-carve), whose cases `tests/unit/test_prefill_carve.py` holds, every field, against the tool.
+
+<a id="loop-order"></a>A SIDE'S LOOP ORDER (`carve_loop_order`; `write_order`, `read_order`) is the levels by that side's density, the sparsest
+outermost and the densest innermost, equal densities keeping the lower level outside (the owner, 25 November 2026:
+"Obviously each side has its own loop order. That's why publish has to order the smem state in a different orientation
+than the registers").
+
+<a id="schedule"></a>THE SCHEDULE (`prefill_cta_at(carve, place, cta)`) is the order a head's CTAs are taken in, a place to a CTA's index
+along each level (the owner, 25 November 2026: "Write density ignoring read was group scheduling. right. In a group the
+CTAs are by read"). A CTA's index along a level has two parts: the low bits, where the level's write group spans
+several CTAs (`write_group_bits - carve_bits` of them), and the bits above, which say which group. A place's low
+digits fill the first part, level by level in the read side's loop order, so inside a group the read side's sparsest
+level varies fastest; its high digits fill the second, in the write side's loop order with its densest level varying
+fastest. The header's proof holds the measured cell: a carve of 32 by 16, a write group of 16 CTAs taken together
+along the level the read side lists, then the next group. `plan_tool` does not print the schedule.

@@ -68,6 +68,18 @@ FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
   return best;
 }
 
+//: A SIDE'S LOOP ORDER over `levels` levels (docs/internals/common/plan/cta_carve.md#loop-order): `order[0]` the outermost, the side's sparsest level, to the densest innermost; equal densities keep the lower level outside
+constexpr void carve_loop_order(const int* density, int levels, int* order) {
+  for (int l = 0; l < levels; ++l) order[l] = l;
+  for (int i = 1; i < levels; ++i) {
+    for (int j = i; j > 0 && density[order[j]] < density[order[j - 1]]; --j) {
+      const int held = order[j];
+      order[j] = order[j - 1];
+      order[j - 1] = held;
+    }
+  }
+}
+
 struct CtaCarve {
   int levels;
   int carve_bits[kCarveMaxLevels];
@@ -99,7 +111,7 @@ constexpr CtaCarve cta_carve(const int* width_bits, const int* write_density,
 }
 
 //: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_group_bits` and `read_group_bits` the groups derived from them;
-//: `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
+//: `write_order` and `read_order` are each side's loop order over the levels, outermost first (`carve_loop_order`); `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
 //: and `folds` their count; `fold_bits` a fold's bits of each level; `fold_set_leaves` and `fold_sets` the leaves a token is expanded over at once on the write side and the
 //: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_ctas` the CTAs inside one combination of write groups (they read one value stream)
 struct PrefillCarve {
@@ -109,6 +121,8 @@ struct PrefillCarve {
   int read_density[kCarveMaxLevels];
   int write_group_bits[kCarveMaxLevels];
   int read_group_bits[kCarveMaxLevels];
+  int write_order[kCarveMaxLevels];
+  int read_order[kCarveMaxLevels];
   int carve_bits[kCarveMaxLevels];
   int cta_leaves;
   int split_level;
@@ -136,6 +150,8 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
     c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
     c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
   }
+  carve_loop_order(c.write_density, levels, c.write_order);
+  carve_loop_order(c.read_density, levels, c.read_order);
   const CtaCarve a = cta_carve(c.width_bits, c.write_density, c.read_density, levels);
   c.cta_leaves = 1;
   for (int l = 0; l < levels; ++l) {
@@ -174,5 +190,59 @@ constexpr PrefillCarve prefill_carve(int levels, const int* width_bits, const in
   c.read_sets = c.cta_leaves / c.read_set_leaves;
   return c;
 }
+
+//: THE CTA AT A PLACE OF THE SCHEDULE (docs/internals/common/plan/cta_carve.md#schedule): `cta[l]` its index along level `l`, of the head's `ctas_per_head` CTAs in the order they are taken --
+//: the write side's groups in its loop order, the densest level's varying fastest, and inside a group its CTAs in the read side's, the read side's sparsest level varying fastest
+constexpr void prefill_cta_at(const PrefillCarve& c, std::int64_t place, int* cta) {
+  int along[kCarveMaxLevels] = {};
+  int shared[kCarveMaxLevels] = {};
+  for (int l = 0; l < c.levels; ++l) {
+    along[l] = c.width_bits[l] - c.carve_bits[l];
+    const int over = c.write_group_bits[l] - c.carve_bits[l];
+    shared[l] = over > 0 ? over : 0;
+    cta[l] = 0;
+  }
+  //: inside a group: the bits of a level its write group spans CTAs along
+  for (int i = 0; i < c.levels; ++i) {
+    const int l = c.read_order[i];
+    cta[l] = static_cast<int>(place & ((std::int64_t{1} << shared[l]) - 1));
+    place >>= shared[l];
+  }
+  //: the groups: the bits of a level above those
+  for (int i = c.levels - 1; i >= 0; --i) {
+    const int l = c.write_order[i];
+    const int bits = along[l] - shared[l];
+    cta[l] |= static_cast<int>(place & ((std::int64_t{1} << bits) - 1)) << shared[l];
+    place >>= bits;
+  }
+}
+
+namespace carve_proof {
+
+//: the measured cell: two levels of 256 digits, level 0 sparse for the write side and whole for the read side, level 1 the reverse
+constexpr PrefillCarve cell() {
+  const int width_bits[2] = {8, 8};
+  const int write_density[2] = {4, 256};
+  const int read_density[2] = {256, 4};
+  return prefill_carve(2, width_bits, write_density, read_density);
+}
+
+constexpr int cta_along(std::int64_t place, int level) {
+  int cta[kCarveMaxLevels] = {};
+  prefill_cta_at(cell(), place, cta);
+  return cta[level];
+}
+
+static_assert(cell().carve_bits[0] == 5 && cell().carve_bits[1] == 4,
+              "the cell's carve is 32 x 16");
+static_assert(cell().write_order[0] == 0 && cell().read_order[0] == 1,
+              "each side's sparsest level is outermost");
+static_assert(cell().unit_ctas == 16, "a write group of the cell spans 16 CTAs");
+static_assert(cta_along(0, 1) == 0 && cta_along(15, 1) == 15 && cta_along(15, 0) == 0,
+              "a group's 16 CTAs are taken together, along the level the read side lists");
+static_assert(cta_along(16, 0) == 1 && cta_along(16, 1) == 0 && cta_along(127, 0) == 7,
+              "then the next group");
+
+}  // namespace carve_proof
 
 }  // namespace fsla::plan

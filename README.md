@@ -30,7 +30,7 @@ measured in the lab before it is written into the library.
 | decode (the `T = 1` step, over the paged fixed-size state) | **built** |
 | entmax / softmax row solves, the paged state | built |
 | prefill: the mask-preparation pass | built (a kernel and its op, `fsla.ops.mask_prepare.prepare_masks`), exact against its host reference on an H100, its time measured ([`docs/lab/mask_prepare_time.md`](docs/lab/mask_prepare_time.md)) ([`docs/internals/mask_prepare/mask_prepare.md`](docs/internals/mask_prepare/mask_prepare.md)) |
-| prefill: the gather pass, the carry, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
+| prefill: the carry, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
 | backward | **not built.** `fsla.prefill` refuses any call that carries a gradient; there is no training path yet |
 | depth three and four, state in and out of a prefill | **not built** (owed: [`docs/open-work.md`](docs/open-work.md)) |
 

@@ -39,8 +39,8 @@ A side's DENSITY on a level is the share of the level's digits a token of that s
   split level; `fold_leaves = cta_leaves / folds`.
 - R4, THE SIDES' SETS. THE WRITE SIDE of a fold: `fold_set_leaves` is the product over levels of `2^min(write_group_bits[l], fold_bits[l])`, the leaves a token is expanded over at once, and `fold_sets = fold_leaves / fold_set_leaves`, the
   separate sets of tokens a fold holds. THE READ SIDE over the whole carve (readout does not partition): `read_set_leaves` is the product of `2^min(read_group_bits[l], carve_bits[l])`, `read_sets = cta_leaves / read_set_leaves`.
-- R5, THE UNITS. `unit_ctas` is the product of `2^max(0, write_group_bits[l] - carve_bits[l])`, the CTAs inside one combination of write groups, which read one value stream
-  ([`../../../architecture/hopper-carry.md#the-packets`](../../../architecture/hopper-carry.md#the-packets)). The units a head, `units_per_head = ctas_per_head / unit_ctas`, join the carve with the launch's count: the carve does not state it, and `plan_tool --cta-carve` prints it.
+- R5, THE UNITS. `unit_ctas` is the product of `2^max(0, write_group_bits[l] - carve_bits[l])`, the CTAs inside one combination of write groups, which see one token schedule and are taken together ([the schedule](cta_carve.md#schedule))
+  ([`../../../architecture/hopper-carry.md`](../../../architecture/hopper-carry.md#what-a-cta-makes)). The units a head, `units_per_head = ctas_per_head / unit_ctas`, join the carve with the launch's count: the carve does not state it, and `plan_tool --cta-carve` prints it.
 
 ## Worked cases (`cc` 900, `tokens` 65,536: window 1024, 64 windows)
 
@@ -62,6 +62,6 @@ other cases (a density of 128, four levels, two levels of 16 digits, one level o
 
 ## What is NOT here
 
-The grid's split between the gather and the carry CTAs, the ring's size, the ring's part of the workspace and the segment length wait on
-[the hand-off's design](../../../architecture/hopper-carry.md#the-hand-off) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The workspace's part for the prepared masks is built ([the prepared masks' layout](mask_prepare_layout.md)). The density input reaches the prefill's kernels once they are built: the call carries it
+The segment length and the workspace beyond the prepared masks wait on the carry's kernel
+([what a CTA makes](../../../architecture/hopper-carry.md#what-a-cta-makes)) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The workspace's part for the prepared masks is built ([the prepared masks' layout](mask_prepare_layout.md)). The density input reaches the prefill's kernels once they are built: the call carries it
 (`fsla/engine/prefill_call.py`, [`../../engine/prefill_call.md`](../../engine/prefill_call.md)) and the mask-preparation pass is the one kernel that reads it. `fsla.ops.prefill` keeps refusing by name.
