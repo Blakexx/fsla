@@ -26,26 +26,26 @@ struct Operands {
   int windows;
 };
 
-//: A SIDE'S FIRST LEVEL-SIDE: the write side's are the first `kLevels`, the read side's the next
-constexpr int side_at(bool read) { return read ? kLevels : 0; }
+//: A SIDE'S FIRST LEVEL-SIDE, in the bundle's slot order: the read side's are the first `kLevels`, the write side's the next
+constexpr int side_at(bool read) { return read ? 0 : kLevels; }
 
-//: THE CARVE OF A CALL, from its densities as the mask-preparation pass reads them (a byte `b` is `b + 1` 256ths) -- see docs/internals/carry/carry_groups.md#carve
+//: THE CARVE OF A CALL, from its densities as the mask-preparation pass reads them (a byte `b` is `b + 1` 256ths, the read side's row first) -- see docs/internals/carry/carry_groups.md#carve
 __device__ __forceinline__ plan::PrefillCarve carve_of(const Operands& o) {
   int write[kLevels] = {}, read[kLevels] = {};
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     if (l < o.levels) {
-      write[l] = static_cast<int>(o.density[l]) + 1;
-      read[l] = static_cast<int>(o.density[o.levels + l]) + 1;
+      read[l] = static_cast<int>(o.density[l]) + 1;
+      write[l] = static_cast<int>(o.density[o.levels + l]) + 1;
     }
   }
   return plan::prefill_carve(o.levels, o.width_bits, write, read);
 }
 
-//: WHETHER A LEVEL-SIDE IS WHOLE: it has no mask, or its density byte is the dense flag and its mask is never read -- see docs/internals/carry/carry_groups.md#whole
-__device__ __forceinline__ bool whole(const Operands& o, int s) {
-  const int density = static_cast<int>(o.density[(s / kLevels) * o.levels + s % kLevels]) + 1;
-  return o.mask[s] == nullptr || density == plan::kWholeDensity;
+//: WHETHER A LEVEL-SIDE IS WHOLE: its group is the level's size, and that alone -- see docs/internals/carry/carry_groups.md#whole
+__device__ __forceinline__ bool whole(const plan::PrefillCarve& c, bool read, int level) {
+  const int group = read ? c.read_group_bits[level] : c.write_group_bits[level];
+  return group == c.width_bits[level];
 }
 
 //: THE CALL'S TOKENS IN A WORD of a window: all 32, or the first of them where the call ends in it -- see docs/internals/carry/carry_groups.md#window-word

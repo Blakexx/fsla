@@ -13,6 +13,6 @@ Symbols: a window is the card's (`window_of_cc`, [`levels.md`](levels.md); token
 - IN A BLOCK of `groups` groups: `uint16 totals[groups]` at byte 0 (the window's live tokens of the group), then
   `uint32 words[words][groups]` at `prepared_words_at(groups)` = `(2 * groups + 3) & ~3`, word-major (the OR of the group's digits' words `j`; NONE at a group of one digit, where the word is the mask's own).
 - NO PER-WORD COUNT IS STORED: a carry CTA counts inline, a popcount and a running sum over the window's words, and the total is what a reader of the window's end needs.
-- The bytes of a block the layout does not use at the level-side's group are UNSPECIFIED, and a level-side at density byte 255 (dense) is not written: its region keeps what it held.
+- The bytes of a block the layout does not use at the level-side's group are UNSPECIFIED, and a level-side whose group is the level's size (whole) is not written: its region keeps what it held.
 
 A group of one digit stores a total a digit alone (its words are the mask's own); a group of 4 digits or more stores a word a group, at most 1 byte a mask word. `mask_prepare_bytes` is the layout's size from a call's widths, batch-heads, words and the card's window (`mask_prepare_bytes(width_bits, heads, words, device)`: the op derives the window from the device's card).

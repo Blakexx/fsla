@@ -23,14 +23,19 @@ GROUP_SIZES = (1, 4, 16, 32, 64, 128, 256)
 DENSE_BYTE = 255
 
 
-def group_of(byte: int, width: int) -> int | None:
+def group_of(byte: int, width: int) -> int:
     """A level-side's group, in digits, from its density byte: with ``d = byte + 1`` (256ths), the allowed size no larger than ``width``
     nearest to ``d * width / 256`` digits, a tie to the smaller, compared exactly in integers (the distance of a size ``a`` is
-    ``|a * 256 - d * width|``). ``None`` at byte 255: the level-side is dense and nothing is written for it."""
+    ``|a * 256 - d * width|``). At byte 255 the group is the level itself, whatever its width."""
     if byte == DENSE_BYTE:
-        return None
+        return width
     live = (byte + 1) * width
     return min((size for size in GROUP_SIZES if size <= width), key=lambda size: (abs(size * 256 - live), size))
+
+
+def whole(byte: int, width: int) -> bool:
+    """Whether a level-side is WHOLE: its group is the level's size. Its mask is never read and nothing is written for it."""
+    return group_of(byte, width) == width
 
 
 def words_at(groups: int) -> int:
@@ -95,12 +100,12 @@ def blocks_of(mask: torch.Tensor, group: int, window_words: int) -> Blocks:
 
 
 def expected(masks: Masks, density: torch.Tensor, window_words: int) -> dict[int, Blocks]:
-    """What the pass writes, by slot: the blocks of every present entry whose density byte is not 255 (``density`` is uint8 ``[2, D]``)."""
+    """What the pass writes, by slot: the blocks of every present entry that is not whole (``density`` is uint8 ``[2, D]``)."""
     out = {}
     for slot, mask in slots_of(masks):
-        group = group_of(int(density[slot // LEVELS, slot % LEVELS]), mask.shape[3])
-        if group is not None:
-            out[slot] = blocks_of(mask, group, window_words)
+        byte, width = int(density[slot // LEVELS, slot % LEVELS]), int(mask.shape[3])
+        if not whole(byte, width):
+            out[slot] = blocks_of(mask, group_of(byte, width), window_words)
     return out
 
 

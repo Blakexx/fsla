@@ -21,7 +21,7 @@ LEVELS = 4
 def prepare_masks(masks: Masks, density: torch.Tensor) -> torch.Tensor:
     """The workspace the pass wrote for ``masks``: uint8 on the masks' device, ``mask_prepare_bytes`` long. The slot of a present entry
     is ``side * 4 + level`` (side 0 the read side); a bundle with no present entry returns an empty tensor and launches nothing. A level-side whose
-    density byte is 255 is dense and is left as the workspace was made (uninitialised). The window is the card's, which the op derives from the masks' device."""
+    group is the level's size is whole (byte 255 always) and is left as the workspace was made (uninitialised). The window is the card's, which the op derives from the masks' device."""
     if masks.consumer != PREFILL:
         raise ValueError(f"the mask-preparation pass is the prefill's: the masks are {masks.consumer!r}-layout, not {PREFILL!r}")
     present = [(side * LEVELS + level, mask)

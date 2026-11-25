@@ -53,7 +53,7 @@ FSLA_CARVE_FN constexpr int carve_clamp(int value, int lo, int hi) {
 }
 
 //: THE GROUP OF A DENSITY (docs/internals/common/plan/prefill_launch.md#groups), one rule for both sides: the log2 of the allowed group size nearest to `density * width / 256` digits,
-//: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`
+//: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`; a density of the whole is the level itself, at every width
 FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
   const std::int64_t live = std::int64_t{density} << width_bits;
   int best = 0;
@@ -68,7 +68,7 @@ FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
       best_distance = distance;
     }
   }
-  return best;
+  return density >= kWholeDensity ? width_bits : best;
 }
 
 //: A SIDE'S LOOP ORDER over `levels` levels (docs/internals/common/plan/cta_carve.md#loop-order): `order[0]` the outermost, the side's sparsest level, to the densest innermost; equal densities keep the lower level outside

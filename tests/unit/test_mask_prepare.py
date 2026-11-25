@@ -30,25 +30,30 @@ LAYOUT = ROOT / "csrc" / "fsla" / "src" / "common" / "plan" / "mask_prepare_layo
 
 
 def _carved_groups(width_bits: int) -> list[int]:
-    """The carve's group of one level of ``width_bits`` at each density 1..255 (read side), in digits."""
-    densities = range(1, 256)
+    """The carve's group of one level of ``width_bits`` at each density 1..256 (read side), in digits."""
+    densities = range(1, 257)
     run = subprocess.run([str(TOOL), "--cta-carve", ";".join(str(width_bits) for _ in densities), "--write-density", ";".join("256" for _ in densities),
                           "--read-density", ";".join(str(d) for d in densities)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
     lines = [json.loads(line) for line in run.stdout.splitlines()]
-    assert len(lines) == 255
+    assert len(lines) == 256
     return [1 << line["read_group_bits"][0] for line in lines]
 
 
 @pytest.mark.parametrize("width_bits", range(1, 9))
 def test_the_references_group_is_the_carves_for_every_density_byte(width_bits):
     width = 1 << width_bits
-    assert [reference.group_of(byte, width) for byte in range(255)] == _carved_groups(width_bits)
+    assert [reference.group_of(byte, width) for byte in range(256)] == _carved_groups(width_bits)
 
 
-@pytest.mark.parametrize("width", [2, 4, 16, 32, 64, 128, 256])
-def test_a_level_side_at_byte_255_is_dense_and_has_no_group(width):
-    assert reference.group_of(255, width) is None
+@pytest.mark.parametrize("width", [2, 4, 8, 16, 32, 64, 128, 256])
+def test_a_level_side_at_byte_255_is_whole_its_group_the_level_itself_at_every_width(width):
+    assert reference.group_of(255, width) == width and reference.whole(255, width)
+
+
+def test_below_byte_255_a_level_side_is_whole_only_where_the_level_is_an_allowed_size():
+    assert not any(reference.whole(byte, width) for byte in range(255) for width in (2, 8))
+    assert all(any(reference.whole(byte, width) for byte in range(255)) for width in (4, 16, 32, 64, 128, 256))
 
 
 def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_digits_and_a_narrow_width_takes_only_what_it_holds():
@@ -92,16 +97,23 @@ def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_b
 
 
 def test_the_reference_of_a_hand_computed_block():
-    #: 4 digits at byte 254 (d = 255, 1020 of 1024 live): the group is the 4 digits. Digits' word 0: 0x1, 0x2, 0x0, 0x2 -> OR 0x3; word 1: 0x1 only on digit 0.
+    #: 4 digits in one group of 4. Digits' word 0: 0x1, 0x2, 0x0, 0x2 -> OR 0x3; word 1: 0x1 only on digit 0.
     masks = _tiny()
-    density = torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8)
-    out = reference.expected(masks, density, 32)
-    assert list(out) == [0]
-    block = out[0]
+    block = reference.blocks_of(masks.read[0], 4, 32)
     assert block.group == 4
     assert block.totals.tolist() == [[3]]
     assert block.words[0, :3, 0].tolist() == [0x3, 0x1, 0x0]
     assert reference.bytes_of(masks, 32) == 1 * 1 * reference.block_bytes(4, 32)
+
+
+def test_the_pass_writes_nothing_for_a_whole_level_side_and_a_block_for_one_that_is_not():
+    #: 4 digits: at byte 254 (d = 255, 1020 of 1024 live) the group is the 4 digits, the level itself: whole. At byte 0 the group is one digit.
+    masks = _tiny()
+    assert reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), 32) == {}
+    out = reference.expected(masks, torch.tensor([[0, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), 32)
+    assert list(out) == [0] and out[0].group == 1 and out[0].words is None
+    #: a digit's own live tokens of the window: digit 0 two (a bit in each word), digits 1 and 3 one, digit 2 none
+    assert out[0].totals.tolist() == [[2, 1, 0, 1]]
 
 
 @pytest.mark.parametrize("window_words", [32, 16])
@@ -113,7 +125,7 @@ def test_the_reference_reads_the_bytes_the_layout_names(window_words):
     for j, word in enumerate([0x3, 0x1] + [0] * (window_words - 2)):
         struct.pack_into("<I", block, reference.words_at(groups) + 4 * j, word)
     got = reference.read(torch.frombuffer(block, dtype=torch.uint8).clone(), masks, 0, 4, window_words)
-    want = reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), window_words)[0]
+    want = reference.blocks_of(masks.read[0], 4, window_words)
     assert got.totals.tolist() == want.totals.tolist() and got.words.tolist() == want.words.tolist()
 
 

@@ -15,7 +15,7 @@ group in digits (1, 4, 16, 32, 64, 128 or 256), `GB` its log2, `groups = width /
 
 - THE GRID IS SIZED FOR A GROUP OF ONE DIGIT, which is what the host can know: a thread a (window, digit), `ctas_of` CTAs of 1,024 threads for each level-side, the level-sides' CTAs one after the other
   (`Args::first_cta`, the last entry the grid). A CTA finds its level-side from its index.
-- THE GROUP IS DERIVED THERE. The CTA reads its level-side's density byte `density[side * levels + level]`; a byte `b` is `b + 1` 256ths, and at 256 (byte 255) the level-side is dense, its mask is never read and the CTA leaves
+- THE GROUP IS DERIVED THERE. The CTA reads its level-side's density byte `density[side * levels + level]`; a byte `b` is `b + 1` 256ths, and where the group that density gives is the level's size the level-side is WHOLE, its mask is never read and the CTA leaves
   with its region untouched. Otherwise `prefill_group_bits(density, width_bits)` (`cta_carve.h`, the carve's one rule) gives the group and `uniform_switch` over `kGroupSizeBits` (7 members, `group_index` the place of a group's bits among them) enters
   the body compiled for it, `prepare<GB, WORDS>`.
 - A SURPLUS CTA LEAVES AT ONCE. At a group of 4 digits or more a window needs fewer threads than the grid holds: a CTA whose first thread is past the level-side's last window returns before it loads.

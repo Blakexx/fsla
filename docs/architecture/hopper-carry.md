@@ -33,7 +33,8 @@ then the fold of the window's writes into the state.
   times, a cta will own a segment of many leaf groups"). Leaf groups tile the leaf space across CTAs; a group and a CTA's
   extent on a level nest, so on a level where the group is the larger the CTAs along it are in one group, and where it is
   the smaller a CTA holds several. A GROUP'S TOKENS are those live in its group on every masked level -- the AND of the
-  level-sides' group words; a level-side with no mask is one whole-level group and adds nothing. "Within a group, the
+  level-sides' group words; a level-side whose group is the level's size is WHOLE and adds nothing, its
+  mask never read (one with no mask is whole by its byte of 255). "Within a group, the
   CTAs all share the exact same token schedule. That's the definition of a group."
 - EACH SIDE HAS ITS OWN LOOP ORDER over the levels, its sparsest outermost (Blake, 2026-11-25: "Obviously each side has
   its own loop order. That's why publish has to order the smem state in a different orientation than the registers"):

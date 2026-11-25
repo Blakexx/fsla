@@ -40,7 +40,7 @@ A side's DENSITY on a level is the share of the level's digits a token of that s
 - R4, THE SIDES' SETS. THE WRITE SIDE of a fold: `fold_set_leaves` is the product over levels of `2^min(write_group_bits[l], fold_bits[l])`, the leaves a token is expanded over at once, and `fold_sets = fold_leaves / fold_set_leaves`, the
   separate sets of tokens a fold holds. THE READ SIDE over the whole carve (readout does not partition): `read_set_leaves` is the product of `2^min(read_group_bits[l], carve_bits[l])`, `read_sets = cta_leaves / read_set_leaves`.
 - R5, THE UNITS. `unit_ctas` is the product of `2^max(0, write_group_bits[l] - carve_bits[l])`, the CTAs inside one combination of write groups, which see one token schedule and are taken together ([the schedule](cta_carve.md#schedule))
-  ([`../../../architecture/hopper-carry.md`](../../../architecture/hopper-carry.md#what-a-cta-makes)). The units a head, `units_per_head = ctas_per_head / unit_ctas`, join the carve with the launch's count: the carve does not state it, and `plan_tool --cta-carve` prints it.
+  ([`../../../architecture/hopper-carry.md`](../../../architecture/hopper-carry.md#what-a-cta-makes)). The units a head, `units_per_head = ctas_per_head / unit_ctas`, join the carve with the launch's count: the carve does not state it, and `plan_tool --cta-carve` prints it. A DENSITY OF THE WHOLE (256, the byte 255) IS THE LEVEL ITSELF whatever its width, so that a whole level-side is the one whose group is the level's size and no kernel asks anything else (the owner: "use the group size equals level as the check, and that check is all you need in carry").
 
 ## Worked cases (`cc` 900, `tokens` 65,536: window 1024, 64 windows)
 

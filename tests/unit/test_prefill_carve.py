@@ -81,8 +81,9 @@ def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_t
 
 
 def test_a_group_is_never_larger_than_its_level():
-    out = _out(_carve([4, 1], [256, 256], [256, 256]))
-    assert out["write_group_bits"] == [4, 0] and out["read_group_bits"] == [4, 0]
+    #: a level of 2 digits holds no allowed size but 1: below the whole its group is one digit; at the whole (256) it is the level itself
+    out = _out(_carve([4, 1], [256, 256], [255, 255]))
+    assert out["write_group_bits"] == [4, 1] and out["read_group_bits"] == [4, 0]
 
 
 def test_one_level_of_256_digits_is_a_cta_of_256_leaves_and_two_folds_of_128():

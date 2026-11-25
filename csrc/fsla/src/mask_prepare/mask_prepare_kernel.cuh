@@ -149,10 +149,10 @@ __device__ __forceinline__ void mask_prepare_cta(const Args& a, const std::uint8
 #pragma unroll
   for (int i = 1; i < kSides; ++i) s += cta >= a.first_cta[i] ? 1 : 0;
   const int side = s / plan::kCarveMaxLevels, level = s % plan::kCarveMaxLevels;
-  //: a byte `b` is `b + 1` 256ths; at 256 the level-side is dense and its mask is never read
+  //: a byte `b` is `b + 1` 256ths; a group that is the level's size is every token: nothing is prepared, no reader asks
   const int dense = static_cast<int>(density[side * a.levels + level]) + 1;
-  if (dense == plan::kWholeDensity) return;
   const int bits = plan::prefill_group_bits(dense, a.width_bits[s]);
+  if (bits == a.width_bits[s]) return;
   uniform_switch<kGroupSizes>(group_index(bits), [&](auto member) {
     constexpr int kBits = plan::kGroupSizeBits[decltype(member)::value];
     prepare<kBits, WORDS>(a, workspace, s, cta - a.first_cta[s]);
