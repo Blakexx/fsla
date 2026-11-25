@@ -71,7 +71,8 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   from and the layout where it lands. MEASURED ALONE ([`lab/value_fetch.md`](../lab/value_fetch.md)): 16
   warps fetch a scattered line in 2.70 cycles where it lands as its 128 bytes whole (2.55 where a unit's 16 CTAs ask
   for the same lines), and in 16.6 in either form tried that lands it as a step's tile -- its 8 pieces in bricks, or a
-  piece of 32 lines an instruction. THE LAYOUT IN WHICH A LINE LANDS WHOLE AND A STEP READS IT IS NOT FOUND YET. NOT
+  piece of 32 lines an instruction. SO A LINE LANDS WHOLE, a row of the step's tile with its pieces in the order the
+  step's 128-byte swizzle reads ([`internals/carry/carry_values.md`](../internals/carry/carry_values.md#tile)). NOT
   MEASURED: the fetch while the CTA folds.
 - ITS COEFFICIENTS. A token's rows on the CTA's digits, loaded by the token's index into registers and expanded there,
   on both sides (RULED 2026-11-23: "the reason that coefficnets can afford to scatter is because we already need to load

@@ -55,9 +55,9 @@ THE PREDICTIONS, WRITTEN BEFORE EACH RUN.
 - The copy's size a register: 6 to 16, on the hypothesis that this form is the slow one -- MISSED, 2.70; the
   hypothesis was wrong.
 - Bricks 17 lines apart: 2.4 to 3.6, the layout putting four of an instruction's lanes on every bank as contiguous
-  rows do -- MISSED, 16.56. Both: 6 to 16 -- 16.55, inside the range for the wrong reason.
+  rows do -- MISSED, by a factor of five (the table's row). Both: 6 to 16 -- inside the range for the wrong reason.
 - By brick: 2.5 to 8, its writes being contiguous, which the run before had been read as what a copy's write costs
-  by -- MISSED, 16.62.
+  by -- MISSED, by a factor of two over its top (the table's row).
 - The turned rows: NO PRICE WAS STATED -- 2.4 to 18.3, near 2.70 if a row's pieces' order is free and near 16.6 if it
   is not, the rows run to learn which. They are near 2.70.
 

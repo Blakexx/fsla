@@ -10,7 +10,7 @@ token index straight into the steps' tiles ([`internals/carry/carry_values.md`](
 
 THE FORM. This file compiles the library's device code. A CTA an SM of 16 warps, each warp a group's windows: a lane
 loads its mask word a window ahead; the warp lists the window a round of 32 places at a time and issues the round's
-copies into its two step tiles, two rounds in flight. The values are one table of 256 windows that every CTA reads.
+copies into the round's 32 rows, two rounds in flight. The values are one table of 256 windows that every CTA reads.
 Rows: 64 live tokens a window; every token live. The first window's first four rounds' tiles of every group are
 checked byte for byte against the host's, a dead place's lines zero.
 
@@ -27,8 +27,9 @@ PREDICTED, before the run: 3.0 to 8.0 and 2.6 to 5.0, from the copies alone at 2
 ([`value_fetch`](value_fetch.md)) and the listing riding on them -- BOTH MISSED, by a factor of three to five. THE
 LISTING IS NOT IT: it is one to two cycles a token alone ([`carry_list`](carry_list.md)). THE WRONG PRICE IS ITS TILE'S
 LAYOUT: a row's 8 pieces landed in bricks 17 lines apart cost 16.6 cycles a line with the copies alone, against 2.70
-where a row lands as its 128 bytes whole ([`value_fetch`](value_fetch.md)); the copy's sized form costs nothing. This
-layout is not the form, and no fold is built on this fetch.
+where a row lands as its 128 bytes whole ([`value_fetch`](value_fetch.md)); the copy's sized form costs nothing. The
+fetch has since been rewritten to land whole rows ([`internals/carry/carry_values.md`](../internals/carry/carry_values.md#tile));
+THE FIGURES ABOVE ARE THE BRICK LAYOUT'S, and the rows' form is NOT RUN.
 
 WHAT IT IS NOT: a fetch past the cache. The values are one 32 MB table the whole grid reads, which the card's cache
 holds; a table it cannot hold is NOT MEASURED here (the copies alone: 3.79 against 3.69, `value_fetch`).

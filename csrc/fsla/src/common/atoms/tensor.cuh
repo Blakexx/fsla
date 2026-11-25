@@ -22,6 +22,20 @@ __device__ __forceinline__ uint64_t step_operand(SmemAddr a, uint32_t lbo, uint3
   return step_operand_lines(a >> 4, lbo, sbo);
 }
 
+//: A STEP'S OPERAND OF 16 ROWS, each one K entry's 64 values in 128 bytes, read through the 128-byte swizzle -- see docs/internals/common/atoms/tensor.md#rows
+__device__ __forceinline__ uint64_t step_operand_rows(SmemAddr a) {
+  //: FIXED by the instruction's descriptor: 8 rows are 64 lines, and layout type 1 at bit 62 is the 128-byte swizzle
+  constexpr uint32_t kHalf = 64;
+  constexpr uint64_t kSwizzle128 = uint64_t{1} << 62;
+  return step_operand(a, kHalf, kHalf) | kSwizzle128;
+}
+
+//: WHERE A ROW'S PIECE LIES under that swizzle: piece `piece` of the row at `row` -- see docs/internals/common/atoms/tensor.md#rows
+__device__ __forceinline__ SmemAddr step_row_piece(SmemAddr row, uint32_t piece) {
+  //: FIXED by the swizzle: a row is 128 bytes of 8 pieces, and a piece's place is turned by the row's own three bits
+  return row + ((piece ^ ((row >> 7) & 7u)) << 4);
+}
+
 //: THE EDGES OF A GROUP OF STEPS -- see docs/internals/common/atoms/tensor.md#edges
 __device__ __forceinline__ void steps_fence() {
   asm volatile("wgmma.fence.sync.aligned;" ::: "memory");
@@ -42,6 +56,16 @@ __device__ __forceinline__ void step_hold(float& r) { asm volatile("" : "+f"(r) 
 
 #define FSLA_STEP_D8(d) \
   "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
+
+//: 64 BY 16 BY 16 with A M|N-major (rows, or bricks) and B K-major -- see docs/internals/common/atoms/tensor.md#steps
+__device__ __forceinline__ void step_n16_rows(float (&d)[8], uint64_t a, uint64_t b, bool add) {
+  asm volatile(
+      "{ .reg .pred p; setp.ne.b32 p, %10, 0;\n"
+      "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, "
+      "%8, %9, p, 1, 1, 1, 0; }"
+      : FSLA_STEP_D8(d)
+      : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+}
 
 //: 64 BY 16 BY 16, bf16 into fp32, A K-major and B K-major: `d` += A [64 x 16] B [16 x 16], or `d` = A B -- see docs/internals/common/atoms/tensor.md#steps
 __device__ __forceinline__ void step_n16(float (&d)[8], uint64_t a, uint64_t b, bool add) {
