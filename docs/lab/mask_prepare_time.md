@@ -33,7 +33,7 @@ the same group size:
 | 256 | 2.53 | not measured | 32 + 0.13 | 12.7 |
 
 WHAT IT SHOWS.
-- THE COST BY GROUP SIZE: from 3.09 at a group of one digit to 2.53 at the largest.
+- THE COST BY GROUP SIZE: 2.74 at a group of one digit; the highest 3.09, at a group of 4; the lowest 2.53, at a group of 256.
 - THE SHUFFLE FORM (32 digits and above): 2.53 to 2.67, beside 2.64 at 16 digits, where a thread is a group.
 - ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is 11.9 to 13.0 bytes a cycle an SM
   at every group size.

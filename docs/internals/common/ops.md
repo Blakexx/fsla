@@ -23,6 +23,7 @@ Each concern of the operations is an atom header under `common/atoms/`, its body
 
 - [`atoms/address.cuh`](atoms/address.md): shared addresses, gathered and pinned bases, the state plane's page translation and the facts' per-atom bits.
 - [`atoms/copy.cuh`](atoms/copy.md): global to shared without the issuing thread, their groups and waits, and the 16-byte quantum moved synchronously.
+- [`atoms/tensor.cuh`](atoms/tensor.md): the hopper tensor step, its operand and edges, and a warpgroup's registers.
 - [`atoms/barrier.cuh`](atoms/barrier.md): the CTA's and named rendezvous, the mbarrier's phases, the warp's edge and the publish fence.
 - [`atoms/warp.cuh`](atoms/warp.md): lane votes and their readings, the warp-uniform index, the lane prefix and broadcast, and the controls ptxas cannot see through.
 - [`atoms/clock.cuh`](atoms/clock.md): the SM's cycle counter for the phase ledgers.

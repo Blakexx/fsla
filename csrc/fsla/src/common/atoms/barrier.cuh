@@ -33,6 +33,17 @@ __device__ __forceinline__ void mbar_wait(SmemAddr a, uint32_t parity) {
       : "memory");
 }
 
+//: THE SAME WAIT, SUSPENDING -- see docs/internals/common/atoms/barrier.md#suspended
+__device__ __forceinline__ void mbar_wait_suspended(SmemAddr a, uint32_t parity) {
+  asm volatile(
+      "{\n.reg .pred p;\n"
+      "MBAR_TRY_%=:\n"
+      "mbarrier.try_wait.parity.shared.b64 p, [%0], %1;\n"
+      "@!p bra MBAR_TRY_%=;\n}\n" ::"r"(a),
+      "r"(parity)
+      : "memory");
+}
+
 //: the same, asked once
 __device__ __forceinline__ bool mbar_test(SmemAddr a, uint32_t parity) {
   uint32_t ok;
@@ -72,6 +83,11 @@ __device__ __forceinline__ void rendezvous_arrive(int id, int n) {
 
 //: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM -- see docs/internals/common/atoms/barrier.md#publish-fence
 __device__ __forceinline__ void publish_fence() { __threadfence_block(); }
+
+//: THE ORDER BETWEEN THREADS' SHARED WRITES AND AN ASYNCHRONOUS OPERATION'S READ OF THEM -- see docs/internals/common/atoms/barrier.md#async-fence
+__device__ __forceinline__ void async_fence() {
+  asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+}
 
 }  // namespace ops
 }  // namespace denseref

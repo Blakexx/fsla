@@ -94,6 +94,8 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
             f"lab page: the record misses {sorted(missed)} and the reading here is of {sorted(MISSED)}: the reading "
             "of a run's misses (MISSED, READING) is written for that run"
         )
+    high = max(GROUPS, key=lambda g: R[name(g)])
+    low = min(GROUPS, key=lambda g: R[name(g)])
     table = "\n".join(
         [
             "| a group, digits | the library's pass | the lab's kernel | bytes a token, read + stored | bytes a cycle an SM |",
@@ -109,7 +111,7 @@ the same group size:
 {table}
 
 WHAT IT SHOWS.
-- THE COST BY GROUP SIZE: from {max(R[name(g)] for g in GROUPS):.2f} at a group of one digit to {min(R[name(g)] for g in GROUPS):.2f} at the largest.
+- THE COST BY GROUP SIZE: {R[name(1)]:.2f} at a group of one digit; the highest {R[name(high)]:.2f}, at a group of {high}; the lowest {R[name(low)]:.2f}, at a group of {low}.
 - THE SHUFFLE FORM (32 digits and above): {min(R[name(g)] for g in GROUPS[3:]):.2f} to {max(R[name(g)] for g in GROUPS[3:]):.2f}, beside {R[name(16)]:.2f} at 16 digits, where a thread is a group.
 - ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is {min(rates):.1f} to {max(rates):.1f} bytes a cycle an SM
   at every group size.

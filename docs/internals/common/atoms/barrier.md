@@ -18,6 +18,11 @@ Mirrors `csrc/fsla/src/common/atoms/barrier.cuh`, a concern of the baseline oper
   which is the case a design arranges. `mbar_test` asks once, for a loop that does other work while copies have not
   landed (its answer voted over the warp before it steers a branch).
 
+- <a id="suspended"></a>`mbar_wait_suspended`: the same wait by `try_wait`, which may suspend the thread until the
+  phase completes or the system's time limit passes, where `mbar_wait`'s `test_wait` issues every trip it waits: the
+  wait of a role that has nothing to do until another role arrives (the carry's roles; the lab's composed kernel waits
+  so, [`../../../lab/carry_token.md`](../../../lab/carry_token.md)).
+
 - <a id="warp-sync"></a>`warp_sync()`: `bar.warp.sync 0xffffffff`. `__syncwarp()` at a site the compiler cannot prove
   convergent lowers to a CALL into `__cuda_sm70_warpsync`; the instruction keeps the edge a single WARPSYNC (no
   shipped caller).
@@ -25,3 +30,7 @@ Mirrors `csrc/fsla/src/common/atoms/barrier.cuh`, a concern of the baseline oper
 - <a id="publish-fence"></a>`publish_fence()`: the order between a unit's shared writes and the flag that publishes
   them, at BLOCK scope: producers and consumers that are warps of one CTA need no device-scope fence, which would
   order traffic no participant can observe (no shipped caller).
+
+- <a id="async-fence"></a>`async_fence()`: `fence.proxy.async.shared::cta`, the order between threads' shared-memory
+  writes and an asynchronous operation's read of them (a tensor step's operand tile, a bulk copy's source): issued
+  after the stores and before the barrier that hands the tile on (no shipped caller; the carry is designed, not built).

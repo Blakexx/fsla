@@ -60,6 +60,7 @@ include_root(
     name = "harness_headers",
     hdrs = [
         "src/common/arch_caps.cuh",
+        "src/common/atoms/tensor.cuh",
         "src/common/atoms/warp.cuh",
         "src/common/structure_switch.cuh",
     ],
