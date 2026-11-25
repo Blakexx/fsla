@@ -16,7 +16,7 @@ group in digits (a power of two from 1 to 256), `GB` its log2, `groups = width /
 - THE GRID IS SIZED FOR A GROUP OF ONE DIGIT, which is what the host can know: a thread a (window, digit), `ctas_of` CTAs of 1,024 threads for each level-side, the level-sides' CTAs one after the other
   (`Args::first_cta`, the last entry the grid). A CTA finds its level-side from its index.
 - THE GROUP IS DERIVED THERE. The CTA reads its level-side's density byte `density[side * levels + level]`; a byte `b` is `b + 1` 256ths, and where the group that density gives is the level's size the level-side is WHOLE, its mask is never read and the CTA leaves
-  with its region untouched. Otherwise `prefill_group_bits(density, width_bits)` (`cta_carve.h`, the carve's one rule) gives the group and `uniform_switch` over `kGroupSizeBits` (9 members, `group_index` the place of a group's bits among them) enters
+  with its region untouched. Otherwise `prefill_group_bits(density, width_bits)` (`cta_carve.h`, the carve's one rule) gives the group and `uniform_switch` over the group's log2 (8 members, 1 to 128 digits: a group of 256 is a level of 256 whole) enters
   the body compiled for it, `prepare<GB, WORDS>`.
 - A SURPLUS CTA LEAVES AT ONCE. At a group of 2 digits or more a window needs fewer threads than the grid holds: a CTA whose first thread is past the level-side's last window returns before it loads.
 - THE HOST (`mask_prepare`) checks what the kernel assumes and nothing else: the density, the workspace and each mask a contiguous array of its dtype on the density's card (`check_operand`); a slot a mask, distinct and inside the density's depth; each mask int32 `[B, H, ceil(T / 32), width]` with `width` a power of two from 2 to 256; the mask's memory
@@ -42,6 +42,6 @@ A thread walks its window's `WORDS` words in order with ITS LOADS HELD AHEAD: `k
 
 ## Its time
 
-Measured on an H100 at seven of its nine group sizes, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
+Measured on an H100 at six of the eight group sizes it prepares, the mask read once: [`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md).
 NOT MEASURED: a group of 2 or of 8 digits, a level narrower than 256 digits, several level-sides in one launch, and a call short enough that the launch itself is most of its time.
 

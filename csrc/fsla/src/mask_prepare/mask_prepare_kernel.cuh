@@ -14,7 +14,8 @@ namespace detail {
 
 constexpr int kThreads = 1024;
 constexpr int kSides = plan::kLevelSides;
-constexpr int kGroupSizes = plan::kGroupSizes;
+//: the group sizes the pass prepares, by log2: those smaller than the widest level (a group of its level's size is the level whole, and nothing is prepared for it)
+constexpr int kPrepared = plan::kCarveMaxWidthBits;
 
 //: THE LAUNCH'S FACTS of each level-side `s`: its mask (null where it has none), where its blocks start in the workspace, its first CTA (`first_cta[kSides]` the grid), its width and its batch-heads
 struct Args {
@@ -27,18 +28,6 @@ struct Args {
   int windows;
   int levels;
 };
-
-//: the index of a group's bits among `plan::kGroupSizeBits`
-__host__ __device__ constexpr int group_index(int bits) { return bits; }
-
-constexpr bool group_index_inverts_the_sizes() {
-  for (int i = 0; i < kGroupSizes; ++i) {
-    if (group_index(plan::group_size_bits(i)) != i) return false;
-  }
-  return true;
-}
-
-static_assert(group_index_inverts_the_sizes(), "group_index inverts group_size_bits");
 
 //: A THREAD'S DIGITS OF ONE WORD AS LOADED: 16 bytes a load where it holds 4 digits or more
 template <int U>
@@ -162,8 +151,8 @@ __device__ __forceinline__ void mask_prepare_cta(const Args& a, const std::uint8
   const int dense = static_cast<int>(density[side * a.levels + level]) + 1;
   const int bits = plan::prefill_group_bits(dense, a.width_bits[s]);
   if (bits == a.width_bits[s]) return;
-  uniform_switch<kGroupSizes>(group_index(bits), [&](auto member) {
-    constexpr int kBits = plan::kGroupSizeBits[decltype(member)::value];
+  uniform_switch<kPrepared>(bits, [&](auto member) {
+    constexpr int kBits = decltype(member)::value;
     prepare<kBits, WORDS>(a, workspace, s, cta - a.first_cta[s]);
   });
 }

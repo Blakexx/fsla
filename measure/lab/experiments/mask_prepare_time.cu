@@ -1,7 +1,7 @@
 // measure/lab/experiments/mask_prepare_time.cu -- QUESTION: what does the LIBRARY's mask-preparation pass cost a token on
-// a mask it reads once, at each of the nine group sizes its density byte can select -- the three the lab's own kernel
-// measured (`mask_prep`: 1, 4 and 16 digits), 2 and 8, and the four whose lanes OR by warp shuffle (32 to 256
-// digits)? METHOD: this file compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts a
+// a mask it reads once, at each of the eight group sizes the pass prepares on a level of 256 digits (a group of 256 is
+// the level whole: nothing is prepared) -- the three the lab's own kernel measured (`mask_prep`: 1, 4 and 16 digits), 2
+// and 8, and the three whose lanes OR by warp shuffle (32 to 128 digits)? METHOD: this file compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts a
 // clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
 // level-side of 4 to 5 live digits a token, a window the hopper card's (1,024 tokens). A round is the CTA's own windows (4 at a group of
 // one digit, 8 at 2, 16 at 4, 32 at 8, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows.
@@ -45,8 +45,8 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the library's CTA dispatches once -- its level-side, its switch on the group, a surplus CTA's return -- outside its own
   //: loops; here that dispatch sits inside the lab's loop over rounds, which the library's kernel does not have
-  //: the switch has an arm a group size, nine of them
-  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 26);
+  //: the switch has an arm a group size the pass prepares, eight of them
+  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 24);
   if (b.expect_only) return 0;
   //: every group covers the same windows a call, 256 a CTA
   constexpr int kCtaWindows = 256;
@@ -74,10 +74,10 @@ int main(int argc, char** argv) {
   args.windows = static_cast<int>(windows);
   args.levels = 1;
   for (int s = 1; s <= pass::kSides; ++s) args.first_cta[s] = INT32_MAX;
-  for (int member = 0; member < plan::kGroupSizes; ++member) {
-    const int gb = plan::group_size_bits(member), g = 1 << gb, groups = kDigits >> gb;
-    //: a density byte whose group is `g`: `byte + 1` 256ths of 256 digits is `byte + 1` digits; 255 would be dense
-    const uint8_t byte = static_cast<uint8_t>(g == kDigits ? 200 : g - 1);
+  for (int gb = 0; gb < kWidthBits; ++gb) {
+    const int g = 1 << gb, groups = kDigits >> gb;
+    //: a density byte whose group is `g`: `byte + 1` 256ths of 256 digits is `byte + 1` digits
+    const uint8_t byte = static_cast<uint8_t>(g - 1);
     if (plan::prefill_group_bits(byte + 1, kWidthBits) != gb) {
       std::fprintf(stderr, "the density byte %d does not select a group of %d digits\n", byte, g);
       return 1;

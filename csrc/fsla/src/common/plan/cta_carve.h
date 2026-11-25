@@ -31,22 +31,8 @@ inline constexpr int kCtaLeaves = 1 << kCtaLeafBits;
 inline constexpr int kWholeDensity = 256;
 inline constexpr int kLeastDensity = 1;
 
-//: the allowed group sizes in digits, as log2: every power of two from 1 to 256 (those no larger than a level's width are allowed on it, so a level's own size always is)
-inline constexpr int kGroupSizeBits[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-inline constexpr int kGroupSizes =
-    static_cast<int>(sizeof(kGroupSizeBits) / sizeof(kGroupSizeBits[0]));
-
-//: `kGroupSizeBits[i]` as arithmetic: a kernel evaluates it where it cannot read the table
-FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i; }
-
-constexpr bool group_size_bits_is_the_table() {
-  for (int i = 0; i < kGroupSizes; ++i) {
-    if (group_size_bits(i) != kGroupSizeBits[i]) return false;
-  }
-  return sizeof(kGroupSizeBits) == kGroupSizes * sizeof(int);
-}
-
-static_assert(group_size_bits_is_the_table(), "group_size_bits is kGroupSizeBits");
+//: the allowed group sizes are every power of two of digits from 1 to the widest level's 256, a size its log2 (those no larger than a level's width are allowed on it, so a level's own size always is)
+inline constexpr int kGroupSizes = kCarveMaxWidthBits + 1;
 
 //: `value` held within `lo` .. `hi`
 FSLA_CARVE_FN constexpr int carve_clamp(int value, int lo, int hi) {
@@ -59,8 +45,7 @@ FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
   const std::int64_t live = std::int64_t{density} << width_bits;
   int best = 0;
   std::int64_t best_distance = -1;
-  for (int i = 0; i < kGroupSizes; ++i) {
-    const int bits = group_size_bits(i);
+  for (int bits = 0; bits < kGroupSizes; ++bits) {
     if (bits > width_bits) break;
     const std::int64_t size = (std::int64_t{1} << bits) << 8;
     const std::int64_t distance = size > live ? size - live : live - size;

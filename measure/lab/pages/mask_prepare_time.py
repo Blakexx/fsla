@@ -19,7 +19,8 @@ import pathlib
 from _record import Record, card
 
 UNIT = "SM-cycles a token"
-GROUPS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+#: the sizes the pass prepares on the experiment's level of 256 digits: a group of 256 is the level whole
+GROUPS = (1, 2, 4, 8, 16, 32, 64, 128)
 #: the sizes whose lanes OR by warp shuffle
 SHUFFLED = tuple(g for g in GROUPS if g > 16)
 #: a level-side's digits and a window's mask words in the experiment, and a word's tokens
@@ -32,7 +33,7 @@ PREDICTED_FOR = "9c2a0f30"
 #: one rate the pass with a count a word had fit (11.8 to 12.9 bytes a cycle an SM, the experiment at 0fb5eb86), the row
 #: at one digit widened upward for its held loads, 8 words' where they were 16
 #: groups of 2 and of 8 are forms the run before did not have (a pair a thread; two lines a thread, 4 words' loads held): the same rate over their bytes
-PREDICTED = {1: (2.5, 3.1), 2: (3.6, 4.2), 4: (3.0, 3.5), 8: (2.7, 3.15), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8), 256: (2.4, 2.7)}
+PREDICTED = {1: (2.5, 3.1), 2: (3.6, 4.2), 4: (3.0, 3.5), 8: (2.7, 3.15), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8)}
 #: THE ROWS THE RUN MISSED, which the reading is of
 MISSED: set[int] = set()
 READING = """WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held. The ranges came from one rate over the bytes a token read

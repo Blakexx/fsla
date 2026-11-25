@@ -31,7 +31,7 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
   density measured; the mask in cache, about 1.0 at every group size, what bounds it there being open.
 - BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
-  and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at seven of its nine group sizes (groups of 2 and of 8 digits are NOT MEASURED)
+  and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at six of the eight group sizes it prepares (groups of 2 and of 8 digits are NOT MEASURED)
   ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)).
 - NOT BUILT: the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
