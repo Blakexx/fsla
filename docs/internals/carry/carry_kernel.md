@@ -33,5 +33,12 @@ the lab runs it ([`../../lab/carry_skeleton.md`](../../lab/carry_skeleton.md)).
 - <a id="drain"></a>`drain_role` follows the readout a panel behind and frees each panel as it has added it.
 - WHAT IS NOT BUILT is named in the code where it goes: the image, the lists, the value lines' fetch, the
   coefficients, the steps, the sums' stores and the adds.
-- <a id="the-cta"></a>`carry_cta<Bt>(args)`: the first thread initializes the barriers, the CTA meets, and each
+- <a id="handoff"></a>A HAND-OFF's form is the arm's while it is measured (`hand<WAIT>`, `take<WAIT>`): the shared
+  barrier with a wait that suspends (0), or a named barrier of the two roles' threads, the producer arriving and the
+  waiter syncing (a tile group's two and a panel's two take twelve of the CTA's sixteen with the roles' own three).
+  The lab prices both on the idle skeleton ([`../../lab/carry_skeleton.md`](../../lab/carry_skeleton.md)); the form not
+  kept goes. A WAIT THAT SPINS is not tried there (the owner, 25 November 2026: "the spinning will look free until it
+  contends with real work ... just keep spin in mind as something we can try if we see barriers as a problem in the
+  final kernel").
+- <a id="the-cta"></a>`carry_cta<Bt, FOLD, READ, WAIT>(args)`: the first thread initializes the barriers, the CTA meets, and each
   role's whole body runs in its own branch.
