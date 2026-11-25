@@ -9,15 +9,17 @@ operands -- the masks, the mask-preparation pass's prepared words, the densities
 their value lines in its rows, exactly; and what does a window cost a CTA with that supply running?
 
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
-of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its four calls: THE CELL, the write
+of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its five calls: THE CELL, the write
 side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
 write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2; level 0's write group of 4 digits is raised to 8,
 a set's least of 16 leaves, which makes 16 sets a fold); THE WRITE SIDE WHOLE on both levels, no mask of its own (a fold is
 one set and every token is live in it: the dense end); and ONE DIGIT A TOKEN on each level (sets of 16 leaves that are
-mostly empty: the sparse end). The last two are NOT RUN. The read side's densities are the cell's mirror and its masks are never read (its role is a
+mostly empty: the sparse end); and THE BOTH-LEVELS MASKS WITH THE READ SIDE'S DENSITIES CROSSED (level 0's the write
+side's of level 1 and the reverse), which changes nothing the supply reads but the carve the densities give. The last
+three are NOT RUN on record. The read side's densities are the cell's mirror and its masks are never read (its role is a
 stub). The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
-cell and of the sparse call, 2 of the others): the tracer waits for a round's copies and copies its tokens and rows out, and on the
-host every round of every set of every fold is there once, its tokens the set's list in order, its rows their value
+cell, the sparse call and the crossed call, 2 of the others): the tracer waits for a round's copies and copies its tokens and rows out, and on the
+host every round of every set of every fold -- of each sharer's part of it, where warps share a set -- is there once, its tokens the set's list in order, its rows their value
 lines in the step's swizzle order, a dead place's row zero, on its boundary; the sets' leaves tile the leaf space
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
@@ -33,7 +35,9 @@ sets tiling the leaf space; cycles a window a CTA, the median):
 
 THE RECORD IS OF THE SUPPLY BEFORE A SET'S LEAST: at b64785d8 no group was raised, and the second call had 32 sets a
 fold of 8 leaves, about 19 live tokens a set a window, 8 sets a warp a window. On this tree it has 16 sets a fold of
-16 leaves, 4 a warp a window, and is NOT RUN.
+16 leaves, 4 a warp a window. Since then, too, the supply LAYS a set's tokens in a list where it selected them a round,
+and warps that share a set split it by bit ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)).
+NOT RUN on record in this form.
 
 PREDICTED, before the run: 3,100 to 3,700 and 4,300 to 5,100; 10,400 to 11,800 and 13,000 to 14,800, each range set
 about an unrecorded trial reading of the same form -- ALL FOUR HELD.

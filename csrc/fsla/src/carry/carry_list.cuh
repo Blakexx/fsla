@@ -28,21 +28,52 @@ __device__ __forceinline__ Listing listing_of(std::uint32_t word) {
   return {word, through - live, through, ops::lane_broadcast(through, WORDS - 1)};
 }
 
-//: THE TOKEN AT A PLACE of the listing: lane `p` of round `r` takes place `WORDS r + p`; -1 past the total -- see docs/internals/carry/carry_list.md#select
+//: FIXED by the mask: a word is 32 tokens
+constexpr int kWordTokens = 32;
+
+//: A PLACE OF A WARP'S LIST that holds no token
+constexpr std::uint16_t kNoToken = 0xFFFF;
+
+//: A WARP'S LIST of a set's tokens: a place a token of a window, and a spare place a lane -- see docs/internals/carry/carry_list.md#lay
 template <int WORDS>
-__device__ __forceinline__ int listed_token(const Listing& s, int round) {
-  const int place = WORDS * round + static_cast<int>(threadIdx.x & (WORDS - 1));
-  //: the lane whose tokens hold the place: the count of lanes that end at or before it
-  int lane = 0;
+constexpr int kListPlaces = WORDS * kWordTokens + ops::kBallotLanes;
+
+//: THE PART OF A WORD'S TOKENS a warp takes of a set that `1 << split_bits` warps share, the warp their `turn`th: that share of the word's bits -- see docs/internals/carry/carry_list.md#share
+__device__ __forceinline__ std::uint32_t shared_part(int split_bits, int turn) {
+  const int bits = kWordTokens >> split_bits;
+  return split_bits == 0 ? ~0u : ((1u << bits) - 1u) << (turn * bits);
+}
+
+//: THE LISTING'S TOKENS LAID into `list`: the token of rank `r` at place `r`, and no token from the total to the end of its round -- see docs/internals/carry/carry_list.md#lay
+template <int WORDS>
+__device__ __forceinline__ void lay_tokens(const Listing& s, std::uint16_t* list) {
+  constexpr int kLanes = ops::kBallotLanes;
+  const int lane = static_cast<int>(threadIdx.x & (kLanes - 1));
+  const int spare = WORDS * kWordTokens + lane;
+  //: the trips are the fullest word's tokens, a value every lane holds: no vote a trip
+  int most = __popc(s.word);
 #pragma unroll
-  for (int step = WORDS / 2; step >= 1; step >>= 1) {
-    const int ends = ops::lane_broadcast(s.through, lane + step - 1);
-    lane += ends <= place ? step : 0;
+  for (int d = 1; d < kLanes; d <<= 1) {
+    const int other = __shfl_xor_sync(0xFFFFFFFFu, most, d);
+    most = other > most ? other : most;
   }
-  const auto word = static_cast<std::uint32_t>(ops::lane_broadcast(static_cast<int>(s.word), lane));
-  const int before = ops::lane_broadcast(s.before, lane);
-  const int token = WORDS * lane + ops::nth_set_bit(word, place - before);
-  return place < s.total ? token : -1;
+  most = ops::lane_broadcast(most, 0);
+
+  std::uint32_t rest = s.word;
+  int rank = s.before;
+#pragma unroll 1
+  for (int trip = 0; trip < most; ++trip) {
+    //: a store every trip and no branch: a lane with no token left stores at its spare place
+    const int bit = __ffs(static_cast<int>(rest)) - 1;
+    list[rest != 0u ? rank : spare] = static_cast<std::uint16_t>(kWordTokens * lane + bit);
+    rank += rest != 0u ? 1 : 0;
+    rest &= rest - 1u;
+  }
+
+  const int tail = s.total & (kLanes - 1);
+  list[tail != 0 && lane >= tail ? s.total - tail + lane : spare] = kNoToken;
+  //: every lane's stores stand before any lane's loads of the list
+  __syncwarp();
 }
 
 }  // namespace detail

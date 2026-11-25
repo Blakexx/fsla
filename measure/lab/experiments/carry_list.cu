@@ -1,7 +1,8 @@
 // measure/lab/experiments/carry_list.cu -- QUESTION: what does the LIBRARY's listing cost -- a warp turning a group's
 // window of mask words into its live tokens in order, 32 places a round, counting inline -- by how many tokens are
 // live, and where the words are two levels' ANDed?
-// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`). A CTA an SM of 16 warps, each warp a
+// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`: the listing; the select is this
+// file's own, the form its record measured -- the library's supply lays its tokens). A CTA an SM of 16 warps, each warp a
 // group's windows: a lane loads its word of each of two tables a window ahead, ANDs them, and the warp lists the
 // window a round at a time into its 32 consecutive words of shared memory. Rows: 64 live tokens a window from one
 // table (the other all ones); every token live; 64 live in both of two tables of a quarter live. The first windows'
@@ -16,6 +17,24 @@
 namespace carry_list {
 
 namespace carry = fsla::carry::detail;
+namespace ops = ::denseref::ops;
+
+//: THE TOKEN AT A PLACE of the listing: lane `p` of round `r` takes place `WORDS r + p`; -1 past the total -- this experiment's own: the library's supply lays its tokens (`carry_supply`)
+template <int WORDS>
+__device__ __forceinline__ int listed_token(const carry::Listing& s, int round) {
+  const int place = WORDS * round + static_cast<int>(threadIdx.x & (WORDS - 1));
+  //: the lane whose tokens hold the place: the count of lanes that end at or before it
+  int lane = 0;
+#pragma unroll
+  for (int step = WORDS / 2; step >= 1; step >>= 1) {
+    const int ends = ops::lane_broadcast(s.through, lane + step - 1);
+    lane += ends <= place ? step : 0;
+  }
+  const auto word = static_cast<std::uint32_t>(ops::lane_broadcast(static_cast<int>(s.word), lane));
+  const int before = ops::lane_broadcast(s.before, lane);
+  const int token = WORDS * lane + ops::nth_set_bit(word, place - before);
+  return place < s.total ? token : -1;
+}
 
 constexpr int kWords = 32, kWarps = 16, kWindow = kWords * 32;
 
@@ -41,7 +60,7 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
     int round = 0;
 #pragma unroll 1
     do {
-      const int token = carry::listed_token<kWords>(s, round);
+      const int token = listed_token<kWords>(s, round);
       *mine = static_cast<uint32_t>(token);
       folded = folded * 31u + static_cast<uint32_t>(token);
       if constexpr (CHECK != 0) out[(group + w) * kWindow + kWords * round + lane] = static_cast<uint32_t>(token);

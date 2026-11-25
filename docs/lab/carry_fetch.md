@@ -35,3 +35,7 @@ WHAT IT IS NOT: a fetch past the cache. The values are one 32 MB table the whole
 holds; a table it cannot hold is NOT MEASURED here (the copies alone: 3.79 against 3.69, `value_fetch`).
 
 Record: `measure/lab/results/carry_fetch/sm_90a.json`.
+
+SINCE THE RECORD: the select (`listed_token`) and the copies it feeds are this experiment's own code. The library's supply lays a set's
+tokens in a list ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)), which
+[`carry_supply`](carry_supply.md) measures; the rows above are of the select.

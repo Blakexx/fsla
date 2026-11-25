@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "carry/carry_list.cuh"
 #include "common/atoms/copy.cuh"
 #include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
@@ -25,23 +26,35 @@ constexpr int kRowBytes = 2 * CHANNELS;
 template <int CHANNELS>
 constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 
-//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group; a token's line is `stride` bytes on from the token before's -- see docs/internals/carry/carry_values.md#fetch
+//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group: `tokens` the round's 32 places of the warp's list, a token's line `stride` bytes on from the token before's; `tiles` on a 1,024-byte boundary -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
-                                            std::int64_t stride, int token) {
+                                            std::int64_t stride, const std::uint16_t* tokens) {
   constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kPieceChannels;
   constexpr int kTokens = kLanes / kPieces;
   static_assert(kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
   const int lane = static_cast<int>(threadIdx.x) & (kLanes - 1);
   const int piece = lane % kPieces, which = lane / kPieces;
+  //: THE ROUND'S TOKENS ARE LOADED FIRST, all of them: a token loaded where it is used holds the warp until it lands
+  int listed[kPieces];
+#pragma unroll
+  for (int i = 0; i < kPieces; ++i) listed[i] = tokens[kTokens * i + which];
+
+  //: a copy's row is `kTokens` rows on from the copy before's, so the rows of every other copy turn their pieces alike: two places a lane, formed once
+  const auto turned = static_cast<std::uint32_t>(piece);
+  const ops::SmemAddr even =
+      ops::step_row_piece(tiles + static_cast<ops::SmemAddr>(which * kRowBytes<CHANNELS>), turned);
+  const ops::SmemAddr odd = ops::step_row_piece(
+      tiles + static_cast<ops::SmemAddr>((kTokens + which) * kRowBytes<CHANNELS>), turned);
+  const std::uint8_t* const lines = values + piece * kPieceBytes;
+  //: a line's place in a window fits 32 bits
+  const int line = static_cast<int>(stride);
 #pragma unroll
   for (int i = 0; i < kPieces; ++i) {
-    const int place = kTokens * i + which;
-    const int from = ops::lane_broadcast(token, place);
-    const ops::SmemAddr row = tiles + static_cast<ops::SmemAddr>(place * kRowBytes<CHANNELS>);
-    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * stride;
-    const ops::SmemAddr to = ops::step_row_piece(row, static_cast<std::uint32_t>(piece));
-    ops::stage_tile_if(to, at + piece * kPieceBytes, from >= 0);
+    const int from = listed[i];
+    const auto on = static_cast<ops::SmemAddr>((i / 2) * 2 * kTokens * kRowBytes<CHANNELS>);
+    const ops::SmemAddr to = ((i & 1) != 0 ? odd : even) + on;
+    ops::stage_tile_if(to, lines + static_cast<std::uint32_t>(from * line), from != kNoToken);
   }
   ops::stage_commit();
 }

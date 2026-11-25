@@ -6,7 +6,8 @@
 // kernel, which it launches first). A call of one head: two levels of 256 digits, 64 value channels, the write side
 // masked on level 0 at 4 to 5 live digits a token and whole on level 1 (THE CELL), or masked on both (level 1 a run of
 // 40 digits a token), or whole on both (no mask of its own: every token live in a fold's one set), or one digit a
-// token on each level (sets that are mostly empty); the read side's densities the cell's mirror, its masks never read (its role is a stub). The grid
+// token on each level (sets that are mostly empty), or masked on both with the read side's densities crossed with
+// the write side's (the carve alone changes); the read side's densities the cell's mirror, its masks never read (its role is a stub). The grid
 // is the head's CTAs. CHECKED through the kernel's tracer, which waits for a round's copies and copies its tokens and
 // rows out: every round of every set of every fold is there once, its tokens the set's list in order, its rows their
 // value lines in the step's swizzle order, a dead place's row zero; and on the host, the sets' leaves tile the leaf
@@ -55,7 +56,7 @@ struct Keep {
   __device__ __forceinline__ void wait_end(int) {}
   __device__ __forceinline__ void arrive(int) {}
   __device__ __forceinline__ void phase(int) {}
-  __device__ __forceinline__ void round(int, int set, int window, int round, int token, uint32_t rows) {
+  __device__ __forceinline__ void round(int, int set, int window, int round, const uint16_t* tokens, uint32_t rows) {
     ops::stage_wait<0>();
     //: every lane's copies have landed before any lane reads a row
     __syncwarp();
@@ -71,7 +72,8 @@ struct Keep {
         head[2] = round;
         head[3] = static_cast<int>((rows & 1023u) != 0u);
       }
-      reinterpret_cast<int*>(to + kTokensAt)[lane] = token;
+      const int listed = tokens[lane];
+      reinterpret_cast<int*>(to + kTokensAt)[lane] = listed == carry::kNoToken ? -1 : listed;
 #pragma unroll 1
       for (int k = 0; k < kRound / kLine; ++k) {
         const int i = kLine * k + 4 * lane;
@@ -102,7 +104,7 @@ struct Stamps {
   __device__ __forceinline__ void wait_end(int id) { row.stamp(warpline::kWaitEnd, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void arrive(int id) { row.stamp(warpline::kArrive, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void phase(int site) { row.mark(warpline::kPhaseBegin, kPhases + static_cast<uint32_t>(site)); }
-  __device__ __forceinline__ void round(int, int, int, int, int, uint32_t) {}
+  __device__ __forceinline__ void round(int, int, int, int, const uint16_t*, uint32_t) {}
 };
 
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's; its warps' timelines stamped where `TRACE`
@@ -131,7 +133,8 @@ struct Call {
 
 //: THE CALLS, by the write side's masks: the cell (level 0 at 4 to 5 live digits a token, level 1 whole); both levels (level 1
 //: a run of `kRun` digits too); whole (no mask: the dense end); one digit a token on each level (the sparse end)
-enum class Shape { kCell, kBoth, kWhole, kSparse };
+//: crossed: both levels' masks, the read side's densities the write side's crossed (level 0's the write side's of level 1), so that the levels weigh alike
+enum class Shape { kCell, kBoth, kWhole, kSparse, kCrossed };
 
 inline Call make(Shape shape, int windows) {
   Call c;
@@ -141,7 +144,7 @@ inline Call make(Shape shape, int windows) {
   //: the cell's level-0 mask, whose byte is the read side's density on level 1 in every call
   std::vector<uint32_t> cell(words * kDigits, 0);
   if (shape != Shape::kWhole) c.mask[0].assign(words * kDigits, 0);
-  if (shape == Shape::kBoth || shape == Shape::kSparse) c.mask[1].assign(words * kDigits, 0);
+  if (shape == Shape::kBoth || shape == Shape::kSparse || shape == Shape::kCrossed) c.mask[1].assign(words * kDigits, 0);
   const int run = shape == Shape::kSparse ? 1 : kRun;
 
   for (size_t x = 0; x < c.tokens; ++x) {
@@ -166,6 +169,10 @@ inline Call make(Shape shape, int windows) {
   c.density[1] = byte(cell);
   c.density[kLevels] = c.mask[0].empty() ? 255 : byte(c.mask[0]);
   c.density[kLevels + 1] = c.mask[1].empty() ? 255 : byte(c.mask[1]);
+  if (shape == Shape::kCrossed) {
+    c.density[0] = c.density[kLevels + 1];
+    c.density[1] = c.density[kLevels];
+  }
   const int width_bits[kLevels] = {kWidthBits, kWidthBits};
   const int read[kLevels] = {c.density[0] + 1, c.density[1] + 1};
   const int write[kLevels] = {c.density[kLevels] + 1, c.density[kLevels + 1] + 1};
@@ -323,6 +330,16 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
             if ((live >> bit & 1u) != 0) lists[set][j / kWords].push_back(static_cast<int>(j % kWords) * 32 + bit);
         }
       }
+      //: warps that share a set split a word's tokens by bit: a set's list a part, the part a warp's
+      int set_bits = 0;
+      while ((1 << set_bits) < sets) ++set_bits;
+      const int shared_bits = std::min(set_bits, carry::kGroupWarpBits), parts = carry::kGroupWarps >> shared_bits;
+      const auto own = [&](int set, int window, int part) {
+        std::vector<int> list;
+        for (const int token : lists[set][window])
+          if (token % 32 / (32 / parts) == part) list.push_back(token);
+        return list;
+      };
       std::map<std::tuple<int, int, int>, int> seen;
       for (int warp = 0; warp < carry::kGroupWarps; ++warp) {
         const size_t mine = static_cast<size_t>(cta) * kFoldWarps + fold * carry::kGroupWarps + warp;
@@ -331,14 +348,18 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
           const uint8_t* const entry = got.data() + (mine * kKept + e) * kEntry;
           const int* const head = reinterpret_cast<const int*>(entry);
           const int set = head[0], window = head[1], round = head[2];
-          if (set < 0 || set >= sets || window < 0 || window >= c.windows || round < 0
-              || kWords * round >= static_cast<int>(lists[set][window].size())) {
+          const int part = warp >> shared_bits;
+          if (set < 0 || set >= sets || window < 0 || window >= c.windows || round < 0) {
             ++unknown;
             continue;
           }
-          ++seen[{set, window, round}];
+          const std::vector<int> list = own(set, window, part);
+          if (kWords * round >= static_cast<int>(list.size())) {
+            ++unknown;
+            continue;
+          }
+          ++seen[{set * parts + part, window, round}];
           off += head[3] != 0;
-          const std::vector<int>& list = lists[set][window];
           const int* const tokens = reinterpret_cast<const int*>(entry + kTokensAt);
           for (int place = 0; place < kWords; ++place) {
             const int i = kWords * round + place;
@@ -358,11 +379,14 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
       }
       for (int set = 0; set < sets; ++set)
         for (int window = 0; window < c.windows; ++window)
-          for (int round = 0; kWords * round < static_cast<int>(lists[set][window].size()); ++round) {
-            const auto it = seen.find({set, window, round});
-            missing += it == seen.end();
-            twice += it != seen.end() && it->second > 1;
-            ++rounds;
+          for (int part = 0; part < parts; ++part) {
+            const int tokens = static_cast<int>(own(set, window, part).size());
+            for (int round = 0; kWords * round < tokens; ++round) {
+              const auto it = seen.find({set * parts + part, window, round});
+              missing += it == seen.end();
+              twice += it != seen.end() && it->second > 1;
+              ++rounds;
+            }
           }
     }
   }
@@ -436,5 +460,7 @@ int main(int argc, char** argv) {
   run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", Shape::kBoth, 2);
   run(b, rows, "the write side whole on both levels: the folds' supply, the rest stubs", Shape::kWhole, 2);
   run(b, rows, "the write side one digit a token on each level: the folds' supply, the rest stubs", Shape::kSparse, 4);
+  run(b, rows, "the write side masked on both levels, the read side's densities crossed with it: the folds' supply, the rest stubs",
+      Shape::kCrossed, 4);
   return 0;
 }

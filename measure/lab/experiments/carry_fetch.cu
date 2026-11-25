@@ -1,7 +1,8 @@
 // measure/lab/experiments/carry_fetch.cu -- QUESTION: what does a carry warp's own supply of a group's value lines
 // cost -- the LIBRARY's listing of a window's live tokens, and the copies of their 128-byte value lines by token index
 // straight into the steps' tiles in shared memory -- by how many tokens are live?
-// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`, `carry/carry_values.cuh`). A CTA an SM
+// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`, `carry/carry_values.cuh`: the listing and the
+// rows; the select and the copies it feeds are this file's own, the form its record measured). A CTA an SM
 // of 16 warps, each warp a group's windows: a lane loads its mask word a window ahead; the warp lists the window a
 // round of 32 places at a time and issues the round's copies, 8 instructions of 4 tokens, into the round's 32 rows --
 // each a token's 128 bytes whole, its pieces in the order the step's swizzle reads -- two rounds in flight; a warp's
@@ -21,6 +22,45 @@ namespace carry_fetch {
 
 namespace carry = fsla::carry::detail;
 namespace ops = ::denseref::ops;
+
+//: THE TOKEN AT A PLACE of the listing: lane `p` of round `r` takes place `WORDS r + p`; -1 past the total -- this experiment's own: the library's supply lays its tokens (`carry_supply`)
+template <int WORDS>
+__device__ __forceinline__ int listed_token(const carry::Listing& s, int round) {
+  const int place = WORDS * round + static_cast<int>(threadIdx.x & (WORDS - 1));
+  //: the lane whose tokens hold the place: the count of lanes that end at or before it
+  int lane = 0;
+#pragma unroll
+  for (int step = WORDS / 2; step >= 1; step >>= 1) {
+    const int ends = ops::lane_broadcast(s.through, lane + step - 1);
+    lane += ends <= place ? step : 0;
+  }
+  const auto word = static_cast<std::uint32_t>(ops::lane_broadcast(static_cast<int>(s.word), lane));
+  const int before = ops::lane_broadcast(s.before, lane);
+  const int token = WORDS * lane + ops::nth_set_bit(word, place - before);
+  return place < s.total ? token : -1;
+}
+
+
+//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group; a token's line is `stride` bytes on from the token before's -- this experiment's own, fed by the select
+template <int CHANNELS>
+__device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
+                                            std::int64_t stride, int token) {
+  constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / carry::kPieceChannels;
+  constexpr int kTokens = kLanes / kPieces;
+  static_assert(carry::kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
+  const int lane = static_cast<int>(threadIdx.x) & (kLanes - 1);
+  const int piece = lane % kPieces, which = lane / kPieces;
+#pragma unroll
+  for (int i = 0; i < kPieces; ++i) {
+    const int place = kTokens * i + which;
+    const int from = ops::lane_broadcast(token, place);
+    const ops::SmemAddr row = tiles + static_cast<ops::SmemAddr>(place * carry::kRowBytes<CHANNELS>);
+    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * stride;
+    const ops::SmemAddr to = ops::step_row_piece(row, static_cast<std::uint32_t>(piece));
+    ops::stage_tile_if(to, at + piece * carry::kPieceBytes, from >= 0);
+  }
+  ops::stage_commit();
+}
 
 constexpr int kWords = 32, kWarps = 16, kWindow = kWords * 32, kChannels = 64, kLine = 2 * kChannels;
 constexpr int kRound = carry::kRoundBytes<kChannels>, kValueWindows = 256;
@@ -51,8 +91,8 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
     int round = 0;
 #pragma unroll 1
     do {
-      const int token = carry::listed_token<kWords>(s, round);
-      carry::fetch_round<kChannels>(mine + static_cast<uint32_t>((round & 1) * kRound), lines, kLine, token);
+      const int token = listed_token<kWords>(s, round);
+      fetch_round<kChannels>(mine + static_cast<uint32_t>((round & 1) * kRound), lines, kLine, token);
       ops::stage_wait<1>();
       ++round;
     } while (ops::lane_ballot(kWords * round < s.total) != 0u);
@@ -74,8 +114,8 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
   const carry::Listing s = carry::listing_of<kWords>(words[group * kWords + lane]);
 #pragma unroll 1
   for (int round = 0; round < kKept; ++round) {
-    const int token = carry::listed_token<kWords>(s, round);
-    carry::fetch_round<kChannels>(ops::smem_addr(from), values, kLine, token);
+    const int token = listed_token<kWords>(s, round);
+    fetch_round<kChannels>(ops::smem_addr(from), values, kLine, token);
     ops::stage_wait<0>();
     uint8_t* const to = out + (group * kKept + round) * kRound;
 #pragma unroll 1

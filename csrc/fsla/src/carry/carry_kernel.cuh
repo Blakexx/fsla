@@ -23,6 +23,9 @@ namespace ops = ::denseref::ops;
 //: FIXED by the tensor step: a warpgroup is four warps
 constexpr int kGroup = 128;
 constexpr int kGroupWarps = kGroup / ops::kBallotLanes;
+//: FIXED by the roles: a warpgroup is four warps, as log2
+constexpr int kGroupWarpBits = 2;
+static_assert(kGroupWarps == 1 << kGroupWarpBits, "a warpgroup is four warps");
 //: FIXED by the roles: two fold warpgroups, then the readout's, then the drain's warps -- see docs/internals/carry/carry_kernel.md#roles
 constexpr int kFolds = 2;
 constexpr int kReadAt = kFolds * kGroup, kDrainAt = kReadAt + kGroup, kThreads = kDrainAt + kGroup;
@@ -47,11 +50,25 @@ constexpr int kWarpRows = kHeld * kRoundBytes<kChannels>;
 constexpr int kRowsAlign = 1024;
 constexpr int kRowsBytes = kFolds * kGroupWarps * kWarpRows;
 
-//: THE CTA'S SHARED MEMORY: the fold warps' rows -- see docs/internals/carry/carry_kernel.md#smem
+//: THE CTA'S SHARED MEMORY: the fold warps' rows, and their lists of a set's tokens -- see docs/internals/carry/carry_kernel.md#smem
 struct FoldRows;
+struct FoldTokens;
+
+//: the window's mask words on the build's card
+template <class Bt>
+constexpr int kWindowWords = plan::window_of_cc(Bt::build.cc) / kWordTokens;
 
 template <class Bt>
-using Smem = SmemLayout<Bt, 1, Aligned<FoldRows, std::uint8_t, kRowsBytes, kRowsAlign>>;
+using Smem = SmemLayout<
+    Bt, 1, Aligned<FoldRows, std::uint8_t, kRowsBytes, kRowsAlign>,
+    Fixed<FoldTokens, std::uint16_t, kFolds * kGroupWarps * kListPlaces<kWindowWords<Bt>>>>;
+
+//: A FOLD WARP'S LIST of the tokens of the set it is on
+template <class Bt>
+__device__ __forceinline__ std::uint16_t* fold_tokens(int fold, int warp) {
+  return Smem<Bt>::template get<FoldTokens>()
+         + (fold * kGroupWarps + warp) * kListPlaces<kWindowWords<Bt>>;
+}
 
 //: A FOLD WARP'S ROWS
 template <class Bt>
@@ -90,7 +107,7 @@ struct NoTrace {
 
   __device__ __forceinline__ void phase(int) {}
 
-  __device__ __forceinline__ void round(int, int, int, int, int, ops::SmemAddr) {}
+  __device__ __forceinline__ void round(int, int, int, int, const std::uint16_t*, ops::SmemAddr) {}
 };
 
 //: A HAND-OFF BETWEEN ROLES: the producer arrives, the waiter syncs -- see docs/internals/carry/carry_kernel.md#handoff
@@ -119,7 +136,9 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   const int set_bits = 31 - __clz(c.fold_sets);
   const int shared_bits = set_bits < 2 ? set_bits : 2;
   const int first_set = warp & ((1 << shared_bits) - 1);
-  const int stride = kGroupWarps >> shared_bits, first_round = warp >> shared_bits;
+  //: warps that share a set split a word's tokens among them by bit: each lists its part and runs its own rounds
+  const std::uint32_t part = shared_part(kGroupWarpBits - shared_bits, warp >> shared_bits);
+  std::uint16_t* const list = fold_tokens<Bt>(fold, warp);
   //: the warp's sets a window, a value every lane holds: the loops below are bounded by it
   const int mine = ops::lane_broadcast(fold < c.folds ? 1 << (set_bits - shared_bits) : 0, 0);
   //: the levels the write side lists, a value every lane holds: a set's word branches on it
@@ -166,10 +185,11 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
 #pragma unroll 1
     for (int i = 0; i < mine; ++i) {
       tr.phase(kSiteSet);
-      std::uint32_t word = whose;
+      std::uint32_t word = whose & part;
 #pragma unroll
       for (int l = 0; l < kLevels; ++l) word &= got[l];
       const Listing s = listing_of<kWords>(word);
+      lay_tokens<kWords>(s, list);
       tr.phase(kSiteListed);
       //: the set after's words: the window's last set loads the next window's first, a level's row a step on; the call's last its own again
       const bool turn = i + 1 == mine, on = turn && w + 1 < o.windows;
@@ -190,20 +210,20 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
       }
       tr.phase(kSiteWord);
       const int set = first_set + (i << shared_bits);
-      int round = first_round;
+      int round = 0;
       if (ops::lane_ballot(kWords * round < s.total) != 0u) {
 #pragma unroll 1
         do {
           tr.phase(kSiteFetch);
-          const int token = listed_token<kWords>(s, round);
+          const std::uint16_t* const tokens = list + kWords * round;
           const int slot = issued & (kHeld - 1);
           const ops::SmemAddr to = rows + static_cast<ops::SmemAddr>(slot * kRoundBytes<kChannels>);
-          fetch_round<kChannels>(to, from, o.line_bytes, token);
+          fetch_round<kChannels>(to, from, o.line_bytes, tokens);
           tr.phase(kSiteIssued);
           ops::stage_wait<kHeld - 1>();
           tr.phase(kSiteLanded);
-          tr.round(fold, set, w, round, token, to);
-          round += stride;
+          tr.round(fold, set, w, round, tokens, to);
+          ++round;
           ++issued;
         } while (ops::lane_ballot(kWords * round < s.total) != 0u);
       }
