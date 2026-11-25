@@ -11,9 +11,10 @@ No role calls it yet; the lab checks and times it with the listing
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). WHY ROWS: an asynchronous copy is cheap where an
   instruction moves whole 128-byte rows at both ends, in any order within a row (2.7 cycles a line), and six times
   that where a row is in pieces at either end (16.5: the step's unswizzled brick layout, tried two ways) --
-  [`../../lab/value_fetch.md`](../../lab/value_fetch.md). The step reads such rows and computes what it computes from
-  bricks ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)). A step of the round is 16 consecutive rows
-  (`round_step`).
+  [`../../lab/value_fetch.md`](../../lab/value_fetch.md). THAT THE STEP READS SUCH ROWS is
+  [`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)'s question, NOT RECORDED. A step of the round is 16
+  consecutive rows (`round_step`), and THE TILE STARTS ON A 1,024-BYTE BOUNDARY, the condition of the step's operand
+  ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)).
 - <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing into its 32 rows, 4
   consecutive tokens an instruction, so every instruction moves 4 whole rows. A PLACE PAST THE LIST'S TOTAL COPIES
   NOTHING AND ITS ROW IS ZERO (`stage_tile_if`), so a short step needs no clearing and no branch, and a pad's value is

@@ -46,7 +46,7 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
   ops::stage_commit();
 }
 
-//: STEP `step` OF A ROUND'S TILE as the tensor step's operand: its 16 rows
+//: STEP `step` OF A ROUND'S TILE as the tensor step's operand: its 16 rows; `tiles` is on a 1,024-byte boundary
 template <int CHANNELS>
 __device__ __forceinline__ std::uint64_t round_step(ops::SmemAddr tiles, int step) {
   const int first = step * kStepTokens * kRowBytes<CHANNELS>;

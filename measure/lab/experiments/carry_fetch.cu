@@ -4,8 +4,9 @@
 // METHOD: this file compiles the library's device code (`carry/carry_list.cuh`, `carry/carry_values.cuh`). A CTA an SM
 // of 16 warps, each warp a group's windows: a lane loads its mask word a window ahead; the warp lists the window a
 // round of 32 places at a time and issues the round's copies, 8 instructions of 4 tokens, into the round's 32 rows --
-// each a token's 128 bytes whole, its pieces in the order the step's swizzle reads -- two rounds in flight. The values are one table of 256 windows every CTA reads (a unit's CTAs ask for the
-// same lines). Rows: 64 live tokens a window; every token live. A second kernel lands each of the first
+// each a token's 128 bytes whole, its pieces in the order the step's swizzle reads -- two rounds in flight; a warp's
+// tiles start on a 1,024-byte boundary. The values are one table of 256 windows every CTA reads (a unit's CTAs ask
+// for the same lines). Rows: 64 live tokens a window; every token live. A second kernel lands each of the first
 // window's first four rounds of every group and copies its tiles out: checked byte for byte against the host's, a
 // dead place's lines zero.
 // TIMELINE: no MMA. A window: the listing's running sums (5 shuffles), then a round -- the select (7 shuffles), and 8
@@ -25,13 +26,17 @@ constexpr int kWords = 32, kWarps = 16, kWindow = kWords * 32, kChannels = 64, k
 constexpr int kRound = carry::kRoundBytes<kChannels>, kValueWindows = 256;
 //: the rounds of a group's first window the check keeps
 constexpr int kKept = 4;
+//: a step's rows start on a 1,024-byte boundary: the bytes from `a` to the first one
+constexpr uint32_t kBoundary = 1024;
+__device__ __forceinline__ uint32_t to_boundary(uint32_t a) { return (kBoundary - (a & (kBoundary - 1))) & (kBoundary - 1); }
 
 //: THE TIMED KERNEL: a group's windows, listed and fetched
 __global__ void __launch_bounds__(32 * kWarps, 1)
     fetched(long long* times, const uint32_t* words, const uint8_t* values, int windows) {
-  __shared__ alignas(128) uint8_t tiles[kWarps * 2 * kRound];
+  __shared__ alignas(128) uint8_t tiles[kWarps * 2 * kRound + kBoundary];
   const int warp = lab::warp_id(), lane = lab::lane_id();
-  const ops::SmemAddr mine = ops::smem_addr(tiles) + static_cast<uint32_t>(warp * 2 * kRound);
+  const ops::SmemAddr base = ops::smem_addr(tiles);
+  const ops::SmemAddr mine = base + to_boundary(base) + static_cast<uint32_t>(warp * 2 * kRound);
   const size_t group = (static_cast<size_t>(blockIdx.x) * kWarps + warp) * static_cast<size_t>(windows);
   uint32_t next = words[group * kWords + lane];
   lab::WarpSpan clock;
@@ -59,13 +64,13 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
 //: THE CHECKED KERNEL: a group's first window's first `kKept` rounds, each landed and its two tiles copied out -- a
 //: lane its 4 bytes of each 128
 __global__ void __launch_bounds__(32 * kWarps, 1)
-    checked(const uint32_t* words, const uint8_t* values, uint8_t* out, int* turn) {
-  __shared__ alignas(128) uint8_t tiles[kWarps * kRound];
+    checked(const uint32_t* words, const uint8_t* values, uint8_t* out, int* off_at) {
+  __shared__ alignas(128) uint8_t tiles[kWarps * kRound + kBoundary];
   const int warp = lab::warp_id(), lane = lab::lane_id();
   const size_t group = static_cast<size_t>(blockIdx.x) * kWarps + warp;
-  const uint8_t* const from = tiles + warp * kRound;
-  //: the three bits of the tile's first row the swizzle turns a row's pieces by, for the host
-  if (lane == 0) turn[group] = static_cast<int>((ops::smem_addr(from) >> 7) & 7u);
+  const uint8_t* const from = tiles + to_boundary(ops::smem_addr(tiles)) + warp * kRound;
+  //: whether the warp's tile is off the boundary a step's rows start on, for the host
+  if (lane == 0) off_at[group] = static_cast<int>((ops::smem_addr(from) & (kBoundary - 1)) != 0u);
   const carry::Listing s = carry::listing_of<kWords>(words[group * kWords + lane]);
 #pragma unroll 1
   for (int round = 0; round < kKept; ++round) {
@@ -113,21 +118,21 @@ void run(lab::Bench& b, const uint8_t* dvalues, const std::vector<uint8_t>& valu
     for (int i = 0; i < kWords; ++i) first[g * kWords + i] = words[g * kTimed * kWords + i];
   uint32_t *dwords = nullptr, *dfirst = nullptr;
   uint8_t* dout = nullptr;
-  int* dturn = nullptr;
+  int* doff_at = nullptr;
   const size_t out_bytes = groups * kKept * kRound;
   LAB_CHECK(cudaMalloc(&dwords, count * 4));
   LAB_CHECK(cudaMalloc(&dfirst, first.size() * 4));
   LAB_CHECK(cudaMalloc(&dout, out_bytes));
-  LAB_CHECK(cudaMalloc(&dturn, groups * sizeof(int)));
+  LAB_CHECK(cudaMalloc(&doff_at, groups * sizeof(int)));
   LAB_CHECK(cudaMemcpy(dwords, words.data(), count * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMemcpy(dfirst, first.data(), first.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMemset(dout, 0xff, out_bytes));
-  checked<<<b.sms, 32 * kWarps>>>(dfirst, dvalues, dout, dturn);
+  checked<<<b.sms, 32 * kWarps>>>(dfirst, dvalues, dout, doff_at);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint8_t> got(out_bytes);
   LAB_CHECK(cudaMemcpy(got.data(), dout, out_bytes, cudaMemcpyDeviceToHost));
-  std::vector<int> turn(groups);
-  LAB_CHECK(cudaMemcpy(turn.data(), dturn, groups * sizeof(int), cudaMemcpyDeviceToHost));
+  std::vector<int> off_at(groups);
+  LAB_CHECK(cudaMemcpy(off_at.data(), doff_at, groups * sizeof(int), cudaMemcpyDeviceToHost));
   long long wrong = 0, checked = 0;
   for (size_t g = 0; g < groups; ++g) {
     std::vector<int> list;
@@ -139,7 +144,7 @@ void run(lab::Bench& b, const uint8_t* dvalues, const std::vector<uint8_t>& valu
         const bool here = at < static_cast<int>(list.size());
         for (int piece = 0; piece < kChannels / carry::kPieceChannels; ++piece) {
           //: the place's row, and the piece where the step's swizzle turns it by the row's three bits
-          const int turned = piece ^ ((turn[g] + place) & 7);
+          const int turned = piece ^ (place & 7);
           const size_t line = (g * kKept + round) * kRound + static_cast<size_t>(place) * kLine
                               + static_cast<size_t>(turned) * carry::kPieceBytes;
           for (int i = 0; i < carry::kPieceBytes; ++i) {
@@ -151,14 +156,18 @@ void run(lab::Bench& b, const uint8_t* dvalues, const std::vector<uint8_t>& valu
         }
       }
   }
-  b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(checked) + " tile bytes differ");
+  long long off_boundary = 0;
+  for (const int v : off_at) off_boundary += v != 0;
+  b.check(name, wrong == 0 && off_boundary == 0,
+          std::to_string(wrong) + " of " + std::to_string(checked) + " tile bytes differ; "
+              + std::to_string(off_boundary) + " tiles off a boundary");
   const double lines_a_cta = static_cast<double>(live) / b.sms;
   const lab::Samples cycles =
       b.variant([&] { fetched<<<b.sms, 32 * kWarps>>>(b.times, dwords, dvalues, kTimed); },
                 [&] { return b.span(kWarps) / lines_a_cta; });
   b.record(name, "cycles a 128-byte row a CTA", cycles);
   for (void* p : {static_cast<void*>(dwords), static_cast<void*>(dfirst), static_cast<void*>(dout),
-                  static_cast<void*>(dturn)})
+                  static_cast<void*>(doff_at)})
     LAB_CHECK(cudaFree(p));
 }
 

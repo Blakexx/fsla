@@ -22,7 +22,7 @@ __device__ __forceinline__ uint64_t step_operand(SmemAddr a, uint32_t lbo, uint3
   return step_operand_lines(a >> 4, lbo, sbo);
 }
 
-//: A STEP'S OPERAND OF 16 ROWS, each one K entry's 64 values in 128 bytes, read through the 128-byte swizzle -- see docs/internals/common/atoms/tensor.md#rows
+//: A STEP'S OPERAND OF 16 ROWS, each one K entry's 64 values in 128 bytes, read through the 128-byte swizzle; `a` is on a 1,024-byte boundary -- see docs/internals/common/atoms/tensor.md#rows
 __device__ __forceinline__ uint64_t step_operand_rows(SmemAddr a) {
   //: FIXED by the instruction's descriptor: 8 rows are 64 lines, and layout type 1 at bit 62 is the 128-byte swizzle
   constexpr uint32_t kHalf = 64;

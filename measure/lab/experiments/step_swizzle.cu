@@ -7,6 +7,9 @@
 // each A against the same B, and writes both accumulators out. CHECKED: every thread's 8 sums are the same from both
 // layouts, and their total over the warpgroup is the product's total, computed on the host.
 // TIMELINE: two m64n16k16 steps in one commit group, their operands landed before the fence. Live: two accumulators.
+// THE STEP'S TIME BY A'S LAYOUT (`timed`): 8 steps a commit group on one accumulator, the group waited, 2,048 groups,
+// with A in bricks 16 lines apart, in bricks 17 apart, and in rows. CHECKED: a thread's sum of its 8 sums is what the
+// first kernel's step gives, 16,384 times over. The rows' descriptor is the library's (`step_operand_rows`).
 // see docs/internals/tools/lab.md#step-swizzle
 #include <functional>
 
@@ -16,7 +19,7 @@ namespace step_swizzle {
 
 constexpr int kM = 64, kK = 16, kN = 16, kThreads = 128;
 //: a tile's room: the swizzled A is two 1,024-byte halves; the plain A 8 bricks 16 lines apart; B two
-constexpr int kTile = 4096, kSwizzle128 = 1;
+constexpr int kTile = 4096;
 //: THE TIMED LAYOUTS of A: bricks 16 lines apart; bricks 17 apart (the pitch a thread's stores want); token-major rows
 constexpr int kBricks = 0, kBricks17 = 1, kRows = 2, kSteps = 8;
 
@@ -39,7 +42,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   lab::bulk_fence();
   __syncthreads();
   const uint32_t tile = base + skip;
-  const uint64_t a_turned = lab::wg_desc(tile, 64, 64) | (static_cast<uint64_t>(kSwizzle128) << 62);
+  const uint64_t a_turned = ::denseref::ops::step_operand_rows(tile);
   const uint64_t a_plain = lab::wg_desc(tile + kTile, 8, 16);
   const uint64_t b = lab::wg_desc(tile + 2 * kTile, 8, 16);
   float from_plain[8], from_turned[8];
@@ -73,7 +76,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   lab::bulk_fence();
   __syncthreads();
   const uint32_t tile = base + skip;
-  const uint64_t rows = lab::wg_desc(tile, 64, 64) | (static_cast<uint64_t>(kSwizzle128) << 62);
+  const uint64_t rows = ::denseref::ops::step_operand_rows(tile);
   const uint64_t a = LAYOUT == kRows ? rows : lab::wg_desc(tile, 8, LAYOUT == kBricks17 ? 17 : 16);
   const uint64_t b = lab::wg_desc(tile + kTile, 8, 16);
   float d[8];
@@ -174,9 +177,22 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&dwide, kTile));
   LAB_CHECK(cudaMalloc(&dsunk, static_cast<size_t>(b.sms) * kThreads * sizeof(int)));
   LAB_CHECK(cudaMemcpy(dwide, wide.data(), kTile, cudaMemcpyHostToDevice));
+  std::vector<int> sunk(static_cast<size_t>(b.sms) * kThreads);
   const auto row = [&](const std::string& name, const std::function<void()>& launch) {
-    b.check(name, same, "the layouts' sums are the check above");
     const lab::Samples cycles = b.variant(launch, [&] { return b.span(kThreads / 32) / (static_cast<double>(kIters) * kSteps); });
+    LAB_CHECK(cudaMemcpy(sunk.data(), dsunk, sunk.size() * sizeof(int), cudaMemcpyDeviceToHost));
+    long long wrong = 0;
+    for (size_t t = 0; t < sunk.size(); ++t) {
+      //: a step's sums are whole numbers under 200, so 16,384 steps of them add exactly; their sum rounds as the kernel's
+      float sum = 0;
+      for (int i = 0; i < 8; ++i) sum += static_cast<float>(kIters * kSteps) * got[t * 16 + i];
+      uint32_t want;
+      std::memcpy(&want, &sum, 4);
+      wrong += static_cast<uint32_t>(sunk[t]) != want;
+    }
+    b.check(name, same && wrong == 0,
+            std::to_string(wrong) + " of " + std::to_string(sunk.size())
+                + " threads' sums are not the first kernel's step's, 16,384 times over");
     b.record(name, "cycles a step", cycles);
   };
   row("a step's A in bricks 16 lines apart",
