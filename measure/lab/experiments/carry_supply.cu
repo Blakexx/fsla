@@ -56,6 +56,8 @@ struct Keep {
   __device__ __forceinline__ void phase(int) {}
   __device__ __forceinline__ void round(int, int set, int window, int round, int token, uint32_t rows) {
     ops::stage_wait<0>();
+    //: every lane's copies have landed before any lane reads a row
+    __syncwarp();
     const int lane = lab::lane_id(), warp = lab::warp_id();
     if (ops::lane_ballot(n < kKept) != 0u) {
       uint8_t* const to = out + ((static_cast<size_t>(blockIdx.x) * kFoldWarps + warp) * kKept + n) * kEntry;
@@ -88,14 +90,31 @@ __global__ void __launch_bounds__(carry::kThreads, 1)
   if (lab::lane_id() == 0 && lab::warp_id() < kFoldWarps) count[blockIdx.x * kFoldWarps + lab::warp_id()] = tr.n;
 }
 
-//: THE LIBRARY'S CTA: the clock is the lab's, the work the library's
+//: a phase's site in a warp's timeline: above every barrier's
+constexpr uint32_t kPhases = 0xc000u;
+
+//: THE KERNEL'S TRACER AS WARPLINE'S STAMPS: a wait's site is its number, a phase's `kPhases` on
+template <bool ON>
+struct Stamps {
+  lab::Trace<ON> row;
+  __device__ __forceinline__ void wait_begin(int id) { row.stamp(warpline::kWaitBegin, static_cast<uint32_t>(id)); }
+  __device__ __forceinline__ void wait_end(int id) { row.stamp(warpline::kWaitEnd, static_cast<uint32_t>(id)); }
+  __device__ __forceinline__ void arrive(int id) { row.stamp(warpline::kArrive, static_cast<uint32_t>(id)); }
+  __device__ __forceinline__ void phase(int site) { row.mark(warpline::kPhaseBegin, kPhases + static_cast<uint32_t>(site)); }
+  __device__ __forceinline__ void round(int, int, int, int, int, uint32_t) {}
+};
+
+//: THE LIBRARY'S CTA: the clock is the lab's, the work the library's; its warps' timelines stamped where `TRACE`
+template <int TRACE>
 __global__ void __launch_bounds__(carry::kThreads, 1)
-    timed(long long* times, const __grid_constant__ carry::Operands o) {
-  carry::NoTrace tr;
+    timed(long long* times, unsigned long long* trace, const __grid_constant__ carry::Operands o) {
+  Stamps<TRACE != 0> tr;
+  tr.row.bind(trace);
   lab::WarpSpan clock;
   clock.start();
-  carry::carry_cta<Bt, kFoldRegs, kReadRegs, carry::NoTrace>(o, tr);
+  carry::carry_cta<Bt, kFoldRegs, kReadRegs, Stamps<TRACE != 0>>(o, tr);
   clock.stop(times);
+  tr.row.close(0);
 }
 
 //: A CALL on the host: the write side's masks (none where a level has none), the values, the density, the carve
@@ -234,11 +253,11 @@ inline Set set_of(const plan::PrefillCarve& c, const int* at, int fold, int set)
 
 }  // namespace carry_supply
 
-//: a row: the call checked at 4 windows, then timed at 64
-void run(lab::Bench& b, const std::string& name, bool both) {
+//: a call's rows: its supply checked over `checked` windows, then timed at 64, plain and with every warp's timeline stamped
+void run(lab::Bench& b, unsigned long long* rows, const std::string& name, bool both, int checked) {
   using namespace carry_supply;
-  constexpr int kChecked = 4, kTimed = 64;
-  const Call c = make(both, kChecked);
+  constexpr int kTimed = 64, kWarps = carry::kThreads / 32;
+  const Call c = make(both, checked);
   const plan::PrefillCarve& cv = c.carve;
   if (c.ctas > b.sms) {
     std::fprintf(stderr, "the call's %d CTAs a head are more than the card's %d multiprocessors\n", c.ctas, b.sms);
@@ -351,18 +370,54 @@ void run(lab::Bench& b, const std::string& name, bool both) {
   LAB_CHECK(cudaFree(dcount));
   const Call t = make(both, kTimed);
   Device dt = up(t);
-  const lab::Samples cycles = b.variant([&] { timed<<<t.ctas, carry::kThreads>>>(b.times, dt.o); },
-                                        [&] { return b.span(carry::kThreads / 32, t.ctas) / kTimed; });
-  b.record(name, "cycles a window a CTA", cycles);
+  const std::string plain = name + ", timed", stamped = name + ", every warp's timeline stamped";
+  b.unchecked(plain, "the row above checks this kernel's supply through its tracer; this is its time with the library's tracer");
+  const lab::Samples cycles = b.variant([&] { timed<0><<<t.ctas, carry::kThreads>>>(b.times, rows, dt.o); },
+                                        [&] { return b.span(kWarps, t.ctas) / kTimed; });
+  b.record(plain, "cycles a window a CTA", cycles);
+  b.unchecked(stamped, "the first row checks this kernel's supply; this is its timeline, its waits and phases stamped");
+  const lab::Samples traced = b.variant([&] { timed<1><<<t.ctas, carry::kThreads>>>(b.times, rows, dt.o); },
+                                        [&] { return b.span(kWarps, t.ctas) / kTimed; });
+  b.record(stamped, "cycles a window a CTA", traced);
+  std::vector<std::string> roles;
+  for (int w = 0; w < kWarps; ++w) {
+    const int thread = 32 * w;
+    roles.push_back(thread < carry::kReadAt ? "fold box " + std::to_string(thread / carry::kGroup)
+                    : thread < carry::kDrainAt ? "readout" : "drain");
+  }
+  std::vector<std::pair<uint32_t, std::string>> legend;
+  for (int box = 0; box < carry::kFolds; ++box)
+    legend.push_back({static_cast<uint32_t>(carry::kFoldId + box), "fold box " + std::to_string(box) + "'s own barrier"});
+  legend.push_back({static_cast<uint32_t>(carry::kReadId), "the readout's own barrier"});
+  for (int k = 0; k < carry::kChunks; ++k) {
+    legend.push_back({static_cast<uint32_t>(carry::kTilesReadyId + k), "tile group " + std::to_string(k) + " published"});
+    legend.push_back({static_cast<uint32_t>(carry::kTilesReadId + k), "tile group " + std::to_string(k) + " read"});
+  }
+  for (int p = 0; p < carry::kPanels; ++p) {
+    legend.push_back({static_cast<uint32_t>(carry::kPanelReadyId + p), "panel " + std::to_string(p) + " filled"});
+    legend.push_back({static_cast<uint32_t>(carry::kPanelFreedId + p), "panel " + std::to_string(p) + " drained"});
+  }
+  legend.insert(legend.end(), {{kPhases + carry::kSiteEntry, "entry"}, {kPhases + carry::kSiteExit, "exit"},
+                               {kPhases + carry::kSiteWindow, "window"}, {kPhases + carry::kSiteSet, "set"},
+                               {kPhases + carry::kSiteListed, "listed"}, {kPhases + carry::kSiteWord, "word"},
+                               {kPhases + carry::kSiteFetch, "fetch"}, {kPhases + carry::kSiteIssued, "issued"},
+                               {kPhases + carry::kSiteLanded, "landed"}});
+  b.trace(stamped, rows, kWarps, {0, t.ctas / 2}, roles, legend);
   down(dt);
 }
 
 int main(int argc, char** argv) {
+  using namespace carry_supply;
   lab::Bench b(argc, argv);
   //: the check's tracer writes a kept round's head from lane 0, inside the fold's loop over rounds
   b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 2);
   if (b.expect_only) return 0;
-  run(b, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", false);
-  run(b, "the write side masked on both levels: the folds' supply, the rest stubs", true);
+  unsigned long long* rows = nullptr;
+  const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
+  LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
+  LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
+  //: the second call has 8 sets a warp a window: its check keeps 2 windows, 16 rounds a warp of the 24 kept
+  run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", false, 4);
+  run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", true, 2);
   return 0;
 }

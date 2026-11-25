@@ -63,3 +63,8 @@ the shares' bytes before it, and that a call using part of the last share reserv
 (its control fields, scan storage, clock rows, value and fold rows as fixed tiles, and the call's staged rows and tables
 in what the budget leaves). The lint that refuses a hand declaration is `tools/lint/facts_in_template.py`
 ([`../tools/lint.md`](../tools/lint.md#facts-in-the-template)).
+- <a id="aligned"></a>`Aligned<Tag, T, COUNT, ALIGN>`: exactly `COUNT` elements whose first is on an `ALIGN`-byte
+  boundary of the CTA's shared memory, for a tile an instruction reads by its address's own bits (the tensor step's
+  operand of rows turns a row's pieces by them: [`atoms/tensor.md`](atoms/tensor.md#rows)). It is its own shared
+  object, `ALIGN` bytes longer than its elements, and `get` gives the first boundary in it: the toolkit states no
+  alignment of a shared object past 16 bytes that this layout relies on, so the tile pays the boundary's bytes.

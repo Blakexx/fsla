@@ -50,6 +50,29 @@ struct Share {
   static constexpr std::int64_t weight = WEIGHT;
 };
 
+//: A TILE OF EXACTLY `COUNT` elements of `T` whose first is on an `ALIGN`-byte boundary -- see docs/internals/common/smem_layout.md#aligned
+template <class Tag, class T, int COUNT, int ALIGN>
+struct Aligned {
+  using tag = Tag;
+  using type = T;
+  static constexpr std::int64_t least = COUNT;
+  //: FIXED by the tile's kind: no part of what the budget leaves
+  static constexpr std::int64_t weight = 0;
+  static constexpr std::int64_t align = ALIGN;
+};
+
+//: the boundary a tile asks for past the layout's own, 0 where its kind asks for none
+template <class Tile, class = void>
+struct TileAlign {
+  //: FIXED by the tile's kind: no boundary of its own
+  static constexpr std::int64_t value = 0;
+};
+
+template <class Tile>
+struct TileAlign<Tile, std::void_t<decltype(Tile::align)>> {
+  static constexpr std::int64_t value = Tile::align;
+};
+
 //: A CTA'S SHARED MEMORY on the build `Bt`, `CTAS` CTAs sharing an SM -- see docs/internals/common/smem_layout.md#layout
 template <class Bt, int CTAS, class... Tiles>
 struct SmemLayout {
@@ -65,9 +88,13 @@ struct SmemLayout {
   template <class Tile>
   static constexpr std::int64_t element = static_cast<std::int64_t>(sizeof(typename Tile::type));
 
+  //: a tile on its own boundary holds that many bytes more, and starts at the first boundary in them
+  template <class Tile>
+  static constexpr std::int64_t slack = TileAlign<Tile>::value;
+
   template <class Tile>
   static constexpr std::int64_t least_bytes =
-      (Tile::least * element<Tile> + kAlign - 1) & ~(kAlign - 1);
+      (Tile::least * element<Tile> + slack<Tile> + kAlign - 1) & ~(kAlign - 1);
 
   template <class Tile>
   static constexpr std::int64_t reserved_least = Tile::weight == 0 ? 0 : least_bytes<Tile>;
@@ -160,8 +187,15 @@ struct SmemLayout {
   //: a tile with no share: its own shared object
   template <class Tile>
   __device__ __forceinline__ static typename Tile::type* own() {
-    __shared__ __align__(16) typename Tile::type cells[Tile::least];
-    return cells;
+    if constexpr (slack<Tile> == 0) {
+      __shared__ __align__(16) typename Tile::type cells[Tile::least];
+      return cells;
+    } else {
+      __shared__ __align__(16) unsigned char room[least_bytes<Tile>];
+      const std::int64_t at = static_cast<std::int64_t>(__cvta_generic_to_shared(room));
+      const std::int64_t skip = (slack<Tile> - (at & (slack<Tile> - 1))) & (slack<Tile> - 1);
+      return reinterpret_cast<typename Tile::type*>(room + skip);
+    }
   }
 
   template <class Tag, class Tile>
@@ -219,6 +253,8 @@ static_assert(2 * (Proof<Large, 2>::budget + 1024) == 66560, "two CTAs' budgets 
 static_assert(S::own_bytes == 400 && S::offset<Ring>() == 0, "a fixed tile is its own object");
 static_assert(S::offset<Panel>() == S::tile_bytes<RingTile>, "shares follow shares");
 static_assert(S::reserved_to<Panel>(9) == S::offset<Panel>() + 32, "a call reserves what it uses");
+static_assert(SmemLayout<Small, 1, Aligned<Table, char, 100, 1024>>::own_bytes == 1136,
+              "a tile on its own boundary holds the boundary's bytes more");
 
 }  // namespace smem_proof
 

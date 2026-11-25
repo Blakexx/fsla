@@ -3,7 +3,7 @@
 Mirrors `csrc/fsla/src/carry/carry_values.cuh`: a fold warp's own supply of its group's value lines
 ([`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#what-a-cta-makes)), the second of the
 skeleton's components ([`carry_kernel.md`](carry_kernel.md)), fed by the listing ([`carry_list.md`](carry_list.md)).
-No role calls it yet; the lab checks and times it with the listing
+The fold's supply calls it ([`carry_kernel.md`](carry_kernel.md#supply)); the lab checks and times it with the listing
 ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)).
 
 - <a id="tile"></a>A ROUND'S TILE IS 32 ROWS, a token's value line each as it lies in global memory: 128 bytes, its

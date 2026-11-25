@@ -9,13 +9,15 @@ operands -- the masks, the mask-preparation pass's prepared words, the densities
 their value lines in its rows, exactly; and what does a window cost a CTA with that supply running?
 
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
-of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its rows are two calls: THE CELL,
-the write side masked on level 0 at 4 to 5 live digits a token and whole on level 1; and the write side masked on
-both, level 1 a run of 40 digits a token. The read side's densities are the cell's mirror and its masks are never
-read (its role is a stub). The grid is the head's CTAs. CHECKED through the kernel's tracer on a call of 4 windows:
-the tracer waits for a round's copies and copies its tokens and rows out, and on the host every round of every set of
-every fold is there once, its tokens the set's list in order, its rows their value lines in the step's swizzle order,
-a dead place's row zero, on its boundary; the sets' leaves tile the leaf space once. TIMED with the library's tracer
-(nothing) on a call of 64 windows.
+of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its two calls: THE CELL, the write
+side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
+write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2, 32 sets a fold, about 19 live
+tokens a set a window). The read side's densities are the cell's mirror and its masks are never read (its role is a
+stub). The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
+cell, 2 of the second call): the tracer waits for a round's copies and copies its tokens and rows out, and on the
+host every round of every set of every fold is there once, its tokens the set's list in order, its rows their value
+lines in the step's swizzle order, a dead place's row zero, on its boundary; the sets' leaves tile the leaf space
+once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
+phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
 NOT MEASURED: no run of it is recorded.

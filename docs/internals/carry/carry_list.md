@@ -2,7 +2,7 @@
 
 Mirrors `csrc/fsla/src/carry/carry_list.cuh`: a carry CTA's own list of a group's live tokens of a window
 ([`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#what-a-cta-makes)), the first of the
-skeleton's components ([`carry_kernel.md`](carry_kernel.md)). No role calls it yet; the lab checks and times it alone
+skeleton's components ([`carry_kernel.md`](carry_kernel.md)). The fold's supply calls it ([`carry_kernel.md`](carry_kernel.md#supply)); the lab checks and times it alone
 ([`../../lab/carry_list.md`](../../lab/carry_list.md)).
 
 WHY THIS FORM. A side's group has a window of mask words (the prepared group words of each of the side's masked

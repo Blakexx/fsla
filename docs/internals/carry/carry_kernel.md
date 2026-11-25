@@ -32,7 +32,8 @@ groups ([`carry_groups.md`](carry_groups.md)).
   `NoTrace`, whose calls are nothing, so the library takes no dependency and pays nothing; the lab passes warpline's
   stamps, and a warp's timeline is then the kernel's own account of where it waited
   ([`../../lab/carry_skeleton.md`](../../lab/carry_skeleton.md)). A component adds its phases to `Site` as it is
-  built. `round(fold, set, window, round, token, rows)` is the supply's: a fold warp calls it when it has issued a
+  built; the supply's are a set's start, its tokens listed, the next set's words asked for, and a round's fetch begun,
+  issued and landed. `round(fold, set, window, round, token, rows)` is the supply's: a fold warp calls it when it has issued a
   round's copies, which is how the lab copies a round's tokens and rows out with no test code in the library
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
 - <a id="fold"></a>`fold_role`. THE IMAGE GOES OUT A TILE GROUP AT A TIME so that the readout starts on the first
@@ -50,26 +51,30 @@ groups ([`carry_groups.md`](carry_groups.md)).
   ([`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md)), and a CTA's place carries its slice
   ([`carry_groups.md`](carry_groups.md#place)).
 - <a id="smem"></a>THE CTA'S SHARED MEMORY is one layout (`Smem`, [`../common/smem_layout.md`](../common/smem_layout.md)).
-  Its one tile so far is the fold warps' rows (`FoldRows`): a warp holds two rounds of 32 rows in flight (`kHeld`),
-  8 KB, the eight fold warps 64 KB, and 1,024 bytes more, because a step's operand of rows starts on a 1,024-byte
-  boundary ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)) and the layout aligns a tile to 16:
-  `fold_rows` gives a warp's rows from the first boundary in the tile.
+  Its one tile so far is the fold warps' rows (`FoldRows`): a warp two rounds of 32 rows (`kHeld`), 8 KB, the eight
+  fold warps 64 KB, on a 1,024-byte boundary ([`../common/smem_layout.md`](../common/smem_layout.md#aligned)), which
+  is where a step's operand of rows starts ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). ITS EDGES
+  (R21): a round's copies are one committed group, and the warp waits for the group before it, so two are in flight;
+  a slot's rows are overwritten by the round issued two later, and that issue stands behind the tracer's call for the
+  round whose rows they were -- where the wait of that round's steps will stand (NOT BUILT: the steps).
 - <a id="supply"></a>THE FOLD'S SUPPLY, built: a fold warp lists its sets' live tokens and fetches their value lines.
   A SET is one leaf group of the fold's box, a group a level ([`carry_groups.md`](carry_groups.md#sets)); a fold holds
   `fold_sets` of them, a power of two. THE WARPS' SHARES ARE THE CARVE'S, NOT THE DATA'S: with four sets or more a
   warp takes every fourth set, whole; with two, two warps take a set and alternate its rounds; with one, the four
-  warps take its rounds in turn -- so a fold's four warps issue copies together whatever its sets. A set's word a
-  lane is loaded a set ahead of its use (`set_word`); its listing ([`carry_list.md`](carry_list.md)) gives a round's
-  32 tokens; a round's copies go to the warp's rows, two rounds in flight ([`carry_values.md`](carry_values.md)); a
-  set with no live token issues nothing. The loops are bounded by values every lane holds (a shuffle from lane 0, a
-  vote) and the levels the side lists are decided once a call, outside them
-  ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)). NOT BUILT: sides of different head counts
-  (one head index reads both); the coefficients and the steps that consume a round.
-  THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set
-  a window, a warp -- a load a lane for each level the side lists, and the listing's 12 shuffles; a round -- the
-  select's 7 shuffles and 8 copies a lane. The floor is the copies' own: 2.1 to 3.0 cycles a line a CTA with 16 warps
-  issuing ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)), 5.8 with 4
-  ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. In the composed CTA:
+  warps take its rounds in turn -- so a fold's four warps issue copies together whatever its sets. A SET'S WORD a lane
+  is the call's own tokens ANDed with the set's group's word on each level the side lists; its parts are formed
+  outside the loop over sets -- a level's `base`, `shift` and `mask` once a fold, a level's row once and then a step
+  on a window ([`carry_groups.md`](carry_groups.md#word)). THE WORDS ARE LOADED A SET AHEAD AND ANDed AT THEIR USE:
+  a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
+  to run under it. The listing ([`carry_list.md`](carry_list.md)) gives a round's 32 tokens and the fetch
+  ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
+  nothing. The loops are bounded by values every lane holds (a shuffle from lane 0, a vote) and the levels the side
+  lists are decided once a call, outside them ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
+  NOT BUILT: sides of different head counts (one head index reads both); the coefficients and the steps that consume
+  a round. THE BUDGET, stated before the code
+  ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- a load a lane
+  for each level the side lists and the listing's running sums; a round -- the select and 8 copy instructions a lane.
+  A ROUND IS PAID WHOLE whatever number of its 32 places are live. What a warp's window is made of, by its stamps:
   [`../../lab/carry_supply.md`](../../lab/carry_supply.md).
 - WHAT IS NOT BUILT is named in the code where it goes: the image, the readout's lists, the coefficients, the steps,
   the sums' stores and the adds, and the tiles they add to the CTA's shared memory.
