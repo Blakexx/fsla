@@ -48,7 +48,7 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 
 ## Per-op scope: not every op pads every axis
 
-* **the prefill's carry leg** is NOT BUILT, and what its seam pads is decided with its kernel. THE VALUE AXIS IS RULED:
+* **the prefill's carry leg** is NOT BUILT; what its seam will pad is ruled on both axes. THE VALUE AXIS:
   a carry CTA takes 64 value channels, the tensor step's own, and a wider value is carved across CTAs (the owner:
   "i think its fine initially to say we are doing start always 64, and we will then we will be able to support higher
   d_v by carving accross ctas"), so `v` pads to a whole number of 64-channel slices
