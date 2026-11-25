@@ -93,7 +93,7 @@ def test_each_group_smaller_than_the_level_a_width_allows(width):
 
 
 @pytest.mark.parametrize("group", [g for g in reference.GROUP_SIZES if g < 256])
-def test_each_of_the_seven_groups_smaller_than_256_digits_over_two_windows(group):
+def test_each_of_the_eight_groups_smaller_than_256_digits_over_two_windows(group):
     masks, density = one_side(2 * window_of(), 256, group, seed=group)
     check(masks, density, launch(masks, density))
 
@@ -103,7 +103,7 @@ LENGTHS = {"one window": lambda w: w, "two windows": lambda w: 2 * w, "a ragged 
 
 
 @pytest.mark.parametrize("length", list(LENGTHS))
-@pytest.mark.parametrize(("width", "group"), [(16, 1), (16, 4), (256, 8), (256, 16), (256, 128)])
+@pytest.mark.parametrize(("width", "group"), [(16, 1), (16, 4), (256, 2), (256, 8), (256, 16), (256, 128)])
 def test_each_length_whole_windows_ragged_words_a_partial_window_and_a_long_call(length, width, group):
     tokens = LENGTHS[length](window_of())
     masks, density = one_side(tokens, width, group, seed=tokens)
@@ -136,7 +136,7 @@ def test_a_present_mask_at_byte_255_leaves_its_region_as_it_was():
     assert (workspace[dense_at:dense_at + reference.block_bytes(16, window_words())] == SENTINEL).all().item()
 
 
-@pytest.mark.parametrize("width", [4, 8, 16, 256])
+@pytest.mark.parametrize("width", [2, 4, 8, 16, 256])
 def test_a_level_side_whose_group_is_the_level_is_whole_below_byte_255_too_and_leaves_its_region_as_it_was(width):
     read = {0: live_mask(1, window_of(), 1, width, 0.5, 11), 1: live_mask(1, window_of(), 1, width, 0.9, 12)}
     masks = bundle(read, {}, 2)
@@ -148,7 +148,7 @@ def test_a_level_side_whose_group_is_the_level_is_whole_below_byte_255_too_and_l
 
 
 @pytest.mark.parametrize("fraction", [0.0, 0.02, 0.5, 0.98, 1.0])
-@pytest.mark.parametrize("group", [1, 8, 16, 128])
+@pytest.mark.parametrize("group", [1, 2, 8, 16, 128])
 def test_random_masks_at_several_live_fractions_including_none_and_all(fraction, group):
     masks, density = one_side(2 * window_of(), 256, group, fraction=fraction, seed=int(fraction * 100))
     check(masks, density, launch(masks, density))

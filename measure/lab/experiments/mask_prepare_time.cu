@@ -1,15 +1,15 @@
 // measure/lab/experiments/mask_prepare_time.cu -- QUESTION: what does the LIBRARY's mask-preparation pass cost a token on
-// a mask it reads once, at each of the seven group sizes its density byte can select -- the three the lab's own kernel
-// measured (`mask_prep`: 1, 4 and 16 digits) and the four no kernel has (32 to 256 digits, whose lanes OR by warp
-// shuffle)? METHOD: this file compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts a
+// a mask it reads once, at each of the nine group sizes its density byte can select -- the three the lab's own kernel
+// measured (`mask_prep`: 1, 4 and 16 digits), 2 and 8, and the four whose lanes OR by warp shuffle (32 to 256
+// digits)? METHOD: this file compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts a
 // clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
 // level-side of 4 to 5 live digits a token, a window the hopper card's (1,024 tokens). A round is the CTA's own windows (4 at a group of
-// one digit, 16 at 4, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows.
+// one digit, 8 at 2, 16 at 4, 32 at 8, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows.
 // The density byte selects the group as it does in the library. Every word and total of the first round is
 // checked against the host's, in the library's layout.
-// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (8 words' at one digit or four, 2 at more), a trip
+// TIMELINE: no MMA. The library's walk: a thread holds its loads ahead (8 words' at up to four digits, 4 at eight, 2 at more), a trip
 // finishes the held words and issues the loads that many words on; at 32 digits and above a word's finish is a warp
-// shuffle across the group's lanes. Live: the held loads (8 words, 8 lines, or 2 words of 4 lines) and the running total.
+// shuffle across the group's lanes. Live: the held loads (8 words, pairs or lines; 4 words of 2 lines; or 2 words of 4 lines) and the running total.
 // see docs/internals/tools/lab.md#mask-prepare-time
 #include "lab.cuh"
 #include "mask_prepare/mask_prepare_kernel.cuh"
@@ -45,8 +45,8 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the library's CTA dispatches once -- its level-side, its switch on the group, a surplus CTA's return -- outside its own
   //: loops; here that dispatch sits inside the lab's loop over rounds, which the library's kernel does not have
-  //: the switch has an arm a group size, eight of them
-  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 24);
+  //: the switch has an arm a group size, nine of them
+  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 26);
   if (b.expect_only) return 0;
   //: every group covers the same windows a call, 256 a CTA
   constexpr int kCtaWindows = 256;

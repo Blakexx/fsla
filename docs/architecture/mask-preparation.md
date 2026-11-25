@@ -31,7 +31,7 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
   density measured; the mask in cache, about 1.0 at every group size, what bounds it there being open.
 - BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
-  and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at seven of its eight group sizes (a group of 8 digits is NOT MEASURED)
+  and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at seven of its nine group sizes (groups of 2 and of 8 digits are NOT MEASURED)
   ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)).
 - NOT BUILT: the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
@@ -39,8 +39,8 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - ITS PLACE IN THE WORKSPACE IS SIZED WITHOUT THE DENSITIES, which the host never reads
   ([`prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the host sizes it for the group size that needs
   the most. At a word of 4 bytes and a total of 2, that is the larger of a total a digit (groups of one digit, where the word is
-  the mask's own) and a word a group at groups of 4 digits (the totals, then a word a mask word a group): at 256 digits
-  and 32 words, 8,320 bytes. THE LAYOUT IS `mask_prepare_layout.h`
+  the mask's own) and a word a group at groups of 2 digits (the totals, then a word a mask word a group): at 256 digits
+  and 32 words, 16,640 bytes. THE LAYOUT IS `mask_prepare_layout.h`
   ([`internals/common/plan/mask_prepare_layout.md`](../internals/common/plan/mask_prepare_layout.md)): a block a (batch-head, window) of `prepared_block_bytes(width_bits, words)`
   bytes (`words` the card's window in mask words), the totals, then the words in it.
 - THE INTRA, in the owner's words, NOT YET CHECKED against the kernel: "the intra doesnt use makss, so it can start

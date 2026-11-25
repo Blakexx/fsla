@@ -51,9 +51,10 @@ def test_a_level_side_at_byte_255_is_whole_its_group_the_level_itself_at_every_w
     assert reference.group_of(255, width) == width and reference.whole(255, width)
 
 
-def test_below_byte_255_a_level_side_is_whole_only_where_the_level_is_an_allowed_size():
-    assert not any(reference.whole(byte, 2) for byte in range(255))
-    assert all(any(reference.whole(byte, width) for byte in range(255)) for width in (4, 8, 16, 32, 64, 128, 256))
+def test_a_level_side_is_whole_from_just_over_three_quarters_density_at_every_width():
+    #: the level's own size against the next one down, half of it: nearer from d * width / 256 over three quarters of the width, d > 192 (a tie to the smaller)
+    for width in (2, 4, 8, 16, 32, 64, 128, 256):
+        assert [reference.whole(byte, width) for byte in range(256)] == [byte + 1 > 192 for byte in range(256)]
 
 
 def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_digits_and_a_narrow_width_takes_only_what_it_holds():
@@ -76,12 +77,12 @@ def _tiny() -> Masks:
 @pytest.mark.parametrize(
     ("window_words", "block_bytes_at_width_2", "block_bytes_at_width_4", "offsets", "total"),
     [
-        #: 32 words (a window of 1,024 tokens). Width 2: a total a digit, words_at(2) = (2 * 2 + 3) & ~3 = 4 bytes (no group of 4 fits). Width 4: the larger of words_at(4) = (8 + 3) & ~3 = 8
-        #: and, one group of 4 digits, words_at(1) + 4 * 32 * 1 = 4 + 128 = 132 bytes. Slot 0: 1 batch-head, 3 windows of 4 bytes = 12; slots 1 to 4 have no heads;
-        #: slot 5: 2 batch-heads, 3 windows of 132 = 792 from offset 12; total 804
-        (32, 4, 132, [0, 12, 12, 12, 12, 12, 804, 804], 804),
-        #: 16 words (a window of 512 tokens): width 2 is 4 bytes; width 4 is max(8, 4 + 4 * 16 * 1 = 68) = 68. Slot 0: 3 * 4 = 12; slot 5: 6 * 68 = 408 from 12; total 420
-        (16, 4, 68, [0, 12, 12, 12, 12, 12, 420, 420], 420),
+        #: 32 words (a window of 1,024 tokens). Width 2: a total a digit, words_at(2) = (2 * 2 + 3) & ~3 = 4 bytes (its group of 2 is the level, whole: nothing is stored for it). Width 4: the larger of
+        #: words_at(4) = (8 + 3) & ~3 = 8 and, two groups of 2 digits, words_at(2) + 4 * 32 * 2 = 4 + 256 = 260 bytes. Slot 0: 1 batch-head, 3 windows of 4 bytes = 12; slots 1 to 4 have no heads;
+        #: slot 5: 2 batch-heads, 3 windows of 260 = 1,560 from offset 12; total 1,572
+        (32, 4, 260, [0, 12, 12, 12, 12, 12, 1572, 1572], 1572),
+        #: 16 words (a window of 512 tokens): width 2 is 4 bytes; width 4 is max(8, 4 + 4 * 16 * 2 = 132) = 132. Slot 0: 3 * 4 = 12; slot 5: 6 * 132 = 792 from 12; total 804
+        (16, 4, 132, [0, 12, 12, 12, 12, 12, 804, 804], 804),
     ],
 )
 def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_bytes_at_width_2, block_bytes_at_width_4, offsets, total):
@@ -89,11 +90,11 @@ def test_the_layout_of_a_hand_computed_call_at_two_windows(window_words, block_b
     widths, heads = [2, 2, 2, 2, 2, 4, 2, 2], [1, 0, 0, 0, 0, 2, 0, 0]
     assert (reference.block_bytes(2, window_words), reference.block_bytes(4, window_words)) == (block_bytes_at_width_2, block_bytes_at_width_4)
     assert reference.layout(widths, heads, 3, window_words) == (offsets, total)
-    #: 256 digits: the total a digit is words_at(256) = 512 bytes; groups of 4: 64 groups, words_at(64) = (128 + 3) & ~3 = 128, plus 4 * words * 64
-    assert reference.block_bytes(256, window_words) == 128 + 256 * window_words
+    #: 256 digits: the total a digit is words_at(256) = 512 bytes; groups of 2: 128 groups, words_at(128) = (256 + 3) & ~3 = 256, plus 4 * words * 128
+    assert reference.block_bytes(256, window_words) == 256 + 512 * window_words
     #: the words start after the totals, rounded up to 4: (2 * 1 + 3) & ~3 = 4, (2 * 2 + 3) & ~3 = 4, (2 * 8 + 3) & ~3 = 16
     assert (reference.words_at(1), reference.words_at(2), reference.words_at(8)) == (4, 4, 16)
-    assert reference.block_bytes(256, 32) == 8320
+    assert reference.block_bytes(256, 32) == 16640
 
 
 def test_the_reference_of_a_hand_computed_block():
@@ -148,8 +149,8 @@ def test_the_references_block_formulas_are_the_layout_headers_at_both_windows():
         for bits in range(1, 9):
             width = 1 << bits
             ones = (2 * width + 3) & ~3
-            fours = ((2 * (width // 4) + 3) & ~3) + 4 * window_words * (width // 4) if width >= 4 else 0
-            assert reference.block_bytes(width, window_words) == max(ones, fours)
+            twos = ((2 * (width // 2) + 3) & ~3) + 4 * window_words * (width // 2) if width >= 4 else 0
+            assert reference.block_bytes(width, window_words) == max(ones, twos)
         assert reference.words_at(3) == (2 * 3 + 3) & ~3
 
 

@@ -31,13 +31,13 @@ inline constexpr int kCtaLeaves = 1 << kCtaLeafBits;
 inline constexpr int kWholeDensity = 256;
 inline constexpr int kLeastDensity = 1;
 
-//: the allowed group sizes in digits, as log2: 1, 4, 8, 16, 32, 64, 128, 256 (those no larger than a level's width are allowed on it; a density of the whole is the level itself, on a level of 2 digits too)
-inline constexpr int kGroupSizeBits[] = {0, 2, 3, 4, 5, 6, 7, 8};
+//: the allowed group sizes in digits, as log2: every power of two from 1 to 256 (those no larger than a level's width are allowed on it, so a level's own size always is)
+inline constexpr int kGroupSizeBits[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
 inline constexpr int kGroupSizes =
     static_cast<int>(sizeof(kGroupSizeBits) / sizeof(kGroupSizeBits[0]));
 
 //: `kGroupSizeBits[i]` as arithmetic: a kernel evaluates it where it cannot read the table
-FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i < 1 ? 0 : i + 1; }
+FSLA_CARVE_FN constexpr int group_size_bits(int i) { return i; }
 
 constexpr bool group_size_bits_is_the_table() {
   for (int i = 0; i < kGroupSizes; ++i) {
@@ -54,7 +54,7 @@ FSLA_CARVE_FN constexpr int carve_clamp(int value, int lo, int hi) {
 }
 
 //: THE GROUP OF A DENSITY (docs/internals/common/plan/prefill_launch.md#groups), one rule for both sides: the log2 of the allowed group size nearest to `density * width / 256` digits,
-//: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`; a density of the whole is the level itself, at every width
+//: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`
 FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
   const std::int64_t live = std::int64_t{density} << width_bits;
   int best = 0;
@@ -69,7 +69,7 @@ FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
       best_distance = distance;
     }
   }
-  return density >= kWholeDensity ? width_bits : best;
+  return best;
 }
 
 //: A SIDE'S LOOP ORDER over `levels` levels (docs/internals/common/plan/cta_carve.md#loop-order): `order[0]` the outermost, the side's sparsest level, to the densest innermost; equal densities keep the lower level outside

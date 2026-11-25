@@ -16,13 +16,13 @@ FSLA_CARVE_FN constexpr std::int64_t prepared_words_at(int groups) {
   return (std::int64_t{2} * groups + 3) & ~std::int64_t{3};
 }
 
-//: A WINDOW'S BLOCK of a level-side `width_bits` wide, in bytes, whatever its group, a window `words` mask words: the larger of a total a digit and, at groups of 4 digits, the totals and a word a mask word a group
+//: A WINDOW'S BLOCK of a level-side `width_bits` wide, in bytes, whatever its group, a window `words` mask words: the larger of a total a digit and, at groups of 2 digits, the totals and a word a mask word a group
 FSLA_CARVE_FN constexpr std::int64_t prepared_block_bytes(int width_bits, int words) {
   const std::int64_t ones = prepared_words_at(1 << width_bits);
   if (width_bits < 2) return ones;
-  const int groups = 1 << (width_bits - 2);
-  const std::int64_t fours = prepared_words_at(groups) + std::int64_t{4} * words * groups;
-  return fours > ones ? fours : ones;
+  const int groups = 1 << (width_bits - 1);
+  const std::int64_t twos = prepared_words_at(groups) + std::int64_t{4} * words * groups;
+  return twos > ones ? twos : ones;
 }
 
 struct PreparedLayout {

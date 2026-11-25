@@ -74,15 +74,15 @@ def test_the_carve_of_the_owners_cases(widths, write, read, want):
     assert got == want
 
 
-@pytest.mark.parametrize("density, group", [(1, 1), (2, 1), (3, 4), (6, 4), (7, 8), (12, 8), (13, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
+@pytest.mark.parametrize("density, group", [(1, 1), (2, 2), (3, 2), (4, 4), (6, 4), (7, 8), (12, 8), (13, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
 def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_to_the_smaller(density, group):
     out = _out(_carve([8], [density], [density]))
     assert out["write_group_bits"] == out["read_group_bits"] == [group.bit_length() - 1]
 
 
 def test_a_group_is_never_larger_than_its_level():
-    #: a level of 2 digits holds no allowed size but 1: below the whole its group is one digit; at the whole (256) it is the level itself
-    out = _out(_carve([4, 1], [256, 256], [255, 255]))
+    #: a level of 2 digits: at half density its group is one digit, at the whole it is the level's two and no more
+    out = _out(_carve([4, 1], [256, 256], [255, 128]))
     assert out["write_group_bits"] == [4, 1] and out["read_group_bits"] == [4, 0]
 
 

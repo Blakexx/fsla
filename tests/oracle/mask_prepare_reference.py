@@ -18,17 +18,14 @@ from fsla.routing.masks import PREFILL, Masks
 #: the level-sides of a call: `side * LEVELS + level`, side 0 the read side
 LEVELS = 4
 SIDES = 2 * LEVELS
-#: the group sizes a level-side may take, and the density whose byte is the dense flag
-GROUP_SIZES = (1, 4, 8, 16, 32, 64, 128, 256)
-DENSE_BYTE = 255
+#: the group sizes a level-side may take: every power of two from 1 to 256
+GROUP_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 
 def group_of(byte: int, width: int) -> int:
     """A level-side's group, in digits, from its density byte: with ``d = byte + 1`` (256ths), the allowed size no larger than ``width``
     nearest to ``d * width / 256`` digits, a tie to the smaller, compared exactly in integers (the distance of a size ``a`` is
     ``|a * 256 - d * width|``). At byte 255 the group is the level itself, whatever its width."""
-    if byte == DENSE_BYTE:
-        return width
     live = (byte + 1) * width
     return min((size for size in GROUP_SIZES if size <= width), key=lambda size: (abs(size * 256 - live), size))
 
@@ -45,11 +42,11 @@ def words_at(groups: int) -> int:
 
 def block_bytes(width: int, window_words: int) -> int:
     """A window's block of a level-side ``width`` digits wide, whatever its group, the window ``window_words`` mask words: the larger of ``words_at(width)`` (a total a digit) and,
-    where ``width >= 4``, ``words_at(width // 4) + 4 * window_words * (width // 4)`` (groups of 4 digits: the totals, then a word a mask word a group)."""
+    where ``width >= 4``, ``words_at(width // 2) + 4 * window_words * (width // 2)`` (groups of 2 digits: the totals, then a word a mask word a group)."""
     ones = words_at(width)
     if width < 4:
         return ones
-    return max(ones, words_at(width // 4) + 4 * window_words * (width // 4))
+    return max(ones, words_at(width // 2) + 4 * window_words * (width // 2))
 
 
 def layout(widths: list[int], heads: list[int], windows: int, window_words: int) -> tuple[list[int], int]:

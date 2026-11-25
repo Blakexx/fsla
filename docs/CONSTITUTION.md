@@ -143,7 +143,7 @@ worst case and a test of the kernel, never a regime to concede.
 EVERY PATTERN IS PROVIDED; ONE REGIME IS PROMISED (Blake, 2026-11-23: "it can just be something we provide, and we dont
 promise it will work amazingly always, because its not the ideal regime"). Each side has a DENSITY on each level (R9), and from it a
 GROUP SIZE (Blake, 2026-11-24: "multiply the sparsity by the actual level digits and round that to our allows range"):
-1, 4, 8, 16, 32, 64, 128 or 256 digits (8 joined them, Blake, 2026-11-26: "just add 8 to the list"). A level walked whole is one group. A token is in a set where it is live in that
+1, 2, 4, 8, 16, 32, 64, 128 or 256 digits (8 and 2 joined them, Blake, 2026-11-26: "just add 8 to the list"; "You can add 2 as a group size too"). A level walked whole is one group. A token is in a set where it is live in that
 set's group on every level; the digits of a group it is not live on carry zeros. The kernels read group sizes and
 nothing about how a level was produced (2026-11-23: "carry doesn't read the metadata, it just reads group size per
 legel"). No side needs a level

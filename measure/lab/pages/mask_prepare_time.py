@@ -5,7 +5,7 @@
 `write(root, instance)` reads that record under `root`, and the lab kernel's record
 `measure/lab/results/mask_prep/sm_90a.json` it is set beside, and rewrites `docs/lab/mask_prepare_time.md` under `root`
 from its `MEASURED (` line to its end: every figure a record's own or arithmetic on one. It REFUSES, naming what is
-missing, where a record is absent, the record lacks one of the experiment's seven rows or holds a row whose check
+missing, where a record is absent, the record lacks one of the experiment's rows or holds a row whose check
 failed, the record is not the one the predictions were written for (`PREDICTED_FOR`), or its misses are not the ones
 the reading speaks of (`MISSED`). `instance` is the rented box's label, which only words the card's line. It returns
 the files it wrote (`lab page mask_prepare_time --instance LABEL`, docs/internals/tools/lab.md).
@@ -19,7 +19,9 @@ import pathlib
 from _record import Record, card
 
 UNIT = "SM-cycles a token"
-GROUPS = (1, 4, 16, 32, 64, 128, 256)
+GROUPS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+#: the sizes whose lanes OR by warp shuffle
+SHUFFLED = tuple(g for g in GROUPS if g > 16)
 #: a level-side's digits and a window's mask words in the experiment, and a word's tokens
 DIGITS, WORDS, TOKENS = 256, 32, 32
 #: the mask's bytes a token the pass reads: a 4-byte word a digit a word of 32 tokens
@@ -29,7 +31,8 @@ PREDICTED_FOR = "9c2a0f30"
 #: THE RANGES PREDICTED FOR THIS FORM OF THE KERNEL before any run of it: the bytes a token it reads and stores over the
 #: one rate the pass with a count a word had fit (11.8 to 12.9 bytes a cycle an SM, the experiment at 0fb5eb86), the row
 #: at one digit widened upward for its held loads, 8 words' where they were 16
-PREDICTED = {1: (2.5, 3.1), 4: (3.0, 3.5), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8), 256: (2.4, 2.7)}
+#: groups of 2 and of 8 are forms the run before did not have (a pair a thread; two lines a thread, 4 words' loads held): the same rate over their bytes
+PREDICTED = {1: (2.5, 3.1), 2: (3.6, 4.2), 4: (3.0, 3.5), 8: (2.7, 3.15), 16: (2.6, 2.9), 32: (2.6, 2.9), 64: (2.5, 2.85), 128: (2.5, 2.8), 256: (2.4, 2.7)}
 #: THE ROWS THE RUN MISSED, which the reading is of
 MISSED: set[int] = set()
 READING = """WHAT THE RUN SAYS, AND WHAT IS NOT SHOWN. Every range held. The ranges came from one rate over the bytes a token read
@@ -112,7 +115,7 @@ the same group size:
 
 WHAT IT SHOWS.
 - THE COST BY GROUP SIZE: {R[name(1)]:.2f} at a group of one digit; the highest {R[name(high)]:.2f}, at a group of {high}; the lowest {R[name(low)]:.2f}, at a group of {low}.
-- THE SHUFFLE FORM (32 digits and above): {min(R[name(g)] for g in GROUPS[3:]):.2f} to {max(R[name(g)] for g in GROUPS[3:]):.2f}, beside {R[name(16)]:.2f} at 16 digits, where a thread is a group.
+- THE SHUFFLE FORM (32 digits and above): {min(R[name(g)] for g in SHUFFLED):.2f} to {max(R[name(g)] for g in SHUFFLED):.2f}, beside {R[name(16)]:.2f} at 16 digits, where a thread is a group.
 - ONE RATE: the bytes a token a row moves, read and stored, over its cycles a token is {min(rates):.1f} to {max(rates):.1f} bytes a cycle an SM
   at every group size.
 

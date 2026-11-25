@@ -232,7 +232,7 @@ The compiled key is the family's own:
 | decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
 | producer (design, not built) | none: one instantiation each | every width, kind and offset, from the plan or the layout |
-| mask-preparation pass | none: the build tag alone, one arm a card; the group is no compiled key | each level-side's group, switched on the device from its density byte (`uniform_switch` over the eight group sizes), and its place, from the layout |
+| mask-preparation pass | none: the build tag alone, one arm a card; the group is no compiled key | each level-side's group, switched on the device from its density byte (`uniform_switch` over the nine group sizes), and its place, from the layout |
 | entmax solves, each kernel its own family | the padded width class (its lane width and items a thread), alpha (not the softmax kernels), the two operand dtypes (`csrc/fsla/src/entmax/arms.bzl`) | the level table |
 
 The window `W`, the warp counts and the register budgets are constants. **Structure is branched on, never a

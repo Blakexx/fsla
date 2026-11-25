@@ -1,11 +1,11 @@
-# `mask_prepare_time`: the library's mask-preparation pass, timed at its seven group sizes
+# `mask_prepare_time`: the library's mask-preparation pass, timed at its group sizes
 
 [`measure/lab/experiments/mask_prepare_time.cu`](../../measure/lab/experiments/mask_prepare_time.cu); how an experiment is run and
 recorded: [`internals/tools/lab.md`](../internals/tools/lab.md).
 
 **QUESTION.** What does the LIBRARY's mask-preparation pass
 ([`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)) cost a token on a mask it reads
-once, at each of the seven group sizes its density byte can select: the three the lab's own kernel measured
+once, at each of the nine group sizes its density byte can select: the three the lab's own kernel measured
 ([`mask_prep`](mask_prep.md): 1, 4 and 16 digits) and the four no kernel has (32 to 256 digits, whose lanes OR by warp
 shuffle)?
 
@@ -16,6 +16,8 @@ digit, 16 at 4, 64 at 16 and above); a call is the rounds that cover 256 windows
 the mask is read once. The density byte selects the group as it does in the library. Every word and total of
 the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
 own loops; here that dispatch sits inside the lab's loop over rounds, which the experiment declares.
+
+THE RECORD BELOW IS OF SEVEN OF THE NINE: groups of 2 and of 8 digits are NOT MEASURED.
 
 MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM pxfjwwmx, driver 580.196.07; 2026-11-25, the experiment at
 9c2a0f30; 7 repetitions; the 7 checked rows pass, every word and total of each group size's

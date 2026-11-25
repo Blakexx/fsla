@@ -29,7 +29,7 @@ struct Args {
 };
 
 //: the index of a group's bits among `plan::kGroupSizeBits`
-__host__ __device__ constexpr int group_index(int bits) { return bits < 2 ? 0 : bits - 1; }
+__host__ __device__ constexpr int group_index(int bits) { return bits; }
 
 constexpr bool group_index_inverts_the_sizes() {
   for (int i = 0; i < kGroupSizes; ++i) {
@@ -51,10 +51,17 @@ struct Raw<1> {
   std::uint32_t word;
 };
 
+template <>
+struct Raw<2> {
+  uint2 pair;
+};
+
 template <int U>
 __device__ __forceinline__ void load(Raw<U>& raw, const std::uint32_t* at) {
   if constexpr (U == 1) {
     raw.word = at[0];
+  } else if constexpr (U == 2) {
+    raw.pair = *reinterpret_cast<const uint2*>(at);
   } else {
     constexpr int kLines = U / 4;
     const uint4* const lines = reinterpret_cast<const uint4*>(at);
@@ -68,6 +75,8 @@ template <int U>
 __device__ __forceinline__ std::uint32_t word_of(const Raw<U>& raw) {
   if constexpr (U == 1) {
     return raw.word;
+  } else if constexpr (U == 2) {
+    return raw.pair.x | raw.pair.y;
   } else {
     constexpr int kLines = U / 4;
     std::uint32_t w = 0;
@@ -118,7 +127,7 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   std::uint8_t* const words = block + plan::prepared_words_at(groups);
   std::uint32_t* word = reinterpret_cast<std::uint32_t*>(words) + group;
 
-  //: THE WALK'S LOADS HELD, issued before any is read: 8 words' at one digit a thread or at four, 2 at more
+  //: THE WALK'S LOADS HELD, issued before any is read: 8 words' at up to four digits a thread, 4 at eight, 2 at more
   constexpr int kHeld = kUnit < 8 ? 8 : kUnit < 16 ? 4 : 2;
   static_assert(WORDS > 0 && WORDS % kHeld == 0 && WORDS * 32 <= 65536, "no window of trips");
   Raw<kUnit> held[kHeld];
