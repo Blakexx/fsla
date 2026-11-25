@@ -11,7 +11,7 @@ whole, and nothing is prepared for it): the three the lab's own kernel measured 
 
 **METHOD.** The experiment compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts the
 lab's clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
-level-side of 4 to 5 live digits a token, a window 1,024 tokens. A round is the CTA's own windows (4 at a group of one
+level-side of 4 to 5 live digits a token, a window 1,024 tokens. The call has a second level of 256 digits, whole on both sides and unmasked: with it a set holds 16 leaves at every group, so the carve raises none and the density byte selects the group timed. A round is the CTA's own windows (4 at a group of one
 digit, 8 at 2, 16 at 4, 32 at 8, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows, so
 the mask is read once. The density byte selects the group as it does in the library. Every word and total of
 the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
@@ -32,6 +32,8 @@ the same group size:
 | 32 | 2.67 | not measured | 32 + 1.02 | 12.4 |
 | 64 | 2.67 | not measured | 32 + 0.51 | 12.2 |
 | 128 | 2.60 | not measured | 32 + 0.25 | 12.4 |
+
+THE RECORD IS OF THE PASS BEFORE IT DERIVED THE CARVE: at 4dca551b a CTA took its group from its level-side's density byte alone and the call was one level. As the experiment stands -- a CTA's first warp computes the call's carve and hands the group to the rest behind a CTA barrier, once a round here -- it is NOT RUN.
 
 WHAT IT SHOWS.
 - THE COST BY GROUP SIZE: 2.77 at a group of one digit; the highest 3.69, at a group of 2; the lowest 2.60, at a group of 128.

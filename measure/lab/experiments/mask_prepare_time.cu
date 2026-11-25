@@ -29,11 +29,13 @@ constexpr uint32_t digit_of(uint32_t x, int i) { return (x * 5u + (x >> 3) + sta
 __global__ void __launch_bounds__(pass::kThreads, 1)
     timed(long long* times, const __grid_constant__ pass::Args a, const uint8_t* density, uint8_t* workspace, int rounds,
           int stride) {
+  //: the word the library's kernel takes from its layout
+  __shared__ int handed;
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
   for (int round = 0; round < rounds; ++round) {
-    pass::mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride);
+    pass::mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x) + round * stride, &handed);
   }
   clock.stop(times);
 }
@@ -43,10 +45,11 @@ __global__ void __launch_bounds__(pass::kThreads, 1)
 int main(int argc, char** argv) {
   using namespace mask_prepare_time;
   lab::Bench b(argc, argv);
-  //: the library's CTA dispatches once -- its level-side, its switch on the group, a surplus CTA's return -- outside its own
-  //: loops; here that dispatch sits inside the lab's loop over rounds, which the library's kernel does not have
-  //: the switch has an arm a group size the pass prepares, eight of them
-  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 24);
+  //: the library's CTA dispatches once -- its level-side, a whole or surplus CTA's return, its first warp's carve and the
+  //: hand of the group to the rest, its switch on the group -- outside its own loops; here that dispatch sits inside the
+  //: lab's loop over rounds, which the library's kernel does not have
+  //: the switch has an arm a group size the pass prepares, eight of them; the first warp's branch and its join are two more
+  b.expect("mask_prepare_time::timed", "LOOP_CONVERGENCE", "<=", 26);
   if (b.expect_only) return 0;
   //: every group covers the same windows a call, 256 a CTA
   constexpr int kCtaWindows = 256;
@@ -57,7 +60,7 @@ int main(int argc, char** argv) {
   uint8_t *dwork = nullptr, *ddensity = nullptr;
   LAB_CHECK(cudaMalloc(&dmask, mask_words * 4));
   LAB_CHECK(cudaMalloc(&dwork, bytes));
-  LAB_CHECK(cudaMalloc(&ddensity, 2));
+  LAB_CHECK(cudaMalloc(&ddensity, 4));
   //: the mask as the prefill is handed it: bit `x % 32` of word `x / 32` at a digit's column
   std::vector<uint32_t> mask(mask_words, 0);
   for (size_t x = 0; x < windows * kWindow; ++x) {
@@ -72,7 +75,9 @@ int main(int argc, char** argv) {
   args.heads[0] = 1;
   args.words = static_cast<int>(windows * kWords);
   args.windows = static_cast<int>(windows);
-  args.levels = 1;
+  //: a second level, whole on both sides and unmasked: with it a set of the first's smallest group holds 16 leaves, so the carve raises none
+  args.levels = 2;
+  args.level_bits[0] = args.level_bits[1] = kWidthBits;
   for (int s = 1; s <= pass::kSides; ++s) args.first_cta[s] = INT32_MAX;
   for (int gb = 0; gb < kWidthBits; ++gb) {
     const int g = 1 << gb, groups = kDigits >> gb;
@@ -82,8 +87,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "the density byte %d does not select a group of %d digits\n", byte, g);
       return 1;
     }
-    const uint8_t density[2] = {byte, 255};
-    LAB_CHECK(cudaMemcpy(ddensity, density, 2, cudaMemcpyHostToDevice));
+    //: row 0 the read side's, level 0 the timed level-side; the rest whole
+    const uint8_t density[4] = {byte, 255, 255, 255};
+    LAB_CHECK(cudaMemcpy(ddensity, density, 4, cudaMemcpyHostToDevice));
     //: a thread's digits, so a CTA's windows a round and its rounds a call
     const int unit = g < 16 ? g : 16, per = pass::kThreads / (kDigits / unit), rounds = kCtaWindows / per;
     const std::string name = "groups of " + std::to_string(g) + (g == 1 ? " digit" : " digits");

@@ -18,9 +18,10 @@ __all__ = ["prepare_masks"]
 LEVELS = 4
 
 
-def prepare_masks(masks: Masks, density: torch.Tensor) -> torch.Tensor:
+def prepare_masks(masks: Masks, density: torch.Tensor, widths: tuple[int, ...] | list[int]) -> torch.Tensor:
     """The workspace the pass wrote for ``masks``: uint8 on the masks' device, ``mask_prepare_bytes`` long. The slot of a present entry
-    is ``side * 4 + level`` (side 0 the read side); a bundle with no present entry returns an empty tensor and launches nothing. A level-side whose
+    is ``side * 4 + level`` (side 0 the read side); a bundle with no present entry returns an empty tensor and launches nothing. ``widths`` are the digits of each of the
+    call's levels, masked or not: a level-side's group is the call's carve's, which the pass derives from them and the density. A level-side whose
     group is the level's size is whole (byte 255 always) and is left as the workspace was made (uninitialised). The window is the card's, which the op derives from the masks' device."""
     if masks.consumer != PREFILL:
         raise ValueError(f"the mask-preparation pass is the prefill's: the masks are {masks.consumer!r}-layout, not {PREFILL!r}")
@@ -37,5 +38,5 @@ def prepare_masks(masks: Masks, density: torch.Tensor) -> torch.Tensor:
     ext = extension()
     words = int(present[0][1].shape[2])
     workspace = torch.empty(int(ext.mask_prepare_bytes(width_bits, heads, words, present[0][1].device.index)), dtype=torch.uint8, device=present[0][1].device)
-    ext.mask_prepare([mask for _, mask in present], [slot for slot, _ in present], density, workspace)
+    ext.mask_prepare([mask for _, mask in present], [slot for slot, _ in present], [int(w) for w in widths], density, workspace)
     return workspace

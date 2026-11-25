@@ -48,7 +48,7 @@ void launch_at(const Args& args, const Tensor& density, Tensor& workspace) {
 }  // namespace detail
 
 void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& slots,
-                  const Tensor& density, Tensor& workspace) {
+                  const std::vector<int64_t>& widths, const Tensor& density, Tensor& workspace) {
   check_arch_table();
   using namespace detail;
   STD_TORCH_CHECK(masks.size() == slots.size() && !masks.empty() && masks.size() <= kSides,
@@ -63,6 +63,14 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
 
   Args args{};
   args.levels = static_cast<int>(density.size(1));
+  STD_TORCH_CHECK(static_cast<std::int64_t>(widths.size()) == density.size(1),
+                  "mask_prepare takes the width of each level of the density's depth");
+  for (int l = 0; l < args.levels; ++l) {
+    const std::int64_t width = widths[static_cast<std::size_t>(l)];
+    STD_TORCH_CHECK(width >= 2 && (width & (width - 1)) == 0 && width <= 256,
+                    "a level's width is a power of two from 2 to 256");
+    while ((std::int64_t{1} << args.level_bits[l]) < width) ++args.level_bits[l];
+  }
   args.words = static_cast<int>(masks[0].size(2));
   const int window_words = window_words_of(device);
   args.windows = (args.words + window_words - 1) / window_words;
@@ -79,6 +87,8 @@ void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& 
         mask.dim() == 4 && mask.size(2) == args.words && mask.size(3) >= 2
             && (mask.size(3) & (mask.size(3) - 1)) == 0 && mask.size(3) <= 256,
         "a mask is int32 [B, H, ceil(T / 32), width], the width a power of two from 2 to 256");
+    STD_TORCH_CHECK(mask.size(3) == widths[static_cast<std::size_t>(s % plan::kCarveMaxLevels)],
+                    "a mask's width is its level's");
     //: a group's digits are loaded 16 bytes at once
     STD_TORCH_CHECK(reinterpret_cast<std::uintptr_t>(mask.data_ptr()) % 16 == 0 || mask.size(3) < 4,
                     "a mask's memory is 16-byte aligned");

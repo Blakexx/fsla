@@ -8,6 +8,7 @@ Symbols: ``byte`` a density byte (``d = byte + 1`` 256ths), ``width`` a level-si
 from __future__ import annotations
 
 import json
+import random
 import re
 import struct
 import subprocess
@@ -48,13 +49,13 @@ def test_the_references_group_is_the_carves_for_every_density_byte(width_bits):
 
 @pytest.mark.parametrize("width", [2, 4, 8, 16, 32, 64, 128, 256])
 def test_a_level_side_at_byte_255_is_whole_its_group_the_level_itself_at_every_width(width):
-    assert reference.group_of(255, width) == width and reference.whole(255, width)
+    assert reference.group_of(255, width) == width
 
 
 def test_a_level_side_is_whole_from_just_over_three_quarters_density_at_every_width():
     #: the level's own size against the next one down, half of it: nearer from d * width / 256 over three quarters of the width, d > 192 (a tie to the smaller)
     for width in (2, 4, 8, 16, 32, 64, 128, 256):
-        assert [reference.whole(byte, width) for byte in range(256)] == [byte + 1 > 192 for byte in range(256)]
+        assert [reference.group_of(byte, width) == width for byte in range(256)] == [byte + 1 > 192 for byte in range(256)]
 
 
 def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_digits_and_a_narrow_width_takes_only_what_it_holds():
@@ -66,6 +67,45 @@ def test_every_allowed_size_no_larger_than_the_width_is_some_bytes_group_at_256_
 def test_a_tie_goes_to_the_smaller_size():
     #: width 256, byte 11 (d = 12): 12 digits live, 4 from 8 and 4 from 16 (1,024 256ths from each): a tie
     assert reference.group_of(11, 256) == 8
+
+
+def _planner_groups(calls: list[tuple[list[int], list[int], list[int]]]) -> list[tuple[list[int], list[int]]]:
+    """The planner's (read group bits, write group bits) of each call, a call its levels' (width bits, read densities, write densities)."""
+
+    def join(rows: list[list[int]]) -> str:
+        return ";".join(",".join(map(str, row)) for row in rows)
+
+    run = subprocess.run([str(TOOL), "--cta-carve", join([c[0] for c in calls]), "--write-density", join([c[2] for c in calls]),
+                          "--read-density", join([c[1] for c in calls])], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr
+    lines = [json.loads(line) for line in run.stdout.splitlines()]
+    assert len(lines) == len(calls)
+    return [(line["read_group_bits"][:len(call[0])], line["write_group_bits"][:len(call[0])]) for line, call in zip(lines, calls)]
+
+
+@pytest.mark.parametrize("levels", [1, 2, 3, 4])
+def test_the_references_carve_written_from_the_rule_gives_the_planners_groups_on_400_calls_a_depth(levels):
+    rng = random.Random(levels)
+    densities = [1, 2, 4, 7, 13, 25, 40, 49, 97, 193, 256]
+    calls = [([rng.choice([1, 2, 4, 6, 8]) for _ in range(levels)], [rng.choice(densities) for _ in range(levels)], [rng.choice(densities) for _ in range(levels)])
+             for _ in range(400)]
+    for (bits, read, write), want in zip(calls, _planner_groups(calls)):
+        assert reference.carve_groups(bits, read, write) == want, (bits, read, write)
+
+
+@pytest.mark.parametrize("width", [2, 4, 8, 16, 32, 64, 128, 256])
+def test_beside_a_whole_level_of_256_digits_a_group_is_the_level_sides_size_and_alone_a_narrow_level_is_raised_to_whole(width):
+    for size in (g for g in reference.GROUP_SIZES if g < width):
+        byte = next(b for b in range(255) if reference.group_of(b, width) == size)
+        assert reference.groups_of(torch.tensor([[byte, 255], [255, 255]], dtype=torch.uint8), [width, 256])[0] == size
+    #: alone, a level of at most 16 digits holds no set of 16 leaves but itself: a group of one digit is raised to the level
+    if width <= 16:
+        assert reference.groups_of(torch.tensor([[0], [255]], dtype=torch.uint8), [width])[0] == width
+
+
+def test_one_level_of_64_digits_raises_the_write_sides_group_of_4_to_16_in_a_fold_of_32():
+    assert reference.groups_of(torch.tensor([[48], [12]], dtype=torch.uint8), [64]) == {0: 16, 4: 16}
+    assert (reference.group_of(48, 64), reference.group_of(12, 64)) == (16, 4)
 
 
 def _tiny() -> Masks:
@@ -109,9 +149,10 @@ def test_the_reference_of_a_hand_computed_block():
 
 def test_the_pass_writes_nothing_for_a_whole_level_side_and_a_block_for_one_that_is_not():
     #: 4 digits: at byte 254 (d = 255, 1020 of 1024 live) the group is the 4 digits, the level itself: whole. At byte 0 the group is one digit.
-    masks = _tiny()
-    assert reference.expected(masks, torch.tensor([[254, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), 32) == {}
-    out = reference.expected(masks, torch.tensor([[0, 255, 255, 255], [255, 255, 255, 255]], dtype=torch.uint8), 32)
+    #: a second level of 256 digits, whole and unmasked, holds a set at 16 leaves, so the carve raises nothing
+    masks = Masks(PREFILL, (_tiny().read[0], None), (None, None))
+    assert reference.expected(masks, torch.tensor([[254, 255], [255, 255]], dtype=torch.uint8), [4, 256], 32) == {}
+    out = reference.expected(masks, torch.tensor([[0, 255], [255, 255]], dtype=torch.uint8), [4, 256], 32)
     assert list(out) == [0] and out[0].group == 1 and out[0].words is None
     #: a digit's own live tokens of the window: digit 0 two (a bit in each word), digits 1 and 3 one, digit 2 none
     assert out[0].totals.tolist() == [[2, 1, 0, 1]]

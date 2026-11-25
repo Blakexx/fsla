@@ -124,7 +124,6 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   const int mine = ops::lane_broadcast(fold < c.folds ? 1 << (set_bits - shared_bits) : 0, 0);
   //: the levels the write side lists, a value every lane holds: a set's word branches on it
   const int listed = ops::lane_broadcast(listed_levels(c, false), 0);
-  const int raised = ops::lane_broadcast(raised_levels(c, false), 0);
 
   const std::uint8_t* const lines = o.values + p.slice * kRowBytes<kChannels>;
   const ops::SmemAddr rows = ops::smem_addr(fold_rows<Bt>(fold, warp));
@@ -137,8 +136,8 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     const int s = side_at(false) + l;
-    row[l] = level_row<kWords>(o, s, c.write_size_bits[l], p.head, 0, lane);
-    step[l] = level_step<kWords>(o, s, c.write_size_bits[l]);
+    row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
+    step[l] = level_step<kWords>(o, s, c.write_group_bits[l]);
   }
   //: THE WORDS A SET IS LISTED FROM ARE LOADED A SET AHEAD AND ANDed AT THEIR USE: ANDed where they are loaded, the warp waits there for them
   std::uint32_t got[kLevels];
@@ -146,8 +145,7 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   for (int l = 0; l < kLevels; ++l) {
     got[l] = ~0u;
     if ((listed >> l & 1) != 0 && mine > 0) {
-      const int group = base[l] + ((first_set >> shift[l]) & mask[l]);
-      got[l] = group_words(row[l], group, raised >> (4 * l) & 15);
+      got[l] = row[l][base[l] + ((first_set >> shift[l]) & mask[l])];
     }
   }
   std::uint32_t whose = mine > 0 ? ours : 0u;
@@ -187,8 +185,7 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
 #pragma unroll
       for (int l = 0; l < kLevels; ++l) {
         if ((listed >> l & 1) != 0) {
-          const int group = base[l] + ((set_after >> shift[l]) & mask[l]);
-          got[l] = group_words(row[l], group, raised >> (4 * l) & 15);
+          got[l] = row[l][base[l] + ((set_after >> shift[l]) & mask[l])];
         }
       }
       tr.phase(kSiteWord);

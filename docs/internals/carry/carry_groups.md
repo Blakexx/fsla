@@ -27,20 +27,12 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
   the first of 32 where the call ends inside it. A role's AND starts from it, so that a side whose levels are all whole
   lists the call's tokens and no place past its last.
 - <a id="word"></a>`level_row<WORDS>(operands, level-side, group bits, head, window, word)`: A LANE'S ROW of a
-  level-side's words in a window -- `row[group]` is its word of a group of the level-side's SIZE, the mask's own word of the digit at one
+  level-side's words in a window -- `row[group]` is its word of the group, the mask's own word of the digit at one
   digit and the prepared word otherwise
   ([`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md)), so a role reads either with one
   form and no branch. `level_step<WORDS>` is the row a window on, in words: a role forms a level's row once and
   advances it by its step a window. A lane whose word is past the mask's last keeps its row (nothing is read past the
   mask) and the call's own tokens (`window_word`) count its word for nothing.
-- <a id="raised"></a>`raised_levels(carve, read)` and `group_words(row, group, more)`: A GROUP RAISED OVER ITS LEVEL'S
-  SIZE. The carve raises a side's groups where a set would hold fewer than 16 leaves
-  ([`../common/plan/prefill_launch.md`](../common/plan/prefill_launch.md#least)), and the mask-preparation pass
-  prepares a level-side at its size: a row (`level_row`) is of the size, and a group raised by `more` doublings is the
-  OR of the `2^more` words from `row[group << more]`. A role takes the doublings once a call, four bits a level, as a
-  value every lane holds. THE WORDS OF A RAISED GROUP ARE ORed WHERE THEY ARE LOADED, so the warp waits there for
-  them; a level that is not raised loads one word and waits for nothing
-  ([`carry_kernel.md`](carry_kernel.md#supply)).
 - `listed_levels(carve, read)`: the levels a side lists, a bit a level -- those that are not whole. A role takes it
   once a call as a value every lane holds and branches on that.
 - <a id="place"></a>`place_of(operands, carve, at, slices)`: A CTA'S PLACE IN THE CALL from its index in the grid: its

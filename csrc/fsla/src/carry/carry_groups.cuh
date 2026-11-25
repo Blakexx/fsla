@@ -84,31 +84,6 @@ __device__ __forceinline__ Place place_of(const Operands& o, const plan::Prefill
   return p;
 }
 
-//: THE DOUBLINGS A SIDE'S GROUPS ARE RAISED over their levels' sizes, four bits a level -- see docs/internals/carry/carry_groups.md#raised
-__device__ __forceinline__ int raised_levels(const plan::PrefillCarve& c, bool read) {
-  int raised = 0;
-#pragma unroll
-  for (int l = 0; l < kLevels; ++l) {
-    const int group = read ? c.read_group_bits[l] : c.write_group_bits[l];
-    const int size = read ? c.read_size_bits[l] : c.write_size_bits[l];
-    raised |= (group - size) << (4 * l);
-  }
-  return raised;
-}
-
-//: A SET'S WORD ON A LEVEL from the lane's row: its group's word, the OR of the words a raised group spans -- see docs/internals/carry/carry_groups.md#raised
-__device__ __forceinline__ std::uint32_t group_words(const std::uint32_t* row, int group,
-                                                     int more) {
-  const std::uint32_t* const at = row + (group << more);
-  std::uint32_t word = at[0];
-  //: a raised group's words are read where they are asked for: the warp waits there for them
-  if (more > 0) {
-#pragma unroll 1
-    for (int j = 1; j < (1 << more); ++j) word |= at[j];
-  }
-  return word;
-}
-
 //: A FOLD'S LEVELS, formed once: a set's group on level `l` is `base[l] + ((set >> shift[l]) & mask[l])` -- see docs/internals/carry/carry_groups.md#sets
 __device__ __forceinline__ void fold_levels(const plan::PrefillCarve& c, const Place& p, int fold,
                                             int* base, int* shift, int* mask) {
@@ -136,7 +111,7 @@ __device__ __forceinline__ void fold_levels(const plan::PrefillCarve& c, const P
   }
 }
 
-//: A LANE'S ROW of a level-side's words in a window: `row[group]` is its word of a group of the level-side's SIZE, the mask's own at one digit and the prepared words otherwise -- see docs/internals/carry/carry_groups.md#word
+//: A LANE'S ROW of a level-side's words in a window: `row[group]` is its word of the group, the mask's own at a group of one digit and the prepared words otherwise -- see docs/internals/carry/carry_groups.md#word
 template <int WORDS>
 __device__ __forceinline__ const std::uint32_t* level_row(const Operands& o, int s, int group_bits,
                                                           std::int64_t head, int window, int word) {

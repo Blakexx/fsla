@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "common/smem_layout.cuh"
 #include "common/structure_switch.cuh"
 #include "plan/levels.h"
 #include "plan/mask_prepare_layout.h"
@@ -14,16 +15,23 @@ namespace detail {
 
 constexpr int kThreads = 1024;
 constexpr int kSides = plan::kLevelSides;
+constexpr int kLevels = plan::kCarveMaxLevels;
+
+//: THE PASS'S SHARED MEMORY: one word, the group a CTA's first warp hands to the rest -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+struct Handed;
+template <class Bt>
+using Smem = SmemLayout<Bt, 1, One<Handed, int>>;
 //: the group sizes the pass prepares, by log2: those smaller than the widest level (a group of its level's size is the level whole, and nothing is prepared for it)
 constexpr int kPrepared = plan::kCarveMaxWidthBits;
 
-//: THE LAUNCH'S FACTS of each level-side `s`: its mask (null where it has none), where its blocks start in the workspace, its first CTA (`first_cta[kSides]` the grid), its width and its batch-heads
+//: THE LAUNCH'S FACTS of each level-side `s`: its mask (null where it has none), where its blocks start in the workspace, its first CTA (`first_cta[kSides]` the grid), its width and its batch-heads; and every level's width, masked or not
 struct Args {
   const std::uint32_t* mask[kSides];
   std::int64_t out[kSides];
   int first_cta[kSides + 1];
   int width_bits[kSides];
   int heads[kSides];
+  int level_bits[plan::kCarveMaxLevels];
   int words;
   int windows;
   int levels;
@@ -139,17 +147,60 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   if (store) totals[group] = static_cast<std::uint16_t>(live);
 }
 
-//: A CTA OF THE GRID, `cta` its index -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+//: whether CTA `cta` of level-side `s` holds no window at a group of `1 << bits` digits: its first thread's window is past the last -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+__device__ __forceinline__ bool surplus(const Args& a, int s, int bits, int cta) {
+  //: FIXED by `prepare`: a thread holds a group's digits, 16 at most
+  constexpr int kUnitBitsMost = 4;
+  const int unit_bits = bits < kUnitBitsMost ? bits : kUnitBitsMost;
+  const std::int64_t first = (std::int64_t{cta} * kThreads) >> (a.width_bits[s] - unit_bits);
+  return first >= std::int64_t{a.heads[s]} * a.windows;
+}
+
+//: A LEVEL-SIDE'S GROUP, as log2, from the call's carve; a density byte `b` is `b + 1` 256ths -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+__device__ __forceinline__ int carved_group_bits(const Args& a, const std::uint8_t* density,
+                                                 int side, int level) {
+  int width[kLevels] = {}, write[kLevels] = {}, read[kLevels] = {};
+#pragma unroll
+  for (int l = 0; l < kLevels; ++l) {
+    width[l] = a.level_bits[l];
+    if (l < a.levels) {
+      read[l] = static_cast<int>(density[l]) + 1;
+      write[l] = static_cast<int>(density[a.levels + l]) + 1;
+    }
+  }
+  const plan::PrefillCarve c = plan::prefill_carve(a.levels, width, write, read);
+  int bits = 0;
+  //: each of the carve's arrays is read before the level is compared with anything
+#pragma unroll
+  for (int l = 0; l < kLevels; ++l) {
+    const int of_read = c.read_group_bits[l], of_write = c.write_group_bits[l];
+    bits = l == level ? (side == 0 ? of_read : of_write) : bits;
+  }
+  return bits;
+}
+
+//: A CTA OF THE GRID, `cta` its index, `handed` its one shared word -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
 template <int WORDS>
 __device__ __forceinline__ void mask_prepare_cta(const Args& a, const std::uint8_t* density,
-                                                 std::uint8_t* workspace, int cta) {
+                                                 std::uint8_t* workspace, int cta, int* handed) {
   int s = 0;
 #pragma unroll
   for (int i = 1; i < kSides; ++i) s += cta >= a.first_cta[i] ? 1 : 0;
-  const int side = s / plan::kCarveMaxLevels, level = s % plan::kCarveMaxLevels;
-  //: a byte `b` is `b + 1` 256ths; a group that is the level's size is every token: nothing is prepared, no reader asks
+  const int side = s / kLevels, level = s % kLevels;
+  //: THE SIZE FIRST, a byte (`b` is `b + 1` 256ths): a level-side whole at its size is whole, and a CTA surplus at its size is surplus at any group raised from it
   const int dense = static_cast<int>(density[side * a.levels + level]) + 1;
-  const int bits = plan::prefill_group_bits(dense, a.width_bits[s]);
+  const int size = plan::prefill_group_bits(dense, a.width_bits[s]);
+  if (size == a.width_bits[s] || surplus(a, s, size, cta - a.first_cta[s])) return;
+  //: THE GROUP IS THE CARVE'S, derived once a CTA by its first warp and handed to the rest
+  //: FIXED by the card: a warp is 32 threads
+  constexpr unsigned kWarp = 32;
+  if (threadIdx.x < kWarp) {
+    const int mine = carved_group_bits(a, density, side, level);
+    if (threadIdx.x == 0) handed[0] = mine;
+  }
+  __syncthreads();
+  const int bits = handed[0];
+  //: a group that is the level's size is every token: nothing is prepared, no reader asks
   if (bits == a.width_bits[s]) return;
   uniform_switch<kPrepared>(bits, [&](auto member) {
     constexpr int kBits = decltype(member)::value;
@@ -164,7 +215,8 @@ __global__ __launch_bounds__(kThreads, 1) void mask_prepare_kernel(const __grid_
                                                                    std::uint8_t* workspace) {
   //: the window is the card's: a constant of the build
   constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
-  mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x));
+  mask_prepare_cta<kWords>(a, density, workspace, static_cast<int>(blockIdx.x),
+                           Smem<Bt>::template get<Handed>());
 }
 
 //: the grid a level-side needs at a group of one digit, which is what the host can know: a thread a (window, digit)

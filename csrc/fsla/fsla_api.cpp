@@ -132,7 +132,9 @@ STABLE_TORCH_LIBRARY(fsla, m) {
       "int[] logit_offsets, int[] value_offsets, int[] widths, int heads) -> ()");
 
   // ---- the prefill's mask-preparation pass ---------------------------------
-  m.def("mask_prepare(Tensor[] masks, int[] slots, Tensor density, Tensor(a!) workspace) -> ()");
+  m.def(
+      "mask_prepare(Tensor[] masks, int[] slots, int[] widths, Tensor density, "
+      "Tensor(a!) workspace) -> ()");
   m.def("mask_prepare_bytes(int[] width_bits, int[] heads, int words, int device) -> int");
 
   m.def("entmax_max_levels() -> int");

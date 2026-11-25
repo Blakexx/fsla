@@ -11,8 +11,8 @@ their value lines in its rows, exactly; and what does a window cost a CTA with t
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
 of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its two calls: THE CELL, the write
 side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
-write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2, 32 sets a fold, about 19 live
-tokens a set a window). The read side's densities are the cell's mirror and its masks are never read (its role is a
+write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2; level 0's write group of 4 digits is raised to 8,
+a set's least of 16 leaves, which makes 16 sets a fold). The read side's densities are the cell's mirror and its masks are never read (its role is a
 stub). The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
 cell, 2 of the second call): the tracer waits for a round's copies and copies its tokens and rows out, and on the
 host every round of every set of every fold is there once, its tokens the set's list in order, its rows their value
@@ -29,6 +29,10 @@ sets tiling the leaf space; cycles a window a CTA, the median):
 | the cell: 4 sets a fold, about 69 live tokens a set a window | 3,323 | 4,664 |
 | the write side masked on both levels: 32 sets a fold, about 19 | 11,486 | 13,974 |
 
+THE RECORD IS OF THE SUPPLY BEFORE A SET'S LEAST: at b64785d8 no group was raised, and the second call had 32 sets a
+fold of 8 leaves, about 19 live tokens a set a window, 8 sets a warp a window. On this tree it has 16 sets a fold of
+16 leaves, 4 a warp a window, and is NOT RUN.
+
 PREDICTED, before the run: 3,100 to 3,700 and 4,300 to 5,100; 10,400 to 11,800 and 13,000 to 14,800, each range set
 about an unrecorded trial reading of the same form -- ALL FOUR HELD.
 
@@ -37,7 +41,7 @@ window, so these are shares):
 - THE CELL, a set a window: the folds' hand-offs 784; the set's running sums 289; the next set's words asked for 203
   and had 99; then three rounds, each 825 to 894 from its select to its 8 copies issued, 55 waiting for the round
   before and 70 to its end. The rounds are 2,553 of the window's 4,523, and the third holds 5 of its 32 places.
-- BOTH LEVELS, 8 sets a window: a set's sums 240 to 290; the next set's words 130 to 180 and 90 to 230; ONE round of
+- BOTH LEVELS, as recorded, 8 sets a window: a set's sums 240 to 290; the next set's words 130 to 180 and 90 to 230; ONE round of
   840 to 950; 70 to 130 waiting and 110 after -- about 1,620 a set, the round more than half of it and 19 of its 32
   places live.
 

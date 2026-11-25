@@ -22,7 +22,7 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - THE MASK'S ORDER ON THE PUBLIC SURFACE IS OPEN: the lab reads it DIGIT-MAJOR, a digit's bits of a window, 32 words, so
   that a warp turns a digit around from one contiguous load; the order is the producer's readers' measured access.
 - THE GROUP SIZES ARE NOT WRITTEN OUT: every kernel that needs a level-side's group size computes it from the call's
-  density by the one rule (`prefill_carve`, [`cta_carve.md`](../internals/common/plan/cta_carve.md)), as the pass does.
+  densities and its levels' widths by the one rule (`prefill_carve`, [`cta_carve.md`](../internals/common/plan/cta_carve.md)), as the pass does.
   The density stays the call's input, which is why the pass is one read of the masks and not two.
 - THE WORKSPACE IS THE OP'S OWN (the owner: "the workspace jsut holds the workpsace, we own it and its op internal,
   its whatever want"): it holds the prepared words and totals, and whatever else the op wants.
@@ -32,7 +32,8 @@ and just be a value re-ordering machine just from the blind masks"; of the whole
 - BUILT, AND EXACT AGAINST ITS HOST REFERENCE ON AN H100 (`tests/oracle/test_mask_prepare.py`): THE PASS IS ITS OWN KERNEL (`mask_prepare_kernel`,
   [`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)), one launch over every level-side that has a mask, with its own contract registry (`hardware/kernels/mask_prepare/`)
   and its own op (`mask_prepare`; the Python face `fsla.ops.mask_prepare.prepare_masks`). The library kernel was MEASURED at each of the eight group sizes it prepares
-  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)).
+  ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)). Both are of the pass that took a level-side's group from its own density; the pass as it stands derives the call's
+  carve, whose least set of 16 leaves raises a group, and is NOT RUN on a device.
 - NOT BUILT: the carry's listing from prepared GROUP words (the lab's listing,
   [`lab/carry_token.md`](../lab/carry_token.md) paragraphs (i) to (l), read a digit's own mask words with counts
   handed to it).

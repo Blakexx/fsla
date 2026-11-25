@@ -23,16 +23,68 @@ GROUP_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 
 def group_of(byte: int, width: int) -> int:
-    """A level-side's group, in digits, from its density byte: with ``d = byte + 1`` (256ths), the allowed size no larger than ``width``
+    """A level-side's SIZE, in digits, from its density byte (its group where the carve raises none): with ``d = byte + 1`` (256ths), the allowed size no larger than ``width``
     nearest to ``d * width / 256`` digits, a tie to the smaller, compared exactly in integers (the distance of a size ``a`` is
     ``|a * 256 - d * width|``). At byte 255 the group is the level itself, whatever its width."""
     live = (byte + 1) * width
     return min((size for size in GROUP_SIZES if size <= width), key=lambda size: (abs(size * 256 - live), size))
 
 
-def whole(byte: int, width: int) -> bool:
-    """Whether a level-side is WHOLE: its group is the level's size. Its mask is never read and nothing is written for it."""
-    return group_of(byte, width) == width
+#: a set's least leaves and the doublings a CTA's carve shares among the levels, as log2
+LEAST_SET_BITS = 4
+CTA_LEAF_BITS = 9
+
+
+def carve_groups(width_bits: list[int], read: list[int], write: list[int]) -> tuple[list[int], list[int]]:
+    """``(read group bits, write group bits)`` a level, from the levels' width bits and each side's densities in 256ths, written from the rule
+    (docs/internals/common/plan/prefill_launch.md) and not from the planner: a level's size; the CTA's carve, nine doublings each to the level of
+    the largest summed density over its holdings plus one, then the larger read density, then the lower level; the folds' split; and each side's
+    groups raised, the densest level with room in the box first, until a set holds 16 leaves."""
+    levels = len(width_bits)
+
+    def size(density: int, bits: int) -> int:
+        return min(range(bits + 1), key=lambda b: (abs((256 << b) - (density << bits)), b))
+
+    sizes_r = [size(read[l], width_bits[l]) for l in range(levels)]
+    sizes_w = [size(write[l], width_bits[l]) for l in range(levels)]
+    carve = [0] * levels
+    for _ in range(CTA_LEAF_BITS):
+        best = None
+        for l in range(levels):
+            if carve[l] + 1 > width_bits[l]:
+                continue
+            if best is None:
+                best = l
+                continue
+            lhs, rhs = (read[l] + write[l]) * (carve[best] + 1), (read[best] + write[best]) * (carve[l] + 1)
+            if lhs > rhs or (lhs == rhs and read[l] > read[best]):
+                best = l
+        if best is not None:
+            carve[best] += 1
+    held = [l for l in range(levels) if carve[l] >= 1]
+    split = next((l for l in held if sizes_w[l] < width_bits[l]), held[0] if held else -1)
+    fold = [carve[l] - (1 if l == split else 0) for l in range(levels)]
+
+    def raised(sizes: list[int], density: list[int], box: list[int]) -> list[int]:
+        order = sorted(range(levels), key=lambda l: (density[l], l))
+        groups = list(sizes)
+        for _ in range(LEAST_SET_BITS):
+            room = [l for l in order if groups[l] < box[l]]
+            if sum(min(groups[l], box[l]) for l in range(levels)) >= LEAST_SET_BITS or not room:
+                break
+            groups[room[-1]] += 1
+        return groups
+
+    return raised(sizes_r, read, carve), raised(sizes_w, write, fold)
+
+
+def groups_of(density: torch.Tensor, widths: list[int]) -> dict[int, int]:
+    """Every level-side's group, in digits, by slot: the call's carve's, from its ``[2, D]`` density bytes (a byte ``b`` is ``b + 1`` 256ths) and its levels' widths."""
+    bits = [int(w).bit_length() - 1 for w in widths]
+    read = [int(b) + 1 for b in density[0].tolist()]
+    write = [int(b) + 1 for b in density[1].tolist()]
+    groups = carve_groups(bits, read, write)
+    return {side * LEVELS + level: 1 << g for side in range(2) for level, g in enumerate(groups[side])}
 
 
 def words_at(groups: int) -> int:
@@ -96,13 +148,13 @@ def blocks_of(mask: torch.Tensor, group: int, window_words: int) -> Blocks:
     return Blocks(group, live.sum(dim=1), ored if group > 1 else None)
 
 
-def expected(masks: Masks, density: torch.Tensor, window_words: int) -> dict[int, Blocks]:
-    """What the pass writes, by slot: the blocks of every present entry that is not whole (``density`` is uint8 ``[2, D]``)."""
+def expected(masks: Masks, density: torch.Tensor, widths: list[int], window_words: int) -> dict[int, Blocks]:
+    """What the pass writes, by slot: the blocks of every present entry whose group, the carve's, is not the level's size (``density`` is uint8 ``[2, D]``, ``widths`` the levels' digits)."""
     out = {}
+    groups = groups_of(density, widths)
     for slot, mask in slots_of(masks):
-        byte, width = int(density[slot // LEVELS, slot % LEVELS]), int(mask.shape[3])
-        if not whole(byte, width):
-            out[slot] = blocks_of(mask, group_of(byte, width), window_words)
+        if groups[slot] != int(mask.shape[3]):
+            out[slot] = blocks_of(mask, groups[slot], window_words)
     return out
 
 

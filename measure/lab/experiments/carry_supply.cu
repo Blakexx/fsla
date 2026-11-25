@@ -195,6 +195,7 @@ inline Device up(const Call& c) {
   a.words = static_cast<int>(c.tokens / 32);
   a.windows = c.windows;
   a.levels = kLevels;
+  for (int l = 0; l < kLevels; ++l) a.level_bits[l] = kWidthBits;
   const plan::PreparedLayout layout = plan::prepared_layout(side_bits, heads, c.windows, kWords);
   std::int64_t ctas = 0;
   for (int s = 0; s < pass::kSides; ++s) {
@@ -411,15 +412,12 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the check's tracer writes a kept round's head from lane 0, inside the fold's loop over rounds
   b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 2);
-  //: a group raised over its level's size is the OR of the words it spans, read where they are asked for: a load a level at
-  //: each of the two places a set's words are asked for (the warp waits there only on a level that is raised)
-  for (const char* kernel : {"carry_supply::kept", "carry_supply::timed"}) b.expect(kernel, "LOAD_IN_TRIP", "<=", 8);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
   LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
   LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
-  //: the second call has 8 sets a warp a window: its check keeps 2 windows, 16 rounds a warp of the 24 kept
+  //: the second call has 4 sets a warp a window, a set 2 rounds and seldom 3: its check keeps 2 windows, 16 rounds a warp of the 24 kept
   run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", false, 4);
   run(b, rows, "the write side masked on both levels: the folds' supply, the rest stubs", true, 2);
   return 0;
