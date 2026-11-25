@@ -13,13 +13,14 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
   ([`../common/plan/cta_carve.md`](../common/plan/cta_carve.md)); that rule is written so that a kernel's thread can
   run it in registers ([`../common/plan/cta_carve.md#register-shaped`](../common/plan/cta_carve.md#register-shaped)).
 - <a id="whole"></a>`whole(operands, level-side)`: a level-side is WHOLE where it has no mask or where its density
-  byte is 255, the dense flag -- a level-side whose activation can make zeros always has its mask, and where its count
+  is the whole of its digits (`plan::kWholeDensity`, a byte of 255: the mask-preparation pass's own test) -- a level-side whose activation can make zeros always has its mask, and where its count
   rounds to 255 it is computed without it and the mask-preparation pass prepares nothing for it
-  ([`../../api.md`](../../api.md) section 2.6).
+  ([`../../api.md`](../../api.md) section 2.6). IT IS THE CALL'S FACT, asked once a level-side a call: a role's AND
+  runs over the levels that are not whole.
 - <a id="window-word"></a>`window_word<WORDS>(operands, window, word)`: the call's own tokens in a word of a window,
   the first of 32 where the call ends inside it. A role's AND starts from it, so that a side whose levels are all whole
   lists the call's tokens and no place past its last.
 - <a id="word"></a>`group_word<WORDS>(operands, level-side, group bits, head, window, word, group)`: a lane's word of
   a group's window, ONE FUNCTION FOR EVERY GROUP SIZE so that a role's AND across a side's levels is the same code
-  whatever each is: all ones where the level-side is whole; zero past the mask's last word (a ragged last window); the
+  whatever each is, for a level-side that is not whole: zero past the mask's last word (a ragged last window); the
   mask's own word at a group of one digit, which the pass stores no words for; the prepared group word otherwise.
