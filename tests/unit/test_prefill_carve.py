@@ -55,10 +55,10 @@ CASES = [
     _case([8, 8], [5, 256], [256, 5], [32, 16], [4, 256], [256, 4], 0, [16, 16], (64, 4), (128, 4), (128, 16, 8)),
     _case([8, 8], [256, 1], [1, 256], [16, 32], [256, 1], [1, 256], 1, [16, 16], (16, 16), (32, 16), (128, 16, 8)),
     _case([8, 8], [256, 256], [256, 256], [32, 16], [256, 256], [256, 256], 0, [16, 16], (256, 1), (512, 1), (128, 128, 1)),
-    _case([8, 8, 8], [5, 256, 256], [256, 1, 256], [4, 4, 32], [4, 256, 256], [256, 1, 256], 0, [2, 4, 32], (256, 1), (128, 4), (32768, 512, 64)),
+    _case([8, 8, 8], [5, 256, 256], [256, 1, 256], [4, 1, 128], [4, 256, 256], [256, 1, 256], 0, [2, 1, 128], (256, 1), (512, 1), (32768, 512, 64)),
     _case([8, 8, 8, 8], [5, 256, 5, 256], [256, 1, 256, 1], [8, 4, 4, 4], [4, 256, 4, 256], [256, 1, 256, 1], 0, [4, 4, 4, 4], (256, 1), (32, 16),
           (8388608, 4096, 2048)),
-    _case([8, 8], [128, 256], [256, 1], [32, 16], [128, 256], [256, 1], 0, [16, 16], (256, 1), (32, 16), (128, 64, 2)),
+    _case([8, 8], [128, 256], [256, 1], [128, 4], [128, 256], [256, 1], 0, [64, 4], (256, 1), (128, 4), (128, 64, 2)),
     #: one level: the write side's size is 4 digits and a set of 4 leaves is under 16, so its group is raised to 16
     _case([8], [5], [256], [256], [16], [256], 0, [128], (16, 8), (256, 1), (1, 1, 1)),
     _case([4, 4], [64, 256], [256, 16], [16, 16], [4, 16], [16, 1], 0, [8, 16], (64, 2), (16, 16), (1, 1, 1)),
@@ -70,7 +70,7 @@ CASES = [
 @pytest.mark.parametrize("widths, write, read, want", CASES, ids=[f"case{n}" for n in range(len(CASES))])
 def test_the_carve_of_the_owners_cases(widths, write, read, want):
     # The groups are each side's allowed size nearest to density x width / 256 digits (a tie to the smaller); the apportionment gives each level at least one digit and
-    # shares the nine doublings by weight (the sum of its two densities over its holdings plus one), a tie to the larger read density, then the lower level; the folds split along the first level not written
+    # gives each of the nine doublings to the level that saves the most fetches (half of each side's left that still needs the level), a tie to the smaller share, then a level the read side needs, then the lower level; the folds split along the first level not written
     # whole that holds two digits; a set is the product of the side's group clipped to the fold (write) or the CTA (read); the counts follow from the carve and the write groups.
     got = _fields(_out(_carve(widths, write, read)))
     assert got == want
@@ -83,14 +83,14 @@ def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_t
 
 
 def test_a_set_under_16_leaves_raises_the_group_of_the_densest_level_with_room_in_the_fold():
-    #: widths 256 and 256; the write side 5 and 41 of 256 (sizes 4 and 32 digits), the read side whole and 5. The carve is 256 x 2 and the folds
-    #: split level 0, a fold 128 x 2: a set of 4 x 2 = 8 leaves. Level 1 is the denser and has no room (its group is past the fold's 2 digits), so level 0's
-    #: group is doubled once: 8 x 2 = 16 leaves, 16 sets a fold
-    out = _out(_carve([8, 8], [5, 41], [256, 5]))
-    assert out["carve_bits"] == [8, 1] and out["fold_bits"] == [7, 1]
-    assert out["write_size_bits"] == [2, 5] and out["write_group_bits"] == [3, 5]
+    #: widths 256 and 4; the write side one digit of level 0 and all 4 of level 1, the read side whole on both. Both sides need level 1 and it takes its two
+    #: doublings, level 0 the seven left: the carve 128 x 4, the folds split along level 0, a fold 64 x 4: a set of 1 x 4 = 4 leaves. Level 1 is the denser
+    #: and has no room (its group is the fold's 4 digits), so level 0's group is doubled twice: 4 x 4 = 16 leaves, 16 sets a fold
+    out = _out(_carve([8, 2], [1, 256], [256, 256]))
+    assert out["carve_bits"] == [7, 2] and out["fold_bits"] == [6, 2]
+    assert out["write_size_bits"] == [0, 2] and out["write_group_bits"] == [2, 2]
     assert (out["fold_set_leaves"], out["fold_sets"]) == (16, 16)
-    #: the read side's set is the whole of level 0 by one digit of level 1, 256 leaves: nothing is raised
+    #: the read side's set is the whole carve, 512 leaves: nothing is raised
     assert out["read_size_bits"] == out["read_group_bits"] == [8, 2]
 
 

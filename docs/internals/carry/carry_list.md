@@ -9,16 +9,14 @@ WHY THIS FORM. A side's group has a window of mask words (the prepared group wor
 levels, ANDed); a warp takes a word a lane. The owner asked for the count inline and for one form whether a side has
 one masked level or several (25 November 2026: "the counts are useless anyway? We need to find a way to do the
 counting inline anwyay"), and shared memory is conflict-free by construction
-([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)). THE LIST IS LAID, NOT SELECTED. It was
-first selected by place -- lane `p` of round `r` computing the token at place `32 r + p`, a binary search of the
-running sums and the place's bit of a word, about 65 instructions a lane a round, with no store and so no conflict.
-That select is now the code of the lab's `carry_list` and `carry_fetch` alone, the form their records measured. The
-library LAYS the list: each lane stores its word's tokens at their ranks' places, once a set, and a round reads its 32
-places. THE LAY'S STORES ARE NOT CONFLICT-FREE BY CONSTRUCTION, which section 30 asks of every shared buffer: their
-places are ranks, the data's. The access table below states them. The form is held against that law on a measurement
-that is NOT RECORDED (an unrecorded session's rounds, the select the larger half of a round's instructions): A RECORDED
-RUN OF [`carry_supply`](../../lab/carry_supply.md) IN THIS FORM IS OWED, and the law's text names no such exception
-until it is there.
+([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)). THE LIST IS LAID: each
+lane stores its word's tokens at their ranks' places, once a set, and a round reads its 32 places. A trip handles one
+token of every mask word at once, which is what makes a set cheap to lay (a trip a token of the fullest word) and what
+makes ITS STORES' PLACES THE DATA'S: they are NOT conflict-free by construction, the one exception section 30 names (the
+owner, 2026-11-26: "list as built seems fine then right? the conflicts are minor, its not a lot of traffic, and a small portion of the window? ok, fine"). The forms that are conflict-free store 32 consecutive places an instruction and cost more instructions: a lane a
+place, each lane finding its place's token (about 65 instructions a lane a round; the lab's `carry_list` and
+`carry_fetch` measure that form as their own code), or a word a trip (a trip a non-empty word). The access table is
+below. NOT RECORDED: the list's time against either.
 
 - <a id="listing"></a>`listing_of<WORDS>(word)`: the window as the warp holds it -- a lane's word, the live tokens
   before it and through it (a popcount and a running sum across the lanes, 5 shuffles), and the window's total, the
@@ -33,7 +31,7 @@ until it is there.
 - <a id="lay"></a>`lay_tokens<WORDS>(listing, list)`: THE SET'S TOKENS IN THE WARP'S LIST, the token of rank `r` at
   place `r`. A place is a `uint16`, a token's index in the window (`kNoToken`, 0xFFFF, where there is none); a list is
   a window's tokens and a spare place a lane (`kListPlaces`). A TRIP stores one token a lane, its lowest left, at its
-  rank; the trips are the fullest word's tokens, one maximum over the lanes a set (5 shuffles), so no trip votes; a
+  rank; the trips are the fullest word's tokens, one maximum over the lanes a set (a warp reduction, `__reduce_max_sync`), so no trip votes; a
   lane with no token left stores at its spare place, so no trip branches. After the trips the places from the total
   to the end of its round are set to no token: a round's fetch reads 32 places whatever the total. A `__syncwarp`
   stands between the stores and the fetch's loads.
@@ -48,6 +46,8 @@ until it is there.
   conflict-free.
 
 THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a
-set, a warp -- one global load a lane a masked level; about 20 instructions a lane to the running sums; the lay about
-11 to the fullest word's count, about 15 a trip, and 8 for the tail. Shared memory: a list a warp, 1,056 places of 2
-bytes on the hopper card. Registers: the listing's four words and the next window's.
+set, a warp -- one global load a lane a masked level; about 20 instructions a lane to the running sums; the lay 2
+to the fullest word's count, about 15 a trip, and 8 for the tail. Shared memory: a list a warp, 1,056 places of 2
+bytes on the hopper card. Wavefronts (section 30 item 4): a trip's store is one where no two of its places share a bank and
+as many as the lanes on its fullest bank otherwise, at worst 16 with every word full (4 for a sharer of four); the tail's
+store one; a round's 8 loads one each. NOT MEASURED. Registers: the listing's four words and the next window's.

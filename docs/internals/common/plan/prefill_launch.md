@@ -33,7 +33,7 @@ A side's DENSITY on a level is the share of the level's digits a token of that s
   size, compared exactly in integers (the distance of a size `a` is `|a * 256 - density * width|`). A WHOLE LEVEL-SIDE IS THE ONE WHOSE GROUP IS THE LEVEL'S SIZE, and no kernel asks anything else (the owner: "use the group size equals level as the check, and that check is all you need in carry"); a density of the whole (256, the byte 255) gives exactly the level. On a level of 256 digits, density to group: 1 to 1, 2 to 2, 3 to 2, 4 to 4, 6 to 4, 7 to 8, 12 to 8, 13 to 16, 24 to 16, 25 to 32, 48 to 32, 49 to 64, 96 to 64,
   97 to 128, 192 to 128, 193 to 256, 256 to 256. The groups are per call ("per window is not possible to implement efficiently from what we found"), and "the producer can be improved to choose them better without any
   carry changes": the kernel reads the groups: the mask-preparation pass derives the call's carve on the device, from the levels' widths and the densities, and prepares each level-side at the group the carve gives it (a set's least, R2, included). A group and a CTA's carve size on a level nest, and a group may be the larger ("the more important thing is the multiple rule, which we can guarantee via padding").
-- R2, THE CTA'S CARVE ([`cta_carve.md`](cta_carve.md)): `carve_bits[l]` of the level's densities (`write_density[l] + read_density[l]`), the CTA's `cta_leaves` the product of the carve sizes (at most 512, the call's leaves where fewer).
+- R2, THE CTA'S CARVE ([`cta_carve.md`](cta_carve.md)): `carve_bits[l]` from the two sides' sizes, each doubling to the level that saves the most fetches, the CTA's `cta_leaves` the product of the carve sizes (at most 512, the call's leaves where fewer).
 - R3, THE FOLDS' SPLIT (CONSTITUTION R20, the owner, 2026-11-23: "take any write sparse level first, otherwise write dense"). `split_level` is the first level (lowest index) whose write group is smaller than its width and whose
   carve size is at least 2 digits; where there is none, the first level whose carve size is at least 2; -1 where the CTA's carve is one leaf. `folds` is 2 with a split level, else 1; `fold_bits[l]` is `carve_bits[l]`, less 1 on the
   split level; `fold_leaves = cta_leaves / folds`.
@@ -54,10 +54,10 @@ THE CARVE: a level is `write density / read density`; widths 256 digits unless s
 | A 1 / 256, B 256 / 1 | 32 x 16 | 1, 256 / 256, 1 | 0 | 16 x 16 | 16 x 16 | 32 x 16 | 128, 16, 8 |
 | A 256 / 1, B 1 / 256 | 16 x 32 | 256, 1 / 1, 256 | 1 | 16 x 16 | 16 x 16 | 32 x 16 | 128, 16, 8 |
 | A, B 256 / 256 | 32 x 16 | 256, 256 / 256, 256 | 0 | 16 x 16 | 256 x 1 | 512 x 1 | 128, 128, 1 |
-| A 5 / 256, B 256 / 1, C 256 / 256 | 4 x 4 x 32 | 4, 256, 256 / 256, 1, 256 | 0 | 2 x 4 x 32 | 256 x 1 | 128 x 4 | 32768, 512, 64 |
+| A 5 / 256, B 256 / 1, C 256 / 256 | 4 x 1 x 128 | 4, 256, 256 / 256, 1, 256 | 0 | 2 x 1 x 128 | 256 x 1 | 512 x 1 | 32768, 512, 64 |
 | one level, 5 / 256 | 256 | 4 / 256 | 0 | 128 | 4 x 32 | 256 x 1 | 1, 1, 1 |
 
-A 256 / 1 against B 1 / 256 weigh alike (257 each): the larger read density (B's) takes the first doubling, so B takes the ninth, 16 x 32. A density of 0 or 300 is clamped to 1 or 256: the carve of densities 0 and 300 is the carve of 1 and 256. `tests/unit/test_prefill_carve.py` holds these and the
+A 256 / 1 against B 1 / 256: each side needs one level and has as much left, so the savings tie and the level the read side needs (B) takes the first doubling and the ninth, 16 x 32. With C whole on both sides, both sides save on C: it takes eight doublings and A, which the read side needs, the ninth. A density of 0 or 300 is clamped to 1 or 256: the carve of densities 0 and 300 is the carve of 1 and 256. `tests/unit/test_prefill_carve.py` holds these and the
 other cases (a density of 128, four levels, two levels of 16 digits, one level of 16), every field against the tool's answer.
 
 ## What is NOT here

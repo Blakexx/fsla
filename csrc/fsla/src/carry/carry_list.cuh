@@ -50,14 +50,8 @@ __device__ __forceinline__ void lay_tokens(const Listing& s, std::uint16_t* list
   constexpr int kLanes = ops::kBallotLanes;
   const int lane = static_cast<int>(threadIdx.x & (kLanes - 1));
   const int spare = WORDS * kWordTokens + lane;
-  //: the trips are the fullest word's tokens, a value every lane holds: no vote a trip
-  int most = __popc(s.word);
-#pragma unroll
-  for (int d = 1; d < kLanes; d <<= 1) {
-    const int other = __shfl_xor_sync(0xFFFFFFFFu, most, d);
-    most = other > most ? other : most;
-  }
-  most = ops::lane_broadcast(most, 0);
+  //: the trips are the fullest word's tokens, one warp reduction, a value every lane holds: no vote a trip
+  const int most = __reduce_max_sync(0xFFFFFFFFu, __popc(s.word));
 
   std::uint32_t rest = s.word;
   int rank = s.before;

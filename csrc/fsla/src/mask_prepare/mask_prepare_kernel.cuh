@@ -157,9 +157,9 @@ __device__ __forceinline__ void prepare(const Args& a, std::uint8_t* workspace, 
   if (store) totals[group] = static_cast<std::uint16_t>(live);
 }
 
-//: A LEVEL-SIDE'S GROUP, as log2, from the call's carve; a density byte `b` is `b + 1` 256ths -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
-__device__ __forceinline__ int carved_group_bits(const Args& a, const std::uint8_t* density,
-                                                 int side, int level) {
+//: A LEVEL-SIDE'S GROUP, as log2, from the call's carve; a density byte `b` is `b + 1` 256ths. ITS OWN FUNCTION, not inlined: its values are allocated apart from the walk's, which holds the kernel's 64 registers -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
+__device__ __noinline__ int carved_group_bits(const Args& a, const std::uint8_t* density, int side,
+                                              int level) {
   int width[kLevels] = {}, write[kLevels] = {}, read[kLevels] = {};
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {

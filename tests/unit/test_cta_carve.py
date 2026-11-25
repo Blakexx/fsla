@@ -55,8 +55,8 @@ def _join(*levels):
 
 
 def test_a_writes_sparse_and_reads_whole_b_writes_whole_and_reads_sparse_carve_32_x_16():
-    # a level's weight is its write density plus its read density (each in 256ths): A 1 + 256, B 256 + 1, both 257; priority weight / (c + 1) is equal at every pair of equal holdings, and the larger READ density
-    # (A's 256) takes the doubling, so A, B, A, B ... and the ninth is A's: 32 x 16. The groups follow from the densities (write: A 1 digit, B 256; read: A 256, B 1): the fold warpgroups split along A
+    # each doubling goes to the level that saves the most fetches. A is the read side's level (its size 256) and B the write side's, and each side has as much left, so the savings tie at every pair of equal
+    # shares and the level the READ side needs (A) takes the tie: A, B, A, B ... and the ninth is A's: 32 x 16. The groups follow from the densities (write: A 1 digit, B 256; read: A 256, B 1): the fold warpgroups split along A
     # (its write group, 1, is under its width), 16 x 16 digits each; a token on the write side spans A's 1 x B's 16 = 16 leaves of a fold, so a fold holds 16 sets; the read side spans A's 32 x B's 1 = 32
     # leaves of the carve, 16 sets. 8 CTAs along A and 16 along B: 128 a head; B's whole write group spans 16 CTAs, so those 16 CTAs see one token schedule and are taken together (the schedule): 8 units.
     out = _one(*_join(A, B))
@@ -72,31 +72,32 @@ def test_a_writes_sparse_and_reads_whole_b_writes_whole_and_reads_sparse_carve_3
 @pytest.mark.parametrize("groups, sizes", [
     (_join(B, A), [16, 32]),
     (_join(C, C), [32, 16]),
-    (_join(A, B, C), [4, 4, 32]),
+    (_join(A, B, C), [2, 1, 256]),
     (_join(A, B, A, B), [8, 4, 4, 4]),
     (_join(([8], [5], [WHOLE]), B), [32, 16]),
 ])
 def test_the_coordinators_cases(groups, sizes):
-    # A sparse / whole against B whole / sparse weigh alike (257 each): equal priority at every step, so the larger read density takes the doubling; B sparse / whole against A whole / sparse puts
-    # the read tie-break on B. Whole / whole twice ties in both and the lower level takes the ninth doubling. A density of 5 (a measured sparsity of about 5 digits of 256) outweighs 1 by 4 and changes no size here.
+    # A sparse / whole against B whole / sparse: each side needs one level and has as much left, so the level the read side needs takes each tie; B sparse / whole against A whole / sparse puts
+    # that on B. Whole / whole twice ties in everything and the lower level takes the ninth doubling. With C, whole on both sides, both sides save on C and it takes its eight doublings; the ninth is A's,
+    # the level the read side needs. A write size of 4 digits on a level the read side needs anyway changes no share here.
     assert _sizes(_one(*groups)) == sizes
 
 
-def test_a_read_density_decides_a_tie_and_the_lower_level_a_tie_of_both():
+def test_the_level_the_read_side_needs_takes_a_tie_and_the_lower_level_a_tie_of_both():
     assert _sizes(_one(*_join(([8], [WHOLE], [SPARSE]), ([8], [SPARSE], [WHOLE])))) == [16, 32]
     assert _sizes(_one(*_join(C, C))) == [32, 16]
 
 
-@pytest.mark.parametrize("write", [1, 5])
-def test_c_and_d_of_small_densities_take_no_leaf_from_a_and_b(write):
-    # C and D weigh write + 1 over 256 at the most 6 against A's and B's 257 at (c + 1) = 9: A and B take what they can, C and D stay at one digit.
+@pytest.mark.parametrize("write, bits", [(1, [0, 0]), (5, [2, 2])])
+def test_c_and_d_take_the_doublings_that_cover_their_write_groups_and_no_more(write, bits):
+    # C and D are read at one digit. Written at one digit neither side needs them and they stay at one; written at 5 of 256 (a size of 4 digits) each takes the two doublings that cover its group.
     c = ([8], [write], [SPARSE])
     out = _one(*_join(A, B, c, c))
-    assert out["carve_bits"][2:] == [0, 0] and out["cta_leaves"] == CTA_LEAVES
+    assert out["carve_bits"][2:] == bits and out["cta_leaves"] == CTA_LEAVES
 
 
 def test_a_level_whole_on_both_sides_takes_the_whole_cta_from_a_sparse_one():
-    # A weighs 1 + 1 = 2, B 256 + 256 = 512: B's priority 512 / 8 = 64 at its eighth doubling still beats A's 2 / 1, so B takes all eight, A its one doubling.
+    # A's sizes are one digit on both sides: neither side needs it, so B, which both need, takes its eight doublings and A the one that is left.
     assert _sizes(_one(*_join(([8], [SPARSE], [SPARSE]), C))) == [2, 256]
 
 
@@ -104,6 +105,23 @@ def test_a_level_whole_on_both_sides_takes_the_whole_cta_from_a_sparse_one():
 def test_a_call_of_fewer_leaves_than_a_cta_owns_takes_every_leaf(widths, leaves):
     out = _one(widths, [WHOLE] * len(widths), [SPARSE] * len(widths))
     assert out["cta_leaves"] == leaves and out["carve_bits"] == widths
+
+
+def _left(sizes, carve) -> int:
+    """A side's left: the product of size over share on the levels where its size is the larger (bits in, a count out)."""
+    return 2 ** sum(max(0, size - share) for size, share in zip(sizes, carve))
+
+
+@pytest.mark.parametrize("depth", [2, 3])
+def test_the_carve_has_the_least_fetches_of_every_carve_over_every_call_of_sizes_1_4_32_and_256(depth):
+    # the rule gives each doubling to the level that saves the most; over every call of these sizes on levels of 256 digits its carve has the least sum of the two sides' left of all carves of nine doublings
+    sizes = (0, 2, 5, 8)
+    calls = [(list(w), list(r)) for w in itertools.product(sizes, repeat=depth) for r in itertools.product(sizes, repeat=depth)]
+    outs = _run([([8] * depth, [1 << b for b in w], [1 << b for b in r]) for w, r in calls])
+    carves = [c for c in itertools.product(range(9), repeat=depth) if sum(c) == 9]
+    for (w, r), out in zip(calls, outs):
+        got = _left(w, out["carve_bits"]) + _left(r, out["carve_bits"])
+        assert got == min(_left(w, c) + _left(r, c) for c in carves), (w, r, out["carve_bits"])
 
 
 def _calls(depth: int, widths=(4, 6, 8)):

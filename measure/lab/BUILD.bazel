@@ -10,10 +10,13 @@ package(default_visibility = ["//visibility:public"])
 #: this package's part of the tree the checks read
 tree_part()
 
-#: `lab.cuh`, which every experiment includes (with the harness's own kernel headers, `//csrc/fsla:harness_headers`, and warpline's `@warpline//:stamp`)
+#: `carry_select.cuh`, the select two experiments measure, and `lab.cuh`, which every experiment includes (with the harness's own kernel headers, `//csrc/fsla:harness_headers`, and warpline's `@warpline//:stamp`)
 include_root(
     name = "lab_headers",
-    hdrs = ["lab.cuh"],
+    hdrs = [
+        "carry_select.cuh",
+        "lab.cuh",
+    ],
     roots = ["."],
 )
 

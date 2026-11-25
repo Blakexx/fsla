@@ -29,4 +29,4 @@ of 32 tokens, a warp -- 8 shared loads of its tokens and 8 copy instructions a l
 lane; 4 KB landed. The floor is the copies' own with rows whole at both ends, 2.55 to 3.80 cycles a line a CTA at 16
 warps ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); MEASURED in the select-fed form the lab's `carry_fetch` keeps, with the listing, 2.96 a line at 64 live tokens a
 window and 2.10 with every token live ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)). Shared memory: a round's 4 KB, and a second round's
-while the first is read. Registers: the round's token.
+while the first is read. Registers: the round's 8 tokens and a lane's two row places.

@@ -37,8 +37,9 @@ CTA_LEAF_BITS = 9
 
 def carve_groups(width_bits: list[int], read: list[int], write: list[int]) -> tuple[list[int], list[int]]:
     """``(read group bits, write group bits)`` a level, from the levels' width bits and each side's densities in 256ths, written from the rule
-    (docs/internals/common/plan/prefill_launch.md) and not from the planner: a level's size; the CTA's carve, nine doublings each to the level of
-    the largest summed density over its holdings plus one, then the larger read density, then the lower level; the folds' split; and each side's
+    (docs/internals/common/plan/prefill_launch.md) and not from the planner: a level's size; the CTA's carve, nine doublings each to the level that saves
+    the most fetches (half of each side's left -- the product of size over share where the size is the larger -- for the sides that still need the level), then the smaller
+    share, then a level the read side needs, then the lower level; the folds' split; and each side's
     groups raised, the densest level with room in the box first, until a set holds 16 leaves."""
     levels = len(width_bits)
 
@@ -49,18 +50,22 @@ def carve_groups(width_bits: list[int], read: list[int], write: list[int]) -> tu
     sizes_w = [size(write[l], width_bits[l]) for l in range(levels)]
     carve = [0] * levels
     for _ in range(CTA_LEAF_BITS):
-        best = None
-        for l in range(levels):
-            if carve[l] + 1 > width_bits[l]:
-                continue
-            if best is None:
-                best = l
-                continue
-            lhs, rhs = (read[l] + write[l]) * (carve[best] + 1), (read[best] + write[best]) * (carve[l] + 1)
-            if lhs > rhs or (lhs == rhs and read[l] > read[best]):
-                best = l
-        if best is not None:
-            carve[best] += 1
+        write_short = sum(max(0, sizes_w[l] - carve[l]) for l in range(levels))
+        read_short = sum(max(0, sizes_r[l] - carve[l]) for l in range(levels))
+
+        def key(l: int) -> tuple[int, int, int, int, int]:
+            writes, reads = int(sizes_w[l] > carve[l]), int(sizes_r[l] > carve[l])
+            if write_short > read_short:
+                first, second = writes, reads
+            elif read_short > write_short:
+                first, second = reads, writes
+            else:
+                first, second = writes + reads, 0
+            return (first, second, -carve[l], reads, -l)
+
+        open_levels = [l for l in range(levels) if carve[l] + 1 <= width_bits[l]]
+        if open_levels:
+            carve[max(open_levels, key=key)] += 1
     held = [l for l in range(levels) if carve[l] >= 1]
     split = next((l for l in held if sizes_w[l] < width_bits[l]), held[0] if held else -1)
     fold = [carve[l] - (1 if l == split else 0) for l in range(levels)]

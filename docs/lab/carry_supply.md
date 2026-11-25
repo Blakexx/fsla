@@ -11,8 +11,7 @@ their value lines in its rows, exactly; and what does a window cost a CTA with t
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
 of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its five calls: THE CELL, the write
 side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
-write side masked on both, level 1 a run of 40 digits a token (the carve 256 x 2; level 0's write group of 4 digits is raised to 8,
-a set's least of 16 leaves, which makes 16 sets a fold); THE WRITE SIDE WHOLE on both levels, no mask of its own (a fold is
+write side masked on both, level 1 a run of 40 digits a token (the carve 64 x 8, 8 sets a fold of 32 leaves); THE WRITE SIDE WHOLE on both levels, no mask of its own (a fold is
 one set and every token is live in it: the dense end); and ONE DIGIT A TOKEN on each level (sets of 16 leaves that are
 mostly empty: the sparse end); and THE BOTH-LEVELS MASKS WITH THE READ SIDE'S DENSITIES CROSSED (level 0's the write
 side's of level 1 and the reverse), which changes nothing the supply reads but the carve the densities give. The last
@@ -34,8 +33,8 @@ sets tiling the leaf space; cycles a window a CTA, the median):
 | the write side masked on both levels: 32 sets a fold, about 19 | 11,486 | 13,974 |
 
 THE RECORD IS OF THE SUPPLY BEFORE A SET'S LEAST: at b64785d8 no group was raised, and the second call had 32 sets a
-fold of 8 leaves, about 19 live tokens a set a window, 8 sets a warp a window. On this tree it has 16 sets a fold of
-16 leaves, 4 a warp a window. Since then, too, the supply LAYS a set's tokens in a list where it selected them a round,
+fold of 8 leaves, about 19 live tokens a set a window, 8 sets a warp a window. On this tree the carve's rule gives it 64 x 8 ([`internals/common/plan/cta_carve.md`](../internals/common/plan/cta_carve.md)),
+8 sets a fold of 32 leaves, 2 a warp a window. Since then, too, the supply LAYS a set's tokens in a list where it selected them a round,
 and warps that share a set split it by bit ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)).
 NOT RUN on record in this form.
 

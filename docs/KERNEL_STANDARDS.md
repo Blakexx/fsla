@@ -930,6 +930,12 @@ three cut conflicts from 1.6-2.1 an MMA to 0.02-0.03 and wavefronts 25%, with no
    against ncu's counters once a layout (sm_86, 2026-10-11: matrix loads and atomics exact, entry loads within 0.03).
 6. CONFLICTS ARE PRICED ACROSS DENSITIES: dense, sparse and the W = 1024 lists each, since a data-dependent conflict
    rate moves with the distribution (CONSTITUTION §R10).
+THE ONE EXCEPTION, the owner's: a store whose places the data picks stands where he accepts it and its page states its table. It is the carry's
+   token list (`lay_tokens`, [`internals/carry/carry_list.md`](internals/carry/carry_list.md#lay); Blake, 2026-11-26: "list as built seems fine then right? the conflicts are minor, its not a lot of traffic, and a small portion of the window? ok, fine").
+   Each lane stores a token of its mask word at the token's rank, a trip a token of the fullest word, so a trip's places are
+   the data's and at worst 16 lanes meet on a bank. Its conflict-free forms store 32 consecutive places an instruction and
+   cost more instructions: a lane a place (each lane finding its place's token, about 65 instructions a lane a round) or a
+   word a trip (a trip a non-empty word). NOT RECORDED: its time against either. NOT MEASURED: its wavefronts.
 Measured: `read_image`, `read_w1024` (sm_86, the branch's); the model: docs/internals/tools/bank_model.md.
 
 ## <a id="first-run"></a>NEW DEVICE CODE RUNS FIRST UNDER A KILL TIMEOUT (law, 2026-10-07, after a hang froze the host)

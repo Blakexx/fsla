@@ -7,13 +7,15 @@
 #include <cstdint>
 
 //: what a kernel calls of the carve is the device's too; a host tool compiles the same text
-//: a loop over the levels is unrolled in a kernel, so that no array of the carve is indexed at run time there -- see docs/internals/common/plan/cta_carve.md#register-shaped
+//: a loop over the levels is unrolled in a kernel, so that no array of the carve is indexed at run time there; a loop over the doublings stays a loop (`FSLA_CARVE_TRIPS`), so that a kernel holds one trip's values and not nine -- see docs/internals/common/plan/cta_carve.md#register-shaped
 #if defined(__CUDACC__)
 #define FSLA_CARVE_FN __host__ __device__
 #define FSLA_CARVE_UNROLL _Pragma("unroll")
+#define FSLA_CARVE_TRIPS _Pragma("unroll 1")
 #else
 #define FSLA_CARVE_FN
 #define FSLA_CARVE_UNROLL
+#define FSLA_CARVE_TRIPS
 #endif
 
 namespace fsla::plan {
@@ -42,19 +44,14 @@ FSLA_CARVE_FN constexpr int carve_clamp(int value, int lo, int hi) {
 //: THE GROUP OF A DENSITY (docs/internals/common/plan/prefill_launch.md#groups), one rule for both sides: the log2 of the allowed group size nearest to `density * width / 256` digits,
 //: a tie to the smaller size, compared exactly: the distance of a size `a` is `|a * 256 - density * width|`
 FSLA_CARVE_FN constexpr int prefill_group_bits(int density, int width_bits) {
-  const std::int64_t live = std::int64_t{density} << width_bits;
-  int best = 0;
-  std::int64_t best_distance = -1;
-  for (int bits = 0; bits < kGroupSizes; ++bits) {
-    if (bits > width_bits) break;
-    const std::int64_t size = (std::int64_t{1} << bits) << 8;
-    const std::int64_t distance = size > live ? size - live : live - size;
-    if (best_distance < 0 || distance < best_distance) {
-      best = bits;
-      best_distance = distance;
-    }
+  //: the live digits in 256ths, at most 2^16; a size `2^b` is nearer than `2^(b + 1)` up to their midpoint, `3 * 2^(b + 7)` 256ths, the tie the smaller's: the group is the midpoints passed
+  const int live = density << width_bits;
+  int bits = 0;
+  FSLA_CARVE_UNROLL
+  for (int b = 0; b < kCarveMaxWidthBits; ++b) {
+    bits += b < width_bits && live > (3 << (b + 7)) ? 1 : 0;
   }
-  return best;
+  return bits;
 }
 
 //: A SIDE'S LOOP ORDER over `levels` levels (docs/internals/common/plan/cta_carve.md#loop-order): `order[0]` the outermost, the side's sparsest level, to the densest innermost; equal densities keep the lower level outside
@@ -83,7 +80,7 @@ inline constexpr int kLeastSetBits = 4;
 //: A SIDE'S GROUPS RAISED until a set holds 16 leaves, where its box holds as many: the group of the side's densest level that has room in the box is doubled, and again -- see docs/internals/common/plan/prefill_launch.md#least
 FSLA_CARVE_FN constexpr void carve_least_sets(const int* order, int levels, const int* box_bits,
                                               int* group_bits) {
-  FSLA_CARVE_UNROLL
+  FSLA_CARVE_TRIPS
   for (int step = 0; step < kLeastSetBits; ++step) {
     int set = 0, grow = -1;
     FSLA_CARVE_UNROLL
@@ -111,28 +108,43 @@ struct CtaCarve {
   int carve_bits[kCarveMaxLevels];
 };
 
-//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each side's densities (in 1..256).
-//: A doubling goes to the level of highest priority that can take it: a level's WEIGHT, the sum of its two densities, over its holdings plus one; then the larger read density; then the lower level
-FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* write_density,
-                                           const int* read_density, int levels) {
+//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each side's sizes a level (the group its density gives, as log2).
+//: EACH DOUBLING GOES TO THE LEVEL THAT SAVES THE MOST FETCHES: a side's LEFT is the product of size over share on the levels where its size is still the larger, and a level's saving half of each side's left that still needs it; then the smaller share, a level the read side needs, the lower level
+FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* write_bits,
+                                           const int* read_bits, int levels) {
   CtaCarve a{levels, {}};
+  //: a side's shortfall, the log2 of its left: the doublings its sizes are above the shares, kept as the shares grow
+  int write_short = 0, read_short = 0;
   FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
+    write_short += l < levels ? write_bits[l] : 0;
+    read_short += l < levels ? read_bits[l] : 0;
+  }
+  FSLA_CARVE_TRIPS
   for (int step = 0; step < kCtaLeafBits; ++step) {
-    int best = -1, best_weight = 0, best_bits = 0, best_read = 0;
+    const bool tied = write_short == read_short, write_more = write_short > read_short;
+    int best = -1, best_key = -1, best_writes = 0, best_reads = 0;
     FSLA_CARVE_UNROLL
     for (int l = 0; l < kCarveMaxLevels; ++l) {
-      const bool open = l < levels && a.carve_bits[l] + 1 <= width_bits[l];
-      const int weight = write_density[l] + read_density[l];
-      const int lhs = weight * (best_bits + 1), rhs = best_weight * (a.carve_bits[l] + 1);
-      const bool ahead = lhs != rhs ? lhs > rhs : read_density[l] > best_read;
-      const bool takes = open && (best < 0 || ahead);
+      const int share = a.carve_bits[l];
+      const bool open = l < levels && share + 1 <= width_bits[l];
+      const int writes = write_bits[l] > share ? 1 : 0, reads = read_bits[l] > share ? 1 : 0;
+      //: the savings compared without their products: the side with more left counts first and the other second; sides with as much left count alike
+      const int more = write_more ? writes : reads, less = write_more ? reads : writes;
+      const int first = tied ? writes + reads : more;
+      const int second = tied ? 0 : less;
+      const int spare = kCarveMaxWidthBits - share;
+      const int key = open ? (first << 6) | (second << 5) | (spare << 1) | reads : -1;
+      const bool takes = key > best_key;
       best = takes ? l : best;
-      best_weight = takes ? weight : best_weight;
-      best_bits = takes ? a.carve_bits[l] : best_bits;
-      best_read = takes ? read_density[l] : best_read;
+      best_key = takes ? key : best_key;
+      best_writes = takes ? writes : best_writes;
+      best_reads = takes ? reads : best_reads;
     }
     FSLA_CARVE_UNROLL
     for (int l = 0; l < kCarveMaxLevels; ++l) a.carve_bits[l] += l == best ? 1 : 0;
+    write_short -= best_writes;
+    read_short -= best_reads;
   }
   return a;
 }
@@ -185,7 +197,8 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
   }
   carve_loop_order(c.write_density, levels, c.write_order);
   carve_loop_order(c.read_density, levels, c.read_order);
-  const CtaCarve a = cta_carve(c.width_bits, c.write_density, c.read_density, levels);
+  //: the shares are picked from the sizes; a set's least raises a group after, and never past a share
+  const CtaCarve a = cta_carve(c.width_bits, c.write_group_bits, c.read_group_bits, levels);
   c.cta_leaves = 1;
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {

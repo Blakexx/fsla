@@ -13,9 +13,9 @@
 // value lines in the step's swizzle order, a dead place's row zero; and on the host, the sets' leaves tile the leaf
 // space once. TIMED with the library's tracer (nothing): a call of 64 windows.
 // TIMELINE: no MMA. A fold warp, a window: the folds' hand-offs, then each of its sets -- the set's word a lane (the
-// levels' group words ANDed, loaded a set ahead), the listing's running sums, and a round of 32 places at a time its
-// select and 8 asynchronous copies a lane into the warp's rows, two rounds in flight. Live: the next set's word, the
-// listing's four, the round's token.
+// levels' group words ANDed, loaded a set ahead), the listing's running sums, the set's tokens laid in the warp's list (a
+// trip a token of the fullest word), and a round of 32 places at a time its 8 shared loads and 8 asynchronous copies a
+// lane into the warp's rows, two rounds in flight. Live: the next set's word, the listing's four, a round's 8 tokens.
 // see docs/internals/tools/lab.md#carry-supply
 #include <algorithm>
 #include <map>
@@ -453,7 +453,7 @@ int main(int argc, char** argv) {
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
   LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
   LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
-  //: the second call has 4 sets a warp a window, a set 2 rounds and seldom 3: its check keeps 2 windows, 16 rounds a warp of the 24 kept
+  //: the second call has 2 sets a warp a window, a set a round and seldom 2: its check keeps 2 windows, about 4 rounds a warp of the 24 kept
   //: the whole call has 8 full rounds a warp a window; the sparse call's sets are mostly empty
   using carry_supply::Shape;
   run(b, rows, "the cell, the write side masked on level 0: the folds' supply, the rest stubs", Shape::kCell, 4);

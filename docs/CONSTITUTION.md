@@ -246,11 +246,14 @@ card; the milestone carries the drift guards (lints, docs).
 
 A CTA OWNS ITS CARVE, on hopper 512 leaves, a power-of-two extent a level (Blake, 2026-11-24: "The cta actually owns 512
 leaves, not 256, with the exception of scaling down, and we are just partioning them during fold due to register limits.
-During readout we don't partition, it's just one by one warpgroup"). THE CARVE IS APPORTIONED across the levels by the
-two sides' densities (R10; "like the US Congress apportionment ... each one gets at least one assignment, and then after you
-assign based on weight"): every level starts at one digit; each doubling goes to the level whose summed density, over one
-more than the doublings it holds, is highest; a tie goes to the level the read side is denser on ("we wanted to bias for
-the read dense side cause it's better"); no level goes past its own width. Two fold warpgroups each hold half of it, split
+During readout we don't partition, it's just one by one warpgroup"). THE CARVE IS APPORTIONED across the levels
+("like the US Congress apportionment ... each one gets at least one assignment"): every level starts at one digit, and EACH
+DOUBLING GOES TO THE LEVEL THAT SAVES THE MOST FETCHES (Blake, 2026-11-26: "it failed because it was overly biasing one side's
+carve evne though it hadnt saturated the other one"; "so you just pick the double the one that has the highest left at each
+step"). A side's left is the product of its size over the share on the levels where the size is still the larger; a level's
+saving is half of each side's left that still needs it. A tie goes to the smaller share, then to a level the read side needs
+("we wanted to bias for the read dense side cause it's better"); no level goes past its own width. The sizes are each level's
+from its density (R10); a set's least of 16 leaves raises a group after the carve and never past a share. Two fold warpgroups each hold half of it, split
 along one level between them and by values across their warps; one readout warpgroup accumulates from the state both
 publish, whether the two sides' layouts differ or are equal (R17). WHICH LEVEL THE TWO FOLDS SPLIT ALONG is decided apart
 from the carve (Blake, 2026-11-23: "the cta box decision is decoupled from how we execute it. we know that we want a larger
