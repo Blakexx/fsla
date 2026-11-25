@@ -59,9 +59,11 @@ CASES = [
     _case([8, 8, 8, 8], [5, 256, 5, 256], [256, 1, 256, 1], [8, 4, 4, 4], [4, 256, 4, 256], [256, 1, 256, 1], 0, [4, 4, 4, 4], (256, 1), (32, 16),
           (8388608, 4096, 2048)),
     _case([8, 8], [128, 256], [256, 1], [32, 16], [128, 256], [256, 1], 0, [16, 16], (256, 1), (32, 16), (128, 64, 2)),
-    _case([8], [5], [256], [256], [4], [256], 0, [128], (4, 32), (256, 1), (1, 1, 1)),
+    #: one level: the write side's size is 4 digits and a set of 4 leaves is under 16, so its group is raised to 16
+    _case([8], [5], [256], [256], [16], [256], 0, [128], (16, 8), (256, 1), (1, 1, 1)),
     _case([4, 4], [64, 256], [256, 16], [16, 16], [4, 16], [16, 1], 0, [8, 16], (64, 2), (16, 16), (1, 1, 1)),
-    _case([4], [64], [256], [16], [4], [16], 0, [8], (4, 2), (16, 1), (1, 1, 1)),
+    #: one level of 16 digits: the fold holds 8, so the group is raised to the fold's 8 and no further
+    _case([4], [64], [256], [16], [8], [16], 0, [8], (8, 1), (16, 1), (1, 1, 1)),
 ]
 
 
@@ -77,7 +79,27 @@ def test_the_carve_of_the_owners_cases(widths, write, read, want):
 @pytest.mark.parametrize("density, group", [(1, 1), (2, 2), (3, 2), (4, 4), (6, 4), (7, 8), (12, 8), (13, 16), (24, 16), (25, 32), (48, 32), (49, 64), (96, 64), (97, 128), (192, 128), (193, 256), (256, 256)])
 def test_a_density_is_the_nearest_allowed_group_on_a_level_of_256_digits_a_tie_to_the_smaller(density, group):
     out = _out(_carve([8], [density], [density]))
-    assert out["write_group_bits"] == out["read_group_bits"] == [group.bit_length() - 1]
+    assert out["write_size_bits"] == out["read_size_bits"] == [group.bit_length() - 1]
+
+
+def test_a_set_under_16_leaves_raises_the_group_of_the_densest_level_with_room_in_the_fold():
+    #: widths 256 and 256; the write side 5 and 41 of 256 (sizes 4 and 32 digits), the read side whole and 5. The carve is 256 x 2 and the folds
+    #: split level 0, a fold 128 x 2: a set of 4 x 2 = 8 leaves. Level 1 is the denser and has no room (its group is past the fold's 2 digits), so level 0's
+    #: group is doubled once: 8 x 2 = 16 leaves, 16 sets a fold
+    out = _out(_carve([8, 8], [5, 41], [256, 5]))
+    assert out["carve_bits"] == [8, 1] and out["fold_bits"] == [7, 1]
+    assert out["write_size_bits"] == [2, 5] and out["write_group_bits"] == [3, 5]
+    assert (out["fold_set_leaves"], out["fold_sets"]) == (16, 16)
+    #: the read side's set is the whole of level 0 by one digit of level 1, 256 leaves: nothing is raised
+    assert out["read_size_bits"] == out["read_group_bits"] == [8, 2]
+
+
+def test_one_digit_groups_on_both_levels_are_raised_to_16_leaves_the_denser_level_first():
+    #: both sides one live digit of 256 on both levels: a tie in density keeps the lower level first in the order, so level 1 is the densest
+    out = _out(_carve([8, 8], [1, 1], [1, 1]))
+    assert out["write_size_bits"] == out["read_size_bits"] == [0, 0]
+    assert out["fold_set_leaves"] == 16 and out["read_set_leaves"] == 16
+    assert out["write_group_bits"][1] >= out["write_group_bits"][0] and sum(out["write_group_bits"]) == 4
 
 
 def test_a_group_is_never_larger_than_its_level():

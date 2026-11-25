@@ -80,6 +80,8 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   line("width_bits", list(c.width_bits));
   line("write_density", list(c.write_density));
   line("read_density", list(c.read_density));
+  line("write_size_bits", list(c.write_size_bits));
+  line("read_size_bits", list(c.read_size_bits));
   line("write_group_bits", list(c.write_group_bits));
   line("read_group_bits", list(c.read_group_bits));
   line("write_order", list(c.write_order));

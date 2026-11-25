@@ -126,6 +126,10 @@ def _check(call, out) -> int:
     for order, density in ((out["write_order"], call[1]), (out["read_order"], call[2])):
         assert order == sorted(levels, key=lambda l: (density[l], l)), call
     assert out["unit_bits"] == [max(0, out["write_group_bits"][l] - carve[l]) for l in levels], call
+    #: a set is at least 16 leaves where its box holds as many, and a group is never under its level's size
+    assert out["fold_set_leaves"] >= min(16, out["fold_leaves"]) and out["read_set_leaves"] >= min(16, out["cta_leaves"]), call
+    assert all(g >= s for g, s in zip(out["write_group_bits"], out["write_size_bits"], strict=True)), call
+    assert all(g >= s for g, s in zip(out["read_group_bits"], out["read_size_bits"], strict=True)), call
     assert out["unit_ctas"] == 2 ** sum(out["unit_bits"]), call
     assert out["fold_leaves"] * out["folds"] == out["cta_leaves"] and out["fold_leaves"] == 1 << sum(out["fold_bits"]), call
     assert out["ctas_per_head"] == 1 << (sum(widths) - sum(carve)), call
