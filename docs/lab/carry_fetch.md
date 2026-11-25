@@ -25,10 +25,10 @@ exact in both rows; cycles a 128-byte line a CTA, the median):
 
 PREDICTED, before the run: 3.0 to 8.0 and 2.6 to 5.0, from the copies alone at 2.70 a line
 ([`value_fetch`](value_fetch.md)) and the listing riding on them -- BOTH MISSED, by a factor of three to five. THE
-LISTING IS NOT IT: it is one to two cycles a token alone ([`carry_list`](carry_list.md)). THE WRONG PRICE IS NOT YET
-NAMED: this fetch differs from `value_fetch`'s in two ways -- its copies give their size in a register (the form that
-zero-fills a dead place), and a row's 8 pieces land in bricks 17 lines apart -- and `value_fetch` is given a row of
-each to part them. Until that row is read, no fold is built on this fetch.
+LISTING IS NOT IT: it is one to two cycles a token alone ([`carry_list`](carry_list.md)). THE WRONG PRICE IS ITS TILE'S
+LAYOUT: a row's 8 pieces landed in bricks 17 lines apart cost 16.6 cycles a line with the copies alone, against 2.70
+where a row lands as its 128 bytes whole ([`value_fetch`](value_fetch.md)); the copy's sized form costs nothing. This
+layout is not the form, and no fold is built on this fetch.
 
 WHAT IT IS NOT: a fetch past the cache. The values are one 32 MB table the whole grid reads, which the card's cache
 holds; a table it cannot hold is NOT MEASURED here (the copies alone: 3.79 against 3.69, `value_fetch`).

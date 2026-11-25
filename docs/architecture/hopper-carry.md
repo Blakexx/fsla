@@ -68,9 +68,11 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   at once on drain warps of 56 registers did not fit.
 - ITS VALUE LINES. A write group's live tokens' value lines, fetched by token index straight into the step's tile in
   shared memory by the threads' asynchronous copies, 8 lanes a line, in step order: the data picks where a line comes
-  from and the layout where it lands. MEASURED ALONE ([`lab/value_fetch.md`](../lab/value_fetch.md)): 16 warps fetch a
-  scattered line in 2.70 cycles from a window's 128 KB, 2.56 where a unit's 16 CTAs ask for the same lines, 3.69 from
-  8 MB. NOT MEASURED: the fetch while the CTA folds.
+  from and the layout where it lands. MEASURED ALONE ([`lab/value_fetch.md`](../lab/value_fetch.md)): 16
+  warps fetch a scattered line in 2.70 cycles where it lands as its 128 bytes whole (2.55 where a unit's 16 CTAs ask
+  for the same lines), and in 16.6 in either form tried that lands it as a step's tile -- its 8 pieces in bricks, or a
+  piece of 32 lines an instruction. THE LAYOUT IN WHICH A LINE LANDS WHOLE AND A STEP READS IT IS NOT FOUND YET. NOT
+  MEASURED: the fetch while the CTA folds.
 - ITS COEFFICIENTS. A token's rows on the CTA's digits, loaded by the token's index into registers and expanded there,
   on both sides (RULED 2026-11-23: "the reason that coefficnets can afford to scatter is because we already need to load
   them into registers to expand them anyway"). The fold then stores a thread's expanded lines into its step's

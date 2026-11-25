@@ -7,8 +7,9 @@
 // ring in shared memory. The table is 1,024 rows (a window's values, 128 KB), 65,536 (8 MB) or 1,048,576 (128 MB); a
 // CTA takes its own rows, or its unit's (16 CTAs the same rows). The ring's last rows are checked exactly. FORMS, at 16
 // warps on the window's table: the copy's size a register (the form that zero-fills a dead copy); the ring a tensor
-// step's tile, a row's 8 pieces in bricks 17 lines apart; both; and BY BRICK -- a lane a row, an instruction one piece
-// of the warp's 32 rows into that piece's run of 32 consecutive lines.
+// step's tile, a row's 8 pieces in bricks 17 lines apart; both; BY BRICK -- a lane a row, an instruction one piece
+// of the warp's 32 rows into that piece's run of 32 consecutive lines; and a row's 8 pieces TURNED within its 128
+// bytes by its place, where they land or where they are read (whole rows at both ends, their pieces out of lane order).
 // TIMELINE: a warp's trip is a batch of 8 rows: two copy instructions, a commit, and a wait for the batch before it
 // -- two batches in flight. Live: nothing of the data.
 // see docs/internals/tools/lab.md#value-fetch
@@ -21,6 +22,10 @@ constexpr int kUnit = 16;
 //: THE FORMS of a row beside the plain one: the copy's size a register (the form that zero-fills a dead copy), and
 //: the ring a tensor step's tile -- a row's 8 pieces in 8 bricks 17 lines apart
 constexpr int kSized = 1, kBricks = 2;
+//: A ROW'S 8 PIECES TURNED WITHIN ITS 128 BYTES by its place in the ring (piece `j` at `j ^ (place & 7)`: the order a
+//: tensor step's 128-byte swizzle reads a row in), at the destination or at the source: every instruction still moves
+//: 4 whole rows at both ends
+constexpr int kTurnedPlace = 4, kTurnedSource = 8;
 constexpr int kTileLines = 8 * 17, kTileWords = kTileLines * 4;
 
 //: the table's word `w`, and the row an (owner, warp, fetch) takes of `rows` (a power of two)
@@ -47,11 +52,14 @@ __global__ void __launch_bounds__(32 * WARPS, 1)
       const uint32_t row = row_of(owner, warp, batch * kBatch + i * kPer + (lane >> 3), rows);
       const uint8_t* const src = bytes + static_cast<long long>(row) * kRowBytes;
       const uint32_t piece = static_cast<uint32_t>(lane & 7);
-      const uint32_t to = base + ((FORM & kBricks) != 0 ? (piece * 17u + slot) * 16u : slot * kRowBytes + within);
+      const uint32_t turned = (piece ^ (static_cast<uint32_t>(slot) & 7u)) * 16u;
+      const uint32_t to = base + ((FORM & kBricks) != 0 ? (piece * 17u + slot) * 16u
+                                 : slot * kRowBytes + ((FORM & kTurnedPlace) != 0 ? turned : within));
+      const uint8_t* const from = (FORM & kTurnedSource) != 0 ? src - within + turned : src;
       if constexpr ((FORM & kSized) != 0) {
-        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::"r"(to), "l"(src), "r"(size) : "memory");
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::"r"(to), "l"(from), "r"(size) : "memory");
       } else {
-        asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(to), "l"(src) : "memory");
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(to), "l"(from) : "memory");
       }
     }
     asm volatile("cp.async.commit_group;" ::: "memory");
@@ -122,7 +130,9 @@ void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shar
   const std::string name = std::to_string(WARPS) + " warps, a table of " + std::to_string(rows) + " rows, "
                            + (shared != 0 ? "a unit's 16 CTAs the same rows" : "a CTA its own rows")
                            + ((FORM & kSized) != 0 ? ", the copy's size a register" : "")
-                           + ((FORM & kBricks) != 0 ? ", a row's pieces in bricks 17 lines apart" : "");
+                           + ((FORM & kBricks) != 0 ? ", a row's pieces in bricks 17 lines apart" : "")
+                           + ((FORM & kTurnedPlace) != 0 ? ", a row's pieces turned within its 128 bytes where they land" : "")
+                           + ((FORM & kTurnedSource) != 0 ? ", a row's pieces turned within its 128 bytes where they are read" : "");
   fetch<WARPS, FORM><<<b.sms, 32 * WARPS>>>(b.times, table, out, rows, kFetches, shared);
   LAB_CHECK(cudaDeviceSynchronize());
   const size_t per = 16 * kTileWords;
@@ -137,7 +147,9 @@ void run(lab::Bench& b, const uint32_t* table, uint32_t* out, int rows, int shar
         const uint32_t row = row_of(owner, w, kFetches - kRing + slot, rows);
         for (int i = 0; i < kRowWords; ++i) {
           //: word `i` of the row: in the plain ring at the row's place, in the tile in piece `i / 4`'s brick
-          const size_t at = (FORM & kBricks) != 0 ? ((i / 4) * 17 + slot) * 4 + i % 4 : slot * kRowWords + i;
+          const size_t turned = static_cast<size_t>(((i / 4) ^ (slot & 7)) * 4 + i % 4);
+          const size_t at = (FORM & kBricks) != 0 ? ((i / 4) * 17 + slot) * 4 + i % 4
+                            : slot * kRowWords + ((FORM & (kTurnedPlace | kTurnedSource)) != 0 ? turned : i);
           wrong += got[blk * per + static_cast<size_t>(w) * kTileWords + at] != table_of(row * kRowWords + i);
         }
       }
@@ -201,5 +213,7 @@ int main(int argc, char** argv) {
   run<16, kBricks>(b, table, out, kWindow, 0);
   run<16, kSized | kBricks>(b, table, out, kWindow, 0);
   run_runs<16>(b, table, out, kWindow);
+  run<16, kTurnedPlace>(b, table, out, kWindow, 0);
+  run<16, kTurnedSource>(b, table, out, kWindow, 0);
   return 0;
 }
