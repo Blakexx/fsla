@@ -3,7 +3,11 @@
 Mirrors `csrc/fsla/src/common/atoms/tensor.cuh`, a concern of the baseline operations ([`../ops.md`](../ops.md)): one
 PTX instruction of sm_90a each. A kernel that calls one compiles for sm_90a alone. No shipped kernel calls them: they
 are the carry's ([`../../../architecture/hopper-carry.md`](../../../architecture/hopper-carry.md)), which is designed
-and not built; the forms are the lab's, measured there ([`../../../lab/carry_token.md`](../../../lab/carry_token.md)).
+and not built; the forms are the lab's, measured there ([`../../../lab/carry_token.md`](../../../lab/carry_token.md)), and the
+lab's harness (`measure/lab/lab.cuh`) calls these atoms by its own names, so an instruction has one definition.
+BLACKWELL'S FORM IS OWED: its tensor step is another instruction with its accumulators in tensor memory, and no
+blackwell carry is designed ([`../../../architecture/hopper-carry.md`](../../../architecture/hopper-carry.md#blackwell)); the atom of that family is
+added with that design, selected at the atom as R8 asks.
 
 - <a id="operand"></a>`step_operand(a, lbo, sbo)`, `step_operand_lines(line, lbo, sbo)`: a step's shared-memory
   operand, unswizzled, as the instruction's 64-bit descriptor: the tile's first 16-byte line, and two offsets in

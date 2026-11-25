@@ -13,6 +13,7 @@
 #include "common/atoms/address.cuh"
 #include "common/atoms/copy.cuh"
 #include "common/atoms/barrier.cuh"
+#include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 #include "common/atoms/clock.cuh"
 #include "common/atoms/math.cuh"

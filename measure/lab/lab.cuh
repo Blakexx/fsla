@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/atoms/barrier.cuh"
+#include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 #include "common/hardware.cuh"
 #include "common/structure_switch.cuh"
@@ -250,13 +252,7 @@ __device__ __forceinline__ void mbar_wait(uint32_t a, uint32_t parity) {
 
 //: the same wait by the instruction that may SUSPEND the thread until the phase completes or a time limit of the
 //: system's passes (`try_wait`); `mbar_wait`'s `test_wait` never suspends: its loop issues every trip it waits
-__device__ __forceinline__ void mbar_wait_suspended(uint32_t a, uint32_t parity) {
-  asm volatile(
-      "{\n.reg .pred p;\nLAB_TRY_%=:\nmbarrier.try_wait.parity.shared.b64 p, [%0], %1;\n@!p bra LAB_TRY_%=;\n}" ::
-          "r"(a),
-      "r"(parity)
-      : "memory");
-}
+__device__ __forceinline__ void mbar_wait_suspended(uint32_t a, uint32_t parity) { ::denseref::ops::mbar_wait_suspended(a, parity); }
 
 //: A NAMED BARRIER (ids 1-15; 0 is `__syncthreads`'s): `count` threads, a multiple of 32, complete it; `bar_sync`
 //: arrives and waits, `bar_arrive` arrives and goes on
@@ -288,31 +284,27 @@ __device__ __forceinline__ bool mbar_test(uint32_t a, uint32_t parity) {
 //: lines on, the next brick `sbo` lines on. M|N-MAJOR (an `_mn` atom): a line is one K's 8 rows or columns, a
 //: brick's K 0-7 8 lines, its K 8-15 `lbo` lines on, the next brick `sbo` lines on
 __device__ __forceinline__ uint64_t wg_desc_lines(uint32_t line, uint32_t lbo, uint32_t sbo) {
-  return uint64_t(line & 0x3fffu) | (uint64_t(lbo & 0x3fffu) << 16) | (uint64_t(sbo & 0x3fffu) << 32);
+  return ::denseref::ops::step_operand_lines(line, lbo, sbo);
 }
 __device__ __forceinline__ uint64_t wg_desc(uint32_t a, uint32_t lbo, uint32_t sbo) { return wg_desc_lines(a >> 4, lbo, sbo); }
 
-__device__ __forceinline__ void wg_fence() { asm volatile("wgmma.fence.sync.aligned;" ::: "memory"); }
+__device__ __forceinline__ void wg_fence() { ::denseref::ops::steps_fence(); }
 
-__device__ __forceinline__ void wg_commit() { asm volatile("wgmma.commit_group.sync.aligned;" ::: "memory"); }
+__device__ __forceinline__ void wg_commit() { ::denseref::ops::steps_commit(); }
 
 //: wait until at most `N` committed groups are in flight
 template <int N>
 __device__ __forceinline__ void wg_wait() {
-  asm volatile("wgmma.wait_group.sync.aligned %0;" : : "n"(N) : "memory");
+  ::denseref::ops::steps_wait<N>();
 }
 
 //: A REGISTER AN ASYNCHRONOUS MMA WROTE, held behind the wait the compiler cannot see it depends on
-__device__ __forceinline__ void wg_hold(float& r) { asm volatile("" : "+f"(r) : : "memory"); }
+__device__ __forceinline__ void wg_hold(float& r) { ::denseref::ops::step_hold(r); }
 __device__ __forceinline__ void wg_hold(int& r) { asm volatile("" : "+r"(r) : : "memory"); }
 
 //: m64n16k16, bf16 x bf16 into fp32, both operands shared memory: `d` += A [64 x 16] B [16 x 16]
 __device__ __forceinline__ void wg_bf16_n16_ss(float (&d)[8], uint64_t a, uint64_t b, bool add = true) {
-  asm volatile(
-      "{ .reg .pred p; setp.ne.b32 p, %10, 0;\n"
-      "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, %8, %9, p, 1, 1, 0, 0; }"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
-      : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+  ::denseref::ops::step_n16(d, a, b, add);
 }
 
 //: m64n16k16 with A M|N-major (a line one K's 8 rows) and B K-major: `d` += A [64 x 16] B [16 x 16], or with
@@ -371,10 +363,7 @@ __device__ __forceinline__ void wg_bf16_n64_ss(float (&d)[32], uint64_t a, uint6
 //: on: the registers a 16-column step of that set writes): `d` += A [64 x 16] B [16 x 64], or written whole
 __device__ __forceinline__ void wg_bf16_n64_ss_mn4(float (&d0)[8], float (&d1)[8], float (&d2)[8], float (&d3)[8],
                                                    uint64_t a, uint64_t b, bool add = true) {
-  asm volatile("{ .reg .pred p; setp.ne.b32 p, %34, 0;\n"
-               "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST ", %32, %33, p, 1, 1, 1, 1; }"
-               : LAB_WG_D8(d0), LAB_WG_D8(d1), LAB_WG_D8(d2), LAB_WG_D8(d3)
-               : "l"(a), "l"(b), "r"(static_cast<int>(add)));
+  ::denseref::ops::step_n64(d0, d1, d2, d3, a, b, add);
 }
 
 //: m64n64k16 with BOTH operands M|N-major (the transposed form; `wg_desc` states the tile): `d` += A [64 x 16]
@@ -472,12 +461,12 @@ __device__ __forceinline__ uint32_t bf16x2_round(float lo, float hi) {
 //: each role's whole body in its own branch (docs/lab/reg_trade.md)
 template <int N>
 __device__ __forceinline__ void regs_down() {
-  asm volatile("setmaxnreg.dec.sync.aligned.u32 %0;" : : "n"(N));
+  ::denseref::ops::registers_down<N>();
 }
 
 template <int N>
 __device__ __forceinline__ void regs_up() {
-  asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;" : : "n"(N));
+  ::denseref::ops::registers_up<N>();
 }
 
 //: A BULK COPY IN (sm_90): `bytes` of global memory at `src` into shared memory at `dst`, asynchronous; the bytes
@@ -537,7 +526,7 @@ __device__ __forceinline__ void bulk_store(void* dst, uint32_t src, uint32_t byt
 
 //: THE WRITERS' EDGE to an asynchronous reader of shared memory -- a bulk copy out, a wgmma in another warp: a
 //: thread's ordinary stores made visible to it
-__device__ __forceinline__ void bulk_fence() { asm volatile("fence.proxy.async.shared::cta;" ::: "memory"); }
+__device__ __forceinline__ void bulk_fence() { ::denseref::ops::async_fence(); }
 
 __device__ __forceinline__ void bulk_commit() { asm volatile("cp.async.bulk.commit_group;" ::: "memory"); }
 
