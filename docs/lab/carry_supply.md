@@ -4,9 +4,11 @@ Mirrors `measure/lab/experiments/carry_supply.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
 Does the LIBRARY's carry CTA ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)), its
-fold warpgroups' supply built and every other component a stub, list each of its sets' live tokens from a call's real
-operands -- the masks, the mask-preparation pass's prepared words, the densities the carve is derived from -- and land
-their value lines in its rows, exactly; and what does a window cost a CTA with that supply running?
+fold warpgroups' supply and coefficients built and every other component a stub, list each of its sets' live tokens
+from a call's real operands -- the masks, the mask-preparation pass's prepared words, the densities the carve is
+derived from, the write side's rows -- land their value lines in its rows and expand their coefficients into its
+tiles ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#expand)), exactly; and what does a window
+cost a CTA with them running?
 
 THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
 of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its five calls: THE CELL, the write
@@ -22,7 +24,40 @@ lines in the step's swizzle order, a dead place's row zero, on its boundary; the
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
-MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
+MEASURED WITH THE COEFFICIENTS (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the
+experiment at ac5fc941, its first run on a device; 7 repetitions; every call's check exact -- its rounds, tokens and
+row bytes as below, and every coefficient of every kept round's chunks, a column its levels' bytes multiplied in fp32
+and rounded to bf16 once, a place with no token zeros, a set's chunks' columns its leaves each once; cycles a window a
+CTA, the median):
+
+| the call | its step, chunks a set | timed | every warp's timeline stamped | the supply alone, timed |
+|---|---|---:|---:|---:|
+| the cell | 16 x 4, 1 | 5,136 | 6,792 | 2,377 |
+| the write side masked on both levels | 8 x 4, 1 | 4,381 | 5,764 | 2,340 |
+| the write side whole on both levels | 16 x 4, 4 | 25,158 | 28,151 | 5,577 |
+| one digit a token on each level | 4 x 4, 1 | 4,350 | 6,639 | 3,626 |
+| both levels, the read side's densities crossed | 16 x 4, 1 | 2,732 | 3,794 | 1,339 |
+
+PREDICTED, before the run (timed): the cell 2,650 to 3,150; both levels 2,420 to 2,700; whole 12,500 to 17,500; one
+digit 3,650 to 3,800; crossed 1,450 to 1,700 -- the supply's row and a round's expansion at an instruction count (170
+a lane a chunk of 64 columns at 2.1 cycles an instruction), less what was taken to hide under the supply's waits on
+its copies. ALL TEN ROWS MISSED HIGH, by 1.2 to 1.9 times. THE WRONG PRICES, by the stamped rows (a fold warp, CTA 0):
+- THE BYTES' LOADS WERE PRICED AS FREE AND ARE NOT. A token's bytes are register loads from global memory, scattered by
+  token, and take about 700 cycles to land. In the cell a set's first round is 1,237 cycles in its coefficient phase
+  and its later rounds 519 and 481; and the phase behind each round's landing, where the next chunk's bytes are first
+  read, is 346 to 734 where it was 70 to 365. "Loaded a chunk ahead" is not ahead enough, and a set's first round's
+  are read in the trip that loads them (the checker's `LOAD_IN_TRIP`, declared here, is that cost).
+- THE EXPANSION'S OWN WORK IS ABOUT 500 CYCLES A CHUNK OF 64 COLUMNS, stamped, where the count gave 360: the cell's
+  later rounds, and 655 a chunk in the whole call (2,620 a round of four chunks).
+- THE WHOLE CALL: a fold warp is 21,526 of its 28,004-cycle window in the coefficient phase -- a window's 262,144
+  coefficients a fold -- with 2,080 issuing its rounds and 1,608 behind their landing.
+- ONE DIGIT: the coefficient phase is 532 a window, and the window grew by what the warps wait on each other at its
+  end (the window phase 1,795 where it was 676, the words 1,877 where 1,036).
+
+THE SUPPLY ALONE, before the coefficients (the same card and day, the experiment at 05b6fec2, whose rows the table
+above repeats; its record is the commit's):
+
+MEASURED (the same card, driver 580.196.07; 2026-11-25, the experiment at
 05b6fec2; 7 repetitions; every call's check exact -- 12,288, 4,096, 16,384, 3,920 and 4,096 rounds, their tokens and
 their row bytes, the sets tiling the leaf space; cycles a window a CTA, the median):
 
@@ -64,15 +99,7 @@ A ROUND'S OWN COST is its 8 loads and 8 copy instructions, about 180 to 390 cycl
 places are live; what a warp waits for after it is the round before's copies. NOT MEASURED on record: more than two
 rounds in flight, and a form that skips the copy instructions of a round's dead places.
 
-SINCE THE RECORD the fold expands a round's coefficients into its warp's tile
-([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#expand)), its one switch a call is on the call's
-levels and its step's shape, and which levels are listed is read as it runs
-([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)); the experiment hands the write side's
-rows as operands and checks, through the kernel's tracer, every coefficient of every kept round's chunks -- a column
-its levels' bytes multiplied in fp32 and rounded to bf16 once, a place with no token zeros -- and that a set's chunks'
-columns are its leaves, each once. NOT RUN on record in that form.
+WHAT IT IS NOT: the fold. No step runs and no accumulator is held; the other roles are stubs; the rows carry no
+scale; the call is one head and its values are the cache's.
 
-WHAT IT IS NOT: the fold. No coefficient is expanded and no step runs; the other roles are stubs; the call is one
-head and its values are the cache's.
-
-Record: `measure/lab/results/carry_supply/sm_90a.json`, the five stamped rows' timelines beside it.
+Record: `measure/lab/results/carry_supply/sm_90a.json` (the run with the coefficients), the five stamped rows' timelines beside it.

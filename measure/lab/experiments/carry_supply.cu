@@ -1,7 +1,8 @@
-// measure/lab/experiments/carry_supply.cu -- QUESTION: does the LIBRARY's carry CTA, its fold warpgroups' SUPPLY built and
-// every other component a stub, list each of its sets' live tokens from a call's real operands -- the masks, the
-// mask-preparation pass's prepared words, the densities the carve is derived from -- and land their value lines in
-// its rows, exactly; and what does a window cost a CTA with that supply running?
+// measure/lab/experiments/carry_supply.cu -- QUESTION: does the LIBRARY's carry CTA, its fold warpgroups' SUPPLY and
+// COEFFICIENTS built and every other component a stub, list each of its sets' live tokens from a call's real operands
+// -- the masks, the mask-preparation pass's prepared words, the densities the carve is derived from, the write side's
+// rows -- land their value lines in its rows and expand their coefficients into its tiles, exactly; and what does a
+// window cost a CTA with them running?
 // METHOD: this file compiles the library's device code (`carry/carry_kernel.cuh`, and the mask-preparation pass's
 // kernel, which it launches first). A call of one head: two levels of 256 digits, 64 value channels, the write side
 // masked on level 0 at 4 to 5 live digits a token and whole on level 1 (THE CELL), or masked on both (level 1 a run of
@@ -10,12 +11,16 @@
 // the write side's (the carve alone changes); the read side's densities the cell's mirror, its masks never read (its role is a stub). The grid
 // is the head's CTAs. CHECKED through the kernel's tracer, which waits for a round's copies and copies its tokens and
 // rows out: every round of every set of every fold is there once, its tokens the set's list in order, its rows their
-// value lines in the step's swizzle order, a dead place's row zero; and on the host, the sets' leaves tile the leaf
-// space once. TIMED with the library's tracer (nothing): a call of 64 windows.
+// value lines in the step's swizzle order, a dead place's row zero; every coefficient of every kept round's chunks is
+// its levels' bytes multiplied in fp32 and rounded to bf16 once, a place with no token zeros; a set's chunks' columns
+// are its leaves, each once; and on the host, the sets' leaves tile the leaf space once. TIMED with the library's tracer (nothing): a call of 64 windows.
 // TIMELINE: no MMA. A fold warp, a window: the folds' hand-offs, then each of its sets -- the set's word a lane (the
 // levels' group words ANDed, loaded a set ahead), the listing's running sums, the set's tokens laid in the warp's list (a
 // trip a token of the fullest word), and a round of 32 places at a time its 8 shared loads and 8 asynchronous copies a
-// lane into the warp's rows, two rounds in flight. Live: the next set's word, the listing's four, a round's 8 tokens.
+// lane into the warp's rows, two rounds in flight; then a chunk of the round at a time, a lane its token's bytes a
+// level (loaded a chunk ahead), their conversion, a multiplication a column, a packed rounding a pair and a 16-byte
+// store a brick into the warp's coefficient tile. Live: the next set's word, the listing's four, a round's 8 tokens,
+// the next chunk's bytes.
 // see docs/internals/tools/lab.md#carry-supply
 #include <algorithm>
 #include <cstring>
@@ -576,6 +581,8 @@ int main(int argc, char** argv) {
   //: set's own trip: the list they are indexed by is made in that trip; and a set of several chunks loads a chunk's
   //: bytes a chunk ahead, inside its round's trip. The count is over the 24 classes the windows are compiled for
   b.expect("carry_supply::timed", "LOAD_IN_TRIP", "<=", 98);
+  //: the same loads in the checking kernel, whose tracer's waits stand between them and their reads
+  b.expect("carry_supply::kept", "LOAD_IN_TRIP", "<=", 98);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;

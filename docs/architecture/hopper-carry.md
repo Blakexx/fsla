@@ -97,7 +97,10 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
   images (64) are 208.5 of the card's 227 KB, which leaves 18.5 for the readout's tiles and the panels, whose sizes
   are not designed; with one it is 176.5. What one tile costs is the steps' own time a meet with nothing of the fold's
   expanded under it -- 8 steps of 32 cycles in the cell. NOT MEASURED; the second tile is the climb's once the read
-  side's shared memory is known (what the fold idles there is to be priced: [`KERNEL_STANDARDS.md` section 28](../KERNEL_STANDARDS.md#s28)). NOT BUILT.
+  side's shared memory is known (what the fold idles there is to be priced: [`KERNEL_STANDARDS.md` section 28](../KERNEL_STANDARDS.md#s28)). BUILT ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md)) and exact on a
+  device; MEASURED ([`lab/carry_supply.md`](../lab/carry_supply.md)): the bytes' loads take about 700 cycles to land and
+  a chunk's expansion about 500, so the cell's window with the supply and the coefficients is 5,136 cycles a CTA and
+  the dense call's 25,158 -- NOT YET THE FORM THAT HOLDS: how the bytes arrive is open.
 - A STEP is 16 tokens by up to 64 of a group's leaves (R25); a group wider than a step is more steps on the same value
   lines, and a short step is padded on the coefficient side, a zero byte, never by zero value lines (RULED 2026-11-19).
 - THE READ SIDE'S RESULTS. A reader's sums are stored once, in the list's order, into a PANEL a read group in shared

@@ -89,10 +89,11 @@ groups ([`carry_groups.md`](carry_groups.md)).
   nothing a window. THE OWNER'S, 2026-11-25, when a switch on the 16 listed patterns nested with the class's made 304
   copies of these windows and the compiler ran the host out of memory: "The tensor step is basically coupled to group
   size right, up to a max of 64? I think that's the more important thing to switch on, for the listing should we
-  switch on depth and runtime on listed pattern?" -- the switch he ruled the day before ("switching uniformly to
+  switch on depth and runtime on listed pattern?", and to that form laid out in answer with its estimate, "Ok" -- the switch he ruled the day before ("switching uniformly to
   precomputed things defined for those patterns ... We are just templating in the code instead of at the arm") stays,
   on the pattern that changes the most code. WHAT THE FLAGS COST is about 3 instructions a set for a level of the call
-  that is not listed -- NOT MEASURED; the form before it, which tested every one of four levels at every set by a
+  that is not listed -- NOT MEASURED APART: the run that has them has the coefficients too, and its stamped set, in the
+  cell, is 610 cycles where the switch on the listed patterns had 690; the form before it, which tested every one of four levels at every set by a
   branch, was 6 to 10 percent of a window slower than the switch on the listed patterns
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
   value lines start is a step on, and THE CALL'S OWN TOKENS a lane -- all 32 of its word, or the first of them where the call ends inside it, which a set's AND starts from so that a side whose levels are all whole lists no place past the call's last -- are the windows its word is whole in, then one word,
