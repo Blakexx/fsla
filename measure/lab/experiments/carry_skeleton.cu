@@ -15,13 +15,15 @@ namespace carry_skeleton {
 
 namespace carry = fsla::carry::detail;
 using Bt = ::denseref::arch::BuildTag<::denseref::arch::Build{900}>;
+//: the registers a fold thread and a readout thread take: the lab's split (docs/lab/carry_token.md)
+constexpr int kFoldRegs = 176, kReadRegs = 104;
 
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's
 __global__ void __launch_bounds__(carry::kThreads, 1) timed(long long* times, int* done, int windows) {
   lab::WarpSpan clock;
   clock.start();
   const carry::Args a{windows};
-  carry::carry_cta<Bt>(a);
+  carry::carry_cta<Bt, kFoldRegs, kReadRegs>(a);
   clock.stop(times);
   if ((threadIdx.x & 31) == 0) atomicAdd(done + blockIdx.x, windows);
 }

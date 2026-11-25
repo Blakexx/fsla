@@ -230,25 +230,15 @@ __device__ __forceinline__ void cp_wait_all() { asm volatile("cp.async.wait_all;
 
 //: THE SHARED-MEMORY BARRIER (`mbarrier`, sm_80+), as `ops.cuh` spells it: `count` arrivals complete a phase, a phase's
 //: parity flips at each completion, a wait polls until the phase of `parity` has completed.
-__device__ __forceinline__ void mbar_init(uint32_t a, uint32_t count) {
-  asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(a), "r"(count) : "memory");
-}
+__device__ __forceinline__ void mbar_init(uint32_t a, uint32_t count) { ::denseref::ops::mbar_init(a, count); }
 
 __device__ __forceinline__ void mbar_arrive_when_landed(uint32_t a) {
   asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];" ::"r"(a) : "memory");
 }
 
-__device__ __forceinline__ void mbar_arrive(uint32_t a) {
-  asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.shared.b64 st, [%0];\n}" ::"r"(a) : "memory");
-}
+__device__ __forceinline__ void mbar_arrive(uint32_t a) { ::denseref::ops::mbar_arrive(a); }
 
-__device__ __forceinline__ void mbar_wait(uint32_t a, uint32_t parity) {
-  asm volatile(
-      "{\n.reg .pred p;\nLAB_WAIT_%=:\nmbarrier.test_wait.parity.shared.b64 p, [%0], %1;\n@!p bra LAB_WAIT_%=;\n}" ::
-          "r"(a),
-      "r"(parity)
-      : "memory");
-}
+__device__ __forceinline__ void mbar_wait(uint32_t a, uint32_t parity) { ::denseref::ops::mbar_wait(a, parity); }
 
 //: the same wait by the instruction that may SUSPEND the thread until the phase completes or a time limit of the
 //: system's passes (`try_wait`); `mbar_wait`'s `test_wait` never suspends: its loop issues every trip it waits
@@ -256,24 +246,12 @@ __device__ __forceinline__ void mbar_wait_suspended(uint32_t a, uint32_t parity)
 
 //: A NAMED BARRIER (ids 1-15; 0 is `__syncthreads`'s): `count` threads, a multiple of 32, complete it; `bar_sync`
 //: arrives and waits, `bar_arrive` arrives and goes on
-__device__ __forceinline__ void bar_sync(int id, int count) {
-  asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(count) : "memory");
-}
+__device__ __forceinline__ void bar_sync(int id, int count) { ::denseref::ops::rendezvous_group(id, count); }
 
-__device__ __forceinline__ void bar_arrive(int id, int count) {
-  asm volatile("bar.arrive %0, %1;" ::"r"(id), "r"(count) : "memory");
-}
+__device__ __forceinline__ void bar_arrive(int id, int count) { ::denseref::ops::rendezvous_arrive(id, count); }
 
 //: the same, asked once: has the phase of parity `parity` completed?
-__device__ __forceinline__ bool mbar_test(uint32_t a, uint32_t parity) {
-  uint32_t ok;
-  asm volatile(
-      "{\n.reg .pred p;\nmbarrier.test_wait.parity.shared.b64 p, [%1], %2;\nselp.u32 %0, 1, 0, p;\n}"
-      : "=r"(ok)
-      : "r"(a), "r"(parity)
-      : "memory");
-  return ok != 0u;
-}
+__device__ __forceinline__ bool mbar_test(uint32_t a, uint32_t parity) { return ::denseref::ops::mbar_test(a, parity); }
 
 // ------------------------------------------------------------------------------------------- hopper atoms
 // each one PTX instruction of sm_90a; an experiment that calls one compiles for sm_90a only

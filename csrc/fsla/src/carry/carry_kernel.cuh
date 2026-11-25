@@ -29,15 +29,11 @@ constexpr int kReadId = kFoldId + kFolds;
 //: FIXED by R15: one CTA a multiprocessor
 constexpr int kCtasPerSm = 1;
 
-//: A ROLE'S REGISTERS A THREAD -- see docs/internals/carry/carry_kernel.md#registers
-template <class Bt>
+//: A ROLE'S REGISTERS A THREAD: `FOLD` and `READ` are the arm's, the drain's what the multiprocessor's file leaves -- see docs/internals/carry/carry_kernel.md#registers
+template <class Bt, int FOLD, int READ>
 struct Registers {
-  //: FIXED by the lab's split, the climb's to change: a fold thread's accumulators and entries
-  static constexpr int kFold = 176;
-  //: FIXED by the lab's split, the climb's to change: a readout thread's sums and rows on their way
-  static constexpr int kRead = 104;
   static constexpr int kDrain =
-      (Bt::traits.caps.regs_per_sm - kFolds * kGroup * kFold - kGroup * kRead) / kGroup;
+      (Bt::traits.caps.regs_per_sm - kFolds * kGroup * FOLD - kGroup * READ) / kGroup;
   static_assert(kDrain >= 24 && kDrain % 8 == 0, "the drain's registers are what the others leave");
 };
 
@@ -134,7 +130,7 @@ __device__ __forceinline__ void drain_role(const Args& a, Bars* bars) {
 }
 
 //: A CTA: its barriers, then each role's whole body in its own branch, its registers set at the branch's head -- see docs/internals/carry/carry_kernel.md#the-cta
-template <class Bt>
+template <class Bt, int FOLD, int READ>
 __device__ __forceinline__ void carry_cta(const Args& a) {
   Bars* const bars = CarrySmem<Bt>::template get<BarsTile>();
   const int thread = static_cast<int>(threadIdx.x);
@@ -154,13 +150,13 @@ __device__ __forceinline__ void carry_cta(const Args& a) {
   __syncthreads();
 
   if (thread < kReadAt) {
-    ops::registers_up<Registers<Bt>::kFold>();
+    ops::registers_up<FOLD>();
     fold_role<Bt>(a, bars);
   } else if (thread < kDrainAt) {
-    ops::registers_down<Registers<Bt>::kRead>();
+    ops::registers_down<READ>();
     read_role<Bt>(a, bars);
   } else {
-    ops::registers_down<Registers<Bt>::kDrain>();
+    ops::registers_down<Registers<Bt, FOLD, READ>::kDrain>();
     drain_role<Bt>(a, bars);
   }
 }
