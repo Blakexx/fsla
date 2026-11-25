@@ -10,9 +10,10 @@ No role calls it yet; the lab checks and times it with the listing
   (16 bytes) one token's 8 channels of a brick, a brick's 16 tokens consecutive lines
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#operand)); the header lays the bricks 17 lines apart
   (`kBrickPitch`). THIS LAYOUT IS NOT THE FORM: on a device a line whose 8 pieces land apart costs 16.6 cycles against
-  2.70 for a line that lands as its 128 bytes whole ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)), and the
-  banks its lanes fall on, which the pitch was chosen by and `tests/unit/test_carry_values_layout.py` holds, are not
-  what an asynchronous copy's write costs. The header stays as measured until the layout that replaces it is found.
+  2.70 for a line that lands as its 128 bytes whole, in any order of its pieces
+  ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); the banks its lanes fall on, which the pitch was chosen
+  by, are not what an asynchronous copy's write costs. The header stays as measured until a tile of whole rows is
+  shown to be one a step reads ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)).
 - <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing, 32 places, into two
   steps' tiles. A PLACE PAST THE LIST'S TOTAL COPIES NOTHING AND ITS LINES ARE ZERO (`stage_tile_if`), so a short step
   needs no clearing and no branch, and a pad's value is finite whatever the tile held. THE ROUND IS ONE COMMITTED
