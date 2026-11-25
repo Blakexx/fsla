@@ -17,7 +17,7 @@ the mask is read once. The density byte selects the group as it does in the libr
 the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
 own loops; here that dispatch sits inside the lab's loop over rounds, which the experiment declares.
 
-MEASURED (NVIDIA H100 80GB HBM3, vast.ai instance hgrdycm0, driver 580.196.07; 2026-11-25, the experiment at
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM hgrdycm0, driver 580.196.07; 2026-11-25, the experiment at
 4dca551b; 7 repetitions; the 8 checked rows pass, every word and total of each group size's
 first round exact; the median). SM-cycles a token, the mask read once; the lab's kernel is [`mask_prep`](mask_prep.md)'s row at
 the same group size:
