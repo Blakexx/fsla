@@ -436,6 +436,7 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="gather-pass"></a>[`gather_pass`](../../lab/gather_pass.md)
 - <a id="cast-cluster"></a>[`cast_cluster`](../../lab/cast_cluster.md)
 - <a id="value-gather"></a>[`value_gather`](../../lab/value_gather.md)
+- <a id="value-fetch"></a>[`value_fetch`](../../lab/value_fetch.md)
 - <a id="readout-role"></a>[`readout_role`](../../lab/readout_role.md)
 - <a id="value-cast"></a>[`value_cast`](../../lab/value_cast.md)
 - <a id="pool-fill"></a>[`pool_fill`](../../lab/pool_fill.md)
