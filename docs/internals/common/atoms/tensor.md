@@ -21,8 +21,8 @@ added with that design, selected at the atom as R8 asks.
   (piece `j` at `j ^ ((row >> 7) & 7)`). It is the layout an asynchronous copy fills cheaply: an instruction moves
   whole rows at both ends, in any order within a row ([`../../../lab/value_fetch.md`](../../../lab/value_fetch.md)).
   THE OPERAND STARTS ON A 1,024-BYTE BOUNDARY: the descriptor's base offset is left zero, and the lab reads rows at
-  a boundary only. The layout is read off the vendor's public library; THAT A STEP COMPUTES FROM SUCH ROWS WHAT IT
-  COMPUTES FROM BRICKS is [`../../../lab/step_swizzle.md`](../../../lab/step_swizzle.md)'s question, NOT RECORDED.
+  a boundary only. The layout is read off the vendor's public library, and the lab holds it: A STEP COMPUTES FROM SUCH
+  ROWS WHAT IT COMPUTES FROM BRICKS, in the same 27.6 cycles ([`../../../lab/step_swizzle.md`](../../../lab/step_swizzle.md)).
 
 - <a id="edges"></a>`steps_fence()`, `steps_commit()`, `steps_wait<InFlight>()`, `step_hold(r)`: a group of steps is
   issued behind a fence (the registers the group reads are written before it), committed, and waited for; a register

@@ -11,8 +11,8 @@ No role calls it yet; the lab checks and times it with the listing
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). WHY ROWS: an asynchronous copy is cheap where an
   instruction moves whole 128-byte rows at both ends, in any order within a row (2.7 cycles a line), and six times
   that where a row is in pieces at either end (16.5: the step's unswizzled brick layout, tried two ways) --
-  [`../../lab/value_fetch.md`](../../lab/value_fetch.md). THAT THE STEP READS SUCH ROWS is
-  [`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)'s question, NOT RECORDED. A step of the round is 16
+  [`../../lab/value_fetch.md`](../../lab/value_fetch.md). THE STEP READS SUCH ROWS, in the time it reads
+  bricks ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)). A step of the round is 16
   consecutive rows (`round_step`), and THE TILE STARTS ON A 1,024-BYTE BOUNDARY, the condition of the step's operand
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)).
 - <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing into its 32 rows, 4
@@ -25,5 +25,6 @@ No role calls it yet; the lab checks and times it with the listing
 THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a round
 of 32 tokens, a warp -- 8 copy instructions a lane, each behind a shuffle and an address, about 50 instructions a
 lane; 4 KB landed. The floor is the copies' own with rows whole at both ends, 2.55 to 3.80 cycles a line a CTA at 16
-warps ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)). Shared memory: a round's 4 KB, and a second round's
+warps ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); MEASURED with the listing, 2.96 a line at 64 live tokens a
+window and 2.10 with every token live ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)). Shared memory: a round's 4 KB, and a second round's
 while the first is read. Registers: the round's token.

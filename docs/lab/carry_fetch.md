@@ -14,7 +14,24 @@ copies into the round's 32 rows, two rounds in flight; a warp's tiles start on a
 Rows: 64 live tokens a window; every token live. The first window's first four rounds' tiles of every group are
 checked byte for byte against the host's, a dead place's lines zero.
 
-NOT MEASURED: no run of it is recorded.
+MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
+73620f1a; 7 repetitions; all 34,603,008 checked tile bytes exact in both rows and every tile on its boundary; cycles
+a 128-byte line a CTA, the median):
+
+| a group's window | cycles a line |
+|---|---:|
+| 64 live tokens: listed, and their value lines fetched | 2.96 |
+| every token live: listed, and their value lines fetched | 2.10 |
+
+PREDICTED, before the run: 3.5 to 9.0 and 2.7 to 5.5, the copies alone at 2.72 a line with rows whole and turned
+([`value_fetch`](value_fetch.md)) and the listing at 2.00 and 1.01 a token ([`carry_list`](carry_list.md)) where the
+two add -- BOTH MISSED, LOW. THE WRONG PRICE IS THE SUM: the listing costs the warp nothing beside its copies (2.96
+against the copies' own 2.72 at 64 live tokens, the last round's dead places filled with zeros), so the warp's time
+is its copies'. With every token live a line costs LESS than `value_fetch`'s row, 2.10 against 2.72: its rows are a
+window's 1,024 consecutive lines of the table, where `value_fetch` reads rows scattered over it. THAT CONSECUTIVE
+SOURCE ROWS ARE WHAT IS CHEAPER IS NOT SHOWN: no row here varies the tokens' spread at one count.
 
 WHAT IT IS NOT: a fetch past the cache. The values are one 32 MB table the whole grid reads, which the card's cache
 holds; a table it cannot hold is NOT MEASURED here (the copies alone: 3.79 against 3.69, `value_fetch`).
+
+Record: `measure/lab/results/carry_fetch/sm_90a.json`.
