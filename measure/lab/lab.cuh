@@ -288,11 +288,7 @@ __device__ __forceinline__ void wg_bf16_n16_ss(float (&d)[8], uint64_t a, uint64
 //: m64n16k16 with A M|N-major (a line one K's 8 rows) and B K-major: `d` += A [64 x 16] B [16 x 16], or with
 //: `add` false `d` = A B -- an accumulator's first step, which needs no register cleared
 __device__ __forceinline__ void wg_bf16_n16_ss_mna(float (&d)[8], uint64_t a, uint64_t b, bool add = true) {
-  asm volatile(
-      "{ .reg .pred p; setp.ne.b32 p, %10, 0;\n"
-      "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, %8, %9, p, 1, 1, 1, 0; }"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
-      : "l"(a), "l"(b), "r"(add ? 1 : 0));
+  ::denseref::ops::step_n16_rows(d, a, b, add);
 }
 
 //: m64n16k16 with BOTH operands M|N-major: `d` += A [64 x 16] B [16 x 16]; a line is one K's 8 rows or columns

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "common/atoms/copy.cuh"
+#include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 
 namespace fsla {
@@ -14,36 +15,42 @@ namespace ops = ::denseref::ops;
 
 //: FIXED by the tensor step: its K is 16 tokens
 constexpr int kStepTokens = 16;
-//: FIXED by the step's operand: a brick is 8 channels and a line 16 bytes, a token's 8 channels of a brick
-constexpr int kBrickChannels = 8;
-constexpr int kLineBytes = 2 * kBrickChannels;
-//: A STEP'S VALUE TILE: a brick's 16 token lines, the bricks a line more than that apart -- see docs/internals/carry/carry_values.md#tile
-constexpr int kBrickPitch = kStepTokens + 1;
+//: FIXED by the step's operand: a row's piece is 16 bytes, 8 channels
+constexpr int kPieceChannels = 8;
+constexpr int kPieceBytes = 2 * kPieceChannels;
+//: A ROUND'S TILE: its 32 tokens' value lines, a row each as they lie in global memory -- see docs/internals/carry/carry_values.md#tile
+template <int CHANNELS>
+constexpr int kRowBytes = 2 * CHANNELS;
 
 template <int CHANNELS>
-constexpr int kValueTileBytes = CHANNELS / kBrickChannels * kBrickPitch * kLineBytes;
+constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 
-//: THE COPIES OF A ROUND'S VALUE LINES into its steps' tiles at `tiles`, one committed group -- see docs/internals/carry/carry_values.md#fetch
+//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
                                             int token) {
-  constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kBrickChannels;
+  constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kPieceChannels;
   constexpr int kTokens = kLanes / kPieces;
-  static_assert(CHANNELS % kBrickChannels == 0 && kLanes % kPieces == 0,
-                "a token's pieces fill lanes");
+  static_assert(kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
   const int lane = static_cast<int>(threadIdx.x) & (kLanes - 1);
   const int piece = lane % kPieces, which = lane / kPieces;
 #pragma unroll
   for (int i = 0; i < kPieces; ++i) {
     const int place = kTokens * i + which;
     const int from = ops::lane_broadcast(token, place);
-    const int line = piece * kBrickPitch + place % kStepTokens;
-    const ops::SmemAddr to =
-        tiles + (place / kStepTokens) * kValueTileBytes<CHANNELS> + line * kLineBytes;
-    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * (2 * CHANNELS);
-    ops::stage_tile_if(to, at + piece * kLineBytes, from >= 0);
+    const ops::SmemAddr row = tiles + static_cast<ops::SmemAddr>(place * kRowBytes<CHANNELS>);
+    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * kRowBytes<CHANNELS>;
+    const ops::SmemAddr to = ops::step_row_piece(row, static_cast<std::uint32_t>(piece));
+    ops::stage_tile_if(to, at + piece * kPieceBytes, from >= 0);
   }
   ops::stage_commit();
+}
+
+//: STEP `step` OF A ROUND'S TILE as the tensor step's operand: its 16 rows; `tiles` is on a 1,024-byte boundary
+template <int CHANNELS>
+__device__ __forceinline__ std::uint64_t round_step(ops::SmemAddr tiles, int step) {
+  const int first = step * kStepTokens * kRowBytes<CHANNELS>;
+  return ops::step_operand_rows(tiles + static_cast<ops::SmemAddr>(first));
 }
 
 }  // namespace detail

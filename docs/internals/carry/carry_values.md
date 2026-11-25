@@ -6,21 +6,25 @@ skeleton's components ([`carry_kernel.md`](carry_kernel.md)), fed by the listing
 No role calls it yet; the lab checks and times it with the listing
 ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)).
 
-- <a id="tile"></a>A STEP'S VALUE TILE. The tensor step reads its 16 tokens' values as bricks of 8 channels, a line
-  (16 bytes) one token's 8 channels of a brick, a brick's 16 tokens consecutive lines
-  ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#operand)); the header lays the bricks 17 lines apart
-  (`kBrickPitch`). THIS LAYOUT IS NOT THE FORM: on a device a line whose 8 pieces land apart costs 16.6 cycles against
-  2.70 for a line that lands as its 128 bytes whole ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)), and the
-  banks its lanes fall on, which the pitch was chosen by and `tests/unit/test_carry_values_layout.py` holds, are not
-  what an asynchronous copy's write costs. The header stays as measured until the layout that replaces it is found.
-- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing, 32 places, into two
-  steps' tiles. A PLACE PAST THE LIST'S TOTAL COPIES NOTHING AND ITS LINES ARE ZERO (`stage_tile_if`), so a short step
-  needs no clearing and no branch, and a pad's value is finite whatever the tile held. THE ROUND IS ONE COMMITTED
-  GROUP: its caller waits for it, and may hold a second round in flight in the tiles beside it.
+- <a id="tile"></a>A ROUND'S TILE IS 32 ROWS, a token's value line each as it lies in global memory: 128 bytes, its
+  eight 16-byte pieces in the order the tensor step's 128-byte swizzle reads a row
+  ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)). WHY ROWS: an asynchronous copy is cheap where an
+  instruction moves whole 128-byte rows at both ends, in any order within a row (2.7 cycles a line), and six times
+  that where a row is in pieces at either end (16.5: the step's unswizzled brick layout, tried two ways) --
+  [`../../lab/value_fetch.md`](../../lab/value_fetch.md). THE STEP READS SUCH ROWS, in the time it reads
+  bricks ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)). A step of the round is 16
+  consecutive rows (`round_step`), and THE TILE STARTS ON A 1,024-BYTE BOUNDARY, the condition of the step's operand
+  ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)).
+- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing into its 32 rows, 4
+  consecutive tokens an instruction, so every instruction moves 4 whole rows. A PLACE PAST THE LIST'S TOTAL COPIES
+  NOTHING AND ITS ROW IS ZERO (`stage_tile_if`), so a short step needs no clearing and no branch, and a pad's value is
+  finite whatever the tile held. THE ROUND IS ONE COMMITTED GROUP: its caller waits for it, and may hold a second
+  round in flight in the rows beside it. A value line of another width than 64 channels is not a row of 128 bytes:
+  the header does not compile for it (NOT BUILT: the den's channel, a narrower value).
 
 THE BUDGET, stated before the code ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a round
 of 32 tokens, a warp -- 8 copy instructions a lane, each behind a shuffle and an address, about 50 instructions a
-lane; 4 KB landed. ITS FLOOR WAS TAKEN FROM THE WRONG FORM: 2.55 to 3.80 cycles a line is a line landing whole, and
-this layout's own price is 16.6 ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); with the listing, 13.3 to
-13.9 ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)). Shared memory: two tiles a round, and a second round's
+lane; 4 KB landed. The floor is the copies' own with rows whole at both ends, 2.55 to 3.80 cycles a line a CTA at 16
+warps ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); MEASURED with the listing, 2.96 a line at 64 live tokens a
+window and 2.10 with every token live ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)). Shared memory: a round's 4 KB, and a second round's
 while the first is read. Registers: the round's token.
