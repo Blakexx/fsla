@@ -29,8 +29,8 @@ sets tiling the leaf space; cycles a window a CTA, the median):
 | the cell: 4 sets a fold, about 69 live tokens a set a window | 3,323 | 4,664 |
 | the write side masked on both levels: 32 sets a fold, about 19 | 11,486 | 13,974 |
 
-PREDICTED, before the run, each from a held session's unrecorded reading of the same form: 3,100 to 3,700 and 4,300
-to 5,100; 10,400 to 11,800 and 13,000 to 14,800 -- ALL FOUR HELD.
+PREDICTED, before the run: 3,100 to 3,700 and 4,300 to 5,100; 10,400 to 11,800 and 13,000 to 14,800, each range set
+about an unrecorded trial reading of the same form -- ALL FOUR HELD.
 
 WHAT A FOLD WARP'S WINDOW IS MADE OF, by the stamped rows (the stamps themselves add 1,341 and 2,488 cycles to the
 window, so these are shares):
@@ -42,11 +42,8 @@ window, so these are shares):
   places live.
 
 A ROUND IS PAID WHOLE: its select and its 8 copy instructions cost a warp the same whatever number of its places are
-live, so a call of many small sets pays a round a set. TRIED ON THE HELD SESSION AND NOT KEPT, each costing more than
-it saved: the copy instructions that hold no live place skipped, by a loop bounded by a vote or each under its own
-vote (a vote costs a warp about what a copy instruction does); a set's tokens compacted once into a list the fetch
-reads (no change, and its stores' addresses are the data's). The first form of the supply read 4,263 and 16,663 on
-the same session: [`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply) says what it did.
+live, so a call of many small sets pays a round a set. NOT MEASURED: a form that skips the copy instructions of a
+round's dead places, and what a vote or a branch round an instruction costs beside it.
 
 WHAT IT IS NOT: the fold. No coefficient is expanded and no step runs; the other roles are stubs; the call is one
 head and its values are the cache's.

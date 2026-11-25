@@ -1,6 +1,6 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE PREFILL'S CARVE (docs/internals/common/plan/cta_carve.md): from a call's level widths and each side's densities alone, the groups of the densities, how the levels share the leaves one CTA owns,
+// THE PREFILL'S CARVE (docs/internals/common/plan/cta_carve.md): from a call's level widths and each side's densities alone, each level's size from its density and the groups raised from the sizes, how the levels share the leaves one CTA owns,
 // the folds' split and the write and read sides' sets. Pure, constexpr, total, integers and fixed arrays alone: nothing in it is beyond a kernel's reach.
 #pragma once
 
@@ -77,6 +77,35 @@ FSLA_CARVE_FN constexpr void carve_loop_order(const int* density, int levels, in
   }
 }
 
+//: FIXED by the owner's ruling ("a minimum leaf group size, such as 16"): the least leaves of a set, as log2; 16 is the narrowest tensor step the tree's kernels run, on any card -- see docs/internals/common/plan/prefill_launch.md#least
+inline constexpr int kLeastSetBits = 4;
+
+//: A SIDE'S GROUPS RAISED until a set holds 16 leaves, where its box holds as many: the group of the side's densest level that has room in the box is doubled, and again -- see docs/internals/common/plan/prefill_launch.md#least
+FSLA_CARVE_FN constexpr void carve_least_sets(const int* order, int levels, const int* box_bits,
+                                              int* group_bits) {
+  FSLA_CARVE_UNROLL
+  for (int step = 0; step < kLeastSetBits; ++step) {
+    int set = 0, grow = -1;
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      set += group_bits[l] < box_bits[l] ? group_bits[l] : box_bits[l];
+    }
+    //: the densest level with room is the last such in the side's order
+    FSLA_CARVE_UNROLL
+    for (int i = 0; i < kCarveMaxLevels; ++i) {
+      FSLA_CARVE_UNROLL
+      for (int l = 0; l < kCarveMaxLevels; ++l) {
+        const int at = order[i], group = group_bits[l], box = box_bits[l];
+        grow = i < levels && at == l && group < box ? l : grow;
+      }
+    }
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      group_bits[l] += set < kLeastSetBits && l == grow ? 1 : 0;
+    }
+  }
+}
+
 struct CtaCarve {
   int levels;
   int carve_bits[kCarveMaxLevels];
@@ -108,7 +137,7 @@ FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* wri
   return a;
 }
 
-//: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_group_bits` and `read_group_bits` the groups derived from them;
+//: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_size_bits` and `read_size_bits` each level's size from its density, `write_group_bits` and `read_group_bits` the groups a kernel reads (the sizes, raised where a set would hold fewer than 16 leaves);
 //: `write_order` and `read_order` are each side's loop order over the levels, outermost first (`carve_loop_order`); `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
 //: and `folds` their count; `fold_bits` a fold's bits of each level; `fold_set_leaves` and `fold_sets` the leaves a token is expanded over at once on the write side and the
 //: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_bits` the bits of a level's CTA index its write group spans, and `unit_ctas` the CTAs inside one combination of write groups (they see one token schedule and are taken together)
@@ -117,6 +146,8 @@ struct PrefillCarve {
   int width_bits[kCarveMaxLevels];
   int write_density[kCarveMaxLevels];
   int read_density[kCarveMaxLevels];
+  int write_size_bits[kCarveMaxLevels];
+  int read_size_bits[kCarveMaxLevels];
   int write_group_bits[kCarveMaxLevels];
   int read_group_bits[kCarveMaxLevels];
   int write_order[kCarveMaxLevels];
@@ -149,8 +180,10 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
       c.width_bits[l] = carve_clamp(width_bits[l], 0, kCarveMaxWidthBits);
       c.write_density[l] = carve_clamp(write_density[l], kLeastDensity, kWholeDensity);
       c.read_density[l] = carve_clamp(read_density[l], kLeastDensity, kWholeDensity);
-      c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
-      c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
+      c.write_size_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
+      c.read_size_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
+      c.write_group_bits[l] = c.write_size_bits[l];
+      c.read_group_bits[l] = c.read_size_bits[l];
     }
   }
   carve_loop_order(c.write_density, levels, c.write_order);
@@ -184,6 +217,11 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
     c.fold_bits[l] = c.carve_bits[l] - (l == c.split_level ? 1 : 0);
+  }
+  carve_least_sets(c.write_order, levels, c.fold_bits, c.write_group_bits);
+  carve_least_sets(c.read_order, levels, c.carve_bits, c.read_group_bits);
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) {
     const int write_set =
         c.write_group_bits[l] < c.fold_bits[l] ? c.write_group_bits[l] : c.fold_bits[l];
     const int read_set =

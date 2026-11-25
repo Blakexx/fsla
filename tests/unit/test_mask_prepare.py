@@ -30,14 +30,14 @@ LAYOUT = ROOT / "csrc" / "fsla" / "src" / "common" / "plan" / "mask_prepare_layo
 
 
 def _carved_groups(width_bits: int) -> list[int]:
-    """The carve's group of one level of ``width_bits`` at each density 1..256 (read side), in digits."""
+    """The carve's size of one level of ``width_bits`` at each density 1..256 (read side), in digits: what the pass prepares at, before a set's least raises a group."""
     densities = range(1, 257)
     run = subprocess.run([str(TOOL), "--cta-carve", ";".join(str(width_bits) for _ in densities), "--write-density", ";".join("256" for _ in densities),
                           "--read-density", ";".join(str(d) for d in densities)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
     lines = [json.loads(line) for line in run.stdout.splitlines()]
     assert len(lines) == 256
-    return [1 << line["read_group_bits"][0] for line in lines]
+    return [1 << line["read_size_bits"][0] for line in lines]
 
 
 @pytest.mark.parametrize("width_bits", range(1, 9))

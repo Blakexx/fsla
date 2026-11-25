@@ -411,6 +411,9 @@ int main(int argc, char** argv) {
   lab::Bench b(argc, argv);
   //: the check's tracer writes a kept round's head from lane 0, inside the fold's loop over rounds
   b.expect("carry_supply::kept", "LOOP_CONVERGENCE", "<=", 2);
+  //: a group raised over its level's size is the OR of the words it spans, read where they are asked for: a load a level at
+  //: each of the two places a set's words are asked for (the warp waits there only on a level that is raised)
+  for (const char* kernel : {"carry_supply::kept", "carry_supply::timed"}) b.expect(kernel, "LOAD_IN_TRIP", "<=", 8);
   if (b.expect_only) return 0;
   unsigned long long* rows = nullptr;
   const size_t trace_words = static_cast<size_t>(b.sms) * (carry::kThreads / 32) * lab::Trace<true>::kRow;
