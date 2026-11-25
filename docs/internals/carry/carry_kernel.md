@@ -5,7 +5,8 @@ Mirrors `csrc/fsla/src/carry/carry_kernel.cuh`. THE SKELETON
 [`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md): every role with its registers, its
 hand-offs and its order of work, each component a stub named where it goes. It has no host half, no op and no data:
 the lab runs it ([`../../lab/carry_skeleton.md`](../../lab/carry_skeleton.md)). Its first component, built and not
-yet called by a role, is the listing ([`carry_list.md`](carry_list.md)).
+yet called by a role, is the listing ([`carry_list.md`](carry_list.md)); its second, the value lines' fetch
+([`carry_values.md`](carry_values.md)).
 
 - <a id="roles"></a>THE ROLES. A CTA is 512 threads, four warpgroups of 128 (a warpgroup is the tensor step's unit):
   two FOLD warpgroups (`kFolds`), the READOUT's (`kReadAt`), and the DRAIN's four warps (`kDrainAt`).

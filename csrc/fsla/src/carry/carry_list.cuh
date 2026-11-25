@@ -36,11 +36,11 @@ __device__ __forceinline__ int listed_token(const Listing& s, int round) {
   int lane = 0;
 #pragma unroll
   for (int step = WORDS / 2; step >= 1; step >>= 1) {
-    const int ends = __shfl_sync(0xffffffffu, s.through, lane + step - 1);
+    const int ends = ops::lane_broadcast(s.through, lane + step - 1);
     lane += ends <= place ? step : 0;
   }
-  const std::uint32_t word = __shfl_sync(0xffffffffu, s.word, lane);
-  const int before = __shfl_sync(0xffffffffu, s.before, lane);
+  const auto word = static_cast<std::uint32_t>(ops::lane_broadcast(static_cast<int>(s.word), lane));
+  const int before = ops::lane_broadcast(s.before, lane);
   const int token = WORDS * lane + ops::nth_set_bit(word, place - before);
   return place < s.total ? token : -1;
 }

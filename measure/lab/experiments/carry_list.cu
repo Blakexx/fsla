@@ -21,12 +21,15 @@ constexpr int kWords = 32, kWarps = 16, kWindow = kWords * 32;
 
 template <int CHECK>
 __global__ void __launch_bounds__(32 * kWarps, 1)
-    listed(long long* times, const uint32_t* first, const uint32_t* second, uint32_t* out, int* totals, int windows) {
+    listed(long long* times, const uint32_t* first, const uint32_t* second, uint32_t* out, int* totals, int* sunk,
+           int windows) {
   __shared__ alignas(128) uint32_t ring[kWarps * kWords];
   const int warp = lab::warp_id(), lane = lab::lane_id();
   uint32_t* const mine = ring + kWords * warp + lane;
   const size_t group = (static_cast<size_t>(blockIdx.x) * kWarps + warp) * static_cast<size_t>(windows);
   uint32_t next = first[group * kWords + lane] & second[group * kWords + lane];
+  //: every token a lane listed, folded: the timed kernel's output, so the listing is not work the compiler may drop
+  uint32_t folded = 0;
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -34,17 +37,22 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
     const carry::Listing s = carry::listing_of<kWords>(next);
     const size_t ahead = (group + static_cast<size_t>(w + 1 < windows ? w + 1 : w)) * kWords + lane;
     next = first[ahead] & second[ahead];
+    //: a window's rounds: at least one, and on while any lane votes a place under the total
+    int round = 0;
 #pragma unroll 1
-    for (int round = 0; kWords * round < s.total; ++round) {
+    do {
       const int token = carry::listed_token<kWords>(s, round);
       *mine = static_cast<uint32_t>(token);
+      folded = folded * 31u + static_cast<uint32_t>(token);
       if constexpr (CHECK != 0) out[(group + w) * kWindow + kWords * round + lane] = static_cast<uint32_t>(token);
-    }
+      ++round;
+    } while (::denseref::ops::lane_ballot(kWords * round < s.total) != 0u);
     if constexpr (CHECK != 0) {
       if (lane == 0) totals[group + w] = s.total;
     }
   }
   clock.stop(times);
+  lab::sink(sunk, folded);
 }
 
 //: bit `x` of a table: live with one chance in `one_in`, by a hash of the place and the table's seed
@@ -75,11 +83,12 @@ void run(lab::Bench& b, const std::string& name, uint32_t one_in_first, uint32_t
     live += __builtin_popcount(a & c);
   }
   uint32_t *dfirst = nullptr, *dsecond = nullptr, *dout = nullptr;
-  int* dtotals = nullptr;
+  int *dtotals = nullptr, *dsunk = nullptr;
   LAB_CHECK(cudaMalloc(&dfirst, words * 4));
   LAB_CHECK(cudaMalloc(&dsecond, words * 4));
   LAB_CHECK(cudaMalloc(&dout, groups * kChecked * kWindow * 4));
   LAB_CHECK(cudaMalloc(&dtotals, groups * kChecked * sizeof(int)));
+  LAB_CHECK(cudaMalloc(&dsunk, groups * 32 * sizeof(int)));
   LAB_CHECK(cudaMemcpy(dfirst, first.data(), words * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMemcpy(dsecond, second.data(), words * 4, cudaMemcpyHostToDevice));
 
@@ -95,7 +104,7 @@ void run(lab::Bench& b, const std::string& name, uint32_t one_in_first, uint32_t
   LAB_CHECK(cudaMalloc(&dcsecond, csecond.size() * 4));
   LAB_CHECK(cudaMemcpy(dcfirst, cfirst.data(), cfirst.size() * 4, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMemcpy(dcsecond, csecond.data(), csecond.size() * 4, cudaMemcpyHostToDevice));
-  listed<1><<<b.sms, 32 * kWarps>>>(b.times, dcfirst, dcsecond, dout, dtotals, kChecked);
+  listed<1><<<b.sms, 32 * kWarps>>>(b.times, dcfirst, dcsecond, dout, dtotals, dsunk, kChecked);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> got(groups * kChecked * kWindow);
   std::vector<int> totals(groups * kChecked);
@@ -118,11 +127,12 @@ void run(lab::Bench& b, const std::string& name, uint32_t one_in_first, uint32_t
               + " of " + std::to_string(groups * kChecked) + " totals differ");
   const double tokens_a_cta = static_cast<double>(live) / b.sms;
   const lab::Samples cycles =
-      b.variant([&] { listed<0><<<b.sms, 32 * kWarps>>>(b.times, dfirst, dsecond, dout, dtotals, kTimed); },
+      b.variant([&] { listed<0><<<b.sms, 32 * kWarps>>>(b.times, dfirst, dsecond, dout, dtotals, dsunk, kTimed); },
                 [&] { return b.span(kWarps) / tokens_a_cta; });
   b.record(name, "cycles a listed token a CTA", cycles);
   for (void* p : {static_cast<void*>(dfirst), static_cast<void*>(dsecond), static_cast<void*>(dout),
-                  static_cast<void*>(dtotals), static_cast<void*>(dcfirst), static_cast<void*>(dcsecond)})
+                  static_cast<void*>(dtotals), static_cast<void*>(dsunk), static_cast<void*>(dcfirst),
+                  static_cast<void*>(dcsecond)})
     LAB_CHECK(cudaFree(p));
 }
 

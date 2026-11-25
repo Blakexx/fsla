@@ -1,0 +1,167 @@
+// measure/lab/experiments/carry_fetch.cu -- QUESTION: what does a carry warp's own supply of a group's value lines
+// cost -- the LIBRARY's listing of a window's live tokens, and the copies of their 128-byte value lines by token index
+// straight into the steps' tiles in shared memory -- by how many tokens are live?
+// METHOD: this file compiles the library's device code (`carry/carry_list.cuh`, `carry/carry_values.cuh`). A CTA an SM
+// of 16 warps, each warp a group's windows: a lane loads its mask word a window ahead; the warp lists the window a
+// round of 32 places at a time and issues the round's copies, 8 instructions of 4 tokens, into its two step tiles of
+// the round, two rounds in flight. The values are one table of 256 windows every CTA reads (a unit's CTAs ask for the
+// same lines). Rows: 64 live tokens a window; every token live. A second kernel lands each of the first
+// window's first four rounds of every group and copies its tiles out: checked byte for byte against the host's, a
+// dead place's lines zero.
+// TIMELINE: no MMA. A window: the listing's running sums (5 shuffles), then a round -- the select (7 shuffles), and 8
+// asynchronous copies a lane, each behind a shuffle of the round's tokens; a commit; a wait for the round before.
+// One global load a lane a window, a window ahead. Live: the next window's word, the listing's four, the round's token.
+// see docs/internals/tools/lab.md#carry-fetch
+#include "lab.cuh"
+#include "carry/carry_list.cuh"
+#include "carry/carry_values.cuh"
+
+namespace carry_fetch {
+
+namespace carry = fsla::carry::detail;
+namespace ops = ::denseref::ops;
+
+constexpr int kWords = 32, kWarps = 16, kWindow = kWords * 32, kChannels = 64, kLine = 2 * kChannels;
+constexpr int kTile = carry::kValueTileBytes<kChannels>, kRound = 2 * kTile, kValueWindows = 256;
+//: the rounds of a group's first window the check keeps
+constexpr int kKept = 4;
+
+//: THE TIMED KERNEL: a group's windows, listed and fetched
+__global__ void __launch_bounds__(32 * kWarps, 1)
+    fetched(long long* times, const uint32_t* words, const uint8_t* values, int windows) {
+  __shared__ alignas(128) uint8_t tiles[kWarps * 2 * kRound];
+  const int warp = lab::warp_id(), lane = lab::lane_id();
+  const ops::SmemAddr mine = ops::smem_addr(tiles) + static_cast<uint32_t>(warp * 2 * kRound);
+  const size_t group = (static_cast<size_t>(blockIdx.x) * kWarps + warp) * static_cast<size_t>(windows);
+  uint32_t next = words[group * kWords + lane];
+  lab::WarpSpan clock;
+  clock.start();
+#pragma unroll 1
+  for (int w = 0; w < windows; ++w) {
+    const carry::Listing s = carry::listing_of<kWords>(next);
+    const size_t ahead = (group + static_cast<size_t>(w + 1 < windows ? w + 1 : w)) * kWords + lane;
+    next = words[ahead];
+    const uint8_t* const lines = values + static_cast<size_t>(w % kValueWindows) * kWindow * kLine;
+    //: a window's rounds: at least one, and on while any lane votes a place under the total; two rounds in flight
+    int round = 0;
+#pragma unroll 1
+    do {
+      const int token = carry::listed_token<kWords>(s, round);
+      carry::fetch_round<kChannels>(mine + static_cast<uint32_t>((round & 1) * kRound), lines, token);
+      ops::stage_wait<1>();
+      ++round;
+    } while (ops::lane_ballot(kWords * round < s.total) != 0u);
+  }
+  ops::stage_wait<0>();
+  clock.stop(times);
+}
+
+//: THE CHECKED KERNEL: a group's first window's first `kKept` rounds, each landed and its two tiles copied out -- a
+//: lane its 4 bytes of each 128
+__global__ void __launch_bounds__(32 * kWarps, 1)
+    checked(const uint32_t* words, const uint8_t* values, uint8_t* out) {
+  __shared__ alignas(128) uint8_t tiles[kWarps * kRound];
+  const int warp = lab::warp_id(), lane = lab::lane_id();
+  const size_t group = static_cast<size_t>(blockIdx.x) * kWarps + warp;
+  const uint8_t* const from = tiles + warp * kRound;
+  const carry::Listing s = carry::listing_of<kWords>(words[group * kWords + lane]);
+#pragma unroll 1
+  for (int round = 0; round < kKept; ++round) {
+    const int token = carry::listed_token<kWords>(s, round);
+    carry::fetch_round<kChannels>(ops::smem_addr(from), values, token);
+    ops::stage_wait<0>();
+    uint8_t* const to = out + (group * kKept + round) * kRound;
+#pragma unroll 1
+    for (int k = 0; k < kRound / 128; ++k) {
+      const int i = 128 * k + 4 * lane;
+      *reinterpret_cast<uint32_t*>(to + i) = *reinterpret_cast<const uint32_t*>(from + i);
+    }
+    __syncwarp();
+  }
+}
+
+inline bool live_at(uint64_t x, uint32_t one_in) {
+  uint64_t h = (x + 17) * 0x9e3779b97f4a7c15ull;
+  h ^= h >> 29;
+  h *= 0xbf58476d1ce4e5b9ull;
+  h ^= h >> 32;
+  return h % one_in == 0;
+}
+
+inline uint8_t value_byte(size_t i) { return static_cast<uint8_t>((i * 2654435761ull >> 13) | 1u); }
+
+}  // namespace carry_fetch
+
+void run(lab::Bench& b, const uint8_t* dvalues, const std::vector<uint8_t>& values, const std::string& name,
+         uint32_t one_in) {
+  using namespace carry_fetch;
+  constexpr int kTimed = 256;
+  const size_t groups = static_cast<size_t>(b.sms) * kWarps, count = groups * kTimed * kWords;
+  std::vector<uint32_t> words(count);
+  long long live = 0;
+  for (size_t i = 0; i < count; ++i) {
+    uint32_t a = 0;
+    for (int bit = 0; bit < 32; ++bit) a |= static_cast<uint32_t>(live_at(i * 32 + bit, one_in)) << bit;
+    words[i] = a;
+    live += __builtin_popcount(a);
+  }
+  //: the check's call is one window a group: its words are each group's first window's
+  std::vector<uint32_t> first(groups * kWords);
+  for (size_t g = 0; g < groups; ++g)
+    for (int i = 0; i < kWords; ++i) first[g * kWords + i] = words[g * kTimed * kWords + i];
+  uint32_t *dwords = nullptr, *dfirst = nullptr;
+  uint8_t* dout = nullptr;
+  const size_t out_bytes = groups * kKept * kRound;
+  LAB_CHECK(cudaMalloc(&dwords, count * 4));
+  LAB_CHECK(cudaMalloc(&dfirst, first.size() * 4));
+  LAB_CHECK(cudaMalloc(&dout, out_bytes));
+  LAB_CHECK(cudaMemcpy(dwords, words.data(), count * 4, cudaMemcpyHostToDevice));
+  LAB_CHECK(cudaMemcpy(dfirst, first.data(), first.size() * 4, cudaMemcpyHostToDevice));
+  LAB_CHECK(cudaMemset(dout, 0xff, out_bytes));
+  checked<<<b.sms, 32 * kWarps>>>(dfirst, dvalues, dout);
+  LAB_CHECK(cudaDeviceSynchronize());
+  std::vector<uint8_t> got(out_bytes);
+  LAB_CHECK(cudaMemcpy(got.data(), dout, out_bytes, cudaMemcpyDeviceToHost));
+  long long wrong = 0, checked = 0;
+  for (size_t g = 0; g < groups; ++g) {
+    std::vector<int> list;
+    for (int token = 0; token < kWindow; ++token)
+      if ((first[g * kWords + token / 32] >> (token % 32) & 1u) != 0) list.push_back(token);
+    for (int round = 0; round < kKept; ++round)
+      for (int place = 0; place < kWords; ++place) {
+        const int at = kWords * round + place;
+        const bool here = at < static_cast<int>(list.size());
+        for (int piece = 0; piece < kChannels / carry::kBrickChannels; ++piece) {
+          const size_t line = (g * kKept + round) * kRound + (place / carry::kStepTokens) * kTile
+                              + (piece * carry::kBrickPitch + place % carry::kStepTokens) * carry::kLineBytes;
+          for (int i = 0; i < carry::kLineBytes; ++i) {
+            const uint8_t want =
+                here ? values[static_cast<size_t>(list[at]) * kLine + piece * carry::kLineBytes + i] : 0;
+            wrong += got[line + i] != want;
+            ++checked;
+          }
+        }
+      }
+  }
+  b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(checked) + " tile bytes differ");
+  const double lines_a_cta = static_cast<double>(live) / b.sms;
+  const lab::Samples cycles =
+      b.variant([&] { fetched<<<b.sms, 32 * kWarps>>>(b.times, dwords, dvalues, kTimed); },
+                [&] { return b.span(kWarps) / lines_a_cta; });
+  b.record(name, "cycles a 128-byte row a CTA", cycles);
+  for (void* p : {static_cast<void*>(dwords), static_cast<void*>(dfirst), static_cast<void*>(dout)}) LAB_CHECK(cudaFree(p));
+}
+
+int main(int argc, char** argv) {
+  using namespace carry_fetch;
+  lab::Bench b(argc, argv);
+  if (b.expect_only) return 0;
+  std::vector<uint8_t> values(static_cast<size_t>(kValueWindows) * kWindow * kLine);
+  for (size_t i = 0; i < values.size(); ++i) values[i] = value_byte(i);
+  uint8_t* dvalues = nullptr;
+  LAB_CHECK(cudaMalloc(&dvalues, values.size()));
+  LAB_CHECK(cudaMemcpy(dvalues, values.data(), values.size(), cudaMemcpyHostToDevice));
+  run(b, dvalues, values, "a window of 64 live tokens: listed, and their value lines fetched", 16);
+  run(b, dvalues, values, "every token of a window live: listed, and their value lines fetched", 1);
+  return 0;
+}

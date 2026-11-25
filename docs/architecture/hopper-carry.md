@@ -103,8 +103,8 @@ prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-p
 
 The registers are the lab kernel's split; the kernel's own is the climb's, the listing included.
 
-A warpgroup's registers are set once, at its role's head; two counts in one warpgroup hang the CTA. Every barrier
-wait is a suspending poll. Shared memory, through the one layout ([`internals/common/smem_layout.md`](../internals/common/smem_layout.md)): a fold's step tiles of value lines, the lists, the two folds' images, the readout's coefficient
+A warpgroup's registers are set once, at its role's head; two counts in one warpgroup hang the CTA. A hand-off
+between roles is a named barrier, the producer arriving and the waiter syncing ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#handoff)). Shared memory, through the one layout ([`internals/common/smem_layout.md`](../internals/common/smem_layout.md)): a fold's step tiles of value lines, the lists, the two folds' images, the readout's coefficient
 tiles, the panels' ring.
 
 A STEP IS NEVER WIDER THAN 64 COLUMNS (R25). THE SKELETON'S fold is the group of four digits alone: a token's value
