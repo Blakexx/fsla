@@ -44,6 +44,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`carry_skeleton`](carry_skeleton.md) | experiment |
 | [`carry_list`](carry_list.md) | experiment |
 | [`carry_fetch`](carry_fetch.md) | experiment |
+| [`carry_supply`](carry_supply.md) | experiment |
 | [`step_swizzle`](step_swizzle.md) | experiment |
 | [`readout_role`](readout_role.md) | experiment |
 | [`value_cast`](value_cast.md) | experiment |

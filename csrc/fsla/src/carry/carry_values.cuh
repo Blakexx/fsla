@@ -25,10 +25,10 @@ constexpr int kRowBytes = 2 * CHANNELS;
 template <int CHANNELS>
 constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 
-//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group -- see docs/internals/carry/carry_values.md#fetch
+//: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, one committed group; a token's line is `stride` bytes on from the token before's -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
-                                            int token) {
+                                            std::int64_t stride, int token) {
   constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kPieceChannels;
   constexpr int kTokens = kLanes / kPieces;
   static_assert(kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
@@ -39,7 +39,7 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
     const int place = kTokens * i + which;
     const int from = ops::lane_broadcast(token, place);
     const ops::SmemAddr row = tiles + static_cast<ops::SmemAddr>(place * kRowBytes<CHANNELS>);
-    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * kRowBytes<CHANNELS>;
+    const std::uint8_t* const at = values + static_cast<std::int64_t>(from) * stride;
     const ops::SmemAddr to = ops::step_row_piece(row, static_cast<std::uint32_t>(piece));
     ops::stage_tile_if(to, at + piece * kPieceBytes, from >= 0);
   }

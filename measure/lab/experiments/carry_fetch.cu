@@ -52,7 +52,7 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
 #pragma unroll 1
     do {
       const int token = carry::listed_token<kWords>(s, round);
-      carry::fetch_round<kChannels>(mine + static_cast<uint32_t>((round & 1) * kRound), lines, token);
+      carry::fetch_round<kChannels>(mine + static_cast<uint32_t>((round & 1) * kRound), lines, kLine, token);
       ops::stage_wait<1>();
       ++round;
     } while (ops::lane_ballot(kWords * round < s.total) != 0u);
@@ -75,7 +75,7 @@ __global__ void __launch_bounds__(32 * kWarps, 1)
 #pragma unroll 1
   for (int round = 0; round < kKept; ++round) {
     const int token = carry::listed_token<kWords>(s, round);
-    carry::fetch_round<kChannels>(ops::smem_addr(from), values, token);
+    carry::fetch_round<kChannels>(ops::smem_addr(from), values, kLine, token);
     ops::stage_wait<0>();
     uint8_t* const to = out + (group * kKept + round) * kRound;
 #pragma unroll 1

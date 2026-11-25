@@ -15,7 +15,9 @@ No role calls it yet; the lab checks and times it with the listing
   bricks ([`../../lab/step_swizzle.md`](../../lab/step_swizzle.md)). A step of the round is 16
   consecutive rows (`round_step`), and THE TILE STARTS ON A 1,024-BYTE BOUNDARY, the condition of the step's operand
   ([`../common/atoms/tensor.md`](../common/atoms/tensor.md#rows)).
-- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, token)` copies a round of the listing into its 32 rows, 4
+- <a id="fetch"></a>`fetch_round<CHANNELS>(tiles, values, stride, token)` copies a round of the listing into its 32 rows -- a token's
+  line `stride` bytes on from the token before's, its first 128 bytes copied, so a CTA's slice of a wider value starts
+  `values` at its slice -- 4
   consecutive tokens an instruction, so every instruction moves 4 whole rows. A PLACE PAST THE LIST'S TOTAL COPIES
   NOTHING AND ITS ROW IS ZERO (`stage_tile_if`), so a short step needs no clearing and no branch, and a pad's value is
   finite whatever the tile held. THE ROUND IS ONE COMMITTED GROUP: its caller waits for it, and may hold a second

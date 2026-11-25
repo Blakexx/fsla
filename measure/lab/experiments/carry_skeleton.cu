@@ -1,12 +1,13 @@
 // measure/lab/experiments/carry_skeleton.cu -- QUESTION: does the LIBRARY's carry skeleton -- its three roles at their
-// registers, their hand-offs and their order of work, every component a stub -- run a call's windows to the end on
-// every multiprocessor, and what does a window of nothing but its hand-offs cost?
+// registers, their hand-offs and their order of work -- run a call's windows to the end on every multiprocessor, and
+// what does a window of nothing but its hand-offs cost? The call has no tokens and no levels: the folds' supply, the
+// one component built, lists nothing.
 // METHOD: this file compiles the library's device code (`carry/carry_kernel.cuh`) and puts a clock around `carry_cta`,
 // a CTA an SM of 512 threads; a call is 256 windows. Every warp adds its windows to its CTA's word when its role has
 // returned: a CTA that hangs or leaves early fails the check. ROWS: the kernel as the library compiles it (its tracer
 // nothing), and with every warp's hand-offs and windows stamped (warpline's stamps through the kernel's tracer), whose
 // timelines of two CTAs the record holds.
-// TIMELINE: no MMA and no memory traffic. A window is the folds' four arrivals behind the readout's reads of the
+// TIMELINE: no MMA and no memory traffic. A fold warp's empty listing a window (its running sums and a vote); a window is the folds' four arrivals behind the readout's reads of the
 // window before, the readout's two passes behind them and each panel's turn behind the drain's, the drain's four
 // turns behind the readout's: named barriers alone, the producer arriving and the waiter syncing. Live: nothing.
 // see docs/internals/tools/lab.md#carry-skeleton
@@ -30,6 +31,7 @@ struct Stamps {
   __device__ __forceinline__ void wait_end(int id) { row.stamp(warpline::kWaitEnd, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void arrive(int id) { row.stamp(warpline::kArrive, static_cast<uint32_t>(id)); }
   __device__ __forceinline__ void phase(int site) { row.mark(warpline::kPhaseBegin, kPhases + static_cast<uint32_t>(site)); }
+  __device__ __forceinline__ void round(int, int, int, int, int, uint32_t) {}
 };
 
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's
@@ -40,8 +42,12 @@ __global__ void __launch_bounds__(carry::kThreads, 1)
   tr.row.bind(trace);
   lab::WarpSpan clock;
   clock.start();
-  const carry::Args a{windows};
-  carry::carry_cta<Bt, kFoldRegs, kReadRegs, Stamps<TRACE != 0>>(a, tr);
+  //: a call of no tokens and no levels: every warp's lists are empty, so a window is its hand-offs
+  carry::Operands o{};
+  o.windows = windows;
+  o.ctas = 1;
+  o.line_bytes = 2 * carry::kChannels;
+  carry::carry_cta<Bt, kFoldRegs, kReadRegs, Stamps<TRACE != 0>>(o, tr);
   clock.stop(times);
   tr.row.close(0);
   if ((threadIdx.x & 31) == 0) atomicAdd(done + blockIdx.x, windows);
@@ -104,7 +110,7 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&done, static_cast<size_t>(b.sms) * sizeof(int)));
   LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
   LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
-  const std::string base = "the skeleton's roles, every component a stub";
+  const std::string base = "the carry on a call of no tokens, a window its hand-offs";
   run<0>(b, done, rows, base);
   run<1>(b, done, rows, base + ", every warp's timeline stamped");
   return 0;

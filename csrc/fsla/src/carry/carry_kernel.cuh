@@ -3,8 +3,16 @@
 
 #include <cstdint>
 
+#include "carry/carry_groups.cuh"
+#include "carry/carry_list.cuh"
+#include "carry/carry_values.cuh"
+#include "common/atoms/address.cuh"
 #include "common/atoms/barrier.cuh"
+#include "common/atoms/copy.cuh"
 #include "common/atoms/tensor.cuh"
+#include "common/atoms/warp.cuh"
+#include "common/smem_layout.cuh"
+#include "plan/levels.h"
 
 namespace fsla {
 namespace carry {
@@ -14,6 +22,7 @@ namespace ops = ::denseref::ops;
 
 //: FIXED by the tensor step: a warpgroup is four warps
 constexpr int kGroup = 128;
+constexpr int kGroupWarps = kGroup / ops::kBallotLanes;
 //: FIXED by the roles: two fold warpgroups, then the readout's, then the drain's warps -- see docs/internals/carry/carry_kernel.md#roles
 constexpr int kFolds = 2;
 constexpr int kReadAt = kFolds * kGroup, kDrainAt = kReadAt + kGroup, kThreads = kDrainAt + kGroup;
@@ -29,16 +38,35 @@ constexpr int kPanelReadyId = kTilesReadId + kChunks, kPanelFreedId = kPanelRead
 static_assert(kPanelFreedId + kPanels <= 16, "a CTA has sixteen named barriers");
 constexpr int kTilesThreads = (kFolds + 1) * kGroup, kPanelThreads = 2 * kGroup;
 
+//: FIXED by the tensor step's M: a CTA's value channels, a slice of a token's line -- see docs/internals/carry/carry_kernel.md#channels
+constexpr int kChannels = 64;
+//: FIXED by KERNEL_STANDARDS section 4: a fold warp holds two rounds of its rows in flight
+constexpr int kHeld = 2;
+constexpr int kWarpRows = kHeld * kRoundBytes<kChannels>;
+//: FIXED by the step's operand of rows: a tile of rows starts on a 1,024-byte boundary
+constexpr int kRowsAlign = 1024;
+constexpr int kRowsBytes = kFolds * kGroupWarps * kWarpRows + kRowsAlign;
+
+//: THE CTA'S SHARED MEMORY: the fold warps' rows -- see docs/internals/carry/carry_kernel.md#smem
+struct FoldRows;
+
+template <class Bt>
+using Smem = SmemLayout<Bt, 1, Fixed<FoldRows, std::uint8_t, kRowsBytes>>;
+
+//: A FOLD WARP'S ROWS, on their boundary
+template <class Bt>
+__device__ __forceinline__ ops::SmemAddr fold_rows(int fold, int warp) {
+  const ops::SmemAddr base = ops::smem_addr(Smem<Bt>::template get<FoldRows>());
+  const ops::SmemAddr first = (base + kRowsAlign - 1) & ~static_cast<ops::SmemAddr>(kRowsAlign - 1);
+  return first + static_cast<ops::SmemAddr>((fold * kGroupWarps + warp) * kWarpRows);
+}
+
 //: A ROLE'S REGISTERS A THREAD: `FOLD` and `READ` are the arm's, the drain's what the multiprocessor's file leaves -- see docs/internals/carry/carry_kernel.md#registers
 template <class Bt, int FOLD, int READ>
 struct Registers {
   static constexpr int kDrain =
       (Bt::traits.caps.regs_per_sm - kFolds * kGroup * FOLD - kGroup * READ) / kGroup;
   static_assert(kDrain >= 24 && kDrain % 8 == 0, "the drain's registers are what the others leave");
-};
-
-struct Args {
-  int windows;
 };
 
 //: THE PLACES A ROLE STAMPS beside its barriers -- see docs/internals/carry/carry_kernel.md#trace
@@ -53,6 +81,8 @@ struct NoTrace {
   __device__ __forceinline__ void arrive(int) {}
 
   __device__ __forceinline__ void phase(int) {}
+
+  __device__ __forceinline__ void round(int, int, int, int, int, ops::SmemAddr) {}
 };
 
 //: A HAND-OFF BETWEEN ROLES: the producer arrives, the waiter syncs -- see docs/internals/carry/carry_kernel.md#handoff
@@ -70,11 +100,31 @@ __device__ __forceinline__ void take(Tr& tr, int id, int threads) {
 }
 
 //: A FOLD WARPGROUP -- see docs/internals/carry/carry_kernel.md#fold
-template <class Tr>
-__device__ __forceinline__ void fold_role(const Args& a, Tr& tr) {
-  const int box = static_cast<int>(threadIdx.x) / kGroup;
+template <class Bt, class Tr>
+__device__ __forceinline__ void fold_role(const Operands& o, const plan::PrefillCarve& c,
+                                          const Place& p, Tr& tr) {
+  constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
+  static_assert(kWords == ops::kBallotLanes, "a lane a word of a window");
+  const int thread = static_cast<int>(threadIdx.x), fold = thread / kGroup;
+  const int warp = thread % kGroup / ops::kBallotLanes, lane = thread % ops::kBallotLanes;
+  //: THE WARP'S SHARE of its fold's sets and of their rounds -- see docs/internals/carry/carry_kernel.md#supply
+  const int set_bits = 31 - __clz(c.fold_sets);
+  const int shared_bits = set_bits < 2 ? set_bits : 2, mine_bits = set_bits - shared_bits;
+  const int first_set = warp & ((1 << shared_bits) - 1);
+  const int stride = kGroupWarps >> shared_bits, first_round = warp >> shared_bits;
+  //: the warp's sets a window, a value every lane holds: the loops below are bounded by it
+  const int mine = ops::lane_broadcast(fold < c.folds ? 1 << mine_bits : 0, 0);
+  //: the levels the write side lists, a value every lane holds: a set's word branches on it
+  const int listed = ops::lane_broadcast(listed_levels(c, false), 0);
+  const int items = o.windows * mine;
+
+  const std::uint8_t* const lines = o.values + p.slice * kRowBytes<kChannels>;
+  const ops::SmemAddr rows = fold_rows<Bt>(fold, warp);
+  std::uint32_t next = mine > 0 ? set_word<kWords>(o, c, p, fold, first_set, 0, lane, listed) : 0u;
+  int item = 0, issued = 0;
+
 #pragma unroll 1
-  for (int w = 0; w < a.windows; ++w) {
+  for (int w = 0; w < o.windows; ++w) {
     tr.phase(kSiteWindow);
 #pragma unroll
     for (int k = 0; k < kChunks; ++k) {
@@ -82,18 +132,46 @@ __device__ __forceinline__ void fold_role(const Args& a, Tr& tr) {
       //: NOT BUILT: tile group `k` of the state's image, published in the readout's orientation and fenced
       hand(tr, kTilesReadyId + k, kTilesThreads);
     }
-    //: NOT BUILT: the next window's lists; this window's value lines landed; a thread's entries expanded into its tile
-    take(tr, kFoldId + box, kGroup);
-    //: NOT BUILT: the groups' steps, behind their fence, committed and waited for; then the next window's copies issued
-    take(tr, kFoldId + box, kGroup);
+
+    const std::uint8_t* const from =
+        lines + (p.head * o.tokens + std::int64_t{w} * kWords * 32) * o.line_bytes;
+#pragma unroll 1
+    for (int i = 0; i < mine; ++i) {
+      const Listing s = listing_of<kWords>(next);
+      //: the item after's word, loaded a set ahead; the call's last item loads its own again
+      ++item;
+      const int after = item < items ? item : item - 1;
+      const int set_after = first_set + ((after & (mine - 1)) << shared_bits);
+      next = set_word<kWords>(o, c, p, fold, set_after, after >> mine_bits, lane, listed);
+      const int set = first_set + (i << shared_bits);
+      int round = first_round;
+      if (ops::lane_ballot(kWords * round < s.total) != 0u) {
+#pragma unroll 1
+        do {
+          const int token = listed_token<kWords>(s, round);
+          const int slot = issued & (kHeld - 1);
+          const ops::SmemAddr to = rows + static_cast<ops::SmemAddr>(slot * kRoundBytes<kChannels>);
+          fetch_round<kChannels>(to, from, o.line_bytes, token);
+          ops::stage_wait<kHeld - 1>();
+          tr.round(fold, set, w, round, token, to);
+          round += stride;
+          ++issued;
+        } while (ops::lane_ballot(kWords * round < s.total) != 0u);
+      }
+      //: NOT BUILT: the round's entries expanded into its coefficient tile, and its steps
+    }
+    take(tr, kFoldId + fold, kGroup);
+    //: NOT BUILT: the groups' steps, behind their fence, committed and waited for
+    take(tr, kFoldId + fold, kGroup);
   }
+  ops::stage_wait<0>();
 }
 
 //: THE READOUT'S WARPGROUP -- see docs/internals/carry/carry_kernel.md#readout
 template <class Tr>
-__device__ __forceinline__ void read_role(const Args& a, Tr& tr) {
+__device__ __forceinline__ void read_role(const Operands& o, Tr& tr) {
 #pragma unroll 1
-  for (int w = 0; w < a.windows; ++w) {
+  for (int w = 0; w < o.windows; ++w) {
     tr.phase(kSiteWindow);
 #pragma unroll
     for (int first = 0; first < kChunks; first += kPanels) {
@@ -118,9 +196,9 @@ __device__ __forceinline__ void read_role(const Args& a, Tr& tr) {
 
 //: A DRAIN WARP -- see docs/internals/carry/carry_kernel.md#drain
 template <class Tr>
-__device__ __forceinline__ void drain_role(const Args& a, Tr& tr) {
+__device__ __forceinline__ void drain_role(const Operands& o, Tr& tr) {
 #pragma unroll 1
-  for (int w = 0; w < a.windows; ++w) {
+  for (int w = 0; w < o.windows; ++w) {
     tr.phase(kSiteWindow);
 #pragma unroll
     for (int k = 0; k < kChunks; ++k) {
@@ -134,18 +212,21 @@ __device__ __forceinline__ void drain_role(const Args& a, Tr& tr) {
 
 //: A CTA: each role's whole body in its own branch, its registers set at the branch's head -- see docs/internals/carry/carry_kernel.md#the-cta
 template <class Bt, int FOLD, int READ, class Tr>
-__device__ __forceinline__ void carry_cta(const Args& a, Tr& tr) {
+__device__ __forceinline__ void carry_cta(const Operands& o, Tr& tr) {
   const int thread = static_cast<int>(threadIdx.x);
   tr.phase(kSiteEntry);
   if (thread < kReadAt) {
     ops::registers_up<FOLD>();
-    fold_role(a, tr);
+    const plan::PrefillCarve c = carve_of(o);
+    const int slices = o.line_bytes / kRowBytes<kChannels>;
+    const Place p = place_of(o, c, static_cast<std::int64_t>(blockIdx.x), slices);
+    fold_role<Bt>(o, c, p, tr);
   } else if (thread < kDrainAt) {
     ops::registers_down<READ>();
-    read_role(a, tr);
+    read_role(o, tr);
   } else {
     ops::registers_down<Registers<Bt, FOLD, READ>::kDrain>();
-    drain_role(a, tr);
+    drain_role(o, tr);
   }
   tr.phase(kSiteExit);
 }
