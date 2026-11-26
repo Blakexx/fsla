@@ -7,7 +7,7 @@
         "lo": 2,
         "hi": 128
       },
-      "declared_by": "docs/open-work.md row A-h: the value widths the carry's cells are drawn at, 2 up to 128 (the central carry cells' `dv` 32, 64 and 128); the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes the range when the carry is built; the padding seam (docs/internals/padding.md) serves the widths between"
+      "declared_by": "docs/open-work.md row A-h: the value widths the carry's cells are drawn at, 2 up to 128 (the central carry cells' `dv` 32, 64 and 128); the prefill launch function (row A-f: the carve, the window and the grid) fixes the range when the carry is built; the padding seam (docs/internals/padding.md) serves the widths between"
     },
     "decay": {
       "value": 0,
@@ -18,14 +18,14 @@
         "lo": 1,
         "hi": 2147483647
       },
-      "declared_by": "docs/open-work.md row A-h: the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes this range when the carry is built; until then it is declared wide; the range is the widest a token index of the kernels holds (int32)"
+      "declared_by": "docs/open-work.md row A-h: the prefill launch function (row A-f: the carve, the window and the grid) fixes this range when the carry is built; until then it is declared wide; the range is the widest a token index of the kernels holds (int32)"
     },
     "batch_heads": {
       "value": {
         "lo": 1,
         "hi": 536870911
       },
-      "declared_by": "docs/open-work.md row A-h: the prefill launch function (row A-f: the carve, the window, the grid and the segment length) fixes this range when the carry is built; until then it is declared wide; the range is declared as wide as decode's (docs/api.md#batch-heads)"
+      "declared_by": "docs/open-work.md row A-h: the prefill launch function (row A-f: the carve, the window and the grid) fixes this range when the carry is built; until then it is declared wide; the range is declared as wide as decode's (docs/api.md#batch-heads)"
     },
     "stateful": {
       "value": {

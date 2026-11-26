@@ -33,7 +33,9 @@ The memory limit is a PREFILL question -- what does one step of this call hold? 
 each from the function that sizes the real thing (the owner, 2026-11-26, on counting a step's inputs: "why wouldnt it? thats also part
 of the memory usage"; and on the form: "why isnt it like a prefill function that calls the actual same underlying thigns so drift is
 impossilbe"). A step's shape is `StepShape`: its levels' widths as log2, each side's masked levels (a bit a level) and batch-heads (the
-read side first), and the values' channels.
+read side first), and the values' channels. `step_shape(widths, levels, masked, heads, value_width)` is the one place a shape is
+made from a call's numbers and judged (`levels == 0` where a part is outside the op's: no level or more than four, a width that is no
+power of two from 2 to 256, no batch-head on a side, no value channel); the library's entries and `plan_tool --step` both call it.
 
 | part | function | what sizes the real thing |
 |---|---|---|

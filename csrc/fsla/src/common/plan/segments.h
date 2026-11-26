@@ -43,6 +43,26 @@ struct StepShape {
   int value_width;
 };
 
+//: A STEP'S SHAPE from a call's numbers (`levels` widths; two masks and two head counts, the read side first), the one place it is made; `levels == 0` where a part is outside the op's
+constexpr StepShape step_shape(const std::int64_t* widths, std::int64_t levels,
+                               const std::int64_t* masked, const std::int64_t* heads,
+                               std::int64_t value_width) {
+  StepShape s{};
+  if (levels < 1 || levels > kCarveMaxLevels || value_width < 1) return s;
+  for (int l = 0; l < levels; ++l) {
+    s.width_bits[l] = carve_width_bits(widths[l]);
+    if (s.width_bits[l] < 0) return StepShape{};
+  }
+  for (int side = 0; side < kCarveSides; ++side) {
+    if (heads[side] < 1) return StepShape{};
+    s.masked[side] = static_cast<int>(masked[side]);
+    s.heads[side] = heads[side];
+  }
+  s.value_width = static_cast<int>(value_width);
+  s.levels = static_cast<int>(levels);
+  return s;
+}
+
 //: THE PROJECTED OPERANDS of `windows` windows of `window` tokens, in bytes: each side's rows and scale a level, each masked level-side's mask words, and the write side's values and their scale
 constexpr std::int64_t operand_bytes(const StepShape& s, std::int64_t windows, int window) {
   std::int64_t bytes = 0;

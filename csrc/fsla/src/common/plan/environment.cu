@@ -156,26 +156,16 @@ int window_of_device(int64_t device) {
   return window;
 }
 
-//: A STEP'S SHAPE from an entry's arguments, a part outside the op's refused by name
-StepShape step_shape(const std::vector<int64_t>& widths, const std::vector<int64_t>& masked,
-                     const std::vector<int64_t>& heads, int64_t value_width) {
-  STD_TORCH_CHECK(!widths.empty() && widths.size() <= kCarveMaxLevels, "a step has 1 to ",
-                  kCarveMaxLevels, " levels");
+//: A STEP'S SHAPE from an entry's arguments (`plan::step_shape`), a part outside the op's refused
+StepShape shape_of(const std::vector<int64_t>& widths, const std::vector<int64_t>& masked,
+                   const std::vector<int64_t>& heads, int64_t value_width) {
   STD_TORCH_CHECK(masked.size() == kCarveSides && heads.size() == kCarveSides,
                   "a step has each side's masked levels and batch-heads");
-  STD_TORCH_CHECK(heads[0] >= 1 && heads[1] >= 1 && value_width >= 1,
-                  "a step has a batch-head or more a side and a value channel or more");
-  StepShape s{};
-  s.levels = static_cast<int>(widths.size());
-  for (int l = 0; l < s.levels; ++l) {
-    s.width_bits[l] = carve_width_bits(widths[static_cast<std::size_t>(l)]);
-    STD_TORCH_CHECK(s.width_bits[l] > 0, "a level's width is a power of two from 2 to 256");
-  }
-  for (int side = 0; side < kCarveSides; ++side) {
-    s.masked[side] = static_cast<int>(masked[static_cast<std::size_t>(side)]);
-    s.heads[side] = heads[static_cast<std::size_t>(side)];
-  }
-  s.value_width = static_cast<int>(value_width);
+  const StepShape s = step_shape(widths.data(), static_cast<int64_t>(widths.size()), masked.data(),
+                                 heads.data(), value_width);
+  STD_TORCH_CHECK(s.levels > 0, "a step has 1 to ", kCarveMaxLevels,
+                  " levels, each a power of two from 2 to 256 wide, a batch-head or more a side "
+                  "and a value channel or more");
   return s;
 }
 
@@ -197,7 +187,7 @@ std::vector<int64_t> fsla_step_bytes(std::vector<int64_t> widths, std::vector<in
                                      std::vector<int64_t> heads, int64_t value_width,
                                      int64_t tokens, int64_t device) {
   STD_TORCH_CHECK(tokens >= 1, "a step is a token or more");
-  const StepShape shape = step_shape(widths, masked, heads, value_width);
+  const StepShape shape = shape_of(widths, masked, heads, value_width);
   const int window = window_of_device(device);
   const int64_t windows = (tokens + window - 1) / window;
   return {workspace_bytes(shape, windows, window), operand_bytes(shape, windows, window)};
@@ -207,7 +197,7 @@ int64_t fsla_step_tokens(std::vector<int64_t> widths, std::vector<int64_t> maske
                          std::vector<int64_t> heads, int64_t value_width, int64_t limit,
                          int64_t device) {
   STD_TORCH_CHECK(limit >= 1, "a memory limit is a byte or more");
-  const StepShape shape = step_shape(widths, masked, heads, value_width);
+  const StepShape shape = shape_of(widths, masked, heads, value_width);
   const int window = window_of_device(device);
   const int64_t tokens = step_tokens_within(shape, limit, window);
   if (tokens == 0) {

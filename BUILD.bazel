@@ -11,7 +11,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "lab_run", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -157,10 +157,12 @@ fsla_wheels(
     library = ":library",
 )
 
-#: THE MEASUREMENTS (docs/measurement.md): fsla-devtools' build system running this checkout's declarations, and the
-#: store's own command line, each in the checkout on its own venv
-tool_run(
+#: THE MEASUREMENTS (docs/measurement.md): fsla-devtools' build system running this checkout's declarations, handed warpline's
+#: checker as the SASS gate's own target is (its SASS instrument reads the code with it), and the store's own command line, each
+#: in the checkout on its own venv
+lab_run(
     name = "measure",
+    library = "@warpline//:checker",
     module = "fsla_devtools.build",
 )
 

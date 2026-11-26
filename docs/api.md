@@ -113,8 +113,9 @@ is refused naming the facts. A call that carries a gradient is refused by name b
 
 **A walk is an action.** `write_listed_k` (decode's call) states whether the write side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses it from the declaration (a side whose activation has exact zeros is walked by its lists); a walk costs time and never the result. The prefill's call states no walk and no density fact: each side's per-level densities are the call's own input (§2.6), and the prefill's kernels derive their groups and the CTA's carve from them ([`internals/common/plan/prefill_launch.md`](internals/common/plan/prefill_launch.md)).
 
-**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment plan, the workspace's layout --
-is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
+**There is no plan object.** Everything a launch derives from the facts -- the carve, the window, the grid, the workspace's layout --
+is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; the segment plan is the
+planner's too, made once a call for the layer that supplies each segment to the op (§4.2); only `common/plan/` reads
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
 `descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
 and the workspace's builder (`fsla.ops.prefill`'s private builder) belong to the library's own code and tests, and are not on the top level. The

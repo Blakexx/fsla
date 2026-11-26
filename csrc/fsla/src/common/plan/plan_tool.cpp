@@ -260,22 +260,13 @@ void print_step(const std::string& text) {
     part.push_back(parse_widths(text.substr(at, end - at)));
     at = end + 1;
   }
-  const bool sized = part.size() == 6 && !part[0].empty() && part[0].size() <= kCarveMaxLevels
-                     && part[1].size() == kCarveSides && part[2].size() == kCarveSides;
-  if (!sized || part[3].size() != 1 || part[4].size() != 1 || part[5].size() != 1) {
-    refuse("--step takes widths/masked/heads/value_width/windows/window");
-  }
-  StepShape s{};
-  s.levels = static_cast<int>(part[0].size());
-  for (int l = 0; l < s.levels; ++l) {
-    s.width_bits[l] = carve_width_bits(part[0][static_cast<std::size_t>(l)]);
-    if (s.width_bits[l] < 0) refuse("--step: a level's width is a power of two from 2 to 256");
-  }
-  for (int side = 0; side < kCarveSides; ++side) {
-    s.masked[side] = static_cast<int>(part[1][static_cast<std::size_t>(side)]);
-    s.heads[side] = part[2][static_cast<std::size_t>(side)];
-  }
-  s.value_width = static_cast<int>(part[3][0]);
+  const bool sized = part.size() == 6 && part[1].size() == kCarveSides
+                     && part[2].size() == kCarveSides && part[3].size() == 1 && part[4].size() == 1
+                     && part[5].size() == 1;
+  if (!sized) refuse("--step takes widths/masked/heads/value_width/windows/window");
+  const StepShape s = step_shape(part[0].data(), static_cast<std::int64_t>(part[0].size()),
+                                 part[1].data(), part[2].data(), part[3][0]);
+  if (s.levels < 1) refuse("--step: a part of the shape is outside the op's");
   const int window = static_cast<int>(part[5][0]);
   std::printf("{\"workspace\":%lld,\"operands\":%lld}\n",
               static_cast<long long>(workspace_bytes(s, part[4][0], window)),

@@ -138,6 +138,15 @@ def _operands(context: SegmentContext, windows: int, window: int) -> int:
     return total
 
 
+@pytest.mark.parametrize("text", ["256,256/3,1/0,6/64/1/1024", "256,256/3,1/4,6/0/1/1024", "250/1,1/4,6/64/1/1024",
+                                  "2,2,2,2,2/0,0/1,1/64/1/1024"])
+def test_a_shape_outside_the_ops_is_refused_by_the_one_function_the_library_calls(text):
+    """`plan::step_shape` makes a step's shape for the tool and for the library's entries alike, so what the tool refuses the
+    library refuses: no batch-head, no value channel, a width that is no power of two, more levels than the op has."""
+    run = subprocess.run([str(TOOL), "--step", text], capture_output=True, text=True, timeout=60)
+    assert run.returncode != 0 and "outside the op's" in run.stderr
+
+
 def _routing(sparse: tuple[str | None, str | None]) -> fsla.Routing:
     return fsla.Routing([fsla.dense_routing(256) if duty is None else fsla.split_routing(256, sparse_duty=duty) for duty in sparse])
 

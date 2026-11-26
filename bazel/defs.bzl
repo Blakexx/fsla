@@ -649,7 +649,7 @@ def tool_run(**kwargs):
 
 _LAB_RUN = """\
 #!/bin/bash
-# a tool that reads compiled code through warpline, as a run target (bazel/defs.bzl's lab_run): `{tool}` in the checkout, on the checkout's own venv, handed
+# a tool that reads compiled code through warpline, as a run target (bazel/defs.bzl's lab_run): {tool} in the checkout, on the checkout's own venv, handed
 # the directory that holds the `warpline` package (the checker, and the library that reads the traced rows) by its resolved path (the runfiles' links do not
 # outlive the run)
 set -euo pipefail
@@ -668,7 +668,8 @@ exec "$venv/bin/python" {tool} "$@"
 def _lab_run_impl(ctx):
     package, files = warpline_root(ctx, ctx.attr.library)
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _LAB_RUN.format(tool = shell.quote(ctx.attr.tool), package = shell.quote(package.short_path)), is_executable = True)
+    what = "-m " + shell.quote(ctx.attr.module) if ctx.attr.module else shell.quote(ctx.attr.tool)
+    ctx.actions.write(script, _LAB_RUN.format(tool = what, package = shell.quote(package.short_path)), is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files))]
 
 lab_run = rule(
@@ -677,8 +678,9 @@ lab_run = rule(
     attrs = {
         "library": attr.label(mandatory = True, doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
+        "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, whose instruments read compiled code)"),
     },
-    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate) run by `bazel run` in the checkout, handed the directory of " +
+    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate; or `module`: the measurements) run by `bazel run` in the checkout, handed the directory of " +
           "warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 
