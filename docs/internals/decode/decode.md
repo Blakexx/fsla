@@ -742,7 +742,7 @@ this form, interleaved on one box):
 |---|---|---|---|
 | none (`true`) | 5 | 2 to 14 | 1.60 ms |
 | `ops::opaque(1) != 0` | 8 | 2 to 14 | not timed |
-| a `ops::once(true)` loop | 5 | not counted (the count reads innermost loops, and the one-trip loop is one) | not timed |
+| a `ops::once(true)` loop | 5 | 3 to 14 | not timed |
 | `ops::launch_known(p.atoms_per_bh)` | 0 | 1 | 0.77 ms |
 
 The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. What moves the loads in
