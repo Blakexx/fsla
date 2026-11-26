@@ -47,10 +47,8 @@ void launch_at(const Args& args, const Tensor& density, Tensor& workspace) {
 
 //: a level's digits as log2: a power of two from 2 to 256
 int width_bits_of(std::int64_t width) {
-  STD_TORCH_CHECK(width >= 2 && (width & (width - 1)) == 0 && width <= 256,
-                  "a level's width is a power of two from 2 to 256");
-  int bits = 0;
-  while ((std::int64_t{1} << bits) < width) ++bits;
+  const int bits = plan::carve_width_bits(width);
+  STD_TORCH_CHECK(bits > 0, "a level's width is a power of two from 2 to 256");
   return bits;
 }
 

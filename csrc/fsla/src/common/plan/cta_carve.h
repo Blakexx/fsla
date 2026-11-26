@@ -25,6 +25,14 @@ inline constexpr int kCarveMaxLevels = 4;
 //: a level is at most 256 digits wide: 8 bits
 inline constexpr int kCarveMaxWidthBits = 8;
 
+//: a level's digits as log2, -1 where they are no power of two from 2 to the widest
+constexpr int carve_width_bits(std::int64_t width) {
+  for (int bits = 1; bits <= kCarveMaxWidthBits; ++bits) {
+    if (width == std::int64_t{1} << bits) return bits;
+  }
+  return -1;
+}
+
 //: a CTA owns at most 512 leaves: 9 doublings from one digit a level
 inline constexpr int kCtaLeafBits = 9;
 inline constexpr int kCtaLeaves = 1 << kCtaLeafBits;

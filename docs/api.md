@@ -99,7 +99,7 @@ the no-fallback rule forbids.
 | device | CUDA | refused |
 | `d_v` | the intra's value width (`fsla.ops.intra.VALUE_WIDTH`), which the binary's carry arms at the depth must reach | refused |
 | widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`fsla.ops.intra.reads`) | refused |
-| `T` | any (a partial last window runs inside the kernels; the layer's segments are whole windows, §4.2) | — |
+| `T` | any (a partial last window runs inside the kernels; the layer's segments start on window boundaries, §4.2) | — |
 | `decay` | decode only (§3); outside the first paper's scope | refused |
 
 No activation reaches the op: it computes on the factors and the masks the producer made and is agnostic to what
@@ -113,7 +113,7 @@ is refused naming the facts. A call that carries a gradient is refused by name b
 
 **A walk is an action.** `write_listed_k` (decode's call) states whether the write side of level `k` is walked by its lists (1) or digit by digit (0). The producer's rule chooses it from the declaration (a side whose activation has exact zeros is walked by its lists); a walk costs time and never the result. The prefill's call states no walk and no density fact: each side's per-level densities are the call's own input (§2.6), and the prefill's kernels derive their groups and the CTA's carve from them ([`internals/common/plan/prefill_launch.md`](internals/common/plan/prefill_launch.md)).
 
-**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment length, the workspace's layout --
+**There is no plan object.** Everything derived from the facts -- the carve, the window, the grid, the segment plan, the workspace's layout --
 is computed by a family's ONE launch function in `common/plan/`, right before the launch, and never stored; only `common/plan/` reads
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
 `descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
@@ -553,13 +553,13 @@ environment the FlashAttention comparison arm runs in.
 ### 4.2 Segments: the layer bounds its own working set
 
 The op runs one segment and knows nothing of segmentation. The layer is handed a SEGMENT HANDLE (`segments=`, or `None`: one prefill is
-one op call), a function from the call's context to the MOST TOKENS a step may hold, and the plan of a call is made once, by one host
-function (the owner, 2026-11-26: "they all should return a token answer, the memory handle is like a function the user calls that returns a
+one op call), a function from the call's context to the MOST TOKENS a step may hold, and the plan of a call is made once, by the
+planner, which reads the card's window ([`internals/common/plan/segments.md`](internals/common/plan/segments.md); the owner, 2026-11-26: "they all should return a token answer, the memory handle is like a function the user calls that returns a
 fucntion they give us"; "i was thinking we could just call it once and it yields the whole exceution plan"):
 
 ```python
 fsla.max_tokens(8192)             # a handle: no step longer than 8,192 tokens
-fsla.max_memory(1 << 30)          # a handle: no step whose workspace, at its worst case, passes 1 GiB
+fsla.max_memory(1 << 30)          # a handle: no step whose workspace and inputs, at their worst case, pass 1 GiB
 fsla.segment_plan(length, maximum)   # the plan: its steps, and the tokens a step
 ```
 
@@ -573,17 +573,21 @@ fsla.segment_plan(length, maximum)   # the plan: its steps, and the tokens a ste
   included (the kernels run a partial last window). The last step of a longer one holds what is left.
 - **A maximum below one window is refused where the sequence must be split.** Tokens of one window interact, so a split sits on a
   window boundary and the least step of a split sequence is one window: 10,000 tokens under a maximum of 500, or 800 under 500, has no
-  plan, and `segment_plan` refuses it, naming the window (the owner, 2026-11-26: "sure we can not allow such a case").
-- **`max_memory` bounds the op's own workspace at its WORST CASE**, a function of the call's shape alone (its levels' digits, which
-  levels each side can hold a mask on, its batch-heads): the prepared masks of the most leaf groups the shape allows, a sixteenth of its
-  leaves a side ([`internals/common/plan/leaf_groups.md`](internals/common/plan/leaf_groups.md#most)), so the bound holds whatever the
-  data and no density is read. Where one window does not fit the limit, no segmentation serves it and the call is refused ("will refuse
-  if there is no form of segmentation that exists that can serve it"). The state and a step's own projected inputs are beside it.
+  plan, and the planner refuses it, naming the window (the owner, 2026-11-26: "sure we can not allow such a case").
+- **`max_memory` bounds what a step holds beside the state**: the op's workspace at its WORST CASE and the step's projected inputs
+  (the owner, 2026-11-26: "why wouldnt it? thats also part of the memory usage"). Both are functions of the call's shape alone (its
+  levels' digits, which levels each side can hold a mask on, its batch-heads, its value width), so the bound holds whatever the data
+  and no density is read: the workspace is the prepared masks of the most leaf groups the shape allows, a sixteenth of its leaves a
+  side ([`internals/common/plan/leaf_groups.md`](internals/common/plan/leaf_groups.md#most)), and the inputs are each side's rows and
+  scales, the masks and the values. One planner function sums them, each part from the function that sizes it
+  ([`internals/common/plan/segments.md`](internals/common/plan/segments.md#step)). Where one window does not fit the limit, no
+  segmentation serves it and the call is refused ("will refuse if there is no form of segmentation that exists that can serve it").
+  Outside the limit: the state, the same however the call is cut, and the call's output, assembled whole.
 - **A handle is any function of the context** (`fsla.segmentation.SegmentContext`: the levels' digits, each side's maskable levels
-  and batch-heads, the device, the window) that returns a token maximum, or `None` for no limit.
+  and batch-heads, the value width, the device) that returns a token maximum, or `None` for no limit. It is told no window and needs none.
 
 A call of the layer needs the producer and the prefill, which are not built on this line (`KernelNotBuilt`); the plan, the handles and
-their refusals are host functions and are (`tests/unit/test_segmentation.py`).
+their refusals are built (`tests/unit/test_segmentation.py`).
 
 ## 5. What is deliberately not here
 

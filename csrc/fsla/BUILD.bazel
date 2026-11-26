@@ -47,6 +47,7 @@ include_root(
         "src/common/plan/levels.h",
         "src/common/plan/mask_prepare_layout.h",
         "src/common/plan/rules.h",
+        "src/common/plan/segments.h",
     ],
     roots = [
         "src",

@@ -94,6 +94,13 @@ STABLE_TORCH_LIBRARY(fsla, m) {
   m.def("fsla_call_facts(str kernel) -> str");
   m.def("fsla_descriptor(str kernel, int device, int[] call) -> int[]");
   m.def("fsla_owed_kernels(str kernel, int device, int[] call) -> str");
+  m.def("fsla_segment_plan(int length, int maximum, int device) -> int[]");
+  m.def(
+      "fsla_step_bytes(int[] widths, int[] masked, int[] heads, int value_width, int tokens, "
+      "int device) -> int[]");
+  m.def(
+      "fsla_step_tokens(int[] widths, int[] masked, int[] heads, int value_width, int limit, "
+      "int device) -> int");
   m.def("fsla_decode_build_stamp() -> int");
   m.def("fsla_decode_launch(int[] descriptor, int device) -> int[]");
   m.def("fsla_decode_lattice(int[] widths) -> int[]");
@@ -110,6 +117,9 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("fsla_call_facts", TORCH_BOX(&fsla::plan::fsla_call_facts));
   m.impl("fsla_descriptor", TORCH_BOX(&fsla::plan::fsla_descriptor));
   m.impl("fsla_owed_kernels", TORCH_BOX(&fsla::plan::fsla_owed_kernels));
+  m.impl("fsla_segment_plan", TORCH_BOX(&fsla::plan::fsla_segment_plan));
+  m.impl("fsla_step_bytes", TORCH_BOX(&fsla::plan::fsla_step_bytes));
+  m.impl("fsla_step_tokens", TORCH_BOX(&fsla::plan::fsla_step_tokens));
   m.impl("fsla_decode_launch", TORCH_BOX(&fsla::decode::fsla_decode_launch));
   m.impl("fsla_decode_lattice", TORCH_BOX(&fsla::decode::fsla_decode_lattice));
   m.impl("fsla_decode_lattice_box", TORCH_BOX(&fsla::decode::fsla_decode_lattice_box));

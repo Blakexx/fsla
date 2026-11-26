@@ -62,6 +62,6 @@ other cases (a density of 128, four levels, two levels of 16 digits, one level o
 
 ## What is NOT here
 
-The segment length and the workspace beyond the prepared masks wait on the carry's kernel
-([what a CTA makes](../../../architecture/hopper-carry.md#what-a-cta-makes)) and stay owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The workspace's part for the prepared masks is built ([the prepared masks' layout](mask_prepare_layout.md)). The density input reaches the prefill's kernels once they are built: the call carries it
+The segment plan is built ([`segments.md`](segments.md)). The workspace beyond the prepared masks waits on the carry's kernel
+([what a CTA makes](../../../architecture/hopper-carry.md#what-a-cta-makes)) and stays owed ([`../../../open-work.md`](../../../open-work.md) rows A-f and A-g). The workspace's part for the prepared masks is built ([the prepared masks' layout](mask_prepare_layout.md)). The density input reaches the prefill's kernels once they are built: the call carries it
 (`fsla/engine/prefill_call.py`, [`../../engine/prefill_call.md`](../../engine/prefill_call.md)) and the mask-preparation pass is the one kernel that reads it. `fsla.ops.prefill` keeps refusing by name.

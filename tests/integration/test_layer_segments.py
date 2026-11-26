@@ -122,9 +122,9 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
 
 
 def test_a_maximum_below_one_window_is_refused_before_anything_runs_when_the_sequence_must_be_split():
-    """A split sits on a window boundary, so a sequence longer than a maximum that is below one window has no plan: the layer
+    """A split sits on a window boundary, so a sequence longer than a maximum that is below one window has no plan: the planner
     refuses it, naming the window, before the producer or any kernel. A sequence no longer than the maximum is one step."""
     layer = _layer(segments=fsla.max_tokens(window_of() - 1)).cuda().eval()
-    with torch.no_grad(), pytest.raises(ValueError, match=rf"the window is {window_of()} tokens"):
+    with torch.no_grad(), pytest.raises(RuntimeError, match=rf"the window is {window_of()} tokens"):
         layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
     assert layer._segment_plan(torch.empty(2, window_of() - 1, 64, device="cuda")).steps == 1

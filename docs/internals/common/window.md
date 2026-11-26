@@ -16,8 +16,8 @@ W is the matcher's: the prefill launch function derives it from the device's fac
 ruling (2026-11-23): "why? shouldnt the matchers be mapping the hardware facts etc to the arm with the correct window. where else would we derive window".
 It is no fact of the registry and no trait of a build. The device card reports it to Python (`device_card_op` in `fsla_api.cpp`,
 `fsla.ops.window.window_of`) from the same function over the card's compute capability, so a host shape and the launch it describes cannot disagree. Python
-reads no window to shape a call: the layer's segment length is an output of the prefill launch function, which is not written yet
-(`docs/open-work.md` row A-f).
+reads no window to shape a call: the layer's segment plan is the planner's (`segment_plan`, [`plan/segments.md`](plan/segments.md)), which reads the card's
+window through that same function.
 
 The hopper (sm_90a, compute capability 900) is 1,024, provisional until the sm_90 carry's design picks it. A call is a whole number of the device's
 windows (the intra's check), so a call is a multiple of 1,024 tokens until the intra takes a partial last window.

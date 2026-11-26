@@ -16,6 +16,12 @@ an owed descriptor, `built`, or `outside the contract`. The launch needs no cont
 `--lattice w1,w2,...` stands alone and needs no device: the lattice law's solve ([`lattice.md`](lattice.md)) of the level widths, printed as the same `lattice:` line (`k`, `m`, `bc`, `owners`, `spans`, `grids`) and a
 `constants:` line (`atom_leaves`, `cap_bc`, `max_span`, `max_span_k`). `tests/unit/test_lattice.py` ties its answers to the extension's (`fsla_decode_lattice`) and the atom's leaves it prints to Python's `MMA_K_QUANTUM`.
 
+`--segments length,maximum,window;...` stands alone and needs no device: the segment plan ([`segments.md`](segments.md)) of each call, a line of JSON
+(`steps`, `tokens`; `maximum` 0 is no limit, `steps` 0 a call with no plan).
+
+`--step widths/masked/heads/value_width/windows/window` stands alone and needs no device: a step's bytes ([`segments.md`](segments.md#step)) as one line of JSON,
+`workspace` and `operands`; the first three are comma lists (the levels' widths; each side's masked levels, a bit a level, and batch-heads, the read side first).
+
 `--cta-carve w,... --write-density n,... --read-density n,...` stands alone and needs no device: the carve ([`cta_carve.md`](cta_carve.md)) of levels of width `2^w` (log2 values) and each side's densities, one number a level, printed as one line of JSON:
 the carve's every field (`write_density` and `read_density` as clamped into 1..256, the derived groups, `write_order` and `read_order` (each side's loop order over the levels, outermost first), `carve_bits`, `cta_leaves`, `split_level`, `folds`, `fold_bits`, `fold_leaves`, the sets, `unit_bits` (lists a level) and `unit_ctas`), then the launch's `ctas_per_head` of those widths
 and `units_per_head`, their quotient (the carve holds no count of a head: the tool joins the two). The carve is total, so no density is refused. Each flag takes several calls, `;` between them, one line each.

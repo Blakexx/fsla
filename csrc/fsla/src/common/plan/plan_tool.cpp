@@ -16,6 +16,7 @@
 #include "plan/planner.h"
 #include "plan/prefill/contract.h"
 #include "plan/prefill_launch.h"
+#include "plan/segments.h"
 
 namespace {
 
@@ -231,6 +232,56 @@ std::vector<std::int64_t> parse_widths(const std::string& text) {
   return out;
 }
 
+//: THE SEGMENT PLANS of calls (`length,maximum,window`, `;` between them; maximum 0 is no limit): a line of JSON each, `steps` 0 where the call has no plan
+void print_segments(const std::string& text) {
+  std::size_t at = 0;
+  while (at <= text.size()) {
+    std::size_t end = text.find(';', at);
+    if (end == std::string::npos) end = text.size();
+    const std::vector<std::int64_t> v = parse_widths(text.substr(at, end - at));
+    if (v.size() != 3 || v[0] < 1 || v[1] < fsla::plan::kNoMaximum || v[2] < 1) {
+      refuse("--segments takes length,maximum,window (maximum 0: no limit)");
+    }
+    const auto plan = fsla::plan::segment_plan(v[0], v[1], static_cast<int>(v[2]));
+    std::printf("{\"steps\":%lld,\"tokens\":%lld}\n", static_cast<long long>(plan.steps),
+                static_cast<long long>(plan.tokens));
+    at = end + 1;
+  }
+}
+
+//: A STEP'S BYTES (`widths/masked/heads/value_width/windows/window`, comma lists, the read side first): its workspace and its operands, one JSON line
+void print_step(const std::string& text) {
+  using namespace fsla::plan;
+  std::vector<std::vector<std::int64_t>> part;
+  std::size_t at = 0;
+  while (at <= text.size()) {
+    std::size_t end = text.find('/', at);
+    if (end == std::string::npos) end = text.size();
+    part.push_back(parse_widths(text.substr(at, end - at)));
+    at = end + 1;
+  }
+  const bool sized = part.size() == 6 && !part[0].empty() && part[0].size() <= kCarveMaxLevels
+                     && part[1].size() == kCarveSides && part[2].size() == kCarveSides;
+  if (!sized || part[3].size() != 1 || part[4].size() != 1 || part[5].size() != 1) {
+    refuse("--step takes widths/masked/heads/value_width/windows/window");
+  }
+  StepShape s{};
+  s.levels = static_cast<int>(part[0].size());
+  for (int l = 0; l < s.levels; ++l) {
+    s.width_bits[l] = carve_width_bits(part[0][static_cast<std::size_t>(l)]);
+    if (s.width_bits[l] < 0) refuse("--step: a level's width is a power of two from 2 to 256");
+  }
+  for (int side = 0; side < kCarveSides; ++side) {
+    s.masked[side] = static_cast<int>(part[1][static_cast<std::size_t>(side)]);
+    s.heads[side] = part[2][static_cast<std::size_t>(side)];
+  }
+  s.value_width = static_cast<int>(part[3][0]);
+  const int window = static_cast<int>(part[5][0]);
+  std::printf("{\"workspace\":%lld,\"operands\":%lld}\n",
+              static_cast<long long>(workspace_bytes(s, part[4][0], window)),
+              static_cast<long long>(operand_bytes(s, part[4][0], window)));
+}
+
 //: THE CARVE of one call: the levels' width bits and each side's densities (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
 void print_cta_carve(const std::string& widths_text, const std::string& write_text,
                      const std::string& read_text) {
@@ -355,13 +406,17 @@ void print_entmax_kernel(const std::string& kernel, const Named& device_facts,
 
 int main(int argc, char** argv) {
   std::string kernel, device_text, call_text, model, grid_text, launch_text, lattice_text,
-      widths_text, cta_carve_text, write_density_text, read_density_text;
+      widths_text, cta_carve_text, write_density_text, read_density_text, segments_text, step_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--lattice") {
       lattice_text = argv[i + 1];
     } else if (flag == "--cta-carve") {
       cta_carve_text = argv[i + 1];
+    } else if (flag == "--segments") {
+      segments_text = argv[i + 1];
+    } else if (flag == "--step") {
+      step_text = argv[i + 1];
     } else if (flag == "--write-density") {
       write_density_text = argv[i + 1];
     } else if (flag == "--read-density") {
@@ -385,12 +440,26 @@ int main(int argc, char** argv) {
     }
   }
   const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
-  if (argc % 2 == 0 || (lattice_text.empty() && cta_carve_text.empty() && !launch_given)) {
+  const bool planned = !segments_text.empty() || !step_text.empty();
+  const bool alone = !lattice_text.empty() || !cta_carve_text.empty() || planned;
+  if (argc % 2 == 0 || (!alone && !launch_given)) {
     refuse(
         "usage: plan_tool --kernel decode|prefill|mask_prepare|<entmax kernel> --device name=v,... --call name=v,... [--model text] "
         "[--grid ...] (decode) | [--launch json] (prefill: the descriptor, or the launch's host half) | [--widths w,...] (an entmax kernel: the launch's "
         "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device) | "
-        "plan_tool --cta-carve width_bits,... --write-density w,... --read-density w,... (the carve of a call's widths and densities, no device)");
+        "plan_tool --cta-carve width_bits,... --write-density w,... --read-density w,... (the carve of a call's widths and densities, no device) | "
+        "plan_tool --segments length,maximum,window;... (the segment plan of a call, no device) | "
+        "plan_tool --step widths/masked/heads/value_width/windows/window (a step's bytes, no device)");
+  }
+  if (!step_text.empty()) {
+    if (argc != 3) refuse("--step stands alone");
+    print_step(step_text);
+    return 0;
+  }
+  if (!segments_text.empty()) {
+    if (argc != 3) refuse("--segments stands alone");
+    print_segments(segments_text);
+    return 0;
   }
   if (!cta_carve_text.empty()) {
     if (!lattice_text.empty() || !kernel.empty() || !device_text.empty() || !call_text.empty()) {

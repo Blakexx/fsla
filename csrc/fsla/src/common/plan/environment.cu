@@ -12,9 +12,11 @@
 #include "plan/environment.h"
 #include "plan/factor_backward/contract.h"
 #include "plan/factor_forward/contract.h"
+#include "plan/levels.h"
 #include "plan/mask_prepare/contract.h"
 #include "plan/plan_api.cuh"
 #include "plan/prefill/contract.h"
+#include "plan/segments.h"
 #include "plan/softmax_backward/contract.h"
 #include "plan/softmax_forward/contract.h"
 
@@ -144,6 +146,80 @@ template softmax_forward::Kernel::Descriptor descriptor_of<softmax_forward::Kern
 template softmax_backward::Kernel::Descriptor descriptor_of<softmax_backward::Kernel>(int,
                                                                                       const Named&);
 template mask_prepare::Kernel::Descriptor descriptor_of<mask_prepare::Kernel>(int, const Named&);
+
+namespace {
+
+//: the window of the card `device`, in tokens; a card with none is refused
+int window_of_device(int64_t device) {
+  const int window = window_of_cc(device_facts(static_cast<int>(device)).cc);
+  STD_TORCH_CHECK(window > 0, "no window is derived for this card");
+  return window;
+}
+
+//: A STEP'S SHAPE from an entry's arguments, a part outside the op's refused by name
+StepShape step_shape(const std::vector<int64_t>& widths, const std::vector<int64_t>& masked,
+                     const std::vector<int64_t>& heads, int64_t value_width) {
+  STD_TORCH_CHECK(!widths.empty() && widths.size() <= kCarveMaxLevels, "a step has 1 to ",
+                  kCarveMaxLevels, " levels");
+  STD_TORCH_CHECK(masked.size() == kCarveSides && heads.size() == kCarveSides,
+                  "a step has each side's masked levels and batch-heads");
+  STD_TORCH_CHECK(heads[0] >= 1 && heads[1] >= 1 && value_width >= 1,
+                  "a step has a batch-head or more a side and a value channel or more");
+  StepShape s{};
+  s.levels = static_cast<int>(widths.size());
+  for (int l = 0; l < s.levels; ++l) {
+    s.width_bits[l] = carve_width_bits(widths[static_cast<std::size_t>(l)]);
+    STD_TORCH_CHECK(s.width_bits[l] > 0, "a level's width is a power of two from 2 to 256");
+  }
+  for (int side = 0; side < kCarveSides; ++side) {
+    s.masked[side] = static_cast<int>(masked[static_cast<std::size_t>(side)]);
+    s.heads[side] = heads[static_cast<std::size_t>(side)];
+  }
+  s.value_width = static_cast<int>(value_width);
+  return s;
+}
+
+}  // namespace
+
+std::vector<int64_t> fsla_segment_plan(int64_t length, int64_t maximum, int64_t device) {
+  STD_TORCH_CHECK(length >= 1 && maximum >= kNoMaximum,
+                  "a segment plan takes a token or more and a maximum of 0 (no limit) or more");
+  const int window = window_of_device(device);
+  const SegmentPlan plan = segment_plan(length, maximum, window);
+  STD_TORCH_CHECK(plan.steps > 0, "a call of ", length, " tokens under a maximum of ", maximum,
+                  " must be split, and a split sits on a window boundary: the window is ", window,
+                  " tokens, so no step of at most ", maximum,
+                  " exists. The least maximum that serves a call longer than itself is ", window);
+  return {plan.steps, plan.tokens};
+}
+
+std::vector<int64_t> fsla_step_bytes(std::vector<int64_t> widths, std::vector<int64_t> masked,
+                                     std::vector<int64_t> heads, int64_t value_width,
+                                     int64_t tokens, int64_t device) {
+  STD_TORCH_CHECK(tokens >= 1, "a step is a token or more");
+  const StepShape shape = step_shape(widths, masked, heads, value_width);
+  const int window = window_of_device(device);
+  const int64_t windows = (tokens + window - 1) / window;
+  return {workspace_bytes(shape, windows, window), operand_bytes(shape, windows, window)};
+}
+
+int64_t fsla_step_tokens(std::vector<int64_t> widths, std::vector<int64_t> masked,
+                         std::vector<int64_t> heads, int64_t value_width, int64_t limit,
+                         int64_t device) {
+  STD_TORCH_CHECK(limit >= 1, "a memory limit is a byte or more");
+  const StepShape shape = step_shape(widths, masked, heads, value_width);
+  const int window = window_of_device(device);
+  const int64_t tokens = step_tokens_within(shape, limit, window);
+  if (tokens == 0) {
+    const int64_t held = workspace_bytes(shape, 1, window), given = operand_bytes(shape, 1, window);
+    std::string why = "no segmentation serves a memory limit of " + std::to_string(limit);
+    why += " bytes on this call: one window of " + std::to_string(window) + " tokens needs ";
+    why += std::to_string(held + given) + " bytes, the op's workspace at its worst case ";
+    why += std::to_string(held) + " and its projected inputs " + std::to_string(given);
+    STD_TORCH_CHECK(false, why);
+  }
+  return tokens;
+}
 
 std::string fsla_call_facts(std::string kernel) {
   return with_kernel(kernel, [](auto k) {

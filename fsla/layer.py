@@ -329,15 +329,13 @@ class FSLA(nn.Module):
         length = x.shape[1]
         if self.segments is None:
             return SegmentPlan(steps=1, tokens=length, length=length)
-        from fsla.ops.window import window_of
-
         levels = self.routing.topology.levels
         masked = tuple(sum(1 << l for l, level in enumerate(levels) if activation_properties(level.activation(duty)).exact_zeros)
                        for duty in ("read", "write"))
         batch_heads = x.shape[0] * self.num_heads
         context = SegmentContext(widths=tuple(self.routing.topology.widths), masked=masked, heads=(batch_heads, batch_heads),
-                                 device=x.device, window=window_of())
-        return segment_plan(length, self.segments(context), window=context.window)
+                                 value_width=self.head_v_dim, device=x.device)
+        return segment_plan(length, self.segments(context), device=x.device)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

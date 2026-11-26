@@ -8,6 +8,8 @@ this same function: EVERY FUNCTION OF THE RULE is annotated for the device (`FSL
 <a id="carve-density"></a>A LEVEL-SIDE'S DENSITY AS THE CARVE TAKES IT is `carve_density(masked, level, byte)`: the byte `b` as `b + 1` 256ths where the side has a mask on the level
 (`masked`, a bit a level), and the whole density, `kWholeDensity`, where it has none, whatever the byte -- the mask's absence is the dense flag. It is the one place that rule is
 written: the mask-preparation pass and the carry both call it, so both form the same carve and the same leaf groups.
+<a id="width-bits"></a>A LEVEL'S WIDTH IN BITS is `carve_width_bits(width)`, -1 where the width is no power of two from 2 to 256 (`kCarveMaxWidthBits`): the one statement of which widths a level has for a host entry
+that takes widths (the mask-preparation pass's entries and the planner's step entries, [`segments.md`](segments.md#entries)); host only, no device annotation.
 A density outside 1..256 is CLAMPED into 1..256, the range of 256ths (the carve of 0 and 300 is the carve of 1 and 256); `levels` is likewise held within 0..4 and a width within 0..8 bits (so that no input reaches outside the arrays).
 `units_per_head` is not the carve's: it is `ctas_per_head / unit_ctas`, and the head's count of CTAs is the launch's (the carve does not depend on it), so the tool joins them (`plan_tool --cta-carve`, [`plan_tool.md`](plan_tool.md)). The apportionment below is `cta_carve(width_bits, write_bits, read_bits, levels)`, which `prefill_carve` calls on each side's SIZES, a level's group from its clamped density as log2, before a set's least raises any.
 

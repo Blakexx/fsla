@@ -398,6 +398,7 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | the host order of a call | [`internals/engine/prefill_call.md`](internals/engine/prefill_call.md), [`internals/engine/decode_step.md`](internals/engine/decode_step.md) |
 | the digits and the row alignment law | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
 | decode: the step, the walk, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
+| the segments of a long prefill: the plan and the handles | [`internals/common/plan/segments.md`](internals/common/plan/segments.md), [`api.md`](api.md) section 4.2 |
 | the mask-preparation pass and its layout | [`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |
