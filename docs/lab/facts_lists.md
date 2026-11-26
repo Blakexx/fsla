@@ -19,8 +19,8 @@ counting sort of the window's live (token, digit) pairs by digit, in token order
 - a thread stores each of its live digits' ENTRY at its digit's offset, the count before its warp and the lanes
   before it in its warp's word. AN ENTRY IS THE TOKEN, with no byte: this
   lab's pass turns the mask around and reads no row, and writes its lists to global memory; it is not the design's
-  pass. In the design no pass hands the carry a list: a carry CTA lists its own groups' live tokens from the
-  prepared group words
+  pass. In the design no pass hands the carry a list: a carry CTA lists its own sets' live tokens from the
+  prepared leaf groups' lines
   (KERNEL_STANDARDS 29, item 5; [`mask-preparation.md`](../architecture/mask-preparation.md#no-gather-kernel)).
 Two forms find a token's live digits: the mask's 32 bytes as handed, or a value test of the token's 256 bytes read
 from the tile-major rows the bundle holds. A call is the window's COUNTS alone -- what sizes its lists before they

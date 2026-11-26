@@ -13,8 +13,7 @@ namespace detail {
 constexpr int kSides = plan::kLevelSides;
 constexpr int kLevels = plan::kCarveMaxLevels;
 
-//: FIXED by the carve's own order (`plan::PrefillCarve` and the prepared layout: the read side first): the write side among its two
-constexpr int kWriteSide = 1;
+using plan::kWriteSide;
 
 //: THE CALL'S OPERANDS a role reads its groups from -- see docs/internals/carry/carry_groups.md#operands
 struct Operands {
@@ -42,12 +41,8 @@ __device__ __forceinline__ plan::PrefillCarve carve_of(const Operands& o) {
   for (int l = 0; l < kLevels; ++l) {
     width[l] = o.width_bits[l];
     if (l < o.levels) {
-      //: a level-side with no mask is walked whole, whatever its density byte: the mask's absence is the dense flag
-      read[l] =
-          (o.masked[0] >> l & 1) != 0 ? static_cast<int>(o.density[l]) + 1 : plan::kWholeDensity;
-      write[l] = (o.masked[kWriteSide] >> l & 1) != 0
-                     ? static_cast<int>(o.density[o.levels + l]) + 1
-                     : plan::kWholeDensity;
+      read[l] = plan::carve_density(o.masked[0], l, o.density[l]);
+      write[l] = plan::carve_density(o.masked[kWriteSide], l, o.density[o.levels + l]);
     }
   }
   return plan::prefill_carve(o.levels, width, write, read);

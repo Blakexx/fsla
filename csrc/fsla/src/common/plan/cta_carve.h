@@ -31,6 +31,12 @@ inline constexpr int kCtaLeaves = 1 << kCtaLeafBits;
 
 //: a side's density, in 256ths of a level's digits, at which it is live on every digit of the level, and the density at least
 inline constexpr int kWholeDensity = 256;
+
+//: A LEVEL-SIDE'S DENSITY AS THE CARVE TAKES IT, in 256ths: its byte `b` is `b + 1`, and a level-side with no mask (`masked`, a bit a level) is whole whatever its byte -- the mask's absence is the dense flag
+FSLA_CARVE_FN constexpr int carve_density(int masked, int level, int byte) {
+  return (masked >> level & 1) != 0 ? byte + 1 : kWholeDensity;
+}
+
 inline constexpr int kLeastDensity = 1;
 
 //: the allowed group sizes are every power of two of digits from 1 to the widest level's 256, a size its log2 (those no larger than a level's width are allowed on it, so a level's own size always is)

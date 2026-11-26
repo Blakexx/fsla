@@ -111,6 +111,8 @@ forms its first again and stores nothing.
 
 ## Its time
 
-NOT MEASURED in this form. The form before it -- each level-side's group words and totals, word-major, and no leaf groups -- was measured on an H100 at each of its eight
-group sizes ([`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md)): 3.63 SM-cycles a token at a group of one digit, 2.67 to 3.85 at the others. The
-experiment is rewritten for this form (one listed level at each group size, two listed levels at groups of 4 digits, no listed level) and not run.
+NO RECORD in this form: the experiment ([`docs/lab/mask_prepare_time.md`](../../lab/mask_prepare_time.md)) is written for it (one masked level at each group size, two
+masked levels at groups of 4 digits, no masked level) and its recorded run is owed. A HELD SESSION'S READINGS, no record (H100, 132 CTAs, 2026-11-26): 14 to 23 SM-cycles a
+token with one masked level, 8 with none, 272 at 4,096 leaf groups -- each above what was predicted for it. WHAT IS KNOWN TO COST: a line is stored 16 bytes an instruction
+by 32 lanes into 32 different lines, so no instruction writes contiguous memory (the standards' rule for a warp's stores, [`KERNEL_STANDARDS` section 20](../../KERNEL_STANDARDS.md#s20));
+each CTA derives the call's carve itself; and the walk of a leaf group's words is one dependent trip after another. None of the three is fixed.

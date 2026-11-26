@@ -71,7 +71,7 @@ prepared leaf groups' lines ([the mask-preparation pass](mask-preparation.md#the
   written (a bit a token, the side's masked levels' group words ANDed, the call's own tokens in it), so a fold reads ONE LINE A SET and counts it inline, a popcount
   and a running sum over the window's words. One form
   whether a side has one masked level or several (Blake, 2026-11-25: "the counts are useless anyway? We need to find a
-  way to do the counting inline anwyay"). NOT BUILT. MEASURED of a lab's read-side listing, its counts handed to it
+  way to do the counting inline anwyay"). BUILT for the fold; the readout's listing from the read side's lines is NOT BUILT. MEASURED of a lab's read-side listing, its counts handed to it
   ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (k) and (l)): 107 to 238 cycles a window a CTA over the same
   row without it at one CTA, 614 to 700 at 132, the growth at the full grid not explained; an inline scan of four digits
   at once on drain warps of 56 registers did not fit.

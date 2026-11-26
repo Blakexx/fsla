@@ -35,7 +35,7 @@ class PrefillOperands:
 
 @dataclass(frozen=True, slots=True)
 class PrefillWorkspace:
-    """What the prefill call derives: ``buffer``, the one byte buffer the call's private workspace builder (:func:`fsla.ops.prefill._build_workspace`) laid out: the mask-preparation pass's prepared group words and totals and whatever the carry's kernel needs.
+    """What the prefill call derives: ``buffer``, the one byte buffer the call's private workspace builder (:func:`fsla.ops.prefill._build_workspace`) laid out: the mask-preparation pass's prepared leaf groups' mask words and counts and whatever the carry's kernel needs.
     The state is not in it: the state is the op's own argument, in and out."""
 
     buffer: torch.Tensor | None

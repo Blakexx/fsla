@@ -1,7 +1,7 @@
 # The mask-preparation pass
 
-STATUS: THE PASS IS REWRITTEN to write each side's LEAF GROUPS' mask words and counts and nothing else; it compiles for the hopper card and HAS NOT RUN in this form.
-The form before it (each level-side's group words and totals) was exact against its host reference on an H100 and measured at each of its group sizes. This page holds
+STATUS: THE PASS WRITES each side's LEAF GROUPS' mask words and counts and nothing else. It is exact against its host reference on an H100 (`tests/oracle/test_mask_prepare.py`);
+its time has no record yet ([`lab/mask_prepare_time.md`](../lab/mask_prepare_time.md)). This page holds
 the pass alone: there is no gather kernel ([No gather kernel](#no-gather-kernel)). A form a lab measured on an H100 quotes the lab's page; a form RULED and not yet built
 says so.
 

@@ -173,10 +173,8 @@ __device__ __noinline__ void hand_leaf_groups(const Args& a, const std::uint8_t*
     width[l] = a.width_bits[l];
     if (l < a.levels) {
       //: A LEVEL-SIDE WITH NO MASK IS WALKED WHOLE, whatever its density byte: the mask's absence is the dense flag, and the workspace is sized by it
-      read[l] =
-          (a.masked[0] >> l & 1) != 0 ? static_cast<int>(density[l]) + 1 : plan::kWholeDensity;
-      write[l] = (a.masked[1] >> l & 1) != 0 ? static_cast<int>(density[a.levels + l]) + 1
-                                             : plan::kWholeDensity;
+      read[l] = plan::carve_density(a.masked[0], l, density[l]);
+      write[l] = plan::carve_density(a.masked[plan::kWriteSide], l, density[a.levels + l]);
     }
   }
   const plan::PrefillCarve c = plan::prefill_carve(a.levels, width, write, read);

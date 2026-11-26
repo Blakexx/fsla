@@ -10,8 +10,9 @@
 
 namespace fsla::plan {
 
-//: FIXED by the op's mathematics: a call has a read side and a write side, the read side first
+//: FIXED by the op's mathematics: a call has a read side and a write side, the read side first, so the write side is the second
 inline constexpr int kCarveSides = 2;
+inline constexpr int kWriteSide = kCarveSides - 1;
 inline constexpr int kLevelSides = kCarveSides * kCarveMaxLevels;
 
 //: A LEAF GROUP'S LINE of a window of `words` mask words, in bytes: a word a mask word, a bit a token of the window
@@ -33,8 +34,7 @@ struct PreparedLayout {
   std::int64_t bytes;
 };
 
-//: THE PLACE of a call's leaf groups' masks, sized at the most leaf groups its shape allows: `width_bits` of its `levels` levels, and of each side `masked` (a bit a level it has a mask on)
-//: and `heads` (batch times the side's heads), over `windows` windows of `words` mask words
+//: THE PLACE of a call's leaf groups' masks, sized at the most leaf groups its shape allows: `width_bits` of its `levels` levels, and of each side `masked` (a bit a level it has a mask on) and `heads`, over `windows` windows of `words` mask words -- see docs/internals/common/plan/mask_prepare_layout.md
 constexpr PreparedLayout prepared_layout(int levels, const int* width_bits, const int* masked,
                                          const std::int64_t* heads, std::int64_t windows,
                                          int words) {

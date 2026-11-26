@@ -25,5 +25,5 @@ def test_every_implemented_op_has_a_definition_and_the_reverse():
 def test_the_mask_preparation_pass_registers_its_two_ops_with_their_schemas():
     #: a schema written over several string literals is one string
     text = re.sub(r'"\s*\n\s*"', "", API.read_text())
-    assert '"mask_prepare(Tensor[] masks, int[] slots, int[] widths, Tensor density, Tensor(a!) workspace) -> ()");' in text
-    assert 'm.def("mask_prepare_bytes(int[] width_bits, int[] heads, int words, int device) -> int");' in text
+    assert '"mask_prepare(Tensor[] masks, int[] slots, int[] widths, int[] heads, int tokens, Tensor density, Tensor(a!) workspace) -> ()");' in text
+    assert '"mask_prepare_bytes(int[] widths, int[] masked, int[] heads, int tokens, int device) -> int");' in text
