@@ -6,7 +6,7 @@ NEVER READS A DENSITY ([`prefill_launch.md`](prefill_launch.md)): the workspace 
 ([`leaf_groups.md`](leaf_groups.md#most)), and the kernels, which derive the call's carve, use the front of it.
 
 Symbols: a window is the card's (`window_of_cc`, [`levels.md`](levels.md); tokens), `words` mask words of 32 tokens, an ARGUMENT of every function here and a template
-constant of the kernel (the hopper card's window is `kHopperWindow` = 1,024 tokens, 32 words); a SIDE is 0, the read side, or 1, the write side (`kCarveSides` = 2); a
+constant of the kernel (the hopper card's window is `kHopperWindow` = 1,024 tokens, 32 words); a SIDE is 0, the read side, or 1, the write side (`kCarveSides` = 2, `kWriteSide` the second); a
 side has `1 << bits` LEAF GROUPS, `bits` the carve's ([`leaf_groups.md`](leaf_groups.md#order)), in the order that page gives; `most` is the most `bits` the call's shape
 allows the side (`leaf_group_bits_most`).
 

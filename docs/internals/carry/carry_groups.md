@@ -6,16 +6,16 @@ Mirrors `csrc/fsla/src/carry/carry_groups.cuh`: what a role of the carry
 - <a id="operands"></a>`Operands`: the call as the kernel is handed it -- the workspace and each side's place in it for
   the leaf groups' lines and counts (`prepared[plan::kCarveSides]`, the read side first,
   [`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md)), the density bytes, and which level-sides have a mask
-  (`masked[plan::kCarveSides]`, a bit a level a side; `kWriteSide` = 1 is the write side's index). It holds also the values (a head's tokens' lines one
+  (`masked[plan::kCarveSides]`, a bit a level a side; `plan::kWriteSide` is the write side's index). It holds also the values (a head's tokens' lines one
   after another, `line_bytes` a token), each level-side's rows (`rows`, in the bundle's slot order, the read side's four then the write side's; a head's tiles one
   after another: [`carry_coefs.md`](carry_coefs.md#rows)), the call's tokens a head, the leaf CTAs a head (`ctas`, the host's count), the levels' width bits, and the
   mask's windows. It holds no mask: the carry reads the pass's lines alone. The host fills it from the call's shape and reads no density.
 - <a id="carve"></a>`carve_of(operands)`: THE KERNEL DERIVES THE CARVE, from the densities as the mask-preparation
   pass reads them (a byte `b` is `b + 1` 256ths), by the one rule the planner states
   ([`../common/plan/cta_carve.md`](../common/plan/cta_carve.md)); that rule is written so that a kernel's thread can
-  run it in registers ([`../common/plan/cta_carve.md#register-shaped`](../common/plan/cta_carve.md#register-shaped)). A level-side with no mask (its bit in `masked`
-  is clear) is taken at the whole density, `plan::kWholeDensity`, whatever its density byte: the mask's absence is the dense flag, and the pass forms the carve the
-  same way, so the carve's groups, the leaf groups and their count are the same in the pass and in the carry
+  run it in registers ([`../common/plan/cta_carve.md#register-shaped`](../common/plan/cta_carve.md#register-shaped)). A level-side's density is `plan::carve_density(masked, level, byte)`
+  ([`../common/plan/cta_carve.md#carve-density`](../common/plan/cta_carve.md#carve-density)): the whole density where its bit in `masked` is clear, whatever its byte. The pass calls the same function,
+  so the carve's groups, the leaf groups and their count are the same in the pass and in the carry
   ([`../common/plan/mask_prepare_layout.md`](../common/plan/mask_prepare_layout.md#what-a-leaf-group-holds)).
 - <a id="lines"></a>`leaf_lines<WORDS>(operands, side, bits, head)`: A SIDE'S LEAF GROUPS' LINES of a batch-head, from its first window: leaf group `leaf`'s
   line is `WORDS` words from `leaf * WORDS`, a word a mask word of the window and a bit a token, set where the token is one of the call's own and live in the leaf
