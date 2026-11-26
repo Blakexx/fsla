@@ -8,8 +8,8 @@ what the call derives. Everything derived from the descriptor's facts is the pla
 never stored (docs/internals/common/plan/decode_launch.md).
 
 A LAUNCH is one internal bundle per kernel family (:class:`DecodeLaunch`, :class:`PrefillLaunch`), built by the call's launch step (``build_launch`` in ``fsla/engine/decode_step.py``, ``launch`` in ``fsla/engine/prefill_call.py``) and passed to
-the launcher, never public. It holds three named parts: the ``descriptor``, the ``operands`` (the data -- rows, scales, values, masks, dials, the
-state and its page table -- what the oracle also takes) and the ``workspace`` (what the call derives for itself). The public op takes the operands as arguments;
+the launcher, never public. It holds three named parts: the ``descriptor``, the ``operands`` (the data -- rows, scales, values, masks, dials and the
+state -- what the oracle also takes) and the ``workspace`` (what the call derives for itself). The public op takes the operands as arguments;
 the launch is how they and the call's descriptor travel inside it (docs/internals/engine/engine.md).
 """
 from __future__ import annotations

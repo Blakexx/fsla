@@ -79,7 +79,7 @@ def build_launch(descriptor, routes, values, masks, decay, plane, held):
 
 
 def step(launch):
-    """THE STEP: fold, expand, walk and the residency verdict, in one launch."""
+    """THE STEP: fold, expand, walk and readout, in one launch."""
     with span("step"):
         return bodies.step(launch)
 

@@ -729,7 +729,7 @@ term whose innermost level is sparse, keeps a leaf a lane group
 
 <a id="atom-loads"></a>THE LOADS' PLACE IS STATED, NOT LEFT TO THE ASSEMBLER. An atom's update is bound by memory latency: a warp walks its atoms one
 after another, and each waits one round trip for its leaves. The four leaves' sixteen loads are therefore issued together, ahead of the first
-leaf's arithmetic, and each leaf's loads sit under `resident` (`p.atoms_per_bh != 0`), a predicate only the launch knows. With the loads
+leaf's arithmetic, and each leaf's loads sit under `resident` (`ops::launch_known(p.atoms_per_bh)`, [warp.md](../common/atoms/warp.md#launch-known)), a predicate only the launch knows. With the loads
 unconditional the assembler moves two leaves' loads below the first leaf's shuffles, which wait on the first leaf's data, and the atom pays
 two round trips in a row: measured on an H100 at 65,536 leaves a head and 64 heads, 1.60 ms a step against 0.77 with the loads together.
 A fence whose input is a constant (`ops::opaque(1)`, a `ops::once(true)` loop) does not hold them: the assembler sees through it.

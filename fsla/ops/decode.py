@@ -74,7 +74,7 @@ def ledger_warps() -> int:
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
-    """Bind the phase ledger the next steps book into, ``[ctas, ledger_warps(), 5]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next steps book into, ``[ctas, ledger_warps(), len(LEDGER_PHASES)]`` int64 cycles, or ``None``."""
     extension().fsla_decode_ledger_bind(ledger)
 
 

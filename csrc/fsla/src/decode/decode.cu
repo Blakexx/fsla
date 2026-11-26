@@ -298,6 +298,8 @@ decode_step_kernel(DecodeParams p) {
       if (writes && p.write_atoms) {
         //: THE WRITE TERM BY WHOLE ATOMS: a warp a unit, its lane groups a quarter of the atom's leaves each, every -- see docs/internals/decode/decode.md#whole-atoms
         constexpr int kRows = kAtomLeaves / Lanes::kGroups;
+        //: a plane has pages: true of every launch, and only the launch knows it
+        const bool resident = denseref::ops::launch_known(p.atoms_per_bh);
         const Unit<D> u = resolve_write_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist,
                                                        dlist, fld, local);
         if (u.cw == 0u) continue;
@@ -309,8 +311,7 @@ decode_step_kernel(DecodeParams p) {
           //: ONE ADDRESS AN ATOM IS HELD: the group's first leaf's; a later leaf's is a constant past it
           const LeafAddr first = leaf_addr<DV>(page, grp, ch0);
           LeafSlice slice[kRows];
-          //: EVERY LEAF'S LOADS ARE ISSUED HERE, before any leaf's arithmetic: each sits under a predicate only the launch knows (a plane has pages), so the assembler keeps it in place -- see docs/internals/decode/decode.md#atom-loads
-          const bool resident = p.atoms_per_bh != 0;
+          //: every leaf's loads are issued here, under `resident`, before any leaf's arithmetic -- see docs/internals/decode/decode.md#atom-loads
 #pragma unroll
           for (int k = 0; k < kRows; ++k) {
             slice[k] =
@@ -356,19 +357,18 @@ decode_step_kernel(DecodeParams p) {
 
         const int leaf = u.base + t;
         const int atom = leaf >> kAtomShift;
-        const bool present = live;
-        const float ar = (present && in_r) ? u.ar * sa_r[off_last] : 0.0f;
+        const float ar = (live && in_r) ? u.ar * sa_r[off_last] : 0.0f;
         //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE; a WRITTEN one both planes -- see docs/internals/decode/decode.md#int8-state
         uint8_t* const page = plane + atom * static_cast<int64_t>(Page::kBytes);
         const LeafAddr addr = leaf_addr<DV>(page, leaf & kAtomMask, ch0);
-        const LeafSlice slice = load_leaf(addr, present, writes, row_lead);
+        const LeafSlice slice = load_leaf(addr, live, writes, row_lead);
         if (!writes) {
           read_hi(slice, ar, row_lead, acc, acc_m);
         } else {
           //: UPDATE FIRST, THEN READ THE STORED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
-          const float aw = present ? u.aw * sa_w[off_last] : 0.0f;
+          const float aw = live ? u.aw * sa_w[off_last] : 0.0f;
           const float rate = DECAY ? u.rate * sd[off_last] : 0.0f;
-          deposit_leaf<DECAY>(slice, addr, ar, aw, rate, share, v_tok, ch0, present, row_lead,
+          deposit_leaf<DECAY>(slice, addr, ar, aw, rate, share, v_tok, ch0, live, row_lead,
                               exp_lead, acc, acc_m);
         }
       }

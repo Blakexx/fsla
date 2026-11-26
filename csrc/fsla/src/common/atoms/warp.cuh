@@ -33,6 +33,9 @@ __device__ __forceinline__ int once(bool cond) {
   return n;
 }
 
+//: A CONDITION ONLY THE LAUNCH KNOWS: true of every lawful launch, read from a parameter, so the assembler cannot fold it and loads under it keep their place -- see docs/internals/common/atoms/warp.md#launch-known
+__device__ __forceinline__ bool launch_known(int positive) { return positive != 0; }
+
 //: A VALUE MADE OPAQUE at this use: what derives from it is formed here -- see docs/internals/common/atoms/warp.md#opaque
 __device__ __forceinline__ int opaque(int v) {
   int out;

@@ -29,6 +29,14 @@ Mirrors `csrc/fsla/src/common/atoms/warp.cuh`, a concern of the baseline operati
   parity passed through it makes each offset formed where it is used, a few instructions there, instead of a register
   held across the window.
 
+- <a id="launch-known"></a>`launch_known(positive)`: a condition true of every lawful launch that only the launch knows -- a parameter that is
+  never 0, compared with 0. LOADS UNDER IT KEEP THEIR PLACE. The assembler moves an unconditional load to shorten the life of what it
+  loads, and `opaque` and `once` do not stop it when their input is a constant: the constant reaches the assembler through the register
+  and it folds the fence away (measured on the decode step's whole-atom walk, H100: with four leaves' loads unconditional, under
+  `opaque(1) != 0` or inside a `once(true)` loop, two leaves' loads were issued after the first leaf's shuffles and a step of 65,536
+  leaves a head took 1.60 ms; under `launch_known` all sixteen are issued together and it takes 0.77,
+  [decode.md](../../decode/decode.md#atom-loads)). It orders the ISSUE of loads; the data dependency is still what orders a value's use.
+
 - <a id="once"></a>`once(cond)`: `for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
   warp-uniform value would be if-converted and every warp would issue the body predicated off (KERNEL_STANDARDS §20).
   The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips. Never

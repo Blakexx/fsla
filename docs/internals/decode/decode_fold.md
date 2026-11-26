@@ -25,8 +25,7 @@ step took the step to 24.6 µs on 2 launches. Each step of that is the same argu
 work was always the consuming CTA's own business, and every boundary drawn around it cost
 more than the work.
 
-So the fold is a HEADER. The step folds its own operands, the growth probe folds its own
-write side, and between them there is no launch, no plane and no ordering constraint.
+So the fold is a HEADER. The step folds its own operands: there is no launch, no plane and no ordering constraint before it.
 
 ## <a id="the-identity"></a>2. The fold is an address, not a copy pass
 

@@ -13,7 +13,7 @@ the leaf, so a leaf is `DV / 8` lanes and a 32-channel exponent group is four of
 words (8 bytes), its group's exponent byte and the leaf's mass word
 ([`../common/state_page.md#geometry`](../common/state_page.md#geometry)). `load_leaf` reads
 them into a `LeafSlice`: the lo words only when the leaf is written, the mass only on the
-leaf's first lane, and zeros for a lane group with no leaf this trip (`present` false).
+leaf's first lane, and zeros for a lane group with no leaf this trip (`live` false).
 
 `leaf_after<DV>(first, rows)` is the address of the leaf `rows` leaves past `first` in the same
 page and lane: every word is a constant past `first`'s (`rows * DV * 2` bytes of hi, `rows * DV`
@@ -37,7 +37,7 @@ the next step reads exactly what this one wrote and a step's `y` never sees prec
 group's exponent is shared by its four lanes, so a group rounds to one quantum; the mass rides the leaf's
 first lane in fp32.
 
-The store predicate is the caller's: `present` for the lane-group form, and for the atom form
-`present` AND the leaf's write bit, since a leaf outside the write support belongs to a read
+The store predicate is the caller's: `live` for the lane-group form, and for the atom form
+`live` AND the leaf's write bit, since a leaf outside the write support belongs to a read
 term. A leaf that does not store also takes no clock (its rate is passed as zero), which keeps
 `0 * log1pf(-1)` out of the arithmetic.

@@ -3,9 +3,7 @@
 """THE STATE IS AN INTERFACE WITH ONE IMPLEMENTATION, the dense state, pinned without a kernel or a device.
 
 `fsla.FSLAState` is the interface a caller and the ops hold; `fsla.dense_state()` builds the one implementation,
-`fsla._state.DenseState` (docs/internals/state.md#interface). The dense state takes no argument: the three the
-old constructor had (`strategy`, `pool_slack`, `backing`) were paging's or had one built value, and `fsla.state`
-is gone.
+`fsla._state.DenseState` (docs/internals/state.md#interface). The dense state takes no argument.
 """
 from __future__ import annotations
 
@@ -42,19 +40,11 @@ def test_the_public_constructor_takes_no_argument():
     assert "dense_state" in fsla.__all__ and "FSLAState" in fsla.__all__
 
 
-def test_the_old_constructor_is_gone_without_an_alias():
-    assert not hasattr(fsla, "state") and "state" not in fsla.__all__
-    import fsla._state as module
-
-    assert not hasattr(module, "state")
-
-
-@pytest.mark.parametrize("keyword", ["backing", "pool_slack", "strategy"])
-def test_the_old_arguments_are_refused_as_unknown_keywords(keyword):
+def test_the_dense_state_takes_no_keyword_either():
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        fsla.dense_state(**{keyword: "dense"})
+        fsla.dense_state(backing="dense")
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        DenseState(**{keyword: "dense"})
+        DenseState(backing="dense")
 
 
 def test_a_fresh_state_is_unbound_and_carries_nothing():
