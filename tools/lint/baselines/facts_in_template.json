@@ -285,36 +285,6 @@
   },
   {
    "path": "csrc/fsla/src/decode/decode.cuh",
-   "message": "kQueueDecided is the number 32: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "2a31be3acef57e48",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/decode/decode.cuh",
-   "message": "kQueueFollower is the number 16: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "c43942545eaff2e0",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/decode/decode.cuh",
-   "message": "kQueueNeedy is the number 4: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "2f4b87ce11fd3b6d",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/decode/decode.cuh",
-   "message": "kQueueOwner is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "6b11f9e9fcb324c7",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/decode/decode.cuh",
-   "message": "kQueueReady is the number 2: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
-   "line_sha256": "9f951cefafc1fc5e",
-   "count": 1
-  },
-  {
-   "path": "csrc/fsla/src/decode/decode.cuh",
    "message": "kUnitBlockWarps is the number 8: derive it from the build's facts, or state in its block why the card does not decide it (FIXED ...)",
    "line_sha256": "466a3d1297c38416",
    "count": 1

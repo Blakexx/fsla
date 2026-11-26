@@ -15,8 +15,7 @@ is the value stream in the internal format -- a ``Values`` bundle, ``Values.from
 -- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero; a level-side's mask may be absent, ``None``, which means dense),
 ``density`` is how full each level is (a uint8 ``[2, D]``, 255 for every digit live, built by ``fsla.masks_and_density`` or ``fsla.density_of_masks``; it chooses how the work is laid out and changes no result),
 the ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial. The call carries only its inputs: it builds its own descriptor
-and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``, whose growth verdict the
-caller owns (``fsla.growth_pending``, ``fsla.admit_growth``; ``fsla.pool_headroom`` and ``fsla.refill_pool`` at leisure). The layer DECLARES its routing -- the levels, each carrying its own
+and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``. The layer DECLARES its routing -- the levels, each carrying its own
 width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
 bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
@@ -34,23 +33,21 @@ and the op decides how it runs, inside the call.
 | Group | Names | Stability |
 |---|---|---|
 | op | `prefill`, `decode_step_gated` | STABLE, semver-major to break |
-| decode growth | `growth_pending`, `admit_growth`, `pool_headroom`, `refill_pool` | STABLE |
 | feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `FSLA`, `LayerContinuation` | STABLE |
-| state | `state()`, `FSLAState` | STABLE |
+| state | `dense_state()`, `FSLAState` | STABLE |
 | configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting` | STABLE |
 | oracle | `naive_fsla` | STABLE signature, EXACT semantics — it is the definition |
 """
 
 __version__ = "0.1.0.dev0"
 
-#: `fsla.state` is the CONSTRUCTOR and nothing else. The class and the function live
-#: in the private `fsla._state` (renamed from `fsla/state.py`, whose public
-#: name the function was shadowing): docs/internals/state.md
-from fsla._state import FSLAState, state
-from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending, pool_headroom, refill_pool
+#: `fsla.dense_state` is the CONSTRUCTOR and nothing else. The interface and the function live
+#: in the private `fsla._state` (docs/internals/state.md)
+from fsla._state import FSLAState, dense_state
+from fsla.engine.decode_step import decode_step_gated
 from fsla.interface import prefill
 from fsla.layer import FSLA, LayerContinuation
 from fsla.ops.naive import naive_fsla
@@ -77,14 +74,10 @@ from fsla.routing.types import (
 from fsla.values import Values
 
 __all__ = [
-    # the ops — the prefill, the single autograd boundary (fsla/interface.py), and the decode step with its growth verdict
+    # the ops — the prefill, the single autograd boundary (fsla/interface.py), and the decode step
     # (fsla/engine/decode_step.py)
     "prefill",
     "decode_step_gated",
-    "growth_pending",
-    "admit_growth",
-    "pool_headroom",
-    "refill_pool",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Masks",
@@ -105,7 +98,7 @@ __all__ = [
     "FSLA",
     "LayerContinuation",
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
-    "state",
+    "dense_state",
     "FSLAState",
     # oracle — ships in the wheel; it is the definition (docs/testing.md)
     "naive_fsla",

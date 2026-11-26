@@ -152,7 +152,7 @@ because the dead ones contribute exactly nothing. Fetching a coarser rectangle
 than the true support costs bandwidth and never correctness. This is what makes
 the engine's granularity coarsening legal:
 
-- The **paging atom** is one `MMA_K_QUANTUM`-leaf granule, not the true support
+- The **page atom** is one `MMA_K_QUANTUM`-leaf granule, not the true support
   ([`paging/paging.md`](../internals/paging/paging.md), the atom re-key);
 - **Window unions** over the carry kernel's window tokens are an OR, deliberately
   coarser than the per-token AND.
@@ -169,12 +169,11 @@ untouched row is an identity RMW: read, multiply by exactly `1.0`, add exactly
 
 Two live uses:
 
-- **Paging is bitwise invisible.** An atom with no write candidate has no
-  committed slot (`kAbsentPage = -1`); it reads as zeros and is never stored
-  back, which is what makes the paged path *bitwise* equal to the unpaged one
-  rather than approximately equal
-  ([`paging/paging.md`](../internals/paging/paging.md); gated by
-`tests/integration/test_decode_paging.py`).
+- **A skipped block is bitwise invisible.** An atom no write reaches holds
+  zeros on the dense plane, and a block with no write is skipped and leaves its atoms
+  holding what they carried in, which is what makes the skip *bitwise* equal to
+  running the block rather than approximately equal
+  ([`engine/rules.md#run-table`](../internals/engine/rules.md#run-table)).
 - **Untouched rows do not walk.** A row whose writes are all zero is left
   bit-identical, so repeated store/reload cannot drift it. This is what separates
   the *store* count from the *visit* count in the state-precision analysis: the

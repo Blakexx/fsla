@@ -178,7 +178,7 @@ def test_the_depth_is_one_number_the_launch_header_and_the_width_facts_agree_on(
     assert _plan(None, f"d_v=64,levels={constant + 1},decay=0").returncode == 1
 
 
-#: the supported B times H of a decode step (docs/api.md#batch-heads): the largest its work queue of 4 B H + 2 int32 counters indexes
+#: the supported B times H of a decode step (docs/api.md#batch-heads): within what its work queue of 3 B H + 2 int32 counters indexes
 BATCH_HEADS_MAX = 536870911
 
 

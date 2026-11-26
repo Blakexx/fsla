@@ -38,9 +38,9 @@ same week.
   ([`facts/liveness_contract.md`](../internals/facts/liveness_contract.md)). An
   amplitude comparison in a kernel is only ever a *performance* skip on a value where
   inclusion is a no-op, and none decides membership.
-- **Paging is bitwise invisible**, not approximately equivalent. An absent atom
-  reads as zeros and is never stored back
-  ([`paging/paging.md`](../internals/paging/paging.md)).
+- **Skipping an untouched block is bitwise invisible**, not approximately equivalent. An atom no call writes
+  holds the zero state, and a skipped block leaves its atoms holding what they carried in
+  ([`engine/rules.md#run-table`](../internals/engine/rules.md#run-table)).
 
 **Numerics**
 
@@ -67,7 +67,7 @@ same week.
   have self-caught is an author failure.
 
 **Known non-guarantees, stated so nobody assumes them.** A stateful call is **not**
-transactional, in either backing: a continuation advances its carried state IN PLACE,
+transactional: a continuation advances its carried state IN PLACE,
 so a launch that fails part way through leaves that state part advanced rather than as
 it was. Recovering a pre-call state is `clone()` before the call
 ([`../internals/state.md`](../internals/state.md#the-dense-continuation)). The output
@@ -123,7 +123,7 @@ uncertainty in the performance record.
 
 **To change a guarantee**: stop and ask. Bring the list of everything that rests
 on it — for the self-masking theorem that is three separate design conclusions
-and a paging invariant. Expect the answer to be no.
+and the identity-store invariant. Expect the answer to be no.
 
 **To change a choice**: bring a measurement that clears the bar the existing
 number cleared.

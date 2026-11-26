@@ -3,7 +3,7 @@
 Mirrors `csrc/fsla/src/common/torch_seam.cuh`.
 
 Every kernel's host code reaches torch through this header and nothing else, and this header reaches torch through the
-**stable ABI** only: `torch/csrc/stable/` (the `Tensor`, `DeviceGuard`, `empty`, `to`, `zero_` and `from_blob` of
+**stable ABI** only: `torch/csrc/stable/` (the `Tensor`, `DeviceGuard`, `empty`, `to` and `zero_` of
 torch's C shim) and `torch/headeronly/` (the dtype enum, `IntHeaderOnlyArrayRef`, `STD_TORCH_CHECK`). No TU under
 `csrc/fsla` includes `torch/extension.h`, ATen or c10, so the binary does not depend on torch's C++ ABI and one build
 loads under every torch from `tools/build_flags.py`'s `TORCH_MIN` on ([`../fsla_api.md`](../fsla_api.md),

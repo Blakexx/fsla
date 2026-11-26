@@ -10,8 +10,8 @@ descriptor's `B` tuple); `DV` the value width; `cols = DV + 1` the page's logica
 (the mass column); an **atom** is 16 consecutive canonical leaves, the page granule.
 
 **THE ONE ADMISSION LAW.** K50: "prefill and decode share ONE admission law" -- there is no
-decode-only shape, tolerance or topology. `FSLAState._kernel_entry` (prefill) and
-`FSLAState._decode_entry` (decode) both build the call's presented format through the SAME
+decode-only shape, tolerance or topology. `DenseState._kernel_entry` (prefill) and
+`DenseState._decode_entry` (decode) both build the call's presented format through the SAME
 free function, `_format_of`, and check it against the bound one through the SAME method,
 `StateFormat.check` -- never a second comparison written at either seam. That is asserted
 here structurally (each entry point's own source names both calls), which is what makes a
@@ -31,7 +31,7 @@ from fsla._state import (
     PAGE_RECTANGLE_BITS,
     SPLIT_PLANE_DTYPE,
     STATE_DTYPE,
-    FSLAState,
+    DenseState,
     StateFormat,
     _format_of,
 )
@@ -152,8 +152,8 @@ def test_kernel_entry_and_decode_entry_both_call_the_one_admission_law():
     `StateFormat.check` is the ONE comparison -- both entry points name both, so a future
     decode-only shape/tolerance path (K50: refused by name) shows up as a source diff here
     rather than as a silent divergence between the two seams."""
-    prefill_src = inspect.getsource(FSLAState._kernel_entry)
-    decode_src = inspect.getsource(FSLAState._decode_entry)
+    prefill_src = inspect.getsource(DenseState._kernel_entry)
+    decode_src = inspect.getsource(DenseState._decode_entry)
     for src, name in ((prefill_src, "_kernel_entry"), (decode_src, "_decode_entry")):
         assert "_format_of(" in src, f"{name} does not build its presented format via _format_of"
         assert ".check(" in src or "self._format = presented" in src, (
@@ -242,14 +242,3 @@ def test_prefill_descriptor_states_the_call_kind_the_extents_and_the_declaration
     assert (first["levels"], first["width_bits_1"], first["width_bits_2"], first["width_bits_3"]) == (2, 5, 4, 0), "24 pads to 32"
     assert not any(name.startswith(("read_listed_", "write_listed_", "read_density_", "write_density_")) for name in first), "the prefill's facts are the widths and levels: the host never reads the densities"
     assert (second["decay"], second["stateful"], second["d_v"]) == (1, 0, 48)
-
-
-def test_a_state_owns_its_backing_paged_by_default_and_dense_when_made_so():
-    """THE STATE'S BACKING is chosen when the state is made (R13: the state owns its format), the one way to choose it: paged by default, one
-    dense plane for `backing="dense"`; anything else is refused by name."""
-    import fsla
-
-    assert fsla.state()._wants_pages() is True
-    assert fsla.state(backing="dense")._wants_pages() is False
-    with pytest.raises(ValueError, match="backing must be 'paged' or 'dense'"):
-        fsla.state(backing="sparse")

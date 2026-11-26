@@ -28,6 +28,14 @@ __device__ __forceinline__ LeafAddr leaf_addr(uint8_t* page, int row, int ch0) {
                   reinterpret_cast<uint32_t*>(page + Page::kMass) + row};
 }
 
+//: The leaf `rows` leaves past `a` in the same page and lane: every word a constant past `a`'s, so no second address is held.
+template <int DV>
+__device__ __forceinline__ LeafAddr leaf_after(const LeafAddr& a, int rows) {
+  using Page = state_page::Blocks<DV>;
+  return LeafAddr{a.hi + rows * DV * 2, a.lo + rows * DV, a.ex + rows * Page::kGroups,
+                  a.mass + rows};
+}
+
 //: The slice as loaded: an absent atom's leaf reads as zeros; `full` loads the lo plane too; the mass is the row's first lane's.
 struct LeafSlice {
   uint4 hi;
@@ -55,17 +63,6 @@ __device__ __forceinline__ void read_hi(const LeafSlice& s, float ar, bool row_l
   for (int c = 0; c < 8; ++c) {
     acc[c] =
         fmaf(static_cast<float>(state_page::hi8(s.hi, c)), ar * state_page::pow2(s.e + 8), acc[c]);
-  }
-  if (row_lead) acc_m += ar * s.mass;
-}
-
-//: A written leaf re-read without depositing (a gated replay's third outcome): its full stored value.
-__device__ __forceinline__ void read_full(const LeafSlice& s, float ar, bool row_lead,
-                                          float (&acc)[8], float& acc_m) {
-#pragma unroll
-  for (int c = 0; c < 8; ++c) {
-    acc[c] = fmaf(static_cast<float>(state_page::mantissa8(s.hi, s.lo, c)),
-                  ar * state_page::pow2(s.e), acc[c]);
   }
   if (row_lead) acc_m += ar * s.mass;
 }

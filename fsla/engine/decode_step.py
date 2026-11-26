@@ -1,12 +1,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The decode step's one plain function, its fast-fail, and the host-side verdict entries.
+"""The decode step's one plain function and its fast-fail.
 
 :func:`decode_step_gated` runs the steps below in order: :func:`decode_call`, :func:`descriptor_of`, :func:`scratch`, :func:`backing`,
-:func:`state_plane`, :func:`build_launch`, :func:`step`. The host-visible verdict is not a step: :func:`growth_pending` reads it at the
-caller's own synchronization (the layer's one-token ``forward``, or a serving loop replaying a captured step). A GROWTH STEP IS NOT A
-SECOND RECIPE -- it is the same call run twice around an admission, which is what makes the replay self-correcting and the step capturable
-(docs/internals/engine/decode_step.md).
+:func:`state_plane`, :func:`build_launch`, :func:`step`. It has no host participation, which is what makes it capturable in a CUDA
+graph (docs/internals/engine/decode_step.md).
 """
 from __future__ import annotations
 
@@ -51,22 +49,18 @@ def scratch(state, descriptor, BH, device):
 
 
 def backing(state, routes):
-    """The state's own plane, table and slack pool, over the residency it already has.
-
-    A step admits from its POOL inside the kernel and from nowhere else: the admission a verdict the pool could not cover calls for is
-    :func:`admit_growth`, between two runs of the step, because that verdict is a host fact.
-    """
+    """The state's own plane, which the kernel updates in place."""
     with span("backing"):
         return state._decode_entry(routes)
 
 
-def state_plane(values, descriptor, decay, carried_plane, page_table):
+def state_plane(values, descriptor, decay, carried_plane):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
     with span("state_plane"):
-        return bodies.step_plane(values.v, descriptor, decay, carried_plane, page_table)
+        return bodies.step_plane(values.v, descriptor, decay, carried_plane)
 
 
-def build_launch(descriptor, routes, values, masks, decay, plane, page_table, held, pool):
+def build_launch(descriptor, routes, values, masks, decay, plane, held):
     """The launch's three named parts, over the bundles' OWN rows, scales, values and masks: the descriptor, the
     operands and the workspace (:class:`fsla.engine.plan.DecodeLaunch`).
 
@@ -80,25 +74,14 @@ def build_launch(descriptor, routes, values, masks, decay, plane, page_table, he
                 read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
                 write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
                 dials=bodies.leaf_rate_dials_for(decay, descriptor, values.device), v=values.v, v_scale=values.scale,
-                state_plane=plane, page_table=page_table),
-            workspace=DecodeWorkspace(scratch=held, pool=pool))
+                state_plane=plane),
+            workspace=DecodeWorkspace(scratch=held))
 
 
 def step(launch):
     """THE STEP: fold, expand, walk and the residency verdict, in one launch."""
     with span("step"):
         return bodies.step(launch)
-
-
-def write_atom_bitmap(masks, descriptor):
-    """The gate's INDEPENDENT second derivation of the write-atom set.
-
-    No call invokes it: the shipped path derives this set on the device, inside the step, and a gate that compared the step against itself
-    would prove nothing (docs/internals/decode/decode.md#second-derivation).
-    """
-    widths = bodies.decode_launch(descriptor).widths
-    live = tuple(masks.bits("write", level, 1, width) for level, width in enumerate(widths))
-    return bodies._write_atom_bitmap(live, widths, bodies.lattice_of(widths))
 
 
 def validate_context(routes, values, masks, state, decay) -> None:
@@ -134,63 +117,14 @@ def _scratch_of(state):
 def decode_step_gated(routes, values, masks, state, *, decay=None):
     """ONE decode step with NO host participation -- the decode entry, and CAPTURE-SAFE.
 
-    Each batch-head is gated on the step's own device-side answer, so one whose write set
-    it can neither address nor admit is a NO-OP that leaves the state exactly as the
-    admission needs it. The CALLER owns the verdict, at whatever synchronization it
-    already has (the layer's one-token ``forward`` does exactly this):
-
-        y, state = decode_step_gated(...)   # or graph.replay()
-        if growth_pending(state):
-            admit_growth(state)
-            y, state = decode_step_gated(...)   # or graph.replay(); now it runs
-
-    A REPLAY IS SELF-CORRECTING because the verdict is re-derived inside it: after the
-    admission it is 0 and the same captured graph performs the step. It advances every
-    sequence EXACTLY ONCE across the pair -- a batch-head that ran in the first run
-    carries a done flag into the second and re-reads for its `y` without depositing again
-    (docs/internals/decode/decode.md#done-flags).
-
-    The step builds its own descriptor from its arguments (:func:`descriptor_of`); the call carries only its inputs.
+    The step reads and updates the state's plane in place and returns ``(y, state)``. The step builds its own
+    descriptor from its arguments (:func:`descriptor_of`); the call carries only its inputs.
     """
     validate_context(routes, values, masks, state, decay)
     BH, device = decode_call(routes)
     descriptor = descriptor_of(routes, values, decay, BH, device)
     held = scratch(state, descriptor, BH, device)
-    carried_plane, page_table, pool = backing(state, routes)
-    plane = state_plane(values, descriptor, decay, carried_plane, page_table)
-    launch = build_launch(descriptor, routes, values, masks, decay, plane, page_table, held, pool)
+    carried_plane = backing(state, routes)
+    plane = state_plane(values, descriptor, decay, carried_plane)
+    launch = build_launch(descriptor, routes, values, masks, decay, plane, held)
     return step(launch), state
-
-
-def growth_pending(state) -> bool:
-    """Did the last gated step skip itself for want of an atom? ONE 4-byte read."""
-    workspace = _scratch_of(state)
-    if workspace is None or not state.paged:
-        return False
-    workspace.growth_host.copy_(workspace.growth_any)
-    return bool(workspace.growth_host[0])
-
-
-def admit_growth(state) -> None:
-    """Admit the pending step's write atoms, from the step's own condensation."""
-    workspace = _scratch_of(state)
-    if workspace is None:
-        raise RuntimeError("admit_growth wants the workspace a gated step leaves behind")
-    state._decode_entry_arena(workspace.atom_bits).wait()
-
-
-def pool_headroom(state) -> int:
-    """Slack slots the thinnest batch-head still has. A HOST READ, AT LEISURE.
-
-    Pool-covered growth raises no verdict -- the step admitted itself and there is nothing
-    urgent for the host -- so this is the level a serving loop polls to decide when to
-    :func:`refill_pool`, on its own schedule and off the step's path.
-    """
-    return 0 if state._arena is None else state._arena.pool_headroom()
-
-
-def refill_pool(state) -> int:
-    """Replace the slack slots the device claimed, and return how many. HOST, OFF PATH."""
-    if state._arena is None:
-        raise RuntimeError("a pool refill wants a paged state; this one is dense")
-    return state._arena.refill_pool()

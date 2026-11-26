@@ -79,21 +79,19 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
     assert_slots_close(y.double(), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope, what="prefill readout")
 
 
-@pytest.mark.parametrize("paging", [True, False])
 @_OP_PREFILL
-def test_segments_carried_through_a_state_are_the_whole_call(paging):
+def test_segments_carried_through_a_state_are_the_whole_call():
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
-    one state are the whole call to fp32 ULPs, in either backing."""
+    one state are the whole call to fp32 ULPs."""
     routes, values, masks = _bundles(4 * window_of())
     with torch.no_grad():
         whole, _ = fsla.prefill(routes, values, masks, fsla.density_of_masks(routes, masks))
-        state = fsla.state(backing="paged" if paging else "dense")
+        state = fsla.dense_state()
         parts = []
         for span in (slice(0, window_of()), slice(window_of(), 4 * window_of())):
             cut_routes, cut_values, cut_masks = _cut(routes, span), _cut(values, span), _cut_masks(masks, span)
             y, state = fsla.prefill(cut_routes, cut_values, cut_masks, fsla.density_of_masks(cut_routes, cut_masks), state=state)
             parts.append(y)
-    assert state.paged is paging
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
 
 
@@ -117,9 +115,9 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
-        _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
+        _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
         layer.memory_budget = window_of() * 4096
-        _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.state()))
+        _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 

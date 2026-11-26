@@ -67,13 +67,8 @@ class _Whitelist:
     _host_budget_worker_slot = None
     _take_gpu_lock = None
 
-    # DOCUMENTED PUBLIC SURFACE, read by a user rather than by this tree: the paging facade's `backing_kind` and
-    # `closed` (`docs/internals/fsla_api.md`), the arena's `owners_total` and `free`, and `Activation`, the spec-facing
+    # DOCUMENTED PUBLIC SURFACE, read by a user rather than by this tree: `Activation`, the spec-facing
     # type alias (`docs/api.md`).
-    backing_kind = None
-    closed = None
-    owners_total = None
-    free = None
     Activation = None
 
     # PEP 517's BUILD BACKEND HOOKS, which pip calls by name on `pyproject.toml`'s backend
@@ -93,10 +88,6 @@ class _Whitelist:
     # `shlex.shlex` READS `whitespace_split` and `commenters` when it tokenizes: `tools/lint/graph_only.py` sets them on its lexer.
     whitespace_split = None
     commenters = None
-    #: `fsla/engine/decode_step.py`'s `write_atom_bitmap` is the growth gate's INDEPENDENT second derivation of the write-atom set: no call
-    #: invokes it BY DESIGN (docs/internals/decode/decode.md#second-derivation), so a caller would be the independence lost.
-    write_atom_bitmap = None
-
     dont_write_bytecode = None  # sys's flag, set by the front door (bazel/front_door.py): a store vulture reads as unused
 
 
@@ -105,7 +96,6 @@ _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,
                _.pytest_collection_modifyitems, _.pytest_pyfunc_call, _.pytest_terminal_summary,  # ruff B018: a bare attribute is "useless"
                _.compile_kernel, _.probe_environment, _.run_tool, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
-               _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.backing_kind, _.closed, _.owners_total,
-               _.free, _.Activation, _.state_size, _.sequence_length,
+               _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.Activation, _.state_size, _.sequence_length,
                _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary, _.pytest_tier,
-               _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode, _.write_atom_bitmap)
+               _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode)

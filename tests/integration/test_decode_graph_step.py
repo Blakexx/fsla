@@ -1,268 +1,51 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""THE GATED DECODE STEP: the deposit fact that forced it, and CUDA-graph capture.
+"""THE GATED DECODE STEP UNDER A CUDA GRAPH: with no host read inside it, the step is capturable, and the
+captured step is the eager step -- the same kernels in the same order, the same state bytes and `y` to its sums' order.
 
-S4b left the steady paged step host-wait-bound -- 0.093 ms of a 0.177 ms step was the
-host waiting for a 4-byte growth flag to become visible, in front of a 0.007 ms kernel.
-P67-a removed the host from the steady step, which is only sound because a step can be
-made a device-side NO-OP for the batch-heads it cannot serve. This file gates the whole
-of that.
-
-Vocabulary, defined here and used unqualified below: **atom** = 16 consecutive leaves in
-LATTICE order = the page granule; **slot** = the physical page an atom maps to (`-1` =
-ABSENT); **needy** = a batch-head whose write atoms it can neither address nor admit;
-**steady step** = one whose write atoms are all resident; **growth step** = one whose are
-not.
-
-**THE FACT THAT DECIDED THE DESIGN (cell 1).** A deposit into an absent atom is DROPPED
-by the kernel -- `decode.cu`'s walk takes `if (in_w && atom_present)`. So a host that
-checked the growth flag LAZILY (every K steps, a pinned poll) would run steps whose
-writes are silently lost: laziness is not an available design at any K > 1, and the only
-sound shapes are per-step synchronization or a device-side conditional. The step's own
-per-batch-head verdict IS that conditional, and it is reached in the same launch, off the
-write map the walk was going to build anyway.
-
-**WHAT THE VERDICT BUYS (cells 2-3).** A needy batch-head touches nothing -- no `y`, no
-state, no counter -- so the step can be ENQUEUED before its verdict is host-visible and,
-if the verdict says grow, replayed after the admission. The result is the admit-then-step
-order's -- the state bit for bit, `y` to its sums' order -- against the enumerated
-reference's own admission (cell 3).
-
-THE VERDICT IS PER BATCH-HEAD, so "touches nothing" is a claim about the NEEDY
-batch-heads and the exactly-once contract is what covers the others: a batch-head that
-advanced in the first walk carries a done flag into the replay and re-reads for its `y`
-without depositing again. Cell 2 makes every batch-head needy so that the claim is the
-whole plane; the mixed batch is `test_decode_growth_trigger.py`'s.
-
-**WHAT IT UNLOCKS (cells 4-5).** With no host read inside it, the step is CUDA-graph
-capturable. A replay is SELF-CORRECTING: the verdict is re-derived inside the graph, so
-after an admission the same captured graph performs the step it had skipped.
+Needs a GPU and the built extension.
 
 Run: ``bazel test //tests:integration --test_filter=test_decode_graph_step``
 """
 from __future__ import annotations
 
-import math
 from dataclasses import fields
 
 import pytest
 import torch
 from conftest import reference_produce
 
-from fsla import admit_growth, decode_step_gated, growth_pending
-from fsla.ops.decode import _decode_step, lattice_of
+from fsla import decode_step_gated
+from fsla.ops.decode import lattice_of
 from fsla.ops.lattice import to_lattice
-from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
+from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, encode_pages
 from fsla.routing.masks import DECODE
 from fsla.values import Values
-from tests.integration.test_decode_paging import (
-    _COLS,
-    _DV,
-    _arena,
-    _bitmap,
-    _bundles,
-    _descriptor,
-    _fixture,
-)
-from tests.oracle.fixtures import assert_reordered_close, live_of, masks_of
+from tests.oracle.fixtures import assert_reordered_close
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-_WIDTHS, _BC = (64, 64), 128
-
-
-def _absent_one_written_atom(fixture, descriptor, arena):
-    """Admit the step's write set except ONE atom, and say which one. `(bitmap, atom)`."""
-    write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _bitmap(write, descriptor)
-    row, column = (bitmap.nonzero())[0].tolist()
-    held_out = bitmap.clone()
-    held_out[row, column] = False
-    arena.plan_exact(held_out, fresh=True)
-    arena.wait()
-    return bitmap, (row, column)
-
-
-def _step(fixture, descriptor, arena, *, workspace=None):
-    routes, values = _bundles(fixture)
-    y, _state, workspace = _decode_step(routes, values, masks_of(routes), descriptor, arena.state,
-                                        workspace=workspace, page_table=arena.page_table)
-    return y, workspace
-
-
-def _absent_one_atom_per_bh(fixture, descriptor, arena):
-    """Admit the step's write set except ONE atom of EVERY batch-head. Returns the set.
-
-    Every batch-head needy is what makes cell 2's claim the WHOLE plane; with the verdict
-    per batch-head, holding out one atom of one batch-head would leave the others running
-    and the cell would be asserting the mechanism the design replaced.
-    """
-    write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _bitmap(write, descriptor)
-    held_out = bitmap.clone()
-    for row in range(bitmap.shape[0]):
-        held_out[row, int(bitmap[row].nonzero()[0])] = False
-    arena.plan_exact(held_out, fresh=True)
-    arena.wait()
-    return bitmap
-
-
-def _atom_rows(arena, row, column):
-    """The `[16, cols]` page an atom maps to, LOGICAL. The caller must know it is resident.
-
-    The stored page is the int8 state format, so "this atom is zero" is a claim about
-    the values it decodes to, not off the raw bytes.
-    """
-    slot = int(arena.page_table[row, column])
-    assert slot >= 0, "the atom is absent; there are no rows to read"
-    return decode_pages(arena.state[slot], _DV)
-
-
-# ---------------------------------------------------------------------------
-# 1. the deposit fact
-# ---------------------------------------------------------------------------
-
-def test_a_batch_head_that_cannot_address_its_writes_declines_which_is_why_laziness_is_refused():
-    """The walk DROPS what it cannot address, so the step refuses to walk at all.
-
-    `if (in_w && atom_present)` means a deposit into an absent atom is lost, not queued.
-    So a host that read the growth verdict LAZILY (every `K` steps, a pinned poll) would
-    run steps whose writes vanish. The kernel closes that off by ASKING FIRST, in the same
-    launch: a batch-head with an unaddressable write atom walks nothing, and the atom that
-    would have eaten the deposit is still zero after the admission that follows.
-
-    Both halves are asserted, because "nothing was written" is only interesting beside
-    "this step does write it": the same step against a resident atom fills those rows.
-    """
-    fixture = _fixture(_WIDTHS, seed=11, support=0.5)
-    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
-    BH = fixture["B"] * fixture["H"]
-
-    declined = _arena(_WIDTHS, _BC, BH)
-    bitmap, (row, column) = _absent_one_written_atom(fixture, descriptor, declined)
-    _step(fixture, descriptor, declined)
-    #: Admitting AFTER the step is exactly what a lazy host would do one token late.
-    declined.plan_exact(bitmap, fresh=False)
-    declined.wait()
-    lost = _atom_rows(declined, row, column)
-
-    kept = _arena(_WIDTHS, _BC, BH)
-    kept.plan_exact(bitmap, fresh=True)
-    kept.wait()
-    _step(fixture, descriptor, kept)
-    deposited = _atom_rows(kept, row, column)
-
-    assert float(deposited.abs().max()) > 0.0, "the fixture's held-out atom is never written"
-    assert float(lost.abs().max()) == 0.0, (
-        "a deposit reached an atom the step could not address; if the kernel ever starts "
-        "walking a batch-head it cannot admit, this file's whole design argument changes "
-        "and the lazy-poll design reopens")
-
-
-# ---------------------------------------------------------------------------
-# 2. a needy batch-head is a no-op, exactly
-# ---------------------------------------------------------------------------
-
-def test_a_step_no_batch_head_can_address_touches_nothing():
-    """Every batch-head needy: no state, no `y` semantics, no counter -- it never happened.
-
-    Every batch-head, because the verdict is PER batch-head: holding one atom out of one
-    batch-head would leave the others running, and the plane-wide `torch.equal` below
-    would then be asserting the global-no-op mechanism the design replaced rather than
-    the contract. The mixed batch is `test_decode_growth_trigger.py`'s cell.
-    """
-    fixture = _fixture(_WIDTHS, seed=12, support=0.5)
-    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
-    BH = fixture["B"] * fixture["H"]
-    arena = _arena(_WIDTHS, _BC, BH)
-    bitmap = _absent_one_atom_per_bh(fixture, descriptor, arena)
-
-    before = arena.state.clone()
-    _step(fixture, descriptor, arena)
-    assert bytes_equal(arena.state, before), "a step no batch-head could address wrote state"
-
-    #: And the same step against the admitted set is the ordinary step, on the same
-    #: buffers -- residency is an input, never a mode.
-    arena.plan_exact(bitmap, fresh=False)
-    arena.wait()
-    _step(fixture, descriptor, arena)
-    assert not bytes_equal(arena.state, before), "the admitted step did not run"
-
-
-# ---------------------------------------------------------------------------
-# 3. the gated growth order is the admit-first order
-# ---------------------------------------------------------------------------
-
-def test_gated_step_then_admit_then_replay_matches_admitting_first():
-    """the host order against the admit-first order: the plane byte for byte, `y` to its sums' order.
-
-    The reference admits from `_write_atom_bitmap` -- the enumerated reference, whose
-    only callers are gates -- so the two orders are compared through two independent
-    derivations of the same write set. One batch-head is needy and the others are not,
-    so the equality is also the exactly-once claim: the batch-heads that ran in the first
-    walk must re-read in the replay without depositing again.
-    """
-    fixture = _fixture(_WIDTHS, seed=13, support=0.5)
-    descriptor = _descriptor(_WIDTHS, fixture["B"] * fixture["H"])
-    BH = fixture["B"] * fixture["H"]
-    write = live_of(_bundles(fixture)[0], "write")
-    bitmap = _bitmap(write, descriptor)
-
-    reference = _arena(_WIDTHS, _BC, BH)
-    reference.plan_exact(bitmap, fresh=True)
-    reference.wait()
-    y_reference, _ = _step(fixture, descriptor, reference)
-
-    #: The gated order: a batch-head that cannot address its writes runs as a no-op, the
-    #: admission follows, and the replay is the step.
-    gated = _arena(_WIDTHS, _BC, BH)
-    _absent_one_written_atom(fixture, descriptor, gated)
-    _y, workspace = _step(fixture, descriptor, gated)
-    gated.plan_exact(bitmap, fresh=False)
-    gated.wait()
-    y_gated, _ = _step(fixture, descriptor, gated, workspace=workspace)
-
-    assert_reordered_close(y_gated, y_reference, "the gated step's y")
-    assert bytes_equal(_gathered(reference, BH), _gathered(gated, BH))
-
-
-def _gathered(arena, BH):
-    """`[BH, N/16, page_bytes]` in LATTICE order from the arena's slots, the stored pages -- what the two backings
-    can both hold, compared as bytes."""
-    table = arena.page_table
-    out = torch.zeros(BH, table.shape[1], arena.page_bytes, dtype=torch.uint8, device="cuda")
-    present = table >= 0
-    out[present] = arena.state[table[present].long()]
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 4-5. capture
-# ---------------------------------------------------------------------------
 
 _HIDDEN, _H, _T, _B = 64, 2, 128, 2
+_DV, _COLS = 64, 65
+_WIDTHS = (64, 64)
 
 
 def _sequence():
-    """A prefilled paged state, the layer whose producer made it, and a stream of decode tokens.
+    """A prefilled dense state, the layer whose producer made it, and a stream of decode tokens.
 
-    The state is SEEDED the facade's own way minus the launch: `_kernel_entry` binds the arena and the
-    fp64 oracle's `output_final_state` fills the committed pages, narrowed to
-    the kernel's fp32 and crossed into the lattice leaf order the arena's atoms
-    are cut from. What these cells gate (capture, replay, growth) reads the
-    arena's base, table and plane, and none of the three cares which arm
-    deposited the numbers.
-
-    RESIDENCY IS TOTAL, stated rather than derived: over 16 atoms a 128-token
-    prefill leaves nothing absent, and cell 5 MAKES its growth by dropping an
-    atom from a full plan. A partial seeding bitmap would be a second leaf-order
-    authority for these cells to disagree with.
+    The state is SEEDED the facade's own way minus the launch: `_kernel_entry` binds the state, a zeroed
+    plane is committed, and the fp64 oracle's `output_final_state` fills it, narrowed to the kernel's fp32,
+    crossed into the lattice leaf order the plane's atoms are cut from and encoded in the stored page
+    format. What this cell gates (capture, replay) reads the plane, and it does not care which arm deposited
+    the numbers.
     """
     import fsla
+    from fsla.engine.facts import planes
     from fsla.ops.naive import naive_fsla
     from tests.conftest import alternating_routing, build_layer
 
@@ -274,18 +57,12 @@ def _sequence():
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x[:, :_T])
-        bits = torch.ones(_B * _H, math.prod(_WIDTHS) // MMA_K_QUANTUM, dtype=torch.bool,
-                          device="cuda")
-        state = fsla.state()
-        _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, BC=64)
-        arena.wait()
+        state = fsla.dense_state()
+        state._kernel_entry(routes, d_v=_DV)
+        state._kernel_commit(planes.state_plane(routes, d_v=_DV, zeros=True))
         _y_ref, oracle_state = naive_fsla(v[:, :_T], routes.dequantized()[0], routes.dequantized()[1], routes.topology, None, output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, *lattice_of(_WIDTHS))
-        #: THE ARENA HOLDS THE STORED FORM (the int8 state pages).
-        atoms = encode_pages(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
-        table = arena.page_table
-        present = table >= 0
-        arena.state[table[present].long()] = atoms[present]
+        state._plane.copy_(encode_pages(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)))
     return layer, x, v, state
 
 
@@ -347,12 +124,7 @@ def test_the_captured_step_is_the_eager_step():
     _fill(static, static_v, static_masks, routes, v[:, token], masks)
     graph, y_graph = _capture(static, static_v, static_masks, state)
 
-    #: Make the token's write set resident FIRST, so neither run is the vacuous no-op
-    #: cell 5 is about.
-    decode_step_gated(static, static_v, static_masks, state)
-    if growth_pending(state):
-        admit_growth(state)
-    plane = state._arena.state
+    plane = state._plane
     snapshot = plane.clone()
 
     graph.replay()
@@ -365,127 +137,3 @@ def test_the_captured_step_is_the_eager_step():
     torch.cuda.synchronize()
     assert_reordered_close(captured_y, eager_y, "the captured step's y")
     assert bytes_equal(captured_plane, plane)
-
-
-def _make_growth(state, static):
-    """Drop one atom this token writes from the plan, and say which. `(row, column)`.
-
-    A 128-token prefill over 16 atoms leaves nothing absent, so the growth is MADE.
-    Re-planning also reassigns slots, which is the stronger cell -- the captured graph
-    holds the arena's BASE and its table, and neither moves.
-    """
-    written = _bitmap(live_of(static, "write"), _descriptor(_WIDTHS, _B * _H))
-    keep = (state._arena.page_table >= 0) & written
-    row, column = (keep.nonzero())[0].tolist()
-    keep[row, column] = False
-    state._arena.plan_exact(keep, fresh=True)
-    state._arena.wait()
-    return row, column
-
-
-@torch.no_grad()
-def test_a_growth_step_lands_under_the_graph_by_replay():
-    """The replay is SELF-CORRECTING: no-op, admit, replay, and it is the eager answer.
-
-    THE COMPARISON IS OF THE WHOLE PAIR, on two independently prefilled sequences, and
-    that is a restatement forced by the verdict being PER BATCH-HEAD. The cell used to
-    replay, admit, replay, then restore the plane and run ONE eager step against the
-    result -- which was sound only while the first walk deposited nothing at all. It now
-    deposits for every batch-head it can serve, so a restored plane is not a common
-    starting point for those batch-heads and a single eager step would deposit into them
-    twice. What the design actually claims is that the PAIR advances every sequence
-    exactly once, and two identical sequences walking the pair -- one captured, one eager
-    -- is that claim stated without a restore.
-    """
-    layer, x, v, state = _sequence()
-    token = slice(_T + 5, _T + 6)
-    routes, _values, masks = reference_produce(layer, x[:, token], DECODE)
-    static, static_v, static_masks = _static(routes, v[:, token], masks)
-    _fill(static, static_v, static_masks, routes, v[:, token], masks)
-    graph, y_graph = _capture(static, static_v, static_masks, state)
-
-    row, column = _make_growth(state, static)
-    plane = state._arena.state
-    snapshot = plane.clone()
-
-    graph.replay()
-    torch.cuda.synchronize()
-    assert growth_pending(state), "the fixture's growth token is already resident"
-    #: THE FIRST WALK, per batch-head: the one that cannot address its writes touches
-    #: nothing. (The plane-wide equality this cell used to assert is the global-no-op
-    #: mechanism, and the design replaced it.)
-    assert int(state._arena.page_table[row, column]) < 0, (
-        "the held-out atom is resident; the fixture made no growth")
-    resident = state._arena.page_table[row][state._arena.page_table[row] >= 0].long()
-    assert bytes_equal(plane[resident], snapshot[resident]), (
-        "the needy batch-head deposited under the graph")
-
-    admit_growth(state)
-    graph.replay()
-    torch.cuda.synchronize()
-    assert not growth_pending(state), "the replay did not clear the verdict"
-    landed_y, landed = y_graph.clone(), state.materialize().clone()
-
-    #: The same pair, eagerly, on its own sequence. `_sequence` is seeded, so the two
-    #: states are the same state and the two tokens are the same token.
-    layer2, x2, v2, eager_state = _sequence()
-    eager_routes, _values, eager_masks = reference_produce(layer2, x2[:, token], DECODE)
-    eager_static, eager_static_v, eager_static_masks = _static(eager_routes, v2[:, token], eager_masks)
-    _fill(eager_static, eager_static_v, eager_static_masks, eager_routes, v2[:, token], eager_masks)
-    assert _make_growth(eager_state, eager_static) == (row, column), (
-        "the two sequences are not the same sequence")
-    decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state)
-    assert growth_pending(eager_state)
-    admit_growth(eager_state)
-    eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_static_masks, eager_state)
-    torch.cuda.synchronize()
-
-    assert_reordered_close(landed_y, eager_y, "the landed step's y")
-    assert torch.equal(landed, eager_state.materialize())
-
-
-@torch.no_grad()
-@pytest.mark.requires_kernel("produce")
-def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_admission():
-    """THE LAYER'S ONE-TOKEN STEP UNDER A GRAPH: `FSLA._step` -- the producer's launch, the gated step, the output
-    projection -- captured whole. Two identical sequences take the same warm-up steps and lose the same written atom;
-    one replays the captured step, admits at the verdict and replays again, the other runs the eager one-token
-    `forward` (step, verdict, admission, step). The pair advances each exactly once: the same state bytes, and `y`
-    to its sums' order."""
-    from fsla import LayerContinuation
-
-    warm, token = slice(_T + 4, _T + 5), slice(_T + 5, _T + 6)
-
-    layer, x, _v, state = _sequence()
-    static_x = x[:, warm].clone()
-    side = torch.cuda.Stream()
-    side.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(side):
-        for _ in range(3):
-            layer._step(static_x, state)
-    torch.cuda.current_stream().wait_stream(side)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        y_graph = layer._step(static_x, state)
-    static_x.copy_(x[:, token])
-    row, column = _make_growth(state, reference_produce(layer, x[:, token])[0])
-    graph.replay()
-    torch.cuda.synchronize()
-    assert growth_pending(state), "the fixture's growth token is already resident"
-    admit_growth(state)
-    graph.replay()
-    torch.cuda.synchronize()
-    assert not growth_pending(state), "the replay did not clear the verdict"
-    landed_y, landed = y_graph.clone(), state.materialize().clone()
-
-    layer2, x2, _v2, eager_state = _sequence()
-    for _ in range(3):
-        layer2._step(x2[:, warm], eager_state)
-    assert _make_growth(eager_state, reference_produce(layer2, x2[:, token])[0]) == (row, column), (
-        "the two sequences are not the same sequence")
-    eager_y, _ = layer2(x2[:, token], continuation=LayerContinuation(state=eager_state))
-    torch.cuda.synchronize()
-    assert layer2.last_execution_backend == "decode"
-
-    assert_reordered_close(landed_y, eager_y, "the layer's landed step")
-    assert bytes_equal(landed, eager_state.materialize()), "the captured pair and the eager forward moved the state apart"

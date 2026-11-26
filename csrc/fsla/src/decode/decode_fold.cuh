@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "common/ops.cuh"
 #include "decode.cuh"
 
 namespace fsla {
@@ -31,14 +32,16 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
                                             float* sa_w, uint32_t* mask_r, uint32_t* mask_w) {
   //: a side is at most `kMaxLevels` levels of `kDecodeMaxLevelWidth` digits, so a thread holds at most this many slots.
   constexpr int kSlots = (2 * kMaxLevels * kDecodeMaxLevelWidth) / Dp::kThreads;
-  const int lane = threadIdx.x & 31;
+  //: the thread's index, opaque here: a slot's level and offsets are formed a head, not held across every head's walk
+  const int me = denseref::ops::opaque(static_cast<int>(threadIdx.x));
+  const int lane = me & 31;
   const int slots = p.mask_total << 5;
   float x[kSlots];
   float scale[kSlots];
   uint32_t live[kSlots];
 #pragma unroll
   for (int j = 0; j < kSlots; ++j) {
-    const int s = threadIdx.x + j * Dp::kThreads;
+    const int s = me + j * Dp::kThreads;
     const bool write_side = s >= slots;
     const int word = (write_side ? s - slots : s) >> 5;
     int l = 0;
@@ -69,7 +72,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
 
 #pragma unroll
   for (int j = 0; j < kSlots; ++j) {
-    const int s = threadIdx.x + j * Dp::kThreads;
+    const int s = me + j * Dp::kThreads;
     if (s >= 2 * slots) break;
     const bool write_side = s >= slots;
     const int word = (write_side ? s - slots : s) >> 5;

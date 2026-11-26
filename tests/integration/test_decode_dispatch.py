@@ -62,35 +62,22 @@ def _layer(device, *, decay="none"):
     ).to(device, torch.float32)
 
 
-def _prime(layer, device, *, prefill=32, paged=True):
+def _prime(layer, device, *, prefill=32):
     """Seed a carrying state by the facade's own binding entries.
 
-    The prefill arm primed this until the K31 deletion batch removed it
-    (baseline = tag `baseline/pre-k31`); a dispatch gate needs only a CARRYING
-    state whose keying matches the layer's routing, so the seed binds through
-    `_kernel_entry` — paged: EVERY atom is committed; dense: a fresh zero plane is
-    committed — and deposits nothing. Total residency rather than the routing's own
-    set, because a dispatch gate has no business owning a second opinion about
+    A dispatch gate needs only a CARRYING state whose keying matches the layer's routing,
+    so the seed binds through `_kernel_entry` and commits a fresh zero plane: it
+    deposits nothing, and no gate here has any business owning a second opinion about
     which leaf sits in which atom.
     """
     from fsla.engine.facts import planes
-    from fsla.ops.paging import MMA_K_QUANTUM
 
     x = torch.randn(1, prefill, _HIDDEN, device=device)
-    state = fsla.state(backing="paged" if paged else "dense")
+    state = fsla.dense_state()
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x)
-        if paged:
-            bits = torch.ones(x.shape[0] * _H,
-                              routes.topology.N // MMA_K_QUANTUM,
-                              dtype=torch.bool, device=device)
-            _s, arena = state._kernel_entry(routes, bits, d_v=layer.d_v,
-                                            BC=64)
-            arena.wait()
-        else:
-            state._kernel_entry(routes, None, d_v=layer.d_v, BC=64)
-            state._kernel_commit(planes.state_plane(routes, d_v=layer.d_v,
-                                                    zeros=True))
+        state._kernel_entry(routes, d_v=layer.d_v)
+        state._kernel_commit(planes.state_plane(routes, d_v=layer.d_v, zeros=True))
     return state
 
 
@@ -166,7 +153,7 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
     device = "cuda"
     layer = _layer(device)
     layer.eval()
-    cache = _prime(layer, device) if carried else fsla.state()
+    cache = _prime(layer, device) if carried else fsla.dense_state()
     layer.train(training)
     before = layer.last_execution_backend
 
@@ -228,7 +215,7 @@ def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
     layer.eval()
     x = torch.randn(1, 32, _HIDDEN)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        layer(x, continuation=LayerContinuation(state=fsla.state()))
+        layer(x, continuation=LayerContinuation(state=fsla.dense_state()))
 
 
 @pytest.mark.cuda
@@ -260,26 +247,6 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     state = torch.zeros(1, launch.N // 16, page_layout(launch.d_v).bytes, dtype=torch.uint8, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
         _decode_step(routes, values, masks_of(routes), descriptor, state)
-
-
-@pytest.mark.cuda
-@_CUDA
-@_PRODUCE
-def test_a_layer_over_a_dense_state_still_reaches_decode():
-    """REPOINTED: paging is not a layer configuration.
-
-    There is no cap and no layer-level paging flag: the backing is the state's, chosen at bind,
-    and decode crosses it through `materialize`/`adopt_dense_contents` at its branch
-    (docs/internals/state.md §5). What is worth asserting is that the dense backing does not perturb the
-    DISPATCH: a layer over a dense-backed state takes the decode fork at ``T = 1`` exactly as over a paged one.
-    """
-    device = "cuda"
-    layer = build_layer(hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES, layer_idx=0).to(device, torch.float32)
-    layer.eval()
-    with torch.no_grad():
-        cache = _prime(layer, device, paged=False)
-        _step(layer, cache, device, L=1, grad_enabled=False)
-    assert layer.last_execution_backend == "decode", "the decode fork did not run"
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +282,7 @@ def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
     retirement), the envelope's first clause, and it must speak BEFORE a kernel."""
     device = "cuda"
     plain = _layer(device).eval()
-    cache = _prime(plain, device) if carried else fsla.state()
+    cache = _prime(plain, device) if carried else fsla.dense_state()
     layer = _layer(device, decay="leaf_mass").eval()
     _refuses(NotImplementedError, "decay is not implemented", lambda: _step(layer, cache, device, L=L, grad_enabled=False))
     assert layer.last_execution_backend is None, (

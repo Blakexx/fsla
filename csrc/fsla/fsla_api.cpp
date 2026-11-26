@@ -10,11 +10,8 @@
 #include <torch/csrc/stable/library.h>
 
 #include <cstdint>
-#include <memory>
-#include <mutex>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <vector>
 
 #include "common/arch_runtime.cuh"
@@ -28,69 +25,11 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/mask_prepare/mask_prepare.cuh"
-#include "src/paging/vmm_owner.cuh"
 
 using fsla::check_arch_table;
 using fsla::Tensor;
 
 namespace {
-
-// THE VMM OWNERS, by handle: an operator cannot return a native object, so the owner lives here and the caller holds
-// an integer. A tensor view of an owner keeps the owner alive past its release (VmmOwner::base).
-std::mutex g_owners_mutex;
-std::unordered_map<int64_t, std::shared_ptr<fsla::paging::VmmOwner>> g_owners;
-int64_t g_next_owner = 1;
-
-std::shared_ptr<fsla::paging::VmmOwner> owner_of(int64_t handle) {
-  const std::lock_guard<std::mutex> lock(g_owners_mutex);
-  const auto it = g_owners.find(handle);
-  STD_TORCH_CHECK(it != g_owners.end(), "no FSLA VMM owner holds handle ", handle,
-                  " (released, or never created)");
-  return it->second;
-}
-
-int64_t vmm_create(int64_t device, int64_t dense_limit_pages, int64_t page_rows, int64_t page_cols,
-                   int64_t target_chunk_bytes) {
-  auto owner = fsla::paging::create_vmm_owner((int)device, dense_limit_pages, page_rows, page_cols,
-                                              target_chunk_bytes);
-  const std::lock_guard<std::mutex> lock(g_owners_mutex);
-  g_owners.emplace(g_next_owner, std::move(owner));
-  return g_next_owner++;
-}
-
-void vmm_release(int64_t handle) {
-  const std::lock_guard<std::mutex> lock(g_owners_mutex);
-  g_owners.erase(handle);
-}
-
-Tensor vmm_base(int64_t handle) { return owner_of(handle)->base(); }
-
-void vmm_grow(int64_t handle, int64_t required_pages) { owner_of(handle)->grow(required_pages); }
-
-void vmm_rollback_to(int64_t handle, int64_t mapped_capacity_pages) {
-  owner_of(handle)->rollback_to(mapped_capacity_pages);
-}
-
-void vmm_reset(int64_t handle) { owner_of(handle)->reset(); }
-
-void vmm_close(int64_t handle) { owner_of(handle)->close(); }
-
-//: closed, mapped_capacity_pages, dense_limit_pages, committed_bytes, virtual_bytes, allocation_granularity, chunk_pages
-std::vector<int64_t> vmm_facts(int64_t handle) {
-  const auto owner = owner_of(handle);
-  return {(int64_t)owner->closed(),
-          owner->mapped_capacity_pages(),
-          owner->dense_limit_pages(),
-          (int64_t)owner->committed_bytes(),
-          (int64_t)owner->virtual_bytes(),
-          (int64_t)owner->allocation_granularity(),
-          owner->chunk_pages()};
-}
-
-std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
-  const auto probe = fsla::paging::VmmOwner::probe((int)device);
-  return {probe.device, probe.supported, (int64_t)probe.allocation_granularity, probe.reason};
-}
 
 //: A DEVICE'S CARD (`common/select.cuh`): its compute capability, its family's name (`kFamilyNames`, generated from
 //: the one list the `Family` enum is) and W, the window the planner's matcher derives from the device's facts (`plan::prefill_window`)
@@ -148,10 +87,8 @@ STABLE_TORCH_LIBRARY(fsla, m) {
   m.def(
       "fsla_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, "
       "Tensor[] read_mask, Tensor[] write_mask, Tensor? dials, Tensor v, Tensor v_scale, "
-      "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
-      "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, "
-      "int ctas, float eps, int[] descriptor, Tensor(i!)? page_table=None, "
-      "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
+      "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, int ctas, float eps, int[] descriptor) -> "
+      "Tensor");
   m.def("fsla_call_facts(str kernel) -> str");
   m.def("fsla_descriptor(str kernel, int device, int[] call) -> int[]");
   m.def("fsla_owed_kernels(str kernel, int device, int[] call) -> str");
@@ -164,19 +101,6 @@ STABLE_TORCH_LIBRARY(fsla, m) {
   m.def("fsla_decode_ledger_warps() -> int");
   m.def("fsla_decode_capacity() -> int");
   m.def("fsla_decode_producer_width_mirror() -> int");
-
-  // ---- the VMM owner, by handle --------------------------------------------
-  m.def("vmm_probe(int device) -> (int, bool, int, str)");
-  m.def(
-      "vmm_create(int device, int dense_limit_pages, int page_rows, int page_cols, "
-      "int target_chunk_bytes=67108864) -> int");
-  m.def("vmm_release(int handle) -> ()");
-  m.def("vmm_base(int handle) -> Tensor");
-  m.def("vmm_grow(int handle, int required_pages) -> ()");
-  m.def("vmm_rollback_to(int handle, int mapped_capacity_pages) -> ()");
-  m.def("vmm_reset(int handle) -> ()");
-  m.def("vmm_close(int handle) -> ()");
-  m.def("vmm_facts(int handle) -> int[]");
 }
 
 STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
@@ -212,15 +136,6 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
   m.impl("fsla_decode_capacity", TORCH_BOX(&fsla::decode::fsla_decode_capacity));
   m.impl("fsla_decode_producer_width_mirror",
          TORCH_BOX(&fsla::decode::fsla_decode_producer_width_mirror));
-  m.impl("vmm_probe", TORCH_BOX(&vmm_probe));
-  m.impl("vmm_create", TORCH_BOX(&vmm_create));
-  m.impl("vmm_release", TORCH_BOX(&vmm_release));
-  m.impl("vmm_base", TORCH_BOX(&vmm_base));
-  m.impl("vmm_grow", TORCH_BOX(&vmm_grow));
-  m.impl("vmm_rollback_to", TORCH_BOX(&vmm_rollback_to));
-  m.impl("vmm_reset", TORCH_BOX(&vmm_reset));
-  m.impl("vmm_close", TORCH_BOX(&vmm_close));
-  m.impl("vmm_facts", TORCH_BOX(&vmm_facts));
 }
 
 // THE MODULE OBJECT: importing `fsla_cu13._C` loads this library, whose static registrations above run on load. The module

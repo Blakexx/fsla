@@ -71,7 +71,7 @@ def prefill(
     and NOTHING about its values (every byte is a valid density); it is carried with the call's other inputs to where the prefill's kernels will read it, to choose how the work is laid out. The GPU
     prefill is not built (it is refused by name) and the reference path does not use the density: as a fact of the contract, the density
     changes no defined result. ``state``: ``None`` for a stateless
-    call, or a :class:`~fsla.FSLAState` from :func:`fsla.state` -- an unbound one binds from this call, a bound
+    call, or a :class:`~fsla.FSLAState` from :func:`fsla.dense_state` -- an unbound one binds from this call, a bound
     one is continued; ``decay``: the recurrence dial, or ``None``. Returns ``y: [B, T, H, d_v]`` fp32 and the SAME state object,
     mutated in place (``None`` when the call was stateless).
 

@@ -89,12 +89,9 @@ would certify the new binary as the old one. A stamp that cannot separate two bi
 not a stamp. `tests/unit/test_decode_capacity.py` inverts the stamp term by term.
 
 <a id="the-step"></a><a id="note-l43"></a>`fsla_decode_forward` is the single data-plane entry, and it launches
-ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN
-per-batch-head residency verdict are phases of it. There is no probe launch in front of it:
-the write set the walk enumerates is the set the residency test reads, so the test is a pass
-over shared memory. The verdict (`growth`, `done`, and the `growth_any` reduction the host
-reads) sits beside the write-atom set it was reached from (`atom_bits`, what a host
-admission plans from), and under a slack pool a growth step admits itself.
+ONE kernel: the fold, the `(k, m)` lattice's factor tables and the walk are phases of it, over
+the dense state plane. Its signature is `(read, write, read_scale, write_scale, read_mask,
+write_mask, dials, v, v_scale, state, yacc, queue, ctas, eps, descriptor)`.
 `write_dense` is the launch function's derived fact that the innermost level's write side is not listed (every digit of it is walked:
 the descriptor's innermost `write_listed_k` is 0, which `fsla.ops.produce._decode_descriptor` states from the declaration), which the launch function hands the entry and which lets the write term walk whole atoms (`decode.md#whole-atoms`); the level widths and their row offsets come from it too, so the entry takes neither. Its operands are the
 caller's RAW
@@ -105,48 +102,15 @@ already written in (`decode_lattice.md#the-refusals`) is the launch function's s
 argument checks and workspace contracts are documented with the definition, in
 [`decode.md`](decode.md#instantiation-matrix).
 
-## <a id="paged-state"></a>3. `page_table` — which backing the state is
+## <a id="dense-state"></a>3. `state` — the one dense plane
 
-The trailing `std::optional<Tensor> page_table` is the whole ABI difference
-between the two backings, and it is what the entry validates differently:
+`state` is the dense `[BH, N / 16, page bytes]` uint8 plane, the one backing the entry serves,
+and `N` comes from the level widths of the descriptor. The entry checks its extents (`BH` heads, `N / 16` pages a head, the page's bytes for the arm's `d_v`); the
+address the kernel builds from an atom is [`decode.md` §4](decode.md#dense-address).
 
-* **absent** — `state` is the dense `[BH, N, d_v + 1]` plane and `N` is its own middle
-  extent. This is the pre-P67 signature exactly, defaulted so a caller that never
-  pages never mentions paging.
-* **present** — `page_table` is `[BH, N / 16]` int32 and NAMES the leaf space, so `N`
-  comes from it; `state` is then the arena's `[slots, 16, d_v + 1]` plane, which holds
-  only the atoms a plan committed.
-
-Slot VALUES are not bounds-checked. That would be a device-side read of the table, and
-the plan owns the bound. The address the kernel builds from a slot, and what a `-1` means, are
-[`decode.md` §4](decode.md#paged-address).
-
-## <a id="the-verdict"></a>4. The verdict buffers — required whichever backing this is
-
-`growth`, `growth_any`, `growth_ctr`, `done` and `atom_bits` are the step's OWN
-per-batch-head residency answer, written by each head's owner and finisher
-([`decode.md#one-writer`](decode.md#one-writer)) and read by nobody's prologue but the
-step's own next call. They are validated whichever
-backing the call is — a dense step has nothing to admit and simply never writes a `1` into
-`growth` — because holding one ABI for both backings is what keeps a dense-vs-paged
-disagreement from being expressible in the first place: [`decode.md`
-§4c](decode.md#absorbed-verdict).
-
-`atom_bits` is `[BH, N / 16]` bool, this step's own write-atom set condensed on the
-device, unconditionally, by every batch-head's owner. It is what a host
-admission (`admit_growth`) plans from, so the host derives no support of its own
-([`decode.md` §39](decode.md#second-derivation)).
-
-## <a id="the-pool"></a>5. `pool_slots`, `pool_cursor` — the slack pool, both or neither
-
-Present exactly on a paged step whose state reserved slack (`fsla.state(pool_slack=...)`
-above `0.0`): the physical slots the host pre-committed and pre-zeroed, and how many of each
-batch-head's are spent. The head's owner writes its claim into the page table itself
-([`decode.md#queue-claim-pool`](decode.md#queue-claim-pool)), so `page_table` is mutable.
-`fsla_decode_forward` checks that both are present together or neither is — the pool is not a mode a caller can half-configure — and
-that a pool requires `page_table` (a dense state has no table to admit into). The design and
-the device-side claim are [`paging/paging.md`
-§the-slack-pool](../paging/paging.md#the-slack-pool).
+`yacc` is `[BH, d_v + 1]` fp32 and `queue` is `[3 BH + 2]` int32: the work queue's sums and
+counters, allocated once per sequence and reset by the kernel itself
+([`decode.md#queue`](decode.md#queue)).
 
 ## <a id="decode-ledger-bind"></a>`fsla_decode_ledger_bind`
 

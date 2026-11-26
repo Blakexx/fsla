@@ -6,7 +6,7 @@ The suite answers **different questions**, and conflating them is how a real bug
 | Directory | Question | Compares |
 |---|---|---|
 | **`tests/oracle`** | Does the kernel compute the right function, over the whole DISTRIBUTION SPACE the model can put through it? | the kernels against the **fp64 oracle**, per slot, at DECLARED regime cells |
-| **`tests/integration`** | Does the COMPOSITION work, GIVEN that the kernels are trustworthy? | the layer against the op, a dispatch fork against what it dispatched to, and — the two-branches-agree class — a kernel against **itself** across geometries and both state backings |
+| **`tests/integration`** | Does the COMPOSITION work, GIVEN that the kernels are trustworthy? | the layer against the op, a dispatch fork against what it dispatched to, and — the two-branches-agree class — a kernel against **itself** across geometries |
 | **`tests/unit`** | Does each file honour its own public contract? | one file's surface, under assumptions about how the others behave |
 
 **There is no fourth tier**, and a campaign name never appears in a test path: `tools/lint/lint_standards.py` refuses
@@ -127,7 +127,7 @@ demonstrate its claimed regime fails rather than passes vacuously. The oracle ti
 along the sequence grows as `sqrt(T)`, so a short fixture under-charges it, and the multi-window cells carry it.
 
 <a id="whole-call-gates"></a>
-THE WHOLE-CALL GATES run on those cells and are OWED until the kernel under them is built: a test that needs a kernel not built on this line carries `@pytest.mark.requires_kernel("carry")` (or `"intra"`, `"prefill"`, `"produce"`) and `tests/conftest.py` makes it a STRICT XFAIL on `fsla.ops._ext.KernelNotBuilt`, the reason naming the kernel. It always runs: the refusal is the expected failure (reported xfailed, counted by kernel in the run's `owed (carry: a, ...)` summary line, never a pass); a pass is a strict XPASS, a failure, so the markers come off in the commit that builds the kernel; any other exception, a refusal naming another kernel included, is a failure. The carry's inter numerator against the fp64 inter term in the recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement `test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla` (`tests/oracle/test_prefill_vs_oracle.py`) and the state's backings bit-identical through a fresh call and a continuation (`tests/integration/test_chunk_paging_equivalence.py`) are owed this way. Operands for a kernel under test come from the reference producer (`tests/conftest.py`'s `reference_produce`, the torch composition), never the producer kernel. THE TOLERANCES OF THOSE KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by name (`fsla.ops._ext.KernelNotBuilt`). `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared once its clauses are measured and not before.
+THE WHOLE-CALL GATES run on those cells and are OWED until the kernel under them is built: a test that needs a kernel not built on this line carries `@pytest.mark.requires_kernel("carry")` (or `"intra"`, `"prefill"`, `"produce"`) and `tests/conftest.py` makes it a STRICT XFAIL on `fsla.ops._ext.KernelNotBuilt`, the reason naming the kernel. It always runs: the refusal is the expected failure (reported xfailed, counted by kernel in the run's `owed (carry: a, ...)` summary line, never a pass); a pass is a strict XPASS, a failure, so the markers come off in the commit that builds the kernel; any other exception, a refusal naming another kernel included, is a failure. The carry's inter numerator against the fp64 inter term in the recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement `test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla` (`tests/oracle/test_prefill_vs_oracle.py`) are owed this way. Operands for a kernel under test come from the reference producer (`tests/conftest.py`'s `reference_produce`, the torch composition), never the producer kernel. THE TOLERANCES OF THOSE KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by name (`fsla.ops._ext.KernelNotBuilt`). `declare.py`'s `carry-vs-oracle` diff, which stores the carry's verdict per cell beside the instruments, is declared once its clauses are measured and not before.
 
 Decode is its own family (`tests/oracle/test_decode_family.py`): the prefill-to-decode hand-off, a 32-step horizon with
 checkpoints ALONG it (a per-step check cannot see cross-call compounding), and frozen density declarations proven
@@ -164,7 +164,6 @@ The same question — do two geometries of one computation agree — asked one f
 | file | the pair it relates |
 |---|---|
 | `test_decode_bc_blindness.py` | one decode step across prefill boxes that differ in `BC` |
-| `test_decode_paging.py`, `test_page_arena_vmm.py` | the dense and paged backings, and the backing's own structures |
 | `test_stream_discipline_fixture.py` | the crossing paths (below) |
 
 The census of instantiation axes lives on the binary's side: each family's `arms()` answers out of the running
@@ -337,9 +336,8 @@ The last is the only *mechanical* detector of the missing-join class that exists
 `cudaStreamEndCapture` returns `cudaErrorStreamCaptureUnjoined` when a stream forked inside the captured region never
 joins back. Each attempt runs in its own process, because a failed capture leaves the context in an error state that
 later calls inherit. **Its limits are measured too**: capture validates only the captured region, cannot see an event
-recorded on the *wrong* stream, and requires the region to be capture-legal. `PageArena` records its side stream's
-readiness event outside any capture, which a capture rejects as a cross-capture dependency, so the paged admission
-cannot be wrapped in one; the detector is the contract for paths that *can* be captured, and
+recorded on the *wrong* stream, and requires the region to be capture-legal: a path that records its readiness event outside any capture is rejected as a cross-capture dependency,
+so the detector is the contract for paths that *can* be captured, and
 `test_stream_discipline_fixture.py` proves it reads on this driver in both directions.
 
 Every check in that file is run against a planted violation as well as a correct path — an unjoined fork, a

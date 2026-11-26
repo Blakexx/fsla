@@ -8,18 +8,6 @@
    "count": 1
   },
   {
-   "path": "tests/integration/test_decode_graph_step.py",
-   "message": "a storage identity claim made with torch.equal: assert torch.equal(landed, eager_state.materialize())",
-   "line_sha256": "a2781f2d0a093cc0",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_paging.py",
-   "message": "'_ARMS' is a literal arm table outside an `arms.bzl`",
-   "line_sha256": "9ba217ecf73f5742",
-   "count": 1
-  },
-  {
    "path": "tests/oracle/test_decode_vs_oracle.py",
    "message": "a storage identity claim made with torch.equal: assert torch.equal(a[\"state\"], b[\"state\"]), \"decode's state is not run-reproducible\"",
    "line_sha256": "61286e59e08c8f5b",

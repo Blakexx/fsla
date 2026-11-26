@@ -168,7 +168,7 @@ more instructions in both roles (the page's static counts) and are slower in eac
 
 ## Entry and exit
 
-A CTA loads its boxes from the paged state at entry and stores what it wrote at exit
+A CTA loads its boxes from the state's plane at entry and stores what it wrote at exit
 ([`ARCHITECTURE.md` section 3](../ARCHITECTURE.md#3-the-state)). MEASURED apart from the carry
 ([`lab/state_move.md`](../lab/state_move.md), [`lab/state_image.md`](../lab/state_image.md)); not composed with it.
 
@@ -199,7 +199,7 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
    cell; then the scales; then the den.
 4. The intra beside it ([`lab/intra_window.md`](../lab/intra_window.md)), and the op's two halves against
    `tests/oracle/test_prefill_vs_oracle.py`; then the producer.
-5. The state at entry and exit, paged and dense.
+5. The state at entry and exit, over the dense plane.
 6. The contract's width: value widths, level widths, depth 3 and 4, every pattern of listed and whole levels (R10).
 7. The climb.
 

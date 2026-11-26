@@ -70,33 +70,10 @@ __global__ void decode_stamp_kernel(int64_t* out) {
 
 }  // namespace stampdet
 
-//: THE VERDICT'S LAST STEP, by the warp that finishes a head: the finished-head count, and the last head's -- see docs/internals/decode/decode.md#seen
-__device__ __forceinline__ void finish_verdict(const DecodeParams& p, int lane) {
-  __threadfence();
-  __syncwarp();
-  int last = 0;
-  if (lane == 0) last = (atomicAdd(p.growth_ctr, 1) == p.BH - 1) ? 1 : 0;
-  last = __shfl_sync(0xffffffffu, last, 0);
-  if (last == 0) return;
-  __threadfence();
-  int seen = 0;
-#pragma unroll 1
-  for (int i = lane; i < p.BH; i += 32) seen |= __ldcg(p.growth + i);
-  const bool any_needy = __any_sync(0xffffffffu, seen != 0);
-  if (!any_needy) {
-#pragma unroll 1
-    for (int i = lane; i < p.BH; i += 32) p.done[i] = 0;
-  }
-  if (lane == 0) {
-    *p.growth_any = any_needy ? 1 : 0;
-    *p.growth_ctr = 0;
-  }
-}
-
 //: A VISIT'S PARTIAL INTO ITS HEAD, by warp 0: the CTA's fold summed a column a lane and added once, the -- see docs/internals/decode/decode.md#queue-finish
 template <class Dp, int DV>
 __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fold, int bh,
-                                          int blocks, bool paged, int* finished, int lane) {
+                                          int blocks, int* finished, int lane) {
   constexpr int cols = DV + 1;
   int positions_walked = 0;
 #pragma unroll 1
@@ -127,24 +104,14 @@ __device__ __forceinline__ void add_visit(const DecodeParams& p, const float* fo
     sums[c] = 0.0f;
   }
   if (lane == 0) sums[DV] = 0.0f;
-  if (!paged) return;
-  //: THE DONE FLAG is set by the head's finisher alone: every visit that read it has claimed its last position.
-  if (lane == 0) {
-    p.growth[bh] = 0;
-    p.done[bh] = 1;
-  }
-  finish_verdict(p, lane);
 }
 
 //: THE STEP at build `Bt::build` (a type: docs/internals/common/hardware.md#build-tag), at its plan's threads.
 struct RowSums;
-struct ScanTemp;
-struct Running;
 struct ListCounts;
 struct DenseCounts;
 struct TermFields;
 struct TermUnits;
-struct Admit;
 struct Blocks;
 struct Next;
 struct Last;
@@ -154,11 +121,10 @@ struct ValueRow;
 struct FoldRows;
 struct StepWords;
 
-//: THE STEP'S SHARED MEMORY: the control state a field a tile, the scan's storage, the clock's rows, the value and a fold row a warp, and what is left for the call's staged rows and tables -- see docs/internals/decode/decode.md#smem
+//: THE STEP'S SHARED MEMORY: the control state a field a tile, the clock's rows, the value and a fold row a warp, and what is left for the call's staged rows and tables -- see docs/internals/decode/decode.md#smem
 template <class Bt, int DV>
 struct DecodeTiles {
   using Dp = DecodePlan<Bt::build>;
-  using Scan = typename LatticeScan<Dp::kThreads>::TempStorage;
   static constexpr int kClock = Dp::kWarps * PhaseClock<kDecodePhases>::kRow;
   static constexpr int kFold = Dp::kWarps * (DV + 4);
   static constexpr int kFields = kMaxTerms * kMaxLevels;
@@ -167,19 +133,17 @@ struct DecodeTiles {
 
 template <class Bt, int DV, class Tl = DecodeTiles<Bt, DV>>
 using DecodeSmem = SmemLayout<
-    Bt, Tl::Dp::kBlocksPerSm, Fixed<RowSums, float, kMaxLevels>, One<ScanTemp, typename Tl::Scan>,
-    One<Running, int>, Fixed<ListCounts, int, Tl::kLists>, Fixed<DenseCounts, int, kMaxLevels>,
-    Fixed<TermFields, int, Tl::kFields>, Fixed<TermUnits, int, kMaxTerms>, One<Admit, int>,
-    One<Blocks, int>, One<Next, int>, One<Last, int>, Fixed<TermFirst, int, kMaxTerms + 1>,
-    Fixed<ClockRows, long long, Tl::kClock>, Fixed<ValueRow, float, DV>,
-    Fixed<FoldRows, float, Tl::kFold>, Rest<StepWords, std::uint32_t>>;
+    Bt, Tl::Dp::kBlocksPerSm, Fixed<RowSums, float, kMaxLevels>, Fixed<ListCounts, int, Tl::kLists>,
+    Fixed<DenseCounts, int, kMaxLevels>, Fixed<TermFields, int, Tl::kFields>,
+    Fixed<TermUnits, int, kMaxTerms>, One<Blocks, int>, One<Next, int>, One<Last, int>,
+    Fixed<TermFirst, int, kMaxTerms + 1>, Fixed<ClockRows, long long, Tl::kClock>,
+    Fixed<ValueRow, float, DV>, Fixed<FoldRows, float, Tl::kFold>, Rest<StepWords, std::uint32_t>>;
 
 template <class Bt, int DV, int D, bool DECAY>
 __global__
 __launch_bounds__(DecodePlan<Bt::build>::kThreads, DecodePlan<Bt::build>::kBlocksPerSm) void
 decode_step_kernel(DecodeParams p) {
   using Dp = DecodePlan<Bt::build>;
-  using Scan = LatticeScan<Dp::kThreads>;
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a -- see docs/internals/decode/decode.md#cols
   constexpr int cols = DV + 1;
   //: THE STATE PAGE: s24 planes at their group exponents, and the mass.
@@ -206,18 +170,15 @@ decode_step_kernel(DecodeParams p) {
   int32_t* dlist = olist + kKinds * p.olist_total;
 
   float* const s_sum = Smem::template get<RowSums>();
-  typename Scan::TempStorage& scan_temp = *Smem::template get<ScanTemp>();
-  int& s_running = *Smem::template get<Running>();
   int* const s_n_o = Smem::template get<ListCounts>();
   int* const s_n_d = Smem::template get<DenseCounts>();
   //: THE TERM TABLE, ONE PACKED WORD PER (term, level): the field's position, its -- see docs/internals/decode/decode.md#decode-step-kernel-note-l137
   int* const s_fld = Smem::template get<TermFields>();
   //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space -- see docs/internals/decode/decode.md#near-line-122
   int* const s_units = Smem::template get<TermUnits>();
-  //: THE HEAD'S ADMISSION as this CTA holds it: whether it admits, the outcome, the position count. -- see docs/internals/decode/decode.md#queue-admission
-  int& s_admit = *Smem::template get<Admit>();
+  //: THE HEAD'S POSITION COUNT as this CTA holds it. -- see docs/internals/decode/decode.md#queue-positions
   int& s_blocks = *Smem::template get<Blocks>();
-  //: The head the CTA visits next, and whether it steals it, as warp 0 chose. -- see docs/internals/decode/decode.md#queue-next
+  //: The head the CTA visits next, as warp 0 chose, and at the exit whether this CTA is the last out. -- see docs/internals/decode/decode.md#queue-next
   int& s_next = *Smem::template get<Next>();
   int& s_last = *Smem::template get<Last>();
   //: A HEAD'S TERMS' FIRST POSITIONS, and past the last its position count. -- see docs/internals/decode/decode.md#queue-positions
@@ -227,12 +188,12 @@ decode_step_kernel(DecodeParams p) {
 
   PhaseClock<kDecodePhases> clock(&s_clock[warp][0], lane);
 
-  //: THE QUEUE, per batch-head: positions claimed, positions finished, the position count (-1 until known), the -- see docs/internals/decode/decode.md#queue
+  //: THE QUEUE, per batch-head: positions claimed, positions finished, the position count (-1 until known) -- see docs/internals/decode/decode.md#queue
   auto q_claim = [&](int i) -> int& { return p.queue[i]; };
   auto q_finished = [&](int i) -> int& { return p.queue[p.BH + i]; };
   auto q_blocks = [&](int i) -> int& { return p.queue[2 * p.BH + i]; };
-  auto q_state = [&](int i) -> int& { return p.queue[3 * p.BH + i]; };
-  int* const q_cursor = p.queue + 4 * p.BH;
+
+  int* const q_cursor = p.queue + 3 * p.BH;
   int* const q_exit = q_cursor + 1;
 
   //: THE LANE'S GROUP AND CHANNELS: group `grp` walks its own unit; the lane holds channels -- see docs/internals/decode/decode.md#leaf-lanes
@@ -240,10 +201,8 @@ decode_step_kernel(DecodeParams p) {
   const int ch0 = 8 * (lane % Lanes::kLanes);
   const bool row_lead = ch0 == 0;
   const bool exp_lead = (ch0 & 31) == 0;
-  const bool paged = p.page_tbl != nullptr;
   //: A CTA'S FIRST HEAD is its index modulo the heads; a head past the grid comes from the cursor. -- see docs/internals/decode/decode.md#queue-next
   int bh = static_cast<int>(blockIdx.x) % p.BH;
-  bool stolen = false;
 
 #pragma unroll 1
   while (bh >= 0) {
@@ -292,123 +251,13 @@ decode_step_kernel(DecodeParams p) {
       s_first[D + 1] = at;
     }
 
-    // ---- THE ADMISSION: one decision a head, published -------------------------------
-    //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without -- see docs/internals/decode/decode.md#paged
-    const bool deposit = !(paged && p.done[bh] != 0);
+    //: THE HEAD'S POSITION COUNT, published for the stealers: every visitor derives the same one (an empty head has one position, which walks nothing).
     if (tid == 0) {
-      //: an unpaged head has nothing to decide; a paged one's first arrival owns the decision.
-      int role = kQueueDecided;
-      if (paged && deposit && !stolen)
-        role = atomicCAS(&q_state(bh), 0, 1) == 0 ? kQueueOwner : kQueueFollower;
-      if (paged && !deposit) role = kQueueDecided;
-      s_admit = role;
-    }
-    __syncthreads();
-    const bool owner = (s_admit & kQueueOwner) != 0;
-    const bool follower = (s_admit & kQueueFollower) != 0 || (paged && deposit && stolen);
-    bool needy = false;
-    if (owner) {
-      const int inner_bits = p.lat_inner_bits;
-      //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses, -- see docs/internals/decode/decode.md#win-bits
-      const int win_bits = inner_bits < kAtomShift ? inner_bits : kAtomShift;
-      const uint32_t win_mask = (1u << (1 << win_bits)) - 1u;
-      const int n_units = 1 << p.lat_units_per_atom_shift;
-      //: THE CANDIDATE SLOT'S ROW of the same packed term table -- the ADMISSION's rank space, -- see docs/internals/decode/decode.md#candfld
-      const int32_t* cand_fld = s_fld + (D + 1) * kMaxLevels;
-      auto candidate_atom = [&](int i) -> int {
-        const int a = i & ((1 << p.atoms_per_unit_shift) - 1);
-        const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
-        int atom = -1;
-#pragma unroll 1
-        for (int q = 0; q < n_units; ++q) {
-          const CandidateUnit u = resolve_candidate_unit<D>(p, mask_w, olist, cand_fld, unit0 + q);
-          if (!u.valid) return -1;
-          if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
-          if (u.live_w
-              && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
-            return atom;
-          }
-        }
-        return -1;
-      };
-      //: FROM THE CANDIDATE SLOT, not from the walk's write term: the two enumerate the same -- see docs/internals/decode/decode.md#ncandidates
-      const int n_candidates = (s_units[D + 1] >> p.lat_units_per_atom_shift)
-                               << p.atoms_per_unit_shift;
-      const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
-      int32_t* const page_row = p.page_tbl + row_base;
-      //: THE TABLE TEST: how many atoms this batch-head's write side reaches that the -- see docs/internals/decode/decode.md#a
-      int found = 0;
-#pragma unroll 1
-      for (int i = tid; i < n_candidates; i += Dp::kThreads) {
-        const int a = candidate_atom(i);
-        if (a >= 0 && page_row[a] < 0) ++found;
-      }
-      int excl = 0;
-      int demand = 0;
-      Scan(scan_temp).ExclusiveSum(found, excl, demand);
-      __syncthreads();
-      if (demand > 0) {
-        const int cursor = (p.pool_cap > 0) ? p.pool_cursor[bh] : 0;
-        const bool claimed = demand <= p.pool_cap - cursor;
-        needy = !claimed;
-        if (claimed) {
-          //: THE CLAIM, owned by the head's owner: the touched-unmapped atoms in ascending atom id take the next -- see docs/internals/decode/decode.md#queue-claim-pool
-          const int32_t* slots = p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap;
-          if (tid == 0) s_running = 0;
-          __syncthreads();
-#pragma unroll 1
-          for (int base = 0; base < n_candidates; base += Dp::kThreads) {
-            const int i = base + tid;
-            const int a = (i < n_candidates) ? candidate_atom(i) : -1;
-            const bool want = a >= 0 && page_row[a] < 0;
-            int rank = 0;
-            int aggregate = 0;
-            Scan(scan_temp).ExclusiveSum(want ? 1 : 0, rank, aggregate);
-            if (want) page_row[a] = slots[cursor + s_running + rank];
-            __syncthreads();
-            if (tid == 0) s_running += aggregate;
-            __syncthreads();
-          }
-          if (tid == 0) p.pool_cursor[bh] = cursor + demand;
-        }
-      }
-      //: THE CONDENSATION, published by the head's owner: the write-atom set a host admission plans from. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l355
-      bool* atom_row = p.atom_bits + row_base;
-#pragma unroll 1
-      for (int a = tid; a < p.atoms_per_bh; a += Dp::kThreads) atom_row[a] = false;
-      __syncthreads();
-#pragma unroll 1
-      for (int i = tid; i < n_candidates; i += Dp::kThreads) {
-        const int a = candidate_atom(i);
-        if (a >= 0) atom_row[a] = true;
-      }
-      //: THE PUBLICATION: the count, every thread's fence, then the one swap that makes it all readable. A needy head has no positions.
-      if (tid == 0) {
-        s_blocks = needy ? 0 : (s_first[D + 1] > 0 ? s_first[D + 1] : 1);
-        q_blocks(bh) = s_blocks;
-      }
-      __threadfence();
-      __syncthreads();
-      if (tid == 0) atomicExch(&q_state(bh), kQueueReady | (needy ? kQueueNeedy : 0));
-    } else if (follower) {
-      //: A FOLLOWER WAITS FOR THE OWNER, which is running: it won the swap. -- see docs/internals/decode/decode.md#queue-admission
-      if (tid == 0) {
-        while ((atomicAdd(&q_state(bh), 0) & kQueueReady) == 0) __nanosleep(64);
-      }
-    } else if (tid == 0) {
-      //: nothing to decide: the head is unpaged, or a replay re-reads it; every visitor derives the same count.
       s_blocks = s_first[D + 1] > 0 ? s_first[D + 1] : 1;
       q_blocks(bh) = s_blocks;
     }
     __syncthreads();
-    int blocks = s_blocks;
-    if (follower) {
-      //: EVERY THREAD READS THE OWNER'S PUBLICATION ITSELF, after its own fence (KERNEL_STANDARDS §12).
-      __threadfence();
-      needy = (__ldcg(&q_state(bh)) & kQueueNeedy) != 0;
-      blocks = __ldcg(&q_blocks(bh));
-    }
-    clock.lap(kPhAdmit);
+    const int blocks = s_blocks;
 
     //: THE WARP'S OWN PARTIAL for this head, over every position it claims.
     float acc[8];
@@ -417,17 +266,12 @@ decode_step_kernel(DecodeParams p) {
     float acc_m = 0.0f;
     int walked = 0;
 
-    //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is -- see docs/internals/decode/decode.md#decode-step-kernel-note-l397
-    const int32_t* page_row =
-        !paged ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
-    const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
-    int cached_atom = -1;
-    int64_t atom_base = 0;
-    bool atom_present = false;
+    //: THE BATCH-HEAD'S PLANE: an atom's page is its own place in it, plain arithmetic at each use.
+    uint8_t* const plane =
+        p.state + static_cast<int64_t>(bh) * p.atoms_per_bh * static_cast<int64_t>(Page::kBytes);
 
     // ---- THE WALK: a warp claims a position, walks it, claims again -------------------
     //: @barrier-free the walk: a lane group's read and write-back are one statement in program order; see docs/internals/decode/decode.md#no-barrier
-    //: A NEEDY BATCH-HEAD RUNS NOTHING: its count is zero, so no warp claims. -- see docs/internals/decode/decode.md#queue-admission
     //: THE NEXT CLAIM IS ISSUED BEFORE THE CURRENT POSITION IS WALKED, so its round trip hides behind the walk. -- see docs/internals/decode/decode.md#queue-claim
     int claim = 0;
     if (lane == 0) claim = atomicAdd(&q_claim(bh), 1);
@@ -461,36 +305,28 @@ decode_step_kernel(DecodeParams p) {
 #pragma unroll 1
         for (int a = 0; a < (1 << p.atoms_per_unit_shift); ++a) {
           const int atom = (u.base >> kAtomShift) + a;
-          bool present = true;
-          int64_t base = (dense_bh_base + atom) * static_cast<int64_t>(Page::kBytes);
-          if (page_row != nullptr) {
-            const int slot = page_row[atom];
-            present = slot >= 0;
-            base = static_cast<int64_t>(slot) * Page::kBytes;
-          }
-          uint8_t* const page = p.state + base;
-          LeafAddr addr[kRows];
+          uint8_t* const page = plane + atom * static_cast<int64_t>(Page::kBytes);
+          //: ONE ADDRESS AN ATOM IS HELD: the group's first leaf's; a later leaf's is a constant past it
+          const LeafAddr first = leaf_addr<DV>(page, grp, ch0);
           LeafSlice slice[kRows];
+          //: EVERY LEAF'S LOADS ARE ISSUED HERE, before any leaf's arithmetic: each sits under a predicate only the launch knows (a plane has pages), so the assembler keeps it in place -- see docs/internals/decode/decode.md#atom-loads
+          const bool resident = p.atoms_per_bh != 0;
 #pragma unroll
           for (int k = 0; k < kRows; ++k) {
-            addr[k] = leaf_addr<DV>(page, k * Lanes::kGroups + grp, ch0);
-            slice[k] = load_leaf(addr[k], present, true, row_lead);
+            slice[k] =
+                load_leaf(leaf_after<DV>(first, k * Lanes::kGroups), resident, true, row_lead);
           }
 #pragma unroll
           for (int k = 0; k < kRows; ++k) {
             const int t = (a << kAtomShift) + k * Lanes::kGroups + grp;
             //: ONLY THE WRITE SUPPORT IS THIS TERM'S: a leaf outside it belongs to a read term, which reads it.
-            const bool mine = present && ((u.cw >> t) & 1u) != 0u;
+            const bool mine = ((u.cw >> t) & 1u) != 0u;
             const bool in_r = ((br >> t) & 1u) != 0u;
             const float ar = (mine && in_r) ? u.ar * sa_r[u.dlast + t] : 0.0f;
-            if (deposit) {
-              const float aw = mine ? u.aw * sa_w[u.dlast + t] : 0.0f;
-              const float rate = (DECAY && mine) ? u.rate * sd[u.dlast + t] : 0.0f;
-              deposit_leaf<DECAY>(slice[k], addr[k], ar, aw, rate, share, v_tok, ch0, mine,
-                                  row_lead, exp_lead, acc, acc_m);
-            } else {
-              read_full(slice[k], ar, row_lead, acc, acc_m);
-            }
+            const float aw = mine ? u.aw * sa_w[u.dlast + t] : 0.0f;
+            const float rate = (DECAY && mine) ? u.rate * sd[u.dlast + t] : 0.0f;
+            deposit_leaf<DECAY>(slice[k], leaf_after<DV>(first, k * Lanes::kGroups), ar, aw, rate,
+                                share, v_tok, ch0, mine, row_lead, exp_lead, acc, acc_m);
           }
         }
         continue;
@@ -520,27 +356,14 @@ decode_step_kernel(DecodeParams p) {
 
         const int leaf = u.base + t;
         const int atom = leaf >> kAtomShift;
-        if (live && atom != cached_atom) {
-          cached_atom = atom;
-          if (page_row != nullptr) {
-            const int slot = page_row[atom];
-            atom_present = slot >= 0;
-            atom_base = static_cast<int64_t>(slot) * Page::kBytes;
-          } else {
-            atom_present = true;
-            atom_base = (dense_bh_base + atom) * (int64_t)Page::kBytes;
-          }
-        }
-        //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the -- see docs/internals/decode/decode.md#decode-step-kernel-note-l516
-        const bool present = live && atom_present;
+        const bool present = live;
         const float ar = (present && in_r) ? u.ar * sa_r[off_last] : 0.0f;
         //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE; a WRITTEN one both planes -- see docs/internals/decode/decode.md#int8-state
-        const LeafAddr addr = leaf_addr<DV>(p.state + atom_base, leaf & kAtomMask, ch0);
+        uint8_t* const page = plane + atom * static_cast<int64_t>(Page::kBytes);
+        const LeafAddr addr = leaf_addr<DV>(page, leaf & kAtomMask, ch0);
         const LeafSlice slice = load_leaf(addr, present, writes, row_lead);
         if (!writes) {
           read_hi(slice, ar, row_lead, acc, acc_m);
-        } else if (!deposit) {
-          read_full(slice, ar, row_lead, acc, acc_m);
         } else {
           //: UPDATE FIRST, THEN READ THE STORED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
           const float aw = present ? u.aw * sa_w[off_last] : 0.0f;
@@ -574,12 +397,7 @@ decode_step_kernel(DecodeParams p) {
     }
     __syncthreads();
     if (warp == 0) {
-      add_visit<Dp, DV>(p, fold, bh, blocks, paged, &q_finished(bh), lane);
-      //: A NEEDY HEAD'S OWNER FINISHES IT: no positions, no y, its growth flag set. -- see docs/internals/decode/decode.md#queue-finish
-      if (owner && needy) {
-        if (lane == 0) p.growth[bh] = 1;
-        finish_verdict(p, lane);
-      }
+      add_visit<Dp, DV>(p, fold, bh, blocks, &q_finished(bh), lane);
     }
     clock.lap(kPhCombine);
 
@@ -594,7 +412,6 @@ decode_step_kernel(DecodeParams p) {
         if (c < p.BH) next = c;
       }
       next = __shfl_sync(0xffffffffu, next, 0);
-      int steal = 0;
       if (next < 0) {
         //: STEALING: the head with the most positions left, among those whose count is published. -- see docs/internals/decode/decode.md#queue-next
         int best = -1;
@@ -626,17 +443,12 @@ decode_step_kernel(DecodeParams p) {
         //: A STEAL PAYS A PROLOGUE, so it takes a head only with a position left for every warp.
         if (most >= Dp::kWarps) {
           next = best;
-          steal = 1;
         }
       }
-      if (lane == 0) {
-        s_next = next;
-        s_last = steal;
-      }
+      if (lane == 0) s_next = next;
     }
     __syncthreads();
     bh = s_next;
-    stolen = s_last != 0;
   }
 
   // ---- THE EXIT: the last CTA out resets the queue for the next step ----------------------
@@ -653,7 +465,6 @@ decode_step_kernel(DecodeParams p) {
       q_claim(i) = 0;
       q_finished(i) = 0;
       q_blocks(i) = -1;
-      q_state(i) = 0;
     }
     if (tid == 0) {
       *q_cursor = 0;
@@ -813,7 +624,6 @@ void fill_lattice(DecodeParams& p, const plan::DecodeLayout& layout) {
   p.olist_total = layout.olist_total;
   p.dlist_total = layout.dlist_total;
   p.atoms_per_unit_shift = layout.atoms_per_unit_shift;
-  p.lat_units_per_atom_shift = layout.lat_units_per_atom_shift;
   p.write_atoms = layout.write_atoms;
 }
 
@@ -867,11 +677,8 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
                            std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
                            std::optional<Tensor> dials, Tensor v, Tensor v_scale, Tensor state,
-                           Tensor yacc, Tensor queue, Tensor growth, Tensor growth_any,
-                           Tensor growth_ctr, Tensor done, Tensor atom_bits, int64_t ctas,
-                           double eps, std::vector<int64_t> descriptor,
-                           std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
-                           std::optional<Tensor> pool_cursor) {
+                           Tensor yacc, Tensor queue, int64_t ctas, double eps,
+                           std::vector<int64_t> descriptor) {
   check_arch_table();
   const int D = static_cast<int>(read.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
@@ -906,30 +713,14 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   detail::check_f32(yacc, "yacc");
   detail::check_i32(queue, "queue");
 
-  //: THE TWO BACKINGS, validated where they differ and nowhere else. -- see docs/internals/decode/decode.md#note-l1083
-  int64_t N = 0;
-  int atoms_per_bh = 0;
-  int32_t* page_ptr = nullptr;
-  if (page_table.has_value()) {
-    Tensor& tbl = *page_table;
-    detail::check_i32(tbl, "page_table");
-    STD_TORCH_CHECK(tbl.dim() == 2 && tbl.size(0) == BH, "page_table must be [BH, N / ",
-                    kAtomLeaves, "] int32");
-    atoms_per_bh = static_cast<int>(tbl.size(1));
-    N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
-    STD_TORCH_CHECK(state.dim() == 2 && state.size(1) == page_bytes,
-                    "under a page table the state is the arena's plane, [slots, ", page_bytes,
-                    "] bytes");
-    page_ptr = tbl.mutable_data_ptr<int32_t>();
-  } else {
-    STD_TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == page_bytes,
-                    "a dense state is [BH, N / ", kAtomLeaves, ", ", page_bytes, "] bytes");
-    N = 1;
-    for (auto w : level_widths) N *= w;
-    atoms_per_bh = static_cast<int>(N / kAtomLeaves);
-    STD_TORCH_CHECK(state.size(1) == atoms_per_bh, "a dense state holds N / ", kAtomLeaves, " = ",
-                    atoms_per_bh, " pages a batch-head; got ", state.size(1));
-  }
+  //: THE STATE'S PLANE: a page an atom, a batch-head's pages in atom order. -- see docs/internals/decode/decode.md#state
+  STD_TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == page_bytes,
+                  "the state is [BH, N / ", kAtomLeaves, ", ", page_bytes, "] bytes");
+  int64_t N = 1;
+  for (auto w : level_widths) N *= w;
+  const int atoms_per_bh = static_cast<int>(N / kAtomLeaves);
+  STD_TORCH_CHECK(state.size(1) == atoms_per_bh, "the state holds N / ", kAtomLeaves, " = ",
+                  atoms_per_bh, " pages a batch-head; got ", state.size(1));
 
   DecodeParams p{};
   p.D = D;
@@ -976,29 +767,8 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                   ctas);
   STD_TORCH_CHECK(yacc.dim() == 2 && yacc.size(0) == BH && yacc.size(1) == cols,
                   "yacc must be [BH, cols]");
-  STD_TORCH_CHECK(queue.dim() == 1 && queue.size(0) == 4 * static_cast<int64_t>(BH) + 2,
-                  "queue must be [4 BH + 2] int32");
-
-  //: THE ADMISSION BUFFERS, checked whichever backing this is: the step's own -- see docs/internals/decode/decode.md#note-l1131
-  detail::check_i32(growth, "growth");
-  detail::check_i32(growth_any, "growth_any");
-  detail::check_i32(growth_ctr, "growth_ctr");
-  detail::check_i32(done, "done");
-  STD_TORCH_CHECK(growth.dim() == 1 && growth.size(0) == BH, "growth must be [BH] int32");
-  STD_TORCH_CHECK(done.dim() == 1 && done.size(0) == BH, "done must be [BH] int32");
-  STD_TORCH_CHECK(growth_any.dim() == 1 && growth_any.size(0) == 1, "growth_any must be [1] int32");
-  STD_TORCH_CHECK(growth_ctr.dim() == 1 && growth_ctr.size(0) == 1, "growth_ctr must be [1] int32");
-  STD_TORCH_CHECK(
-      atom_bits.is_cuda() && atom_bits.scalar_type() == Dtype::Bool && atom_bits.is_contiguous(),
-      "atom_bits must be a contiguous CUDA bool tensor, got ", atom_bits.scalar_type());
-  STD_TORCH_CHECK(
-      atom_bits.dim() == 2 && atom_bits.size(0) == BH && atom_bits.size(1) == N / kAtomLeaves,
-      "atom_bits must be [BH, N / ", kAtomLeaves, "] bool, got ", shape(atom_bits.sizes()));
-
-  //: THE ATOM'S PLACE IN THE LATTICE, required of a PAGED backing only, and now -- see docs/internals/decode/decode.md#torch-check
-  if (page_ptr != nullptr && !launch.layout.owner_holds_atom) {
-    STD_TORCH_CHECK(false, plan::decode_paged_refusal(launch.layout));
-  }
+  STD_TORCH_CHECK(queue.dim() == 1 && queue.size(0) == 3 * static_cast<int64_t>(BH) + 2,
+                  "queue must be [3 BH + 2] int32");
 
   const bool decay = dials.has_value();
   STD_TORCH_CHECK(decay == (launch.arm.decay != 0), "the call's dials are ",
@@ -1015,35 +785,10 @@ Tensor fsla_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   //: `empty`, not `zeros`: every element is written, so a zero-fill is a launch the -- see docs/internals/decode/decode.md#y
   auto y = empty_cuda({BH, d_v}, Dtype::Float, v.get_device_index());
   p.state = state.mutable_data_ptr<uint8_t>();
-  p.page_tbl = page_ptr;
   p.atoms_per_bh = atoms_per_bh;
   p.y = y.mutable_data_ptr<float>();
   p.yacc = yacc.mutable_data_ptr<float>();
   p.queue = queue.mutable_data_ptr<int32_t>();
-  p.growth = growth.mutable_data_ptr<int32_t>();
-  p.growth_any = growth_any.mutable_data_ptr<int32_t>();
-  p.growth_ctr = growth_ctr.mutable_data_ptr<int32_t>();
-  p.done = done.mutable_data_ptr<int32_t>();
-  p.atom_bits = atom_bits.mutable_data_ptr<bool>();
-
-  //: THE SLACK POOL, present or absent as ONE decision -- two buffers and a capacity, -- see docs/internals/decode/decode.md#pooled
-  const bool pooled = pool_slots.has_value();
-  STD_TORCH_CHECK(pooled == pool_cursor.has_value(),
-                  "the slack pool is its two buffers together: pass pool_slots and pool_cursor, "
-                  "or neither");
-  if (pooled) {
-    STD_TORCH_CHECK(page_table.has_value(),
-                    "a slack pool admits into a page table and this state is dense-backed");
-    detail::check_i32(*pool_slots, "pool_slots");
-    detail::check_i32(*pool_cursor, "pool_cursor");
-    STD_TORCH_CHECK(pool_slots->dim() == 2 && pool_slots->size(0) == BH,
-                    "pool_slots must be [BH, pool_cap] int32, got ", shape(pool_slots->sizes()));
-    STD_TORCH_CHECK(pool_cursor->dim() == 1 && pool_cursor->size(0) == BH,
-                    "pool_cursor must be [BH] int32");
-    p.pool_slots = pool_slots->mutable_data_ptr<int32_t>();
-    p.pool_cursor = pool_cursor->mutable_data_ptr<int32_t>();
-    p.pool_cap = static_cast<int>(pool_slots->size(1));
-  }
   p.N = N;
   p.BH = BH;
   p.H = H;

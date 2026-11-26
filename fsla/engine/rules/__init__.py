@@ -8,11 +8,9 @@ present (docs/internals/engine/rules.md).
 """
 
 from fsla.engine.rules.envelope import envelope
-from fsla.engine.rules.paging import admission
 from fsla.engine.rules.run_table import run_table
 
 __all__ = [
-    "admission",
     "envelope",
     "run_table",
 ]

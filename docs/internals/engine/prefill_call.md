@@ -14,15 +14,14 @@ length is an output of the prefill launch function (`docs/api.md` section 4.2, `
 
 | Step | Returns | What it does |
 |---|---|---|
-| `backing` | `page_table`, `state_out` | the planes the launch is handed; a continuation's are one |
+| `backing` | `state_out` | the plane the launch stores into; a continuation's is the plane it reads |
 | `launch` | `num`, `den` | the carry at its bytes (`num` and the v+1 channel `den`) and the intra into the same planes, each over the reader factor (`fsla.ops.prefill.prefill`, [`#the-seam`](#the-seam)) |
 | `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`fsla.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
 
 Each step runs inside a profiler range under its own name ([`engine.md`](engine.md#the-profiler-range)).
 
-The call holds the steps that run over its descriptor and workspace. The state's entry (`FSLAState._kernel_entry`) needs the arena's
-allocation extent, the carry's box leaves, which only the prefill launch function's carve gives, so the entry on the prefill path is that
-function's (`docs/open-work.md` rows A-c and A-f); a prefill is refused before any of it could run.
+The call holds the steps that run over its descriptor and workspace. The state's entry (`FSLAState._kernel_entry`) binds the call's shape, device and format and hands back the plane the state carries; the prefill
+is to load and store every page of a block it runs, with no activity fold (`docs/internals/state.md#dense-state`), and a prefill is refused before any of it could run.
 
 ## The seam
 

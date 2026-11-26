@@ -6,7 +6,7 @@ explains WHY the structure is shaped as it is and how its pieces connect; the co
 statement of how each body works. What is DECIDED from values is [the rule layer's page](rules.md).
 
 Symbols: `B` batch, `T` tokens, `H` heads, `D` routing depth, `N` leaf count, `d_v`
-value width, `BC` the carry's box in leaves (the arena's allocation extent), `BH = B*H`.
+value width, `BC` the carry's box in leaves, `BH = B*H`.
 
 ## <a id="the-three-bands"></a>1. What the engine is
 
@@ -64,8 +64,8 @@ step taking what it reads as arguments. A step that needs a value an earlier ste
 produce is a name error at its first run, never a runtime surprise.
 
 A shipped call selects nothing by call class: stateless and stateful prefill are one function (the
-state's absence is a runtime-null operand, `state_in is None`), and dense and paged decode are one
-function (a dense step's `page_table is None`). Intra-call variation is a null operand, which is free
+state's absence is a runtime-null operand, `state_in is None`), and decode is one
+function over the state's plane. Intra-call variation is a null operand, which is free
 and costs no hot-loop register; a bool per fact would be `2^n` specializations of everything downstream.
 
 ## <a id="the-profiler-range"></a>4. The profiler range

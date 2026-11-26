@@ -461,7 +461,9 @@ def test_the_calls_carry_only_their_inputs_and_no_plan_object_exists():
     assert step["decay"].kind is inspect.Parameter.KEYWORD_ONLY and step["decay"].default is None
     for gone in ("Descriptor", "descriptor", "workspace_bytes", "build_workspace", "prefill_descriptor", "decode_descriptor", "fsla_op"):
         assert not hasattr(fsla, gone) and gone not in fsla.__all__
-    for kept in ("growth_pending", "admit_growth", "pool_headroom", "refill_pool"):
+    for gone in ("growth_pending", "admit_growth", "pool_headroom", "refill_pool", "state"):
+        assert not hasattr(fsla, gone) and gone not in fsla.__all__
+    for kept in ("dense_state", "FSLAState"):
         assert kept in fsla.__all__
     for gone in ("PrefillPlan", "prefill_plan", "Carve", "SidePlan"):
         assert not hasattr(engine, gone) and gone not in fsla.__all__
@@ -527,7 +529,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     and one that merely IMPORTS a measure module fails on the second assertion.
 
     The module list is the prefill path itself -- the facade, the prefill call, the
-    state, decode, paging -- and nothing else: a module the prefill path does not
+    state, decode, the page codec -- and nothing else: a module the prefill path does not
     resolve does not belong in a probe about what the prefill path resolves. The
     general `measure/` clause is the release blocker.
     """
@@ -557,7 +559,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from fsla.engine.prefill_call import PrefillContext, run_prefill;"
             "from fsla.ops.prefill import prefill;"
             "from fsla.ops.decode import decode_launch;"
-            "from fsla.ops.paging import PageArena, MMA_K_QUANTUM;"
+            "from fsla.ops.paging import MMA_K_QUANTUM, decode_pages, encode_pages;"
             # Nothing may have come from a `measure/` or `tests/` tree.
             "bad = [m.__name__ for m in list(sys.modules.values())"
             " if getattr(m, '__file__', None)"

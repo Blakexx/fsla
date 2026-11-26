@@ -1,14 +1,14 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The carried recurrent state: A PAGED TENSOR, and nothing more.
+"""The carried recurrent state: an interface, :class:`FSLAState`, and its one implementation, :class:`DenseState`.
 
-Storage (an arena or a dense plane), a page table, the logical shape
-``[B, H, N, cols]``, a device and a dtype, and the storage-mechanics stamp
-(``strategy``). Everything else that used to ride here failed one question --
-*would a paged tensor know this?* -- and lives where it belongs now
-(docs/internals/state.md).
+The interface is what a caller may ask of a state (its format, bound shape, device, dtype, whether it carries
+anything, a ``materialize`` and a ``clone``) and the seam the ops take the plane in and hand it back through. The
+dense state is the one implementation: one ``[BH, N/16, page_bytes]`` plane of the stored page format, the whole
+leaf space resident. Another implementation takes whatever parameters its own storage needs and is built by its
+own constructor (docs/internals/state.md#interface).
 
-    s = fsla.state()                     # unbound; the first call binds the shape
+    s = fsla.dense_state()               # unbound; the first call binds the shape
     y1, s = fsla.prefill(routes1, values1, masks1, state=s)
     y2, s = fsla.prefill(routes2, values2, masks2, state=s)
 
@@ -26,14 +26,14 @@ error where the bytes are addressed, and nothing here polices it in advance.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import torch
 
 from fsla.engine.types import MMA_K_QUANTUM
-from fsla.ops.paging import AtomKeying, PageArena
 
-__all__ = ["FSLAState", "StateFormat", "state"]
+__all__ = ["DenseState", "FSLAState", "StateFormat", "dense_state"]
 
 #: The page rectangle, as a bit count: an atom is the trailing
 #: ``log2(MMA_K_QUANTUM)`` canonical leaf bits, and the page IS that rectangle.
@@ -144,7 +144,7 @@ class StateFormat:
                     f"{field}={theirs!r}. A state carries its FORMAT: its leaf order, its "
                     f"page rectangle and its value width are what every kernel derives its "
                     f"addressing from, so a call that disagrees is refused here rather than "
-                    f"reading somebody else's bytes. Bind a fresh fsla.state() for this shape.")
+                    f"reading somebody else's bytes. Bind a fresh fsla.dense_state() for this shape.")
 
 
 def _format_of(routes, d_v: int, BH: int) -> StateFormat:
@@ -158,106 +158,114 @@ def _format_of(routes, d_v: int, BH: int) -> StateFormat:
                        ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
 
-#: THE ONE PAGING STRATEGY THIS VERSION BUILDS. It is a CONSTANT and not a list: one
-#: value is not an axis, and a list of one is a list that reads as a choice nobody has.
-_BUILT_STRATEGY = "mutable"
-
-#: The next one, named in the design and refused BY NAME rather than by a generic
-#: message, so a caller who asks for it learns it is scheduled rather than misspelled.
-_DESIGNED_STRATEGY = "cow"
+def dense_state() -> DenseState:
+    """A fresh UNBOUND dense state. Everything binds at the first call that receives it."""
+    return DenseState()
 
 
-def state(
-    strategy: str = "mutable",  #: reserved: copy-on-write branching, refused by name until it is built (its slot refcounts and per-branch tables do not exist)
-    pool_slack: float = 0.0,  #: reserved: the slack pool a decode step admits from (docs/internals/state.md#the-slack-pool)
-    *,
-    backing: str = "paged",
-) -> FSLAState:
-    """A fresh UNBOUND state. Everything but the knobs binds at the first call.
+class FSLAState(ABC):
+    """THE STATE INTERFACE: one sequence's carried state, mutated in place and handed back.
 
-    ``backing`` is the state's own format choice (R13: the state owns its format): ``"paged"`` -- the default -- is the
-    arena of the atoms a call realizes; ``"dense"`` pins one dense plane, the backing the bit-identity gate compares the
-    paged one against. Paging is bitwise invisible, so there is nothing to turn on.
-
-    ``pool_slack`` is STORAGE MECHANICS, which is why it lives here and not on the op: a
-    fraction of full residency, reserved per ``bh`` as physical slots a decode step can
-    admit into by itself. ``0.0`` -- the default -- is exact commitment, and every growth
-    step asks the host, exactly as it always did (docs/internals/state.md#the-slack-pool).
-    """
-    return FSLAState(strategy=strategy, pool_slack=pool_slack, backing=backing)
-
-
-class FSLAState:
-    """One sequence's carried state, mutated in place and handed back.
-
-    Construct through :func:`fsla.state`. The first stateful call binds the shape, the
-    device and the backing from the call itself -- binding is SHAPE ACQUISITION, not a
-    fingerprint, and there is no later compatibility interview.
-
-    ``strategy`` is a storage-mechanics fact, the same class as a tensor's layout: it
-    governs what a write does to this object's own storage. ``"mutable"`` is the built
-    one -- the call writes in place and returns THIS object. Changing it is
-    :meth:`clone`, never a mode flip on a live object.
-    TWO INDEPENDENT AXES, never conflated. ``strategy`` is the WRITE-SEMANTICS
-    contract -- what an advance does to existing references ("mutable": in
-    place, old references alias the result; "cow", when built: writes never
-    overwrite, every returned state stays valid, resubmission is branching).
-    The BACKING (dense plane vs paged arena) is storage mechanics -- chosen by
-    the state's creation (`fsla.state(backing=)`), priced in footprint, and semantically invisible (the
-    dense-vs-paged torch.equal gate is that claim). All four combinations are
-    coherent; dense x cow is legal-but-degenerate (no table -> a full-plane
-    copy per advance).
+    What a caller may ask is the public half; the underscored half is the seam the ops take the plane in and hand it
+    back through (`fsla/interface.py`, `fsla/engine/decode_step.py`). The first stateful call binds the shape and the
+    device from the call itself -- binding is SHAPE ACQUISITION, not a fingerprint, and there is no later
+    compatibility interview. An implementation owns its storage and the parameters that storage takes.
     """
 
-    __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
-                 "_plane", "_format", "__weakref__")
-
-    def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0, backing: str = "paged") -> None:
-        if strategy == _DESIGNED_STRATEGY:
-            raise NotImplementedError(
-                f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
-                "branching is named future work, and its slot refcounts "
-                f"and per-branch tables do not exist yet. The built strategy is "
-                f"{_BUILT_STRATEGY!r}.")
-        if strategy != _BUILT_STRATEGY:
-            raise ValueError(
-                f"strategy must be {_BUILT_STRATEGY!r}, got {strategy!r}")
-        if backing not in ("paged", "dense"):
-            raise ValueError(f"backing must be 'paged' or 'dense', got {backing!r}")
-        self.strategy = strategy
-        self.pool_slack = float(pool_slack)
-        self._shape: tuple[int, int, int, int] | None = None
-        self._device: torch.device | None = None
-        self._paging = backing == "paged"
-        self._arena: PageArena | None = None
-        self._plane: torch.Tensor | None = None
-        self._format: StateFormat | None = None
+    __slots__ = ()
 
     # -- what a caller may ask -------------------------------------------------
 
+    @property
+    @abstractmethod
+    def format(self) -> StateFormat | None:
+        """This state's FORMAT DESCRIPTOR, or ``None`` while unbound (docs/internals/state.md#format)."""
+
+    @property
+    @abstractmethod
+    def bound(self) -> bool:
+        """Whether a call has bound this state's shape and device yet."""
+
+    @property
+    @abstractmethod
+    def shape(self) -> tuple[int, int, int, int] | None:
+        """``[B, H, N, cols]``, or ``None`` while unbound."""
+
+    @property
+    @abstractmethod
+    def device(self) -> torch.device | None:
+        """The bound device, or ``None`` while unbound."""
+
+    @property
+    @abstractmethod
+    def dtype(self) -> torch.dtype | None:
+        """The STORAGE's dtype, or ``None`` while nothing is carried."""
+
+    @property
+    @abstractmethod
+    def carries(self) -> bool:
+        """Whether anything is STORED yet. A bound state can still be empty: binding fixes the shape, contents
+        arrive with the first call that finishes."""
+
+    @abstractmethod
+    def materialize(self) -> torch.Tensor | None:
+        """``[B, H, N, cols]`` fp32, or ``None`` while nothing is carried. ORACLE AND BRIDGE ONLY."""
+
+    @abstractmethod
+    def clone(self) -> FSLAState:
+        """An EAGER deep copy: an independent sequence, either handle passable into any op with no effect on the other."""
+
+    # -- the seam (fsla/interface.py, fsla/engine/decode_step.py) --------------
+
+    @abstractmethod
+    def _kernel_entry(self, routes, *, d_v: int) -> torch.Tensor | None:
+        """Bind this state to the call's shape, device and format (or check the call against what it is bound to),
+        and return the plane the kernel reads in, or ``None`` for a state that carries nothing yet."""
+
+    @abstractmethod
+    def _kernel_commit(self, plane: torch.Tensor) -> None:
+        """Take the plane a call that bound a FRESH state stored into; a continuation has nothing to take."""
+
+    @abstractmethod
+    def _require_carrying(self) -> None:
+        """Refuse a state with nothing to continue from: a decode step CONTINUES a sequence."""
+
+    @abstractmethod
+    def _decode_entry(self, routes) -> torch.Tensor:
+        """The plane one decode step reads and updates in place, after checking the step's routing against the bound format."""
+
+
+class DenseState(FSLAState):
+    """The dense state: one ``[BH, N/16, page_bytes]`` plane of the stored page format, mutated in place.
+
+    The plane is the whole leaf space, every page resident. A continuation advances it IN PLACE and returns THIS
+    object; a fresh plane is ZEROED at bind (docs/internals/state.md#the-dense-continuation). It takes no parameter:
+    its storage has nothing to configure.
+    """
+
+    __slots__ = ("_shape", "_device", "_plane", "_format", "__weakref__")
+
+    def __init__(self) -> None:
+        self._shape: tuple[int, int, int, int] | None = None
+        self._device: torch.device | None = None
+        self._plane: torch.Tensor | None = None
+        self._format: StateFormat | None = None
+
     def __repr__(self) -> str:
         if not self.bound:
-            return f"FSLAState(strategy={self.strategy!r}, unbound)"
-        return (f"FSLAState(strategy={self.strategy!r}, shape={self._shape}, "
-                f"backing={'paged' if self.paged else 'dense'}, device={self._device})")
+            return "DenseState(unbound)"
+        return f"DenseState(shape={self._shape}, device={self._device})"
 
     @property
     def format(self) -> StateFormat | None:
-        """This state's FORMAT DESCRIPTOR, or ``None`` while unbound.
-
-        What every kernel derives its addressing from, and what a later call is
-        checked against (docs/internals/state.md#format).
-        """
         return self._format
 
     @property
     def bound(self) -> bool:
-        """Whether a call has bound this state's shape, device and backing yet."""
         return self._shape is not None
 
     @property
     def shape(self) -> tuple[int, int, int, int] | None:
-        """``[B, H, N, cols]``, or ``None`` while unbound."""
         return self._shape
 
     @property
@@ -266,109 +274,31 @@ class FSLAState:
 
     @property
     def dtype(self) -> torch.dtype | None:
-        """The STORAGE's dtype, or ``None`` while nothing is carried."""
-        if self._arena is not None:
-            return self._arena.state.dtype
         return None if self._plane is None else self._plane.dtype
 
     @property
-    def paged(self) -> bool:
-        """Whether the CURRENT backing is an arena. Not a mode: a footprint."""
-        return self._arena is not None
-
-    @property
     def carries(self) -> bool:
-        """Whether anything is STORED yet. A bound state can still be empty.
-
-        Binding fixes the shape and the backing kind; contents arrive with the first
-        call that finishes. The two are separate because a call may bind a state and
-        then have nothing to carry (a fresh sequence's entry state is no state at all).
-        """
-        return self._arena is not None or self._plane is not None
-
-    @property
-    def page_table(self) -> torch.Tensor | None:
-        """The arena's ``[BH, N/16]`` table, or ``None`` for a dense backing."""
-        return None if self._arena is None else self._arena.page_table
+        return self._plane is not None
 
     def materialize(self) -> torch.Tensor | None:
-        """`[B, H, N, cols]`, or `None` while nothing is carried. ORACLE AND BRIDGE ONLY.
-
-        Allocating `[B, H, N, cols]` is precisely what paging exists to avoid, so
-        this is for the fp64 oracle, for a cross-arm hand-off and for a test -- never
-        on a measured path.
-        """
-        if not self.carries:
+        """`[B, H, N, cols]`, or `None` while nothing is carried. ORACLE AND BRIDGE ONLY: it rejoins every page on the
+        host, so it is for the fp64 oracle, for a cross-arm hand-off and for a test -- never on a measured path."""
+        if self._plane is None:
             return None
-        if self._arena is not None:
-            return self._arena.materialize().view(self._shape)
         from fsla.ops.paging import decode_pages
 
         return decode_pages(self._plane, self._format.DV).view(self._shape)
 
-    def clone(self, strategy: str | None = None) -> FSLAState:
-        """An EAGER deep copy, and the only sanctioned strategy change.
-
-        `clone()` returns an independent sequence: either handle may be passed into any
-        op with no effect on the other, ever. The strategy chooses the MECHANISM
-        (dense: plane copy; paged: referenced-slot copy; cow, future: table copy +
-        refcounts) -- the contract does not vary.
-
-        The copy shares nothing: a paged state's copy gets its own arena with the
-        same residency, a dense one's its own plane. Changing strategy crosses a
-        clone by rule -- a live ancestor is a
-        standing alias onto shared slots, so a cheaper transition would hand a
-        descendant a guarantee its ancestor can break.
-        """
-        out = FSLAState(strategy=self.strategy if strategy is None else strategy,
-                        pool_slack=self.pool_slack)
+    def clone(self) -> DenseState:
+        out = DenseState()
         if not self.bound:
             return out
-        out._shape, out._device, out._paging = self._shape, self._device, self._paging
-        out._format = self._format
-        if self._arena is None:
-            if self._plane is not None:
-                out._plane = self._plane.clone()
-            return out
-        arena = out._new_arena(self._arena.widths, self._arena.BC)
-        arena.plan_exact(self._arena.page_table >= 0, fresh=True)
-        arena.wait()
-        source, destination = self._arena.page_table, arena.page_table
-        present = source >= 0
-        arena.state.index_copy_(
-            0, destination[present].long(),
-            self._arena.state.index_select(0, source[present].long()))
-        out._arena = arena
+        out._shape, out._device, out._format = self._shape, self._device, self._format
+        if self._plane is not None:
+            out._plane = self._plane.clone()
         return out
 
-    # -- the facade's seam (fsla/interface.py and fsla/ops/decode.py) -----------
-
-    @property
-    def _keying(self) -> AtomKeying:
-        B, H, N, cols = self._shape
-        return AtomKeying(N=N, cols=cols, BH=B * H)
-
-    def _wants_pages(self) -> bool:
-        """Whether this call needs an atom bitmap -- i.e. whether it will PAGE: the state's own backing, fixed at creation.
-
-        Asked by the facade before the stats pass, so a dense-backed state does not
-        pay for a bitmap nothing reads.
-        """
-        return self._paging
-
-    def _kernel_entry(self, routes, atom_bits: torch.Tensor | None, *, d_v: int, BC: int):
-        """`(s_in, arena)` for the kernel arm, with this call's pages committed.
-
-        The caller has already folded the call's atom bits, so the only thing that
-        happens here is `plan_exact` on the arena's side stream -- one device-to-host
-        size read, no other synchronization. The admission is on the arena's side stream and
-        its one event is what the consumer launch waits on (`fsla.ops.paging`).
-
-        `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
-        extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by
-        the atom re-key, so a `BC` flip between calls neither rebuilds the arena nor
-        moves a byte.
-        """
+    def _kernel_entry(self, routes, *, d_v: int) -> torch.Tensor | None:
         routes.refuse_grouped("the carried state")
         presented = _format_of(routes, d_v, routes.batch * routes.heads)
         if not self.bound:
@@ -377,45 +307,15 @@ class FSLAState:
             self._format = presented
         else:
             self._format.check(presented)
-        from fsla.engine.facts import planes
-
-        #: RESIDENCY IS KEYED ON THE WRITE SET: the byte carries the READ bit
-        #: beside it, and admitting a read-only atom would make exact commitment a
-        #: superset (`fsla.engine.facts.planes.written_atoms`).
-        bitmap = (None if atom_bits is None else planes.written_atoms(
-            atom_bits.reshape(self._keying.BH, self._keying.atoms_per_bh)))
-
-        if self._arena is not None:
-            #: a continuation: residency becomes the UNION, which is what continuing
-            #: a sequence means, and the atoms already committed keep their contents.
-            self._arena.plan_exact(bitmap, fresh=False)
-            return self._arena.state, self._arena
-        if self._plane is not None:
-            return self._plane, None
-        if not self._paging:
-            return None, None
-        arena = self._new_arena(routes.topology.widths, BC)
-        arena.plan_exact(bitmap, fresh=True)
-        self._arena = arena
-        return None, arena
+        return self._plane
 
     def _kernel_commit(self, plane: torch.Tensor) -> None:
-        """Take a FRESH dense plane; a continuation has nothing to take.
-
-        Paged states already own the arena's plane, and a dense CONTINUATION launched
-        with `s_out` aliased onto its own plane, so the update landed in place. The one
-        call that moves a reference here is the one that BOUND a dense state
-        (docs/internals/state.md#the-dense-continuation).
-        """
-        if self._arena is None and self._plane is None:
+        """A continuation launched with `s_out` aliased onto its own plane, so its update landed in place; the one
+        call that moves a reference here is the one that BOUND the state (docs/internals/state.md#the-dense-continuation)."""
+        if self._plane is None:
             self._plane = plane
 
     def _require_carrying(self) -> None:
-        """A decode step CONTINUES; refuse a state with nothing to continue from.
-
-        Asked by the decode family's `validate_context` before that step's first
-        launch, and again at the seam below for a caller that reaches it directly.
-        """
         if not self.carries:
             raise RuntimeError(
                 "a decode step continues a carried state, and this one carries nothing: "
@@ -423,48 +323,11 @@ class FSLAState:
                 "sequence's first tokens through fsla.prefill and step from the state it "
                 "returns.")
 
-    def _decode_entry(self, routes):
-        """`(plane, page_table, arena)` for one step, over the residency it already has.
-
-        A step CONTINUES a sequence, so unlike :meth:`_kernel_entry` there is no fresh
-        case to serve and nothing to admit here: the step asks its own residency question
-        on the device, admits from the slack pool where there is one, and where there is
-        not, the admission its verdict calls for is :meth:`_decode_entry_arena`, between
-        two walks of the step (docs/internals/engine/decode_step.md#the-two-backings). The
-        arena rides along for its pool buffers alone; a dense state has none.
-
-        Dense states hand back a VIEW of their own plane, which is what makes the
-        kernel's in-place update the state's update.
-
-        The step's routing is CHECKED against the bound format first: a decode step
-        derives its lattice and its unit from the descriptor, so a routing that
-        disagrees is refused here rather than walked (docs/internals/state.md#format).
-        """
+    def _decode_entry(self, routes) -> torch.Tensor:
+        """The plane itself, not a copy: which is what makes the kernel's in-place update the state's update. The step's
+        routing is CHECKED against the bound format first: a decode step derives its lattice and its unit from the
+        descriptor, so a routing that disagrees is refused here rather than walked (docs/internals/state.md#format)."""
         self._require_carrying()
         self._format.check(_format_of(routes, self._format.DV,
                                       self._shape[0] * self._shape[1]))
-        if self._arena is not None:
-            return self._arena.state, self._arena.page_table, self._arena
-        return self._plane, None, None
-
-    def _decode_entry_arena(self, bitmap: torch.Tensor):
-        """Admit `bitmap`'s atoms into the carried arena and hand it back.
-
-        The growth half of :meth:`_decode_entry`: the gated step has already run as a
-        no-op, so admission is all that is left before it is replayed
-        (docs/internals/decode/decode.md#capture). The arena's own plane and table are
-        untouched objects -- the base never moves and the table is written in place --
-        which is what keeps a CUDA graph captured over them valid across an admission.
-        """
-        if self._arena is None:
-            raise RuntimeError("a growth admission wants a paged state; this one is dense")
-        self._arena.plan_exact(
-            bitmap.reshape(self._keying.BH, self._keying.atoms_per_bh).bool(), fresh=False)
-        return self._arena
-
-    # -- backing internals -----------------------------------------------------
-
-    def _new_arena(self, widths: tuple[int, ...], BC: int) -> PageArena:
-        keying = self._keying
-        return PageArena(widths=widths, BC=int(BC), cols=keying.cols, BH=keying.BH,
-                         device=self._device, pool_slack=self.pool_slack)
+        return self._plane

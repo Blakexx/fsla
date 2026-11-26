@@ -75,7 +75,7 @@ Decode's value widths are the launch function's: it maps a call's `d_v` into the
 contract bounds it (`hardware/kernels/decode/parts/call.json`), so no literal tuple here can drift from what the binary carries. The intra reads one
 value width, `fsla.ops.intra.VALUE_WIDTH`.
 
-The prefill's carry takes its value channels 64 a CTA (above); the arena's allocation extent is the prefill launch
+The prefill's carry takes its value channels 64 a CTA (above); the carve is the prefill launch
 function's ([`engine/rules.md#carve`](engine/rules.md#carve); [`docs/open-work.md`](../open-work.md) A-c and A-f).
 
 ## What this does not do
