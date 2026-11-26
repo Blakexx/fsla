@@ -191,7 +191,7 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
   const ops::SmemAddr rows = ops::smem_addr(fold_rows<Bt>(fold, warp));
   const ops::SmemAddr coefs = ops::smem_addr(fold_coefs<Bt>(fold, warp));
   const ops::SmemAddr staged = ops::smem_addr(fold_staged<Bt>(fold, warp));
-  //: the positions' rows a window on: a window is a whole number of the rows' tiles
+  //: the fold's positions, their rows the call's: a window's place in them is `tiles_at`, a window a whole number of the rows' tiles
   const FoldPositions& at = positions;
   //: the window's place in its head's value lines and in the rows' tiles: offsets, the bases the call's
   std::uint32_t line_at = 0;
@@ -273,9 +273,9 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
         //: A STAGE IS A CHUNK OF A ROUND, its copies one committed group: the chunk's bytes, and with a round's first chunk the round's value lines. The set's first stage is issued here, and each stage issues the one after it -- see docs/internals/carry/carry_kernel.md#supply
         //: A STAGE'S ORDER: its tokens' loads and its addresses, then the round's value lines' copies, then the bytes' last, under the wait -- see docs/internals/carry/carry_kernel.md#supply
         const StagePlan first = stage_plan<kDepth, kS0, kB1, kB2, kB3>(
-            coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, tiles_at, set, 0), list, staged,
-            true);
-        fetch_round<kChannels>(rows, from, line_at, o.line_bytes, list, true);
+            coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, tiles_at, set, 0), list,
+            staged);
+        fetch_round<kChannels>(rows, from, line_at, o.line_bytes, list);
         stage_bytes<kDepth, kS0, kB1, kB2, kB3>(first);
         ops::stage_commit();
       }
@@ -300,18 +300,18 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
               stage_bytes<kDepth, kS0, kB1, kB2, kB3>(stage_plan<kDepth, kS0, kB1, kB2, kB3>(
                   coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, tiles_at, set,
                                                                       (stage + 1) * kStageChunks),
-                  tokens, there, true));
+                  tokens, there));
               ops::stage_commit();
               tr.phase(kSiteIssued);
               ops::stage_wait<kHeld - 1>();
             } else if (more) {
               const StagePlan next = stage_plan<kDepth, kS0, kB1, kB2, kB3>(
                   coef_source<kDepth, kB0, kB1, kB2, kB3, kChunkBits>(at, tiles_at, set, 0),
-                  tokens + kWords, there, true);
+                  tokens + kWords, there);
               fetch_round<kChannels>(rows
                                          + static_cast<ops::SmemAddr>(((round + 1) & (kHeld - 1))
                                                                       * kRoundBytes<kChannels>),
-                                     from, line_at, o.line_bytes, tokens + kWords, true);
+                                     from, line_at, o.line_bytes, tokens + kWords);
               stage_bytes<kDepth, kS0, kB1, kB2, kB3>(next);
               ops::stage_commit();
               tr.phase(kSiteIssued);
@@ -357,6 +357,11 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   fold_levels(c, p, fold, base, shift, mask);
   const FoldPositions positions = fold_positions(o, c, p, fold, shift, mask);
   const int listed = listed_levels(c, false);
+  //: a head's value lines and a level's rows are addressed by 32-bit offsets from the call's bases
+  if (o.tokens * o.line_bytes >= (std::int64_t{1} << 32)
+      || (o.tokens << 8) >= (std::int64_t{1} << 32)) {
+    __trap();
+  }
   uniform_switch<kFoldClassCount>(positions.fold_class, [&](auto member) {
     fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, positions, base, shift, mask, listed,
                                                   tr);

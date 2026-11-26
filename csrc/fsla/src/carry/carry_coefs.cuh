@@ -216,15 +216,15 @@ struct StagePlan {
   bool on;
 };
 
-//: lane `i` takes place `i` of `tokens`; nothing is copied where `live` is false or the place holds no token
+//: lane `i` takes place `i` of `tokens`; nothing is copied where the place holds no token
 template <int LEVELS, int B0, int B1, int B2, int B3>
 __device__ __forceinline__ StagePlan stage_plan(const CoefSource& c, const std::uint16_t* tokens,
-                                                ops::SmemAddr stage, bool live) {
+                                                ops::SmemAddr stage) {
   using G = StageShape<LEVELS, B0, B1, B2, B3>;
   const int lane = static_cast<int>(threadIdx.x) & (ops::kBallotLanes - 1);
   const int listed = tokens[lane];
   StagePlan plan{};
-  plan.on = live && listed != kNoToken;
+  plan.on = listed != kNoToken;
   const int token = plan.on ? listed : 0;
   const int line = (token & ((1 << kRowTileBits) - 1)) << kRowBlockBits;
   const int tile_of = token >> kRowTileBits;

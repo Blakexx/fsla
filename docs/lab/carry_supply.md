@@ -24,8 +24,27 @@ lines in the step's swizzle order, a dead place's row zero, on its boundary; the
 once. TIMED with the library's tracer (nothing) on a call of 64 windows. STAMPED: the same call with the kernel's
 phases and hand-offs stamped, whose timelines of two CTAs the record holds.
 
-MEASURED WITH A STAGE'S BYTES ISSUED LAST (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07;
-2026-11-25, the experiment at 0691c521; 7 repetitions; every call's check exact, every coefficient with it; cycles a
+MEASURED AFTER THE HELD CLIMB (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-26, the
+experiment at 7e069c61; 7 repetitions; every call's check exact, every coefficient with it; cycles a window a CTA,
+the median):
+
+| the call | timed | stamped | the record before, timed |
+|---|---:|---:|---:|
+| the cell | 4,666 | 6,285 | 5,066 |
+| the write side masked on both levels | 4,291 | 5,721 | 5,046 |
+| the write side whole on both levels | 23,659 | 27,382 | 29,638 |
+| one digit a token on each level | 4,760 | 7,108 | 4,881 |
+| both levels, the read side's densities crossed | 2,504 | 3,401 | 3,079 |
+
+PREDICTED, before the run: each row 3 percent about the held climb's own reading of this code on another box (timed
+4,665 / 4,286 / 23,655 / 4,759 / 2,507). ALL TEN HELD -- that a reading repeats between boxes, and no test of a model.
+WHAT THE FOUR CHANGES ARE is on the kernel's page ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply));
+the climb that chose them is below. THE CLIMB'S COMPARISONS ARE SUCCESSIVE BUILDS, EACH TIMED IN ITS OWN RUNS ON ONE
+BOX, not one interleaved session ([`KERNEL_STANDARDS.md` section 32](../KERNEL_STANDARDS.md#s32)): a kept change of
+under 2 percent (the constant bases) is within what a rebuild alone moves a row and is kept for its registers; the
+other three moved a row by 4 to 20 percent.
+
+A STAGE'S BYTES ISSUED LAST, the record before (the same card class, 2026-11-25, the experiment at 0691c521; 7 repetitions; every call's check exact, every coefficient with it; cycles a
 window a CTA, the median):
 
 | the call | timed | stamped | the bytes' copies issued first, timed |
@@ -72,8 +91,8 @@ register-loaded one on every call, by 7 to 20 percent. THE WRONG PRICES, by the 
 - THE WHOLE CALL IS LATENCY-BOUND A STAGE: its 32 stages a window are each about 390 of expansion, 260 of issue and
   217 of waiting -- a group asked one stage ahead does not land under one chunk's work.
 
-A HELD CLIMB SINCE THE RECORD (one box, 43 minutes; timed rows of three repetitions, every check exact where a row is
-kept; NOT ON RECORD -- the kept state is to be recorded). The rows are the cell / both levels / whole / one digit /
+THE HELD CLIMB (one box, 43 minutes; timed rows of three repetitions, every check exact where a row is kept; its
+own rows NOT ON RECORD -- the kept state's are the table above). The rows are the cell / both levels / whole / one digit /
 crossed; the record's kernel on that box 5,064 / 5,059 / 29,536 / 4,880 / 3,092.
 - KEPT, in order: a set's last round issues nothing (4,806 / 4,840 / 29,637 / 4,686 / 2,886); the bases the call's
   and the window an offset (4,792 / 4,771 / 29,543 / 4,645 / 2,845); a stage as many chunks as fit its slot (4,841 /
@@ -177,4 +196,4 @@ rounds in flight, and a form that skips the copy instructions of a round's dead 
 WHAT IT IS NOT: the fold. No step runs and no accumulator is held; the other roles are stubs; the rows carry no
 scale; the call is one head and its values are the cache's.
 
-Record: `measure/lab/results/carry_supply/sm_90a.json` (the run with the bytes staged), the five stamped rows' timelines beside it.
+Record: `measure/lab/results/carry_supply/sm_90a.json` (the run after the held climb), the five stamped rows' timelines beside it.

@@ -53,7 +53,8 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   so that the stage lands under them (and under the image, when it is built): the listing and the copies' issue
   change no state, so the image is still the state as of the window's start. A held reading: the cell's window 3
   percent shorter, both levels' and the crossed call's 11 and 12; a window whose first set is empty gains nothing and
-  its hand-offs stand a set's listing later (one digit 1.3 percent longer, the call of no tokens 8)
+  its hand-offs stand a set's listing later (one digit 1.3 percent longer, the call of no tokens 8): A FORM THAT WINS
+  FOUR CALLS AND LOSES ONE (R10), kept on the coordinator's judgment and put to the owner to rule
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). THE IMAGE GOES OUT A TILE GROUP AT A TIME so that the readout starts on the first
   group while the folds store the rest, and each group waits on the readout's read of the window before because the
   image is overwritten in place: the state has one image, not a ring of them
@@ -104,10 +105,12 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   stage is issued behind its lay; then each stage ISSUES THE STAGE AFTER IT, WAITS FOR ITS OWN, AND EXPANDS
   ([`carry_coefs.md`](carry_coefs.md#expand)) -- two groups in flight, the newer one's latency under this stage's work.
   A SET'S LAST ROUND ISSUES NOTHING: a branch on a value every lane holds (a vote), and its wait is for its own
-  stage alone -- where it issued a stage of copies that moved nothing, each still wrote its place zero, about a
+  stage alone -- A DEPARTURE from the standards' default of a prefetch issued unconditionally into a pad
+  ([`../../KERNEL_STANDARDS.md` section 29](../../KERNEL_STANDARDS.md#s29)), put to the owner with its record -- where it issued a stage of copies that moved nothing, each still wrote its place zero, about a
   twentieth of the cell's window. THE BASES ARE THE CALL'S AND THE WINDOW IS AN OFFSET: the value lines and each
   level's rows are addressed from a pointer that does not change, the window's and the token's place a 32-bit
-  offset, so no pointer is stepped a window. A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
+  offset, so no pointer is stepped a window; a call whose head's lines or rows pass 4 GB traps where the fold starts
+  (the op's own refusal of it is owed with the op). A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
   COPIES, THEN THE BYTES', under the wait for the stage that is landing. MEASURED: with the bytes' copies first the
   cell's window was 5,487 cycles a CTA and with them last 5,066, the crossed call's 3,274 and 3,079
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). WHY IS ONE PROFILE'S READING, not on record: its largest

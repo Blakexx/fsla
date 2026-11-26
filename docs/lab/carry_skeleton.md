@@ -15,16 +15,18 @@ hangs or leaves early fails the check. Its second row stamps every warp's hand-o
 tracer (64 windows), and the record holds two CTAs' timelines of it.
 
 MEASURED (NVIDIA H100 80GB HBM3, 132 SMs, a Nebius instance, driver 580.196.07; 2026-11-25, the experiment at
-0691c521; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
+7e069c61; 7 repetitions, every warp of all 132 CTAs returning in both rows; cycles a window a CTA, the median):
 
 | the carry on a call of no tokens | cycles |
 |---|---:|
-| as the library compiles it, its tracer nothing | 749 |
-| every warp's hand-offs and phases stamped | 1669 |
+| as the library compiles it, its tracer nothing | 810 |
+| every warp's hand-offs and phases stamped | 1750 |
 
-PREDICTED, before the run: the plain row 720 to 780 and the stamped row 1,620 to 1,730 (749 and 1,673 at fc999aad) --
-BOTH HELD. NOT EXPLAINED: what of the call's two whole levels is the 89 cycles over the call of no levels (660 at
-05b6fec2). A
+PREDICTED, before the run: the plain row 780 to 840 and the stamped row 1,690 to 1,810, about a held reading of the
+same code (810 and 1,749) -- BOTH HELD. The row was 749 at 0691c521: a fold's hand-offs now stand behind its first
+set's listing ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#fold)), and a call of no tokens
+lists an empty set before them. NOT EXPLAINED: the 89 cycles of the call's two whole levels over the call of no
+levels (660 at 05b6fec2). A
 STAMPED ROW OF THIS CALL IS A TIMELINE'S ORDER, NOT ITS DURATIONS: on a window that is nothing but 16 hand-offs the
 stamps are the larger cost.
 
