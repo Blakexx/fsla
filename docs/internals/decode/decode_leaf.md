@@ -12,16 +12,20 @@ the leaf, so a leaf is `DV / 8` lanes and a 32-channel exponent group is four of
 `leaf_addr` places a lane's slice in its page: its eight channels' hi words (16 bytes), its lo
 words (8 bytes), its group's exponent byte and the leaf's mass word
 ([`../common/state_page.md#geometry`](../common/state_page.md#geometry)). `load_leaf` reads
-them into a `LeafSlice`: the lo words only when the leaf is written or re-read in full, the
-mass only on the leaf's first lane, and zeros for an absent atom's leaf -- an absent atom
-reads as zeros and is never written.
+them into a `LeafSlice`: the lo words only when the leaf is written, the mass only on the
+leaf's first lane, and zeros for a lane group with no leaf this trip (`live` false).
+
+`leaf_after<DV>(first, rows)` is the address of the leaf `rows` leaves past `first` in the same
+page and lane: every word is a constant past `first`'s (`rows * DV * 2` bytes of hi, `rows * DV`
+of lo, `rows * kGroups` of exponent, `rows` words of mass). The whole-atom walk
+([`decode.md#whole-atoms`](decode.md#whole-atoms)) therefore holds one `LeafAddr` for an atom, the
+first leaf's, and forms each later leaf's address where it loads and deposits, so no second
+address is held across the atom's loads.
 
 ## <a id="reads"></a>The reads
 
 `read_hi` is a leaf this step only reads: its hi plane at `2^(e + 8)` (the s16 operand of
-[`decode.md#int8-state`](decode.md#int8-state)) into the lane's eight partials. `read_full` is
-a written leaf re-read without depositing -- a gated replay's third outcome -- at its full
-stored value.
+[`decode.md#int8-state`](decode.md#int8-state)) into the lane's eight partials.
 
 ## <a id="deposit"></a>The deposit
 
@@ -33,7 +37,7 @@ the next step reads exactly what this one wrote and a step's `y` never sees prec
 group's exponent is shared by its four lanes, so a group rounds to one quantum; the mass rides the leaf's
 first lane in fp32.
 
-The store predicate is the caller's: `present` for the lane-group form, and for the atom form
-`present` AND the leaf's write bit, since a leaf outside the write support belongs to a read
-term. A leaf that does not store also takes no clock (its rate is passed as zero), which keeps
+The store predicate is the caller's: `live` for the lane-group form, and for the atom form
+the leaf's write bit alone (`mine`), since a leaf outside the write support belongs to a read
+term; the atom form's loads run under `resident` ([decode.md](decode.md#atom-loads)). A leaf that does not store also takes no clock (its rate is passed as zero), which keeps
 `0 * log1pf(-1)` out of the arithmetic.

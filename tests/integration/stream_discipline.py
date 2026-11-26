@@ -1,7 +1,7 @@
 """THE STREAM-DISCIPLINE FIXTURE: what every new stream-crossing path must instantiate.
 
 Two bugs escaped this repository and both were host-side Python stream ordering: a
-`PageArena.wait()` never called before the consumer launch, and `atom_ids` crossing to
+side stream's publication never joined before the consumer launch, and a tensor crossing to
 a side stream with no `record_stream`. Neither is a device memory hazard, so neither
 is visible to `compute-sanitizer` -- `racecheck` detects on-chip SHARED MEMORY hazards
 only, and there is no runtime detector anywhere for a forgotten cross-stream
@@ -159,11 +159,9 @@ def assert_capture_rejoins(body: str) -> None:
     **LIMITS, measured rather than assumed.** It validates only the captured region;
     the path must be CAPTURE-LEGAL; and it sees reachability back to the origin
     stream and nothing else -- an event recorded or waited on the WRONG stream is
-    invisible to it. Measured on this box: the production paged path is not
-    capture-legal, because `PageArena` owns a persistent side stream and records its
-    readiness event OUTSIDE any capture, which the capture rejects as a
-    cross-capture dependency before the body runs. So this is the contract for paths
-    that CAN be captured, and `test_stream_discipline_fixture.py` proves the detector
+    invisible to it. A path that records its readiness event OUTSIDE any capture is
+    not capture-legal: the capture rejects it as a cross-capture dependency before
+    the body runs. So this is the contract for paths that CAN be captured, and `test_stream_discipline_fixture.py` proves the detector
     itself works on this driver in both directions.
 
     `body` must print OK on success.

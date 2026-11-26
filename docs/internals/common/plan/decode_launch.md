@@ -20,8 +20,7 @@ parameters carry. The three parts are composed from three functions and stay str
   box the step walks (`lattice_solve`, [`lattice.md`](lattice.md): C++ owns the lattice) is a distillation of the call's facts into what to launch, which is what a matcher holds
   ("anything that has any kind of logic for that mapping should be in a matcher", the owner, 2026-11-23). So the matcher returns the layout whole and `decode.cu`'s `fill_lattice` copies it into
   the step's parameters and derives nothing; the fields, and what each is the step's parameter of, are `DecodeLayout`'s in the header. The refusals the layout implies are this header's,
-  in one set of words: `decode_smem_refusal` (a call that needs more of the step's run-time tile, `DecodeLayout::step_words`, than the kernel's layout holds on the card: a declared capacity refused loudly rather than taken as a slower path) and `decode_paged_refusal` (a
-  paged backing under an owner that holds less than one atom); the host throws them, the matcher words them.
+  in one set of words: `decode_smem_refusal` (a call that needs more of the step's run-time tile, `DecodeLayout::step_words`, than the kernel's layout holds on the card: a declared capacity refused loudly rather than taken as a slower path); the host throws it, the matcher words it.
 - `decode_grid(args, unit_ceiling, bh, forced)` is the grid, from exact values right before the launch: one wave of the declared residency
   (`kDecodeBlocksPerSm` CTAs an SM) at most `bh` heads' unit supply (`ceil(unit_ceiling / kDecodeUnitsPerCta)`, at least one); a gate's forced
   count (at least 1) replaces it, -1 leaves it ([`../../decode/decode.md#the-split-policy`](../../decode/decode.md#the-split-policy)). The host passes the layout's `unit_ceiling`.

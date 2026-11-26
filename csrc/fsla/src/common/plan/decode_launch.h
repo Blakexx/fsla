@@ -49,7 +49,7 @@ struct DecodeArgs {
 };
 
 //: THE LAUNCH'S LAYOUT, a function of the call's facts and the device's: the lattice box `(lat_k, lat_m)` of the level widths, every
-//: field the step's parameters carry of it (named as `DecodeParams` names them), the tables' word layout, `write_atoms`, `owner_holds_atom`,
+//: field the step's parameters carry of it (named as `DecodeParams` names them), the tables' word layout, `write_atoms`,
 //: the `leaves`, `total_rows`, `unit_ceiling` (the units a head supplies the grid), and `step_words`, what the call needs of the step's
 //: run-time tile; every array is 0 beyond the call's levels -- see docs/internals/common/plan/decode_launch.md
 struct DecodeLayout {
@@ -72,9 +72,7 @@ struct DecodeLayout {
   int dlist_off[kDecodeMaxLevels];
   int dlist_total;
   int atoms_per_unit_shift;
-  int lat_units_per_atom_shift;
   int write_atoms;
-  int owner_holds_atom;
   std::int64_t leaves;
   int total_rows;
   std::int64_t unit_ceiling;
@@ -232,8 +230,6 @@ constexpr DecodeLayout decode_layout(const DecodeArm& arm, const DecodeArgs& arg
 
   out.atoms_per_unit_shift =
       out.lat_inner_bits > kLatticeAtomShift ? out.lat_inner_bits - kLatticeAtomShift : 0;
-  out.lat_units_per_atom_shift =
-      out.lat_inner_bits < kLatticeAtomShift ? kLatticeAtomShift - out.lat_inner_bits : 0;
 
   for (int l = 0; l < levels; ++l) {
     out.mask_off[l] = out.mask_total;
@@ -246,7 +242,6 @@ constexpr DecodeLayout decode_layout(const DecodeArm& arm, const DecodeArgs& arg
   }
 
   out.write_atoms = (args.write_dense != 0 && out.lat_inner_bits >= kLatticeAtomShift) ? 1 : 0;
-  out.owner_holds_atom = out.lat_local_bits >= kLatticeAtomShift ? 1 : 0;
   out.leaves = leaves;
   out.total_rows = rows;
   out.unit_ceiling = leaves / out.lat_s[levels - 1];
@@ -264,16 +259,6 @@ inline std::string decode_smem_refusal(const DecodeLaunch& launch, std::int64_t 
   out += " its layout holds on this card; sum_l width_l = ";
   out += std::to_string(launch.layout.total_rows);
   out += ". This is a declared capacity, refused loudly rather than taken as a slower path.";
-  return out;
-}
-
-//: the refusal of a paged backing under an owner that holds less than one atom
-inline std::string decode_paged_refusal(const DecodeLayout& layout) {
-  std::string out = "a paged decode needs one walk unit's leaves to hold a whole number of ";
-  out += std::to_string(kLatticeAtomLeaves);
-  out += "-leaf atoms, and this (k, m) gives an owner only ";
-  out += std::to_string(1 << layout.lat_local_bits);
-  out += " (the innermost span must cover an atom)";
   return out;
 }
 

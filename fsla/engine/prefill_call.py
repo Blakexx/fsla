@@ -25,9 +25,9 @@ from fsla.routing.masks import PREFILL, Masks
 class PrefillContext:
     """One segment's RAW inputs -- everything before a single fact is found.
 
-    `state` is the facade's :class:`~fsla.FSLAState`, which owns its own residency;
-    `state_in` and `arena` are the same two facts handed in directly, which is how a
-    caller drives the kernels without the state object.
+    `state` is the facade's :class:`~fsla.FSLAState`, which owns its own plane;
+    `state_in` is the same fact handed in directly, which is how a caller drives the
+    kernels without the state object.
     """
 
     routes: Any
@@ -37,32 +37,26 @@ class PrefillContext:
     decay: Any = None
     state: Any = None
     state_in: torch.Tensor | None = None
-    arena: Any = None
     want_state: bool = False
 
 
-def backing(arena, state_in, want_state, routes, d_v):
-    """The two state planes a launch is given -- and for a CONTINUATION they are ONE.
+def backing(state_in, want_state, routes, d_v):
+    """The plane a launch stores into -- and for a CONTINUATION it is the plane it reads.
 
-    A FRESH DENSE PLANE IS ZEROED, and that is the price of the store
-    predicate: the exit sweep writes the atoms this call WRITES and no others, so the
-    atoms it skips must already hold the zero an absent paged atom reads as. It is one
-    fill per SEQUENCE on the expert-override backing, never per call.
+    A FRESH PLANE IS ZEROED, and that is the price of the store predicate: the exit
+    sweep writes the atoms this call WRITES and no others, so the atoms it skips must
+    already hold the zero state. It is one fill per SEQUENCE, never per call.
 
-    A continued sequence advances its state IN PLACE, in either backing: the arena has
-    always handed the same plane in and out, and the dense one does now
-    (docs/internals/state.md#the-dense-continuation). Only a FRESH dense bind allocates,
-    and that plane is uninitialized because it is written whole.
+    A continued sequence advances its state IN PLACE (docs/internals/state.md#the-dense-continuation).
+    Only a FRESH bind allocates.
     """
     with span("backing"):
-        if arena is not None:
-            return arena.page_table, (arena.state if want_state else None)
         if not want_state:
-            return None, None
-        return None, (planes.state_plane(routes, d_v=d_v, zeros=True) if state_in is None else state_in)
+            return None
+        return planes.state_plane(routes, d_v=d_v, zeros=True) if state_in is None else state_in
 
 
-def launch(descriptor, workspace, routes, values, masks, density, decay, state_in, page_table, state_out):
+def launch(descriptor, workspace, routes, values, masks, density, decay, state_in, state_out):
     """The carry at its bytes and the intra into the same planes: ``num [BH, T, d_v]`` and
     ``den [BH, T]``, fp32, each over the reader factor (`fsla.ops.prefill.prefill`), over the launch's three named
     parts -- the descriptor, the operands and the workspace (:class:`fsla.engine.plan.PrefillLaunch`)."""
@@ -72,7 +66,7 @@ def launch(descriptor, workspace, routes, values, masks, density, decay, state_i
         bundle = PrefillLaunch(
             descriptor=descriptor,
             operands=PrefillOperands(routes=routes, values=values, masks=masks, density=density, decay=decay,
-                                     state_in=state_in, page_table=page_table, state_out=state_out),
+                                     state_in=state_in, state_out=state_out),
             workspace=PrefillWorkspace(buffer=workspace))
         return prefill_ops.prefill(bundle)
 
@@ -138,11 +132,11 @@ def validate_context(ctx: PrefillContext) -> None:
         raise ValueError(f"values are on {values.device} but the routing bundle is on {routes.device}")
     if decay is not None:
         decay.validate_against(routes.topology)
-    if ctx.state is not None and type(ctx.state) is not FSLAState:
+    if ctx.state is not None and not isinstance(ctx.state, FSLAState):
         raise TypeError(
-            "prefill's `state` argument is a fsla.FSLAState from fsla.state(), got "
+            "prefill's `state` argument is a fsla.FSLAState from fsla.dense_state(), got "
             f"{type(ctx.state).__name__}. A raw tensor is not one: the state owns its own "
-            "backing (dense or paged) and the shape it is bound to.")
+            "plane and the shape it is bound to.")
     if type(ctx.masks) is not Masks:
         raise TypeError(f"prefill's `masks` is a fsla.routing.masks.Masks, got {type(ctx.masks).__name__}; the producer "
                         "emits it beside the bundle (docs/api.md section 2.6)")
@@ -177,8 +171,8 @@ def run_prefill(ctx: PrefillContext, descriptor) -> tuple[torch.Tensor, torch.Te
     """
     from fsla.ops import prefill as prefill_ops
 
-    page_table, state_out = backing(ctx.arena, ctx.state_in, ctx.want_state, ctx.routes, ctx.values.d_v)
+    state_out = backing(ctx.state_in, ctx.want_state, ctx.routes, ctx.values.d_v)
     workspace = prefill_ops._build_workspace(descriptor)
     num, den = launch(descriptor, workspace, ctx.routes, ctx.values, ctx.masks, ctx.density, ctx.decay, ctx.state_in,
-                      page_table, state_out)
+                      state_out)
     return post(num, den, ctx.routes), state_out

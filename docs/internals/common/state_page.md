@@ -17,8 +17,8 @@ boundary, so `kBytes` is 1616 / 3168 / 6272 at `DV` 32 / 64 / 128 -- about 3.03 
 split fp32 page's 4. The planes are aligned and never packed into 3-byte elements: a hi row is one 128-byte line at
 `DV = 64`, and a read that needs only the s16 operand touches the hi plane alone.
 
-Nothing about the arena, the page table, the id space or the VMM commitment depends on what is inside a page: they
-address `kBytes`-sized slots.
+Nothing about how a state addresses its pages depends on what is inside one: the dense plane addresses `kBytes`-sized pages
+by atom index.
 
 ## <a id="codec"></a>The codec
 
@@ -26,7 +26,7 @@ address `kBytes`-sized slots.
   the largest mantissa fits under `2^23`, and `2^e` stays a normal float (`pow2` builds it from the exponent field).
   `group_exponent` reads `k - 23` off the float's exponent field (`field - 149`; a subnormal's field is 0, and the
   floor takes it), which is `frexp`'s answer without the call.
-  An all-zero group stores `e = 0`, so a zero page is all zero bytes -- the arena's fresh page, byte for byte.
+  An all-zero group stores `e = 0`, so a zero page is all zero bytes, byte for byte.
 - **The store** rounds each value once, `m = rint(v / 2^e)`, held inside `+-(2^23 - 1)` (`mantissa`); an all-zero
   group stores zeros, so a zeroed page is the zero state.
 - **A full read** is `(hi << 8 | lo) * 2^e`, exact in fp32.

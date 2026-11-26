@@ -1,5 +1,5 @@
 """THE DECODE PHASE LEDGER: the instrument the int8 port's budget line is measured with books every warp of every
-launched CTA into its five phases, and binding it moves no number (docs/internals/decode/decode.md#phase-ledger)."""
+launched CTA into its four phases (fold, factor, walk, combine), and binding it moves no number (docs/internals/decode/decode.md#phase-ledger)."""
 from __future__ import annotations
 
 import pytest
@@ -19,8 +19,8 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
     decode step without a prefill."""
     with torch.no_grad():
         routes, _values, _masks = reference_produce(layer, x)
-        state = fsla.state(backing="dense")
-        state._kernel_entry(routes, None, d_v=layer.d_v, BC=64)
+        state = fsla.dense_state()
+        state._kernel_entry(routes, d_v=layer.d_v)
         entry = 0.1 * torch.randn(routes.batch * routes.heads, layer.topology.N, layer.d_v + 1, device="cuda")
         entry[..., layer.d_v] = entry[..., layer.d_v].abs()
         state._kernel_commit(state_pages(entry))

@@ -890,18 +890,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'S4b'",
-   "line_sha256": "11547c870405df36",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'S4b'",
-   "line_sha256": "a862d3623b6025e9",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode_lattice.md",
    "message": "names the work code 'K6'",
    "line_sha256": "6beadcaa660feef7",
@@ -939,18 +927,6 @@
   },
   {
    "path": "docs/internals/state.md",
-   "message": "names the work code 'G1'",
-   "line_sha256": "c45bb34df3985513",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/state.md",
-   "message": "names the work code 'K41'",
-   "line_sha256": "c2f5970aed29133e",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/state.md",
    "message": "names the work code 'K45'",
    "line_sha256": "fbac34e242ab17a9",
    "count": 1
@@ -963,38 +939,8 @@
   },
   {
    "path": "tests/integration/test_decode_dispatch.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "3ba319609445ccd5",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_dispatch.py",
    "message": "names the work code 'K45'",
    "line_sha256": "fe7cb9d97d45b13b",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_graph_step.py",
-   "message": "names the work code 'P67-a'",
-   "line_sha256": "8935a47594464944",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_graph_step.py",
-   "message": "names the work code 'S4b'",
-   "line_sha256": "b6ed3ca5ffaec9f7",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_paging.py",
-   "message": "names the work code 'K53'",
-   "line_sha256": "bc8be1383f0b24f3",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_page_arena_vmm.py",
-   "message": "names the work code 'P67'",
-   "line_sha256": "d539a590b88d242c",
    "count": 1
   },
   {
@@ -1331,12 +1277,6 @@
    "path": "tests/unit/test_exchange_law.py",
    "message": "names the work code 'S1b'",
    "line_sha256": "a0b3ff29a6ae99aa",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_facts_rules.py",
-   "message": "names the work code 'P75'",
-   "line_sha256": "413b36551e580bbe",
    "count": 1
   },
   {

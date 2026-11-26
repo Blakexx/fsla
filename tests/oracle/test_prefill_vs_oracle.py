@@ -68,7 +68,7 @@ def test_the_op_hands_back_the_fp64_state(spec):
     """A stateful call binds the state and hands back the recurrence's final state, leaf by leaf in canonical order
     (`FSLAState.materialize`), against the oracle's and its envelope."""
     routes, values, _masks, _density = operands_ = operands(spec)
-    state = fsla.state()
+    state = fsla.dense_state()
     call(operands_, state=state)
     want = oracle(routes, values)
     assert_slots_close(state.materialize(), want.state, output=PREFILL_STATE, envelope=want.state_envelope,
@@ -81,7 +81,7 @@ def test_a_chained_call_equals_one_long_call():
     the long call's readout and final state, each against the oracle's one long run."""
     spec = by_name("flagship-alt-k4-L4096")
     half = spec.tokens // 2
-    state = fsla.state()
+    state = fsla.dense_state()
     ys = [call(operands(spec, part), state=state)[0] for part in (slice(0, half), slice(half, spec.tokens))]
     routes, values, _masks, _density = operands(spec)
     want = oracle(routes, values)

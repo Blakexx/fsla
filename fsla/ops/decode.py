@@ -21,9 +21,8 @@ strictly larger than the chunk arm's as a CONSEQUENCE
 FORWARD ONLY. The decode kernels have no backward; the guard below is defence in depth
 behind the layer's own envelope check (docs/internals/decode/decode.md#forward-only).
 
-PAGED AND DENSE ARE ONE WALK: the page granule is the ATOM, which is what makes the
-paged address BC-free, so the whole difference is one indirection resolved once per
-touched atom (docs/internals/decode/decode.md#the-atom).
+THE STATE IS THE DENSE PLANE: every atom of the leaf space is a page of it, addressed by its atom index
+(docs/internals/decode/decode.md#the-atom).
 """
 
 from __future__ import annotations
@@ -39,7 +38,6 @@ from fsla.ops._ext import extension
 from fsla.ops.constants import READOUT_EPS
 from fsla.ops.decay import leaf_rate_dials
 from fsla.ops.descriptor import Descriptor
-from fsla.ops.lattice import permutation
 from fsla.ops.padding import pad_v, slice_y
 from fsla.ops.paging import MMA_K_QUANTUM, page_layout
 from fsla.routing.masks import DECODE
@@ -67,7 +65,7 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
 
 
 #: THE PHASE LEDGER'S SHAPE: `[ctas][warps][phases]`, the kernel's own `DecodePhase` order.
-LEDGER_PHASES = ("fold", "factor", "admit", "walk", "combine")
+LEDGER_PHASES = ("fold", "factor", "walk", "combine")
 
 
 def ledger_warps() -> int:
@@ -76,7 +74,7 @@ def ledger_warps() -> int:
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
-    """Bind the phase ledger the next steps book into, ``[ctas, ledger_warps(), 5]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next steps book into, ``[ctas, ledger_warps(), len(LEDGER_PHASES)]`` int64 cycles, or ``None``."""
     extension().fsla_decode_ledger_bind(ledger)
 
 
@@ -121,7 +119,7 @@ def lattice_of(widths: tuple[int, ...]) -> tuple[int, int]:
 class DecodeScratch:
     """Per-sequence scratch, allocated once and reused across steps.
 
-    ``yacc``, ``queue``, ``growth_ctr`` and ``done`` are set exactly once here: every one of them
+    ``yacc`` and ``queue`` are set exactly once here: each
     is reset by the kernel that last reads it (a head's finisher, the last CTA out), so no
     ``memset`` launch ever stands between two decode steps and the whole step stays capturable
     in a CUDA graph.
@@ -129,50 +127,23 @@ class DecodeScratch:
 
     #: `[BH, cols]` fp32, a head's readout sums, added into once by every CTA visit that walks it.
     yacc: torch.Tensor
-    #: `[4 BH + 2]` int32, THE WORK QUEUE: per head the positions claimed, the positions finished,
-    #: the position count (-1 until published) and the admission state, then the unstarted-head
+    #: `[3 BH + 2]` int32, THE WORK QUEUE: per head the positions claimed, the positions finished
+    #: and the position count (-1 until published), then the unstarted-head
     #: cursor and the exit count (docs/internals/decode/decode.md#queue).
     queue: torch.Tensor
-    #: `[BH]` int32, THE PER-BATCH-HEAD VERDICT, and the `[1]` int32 OR of it that the
-    #: host reads through a PINNED mirror -- pinned so the read is one DMA rather than a
-    #: staging copy, and held here so a steady step allocates nothing
-    #: (docs/internals/decode/decode.md#per-bh-verdict).
-    growth: torch.Tensor
-    growth_any: torch.Tensor
-    #: The reducing CTA's self-resetting arrival counter.
-    growth_ctr: torch.Tensor
-    growth_host: torch.Tensor
-    #: `[BH]` int32, THE DONE FLAGS: which batch-heads have already deposited this step.
-    #: A replay re-walks a done batch-head for its `y` and deposits nothing, which is what
-    #: makes the caller's replay advance every sequence EXACTLY ONCE
-    #: (docs/internals/decode/decode.md#done-flags).
-    done: torch.Tensor
-    #: `[BH, N/16]` bool, the step's own write-atom set, condensed on the device from the
-    #: expansion the verdict was read off. A host admission plans from THIS -- the host
-    #: derives nothing: docs/internals/decode/decode.md#atom-bits
-    atom_bits: torch.Tensor
 
     @staticmethod
     def build(descriptor: Descriptor, BH: int, device) -> DecodeScratch:
         launch = decode_launch(descriptor)
-        i32 = dict(dtype=torch.int32, device=device)
         f32 = dict(dtype=torch.float32, device=device)
-        cuda = torch.device(device).type == "cuda"
         return DecodeScratch(
             yacc=torch.zeros(BH, launch.cols, **f32),
-            queue=_fresh_queue(BH, device),
-            growth=torch.zeros(BH, **i32),
-            growth_any=torch.zeros(1, **i32),
-            growth_ctr=torch.zeros(1, **i32),
-            growth_host=torch.empty(1, dtype=torch.int32, pin_memory=cuda),
-            done=torch.zeros(BH, **i32),
-            atom_bits=torch.empty(BH, launch.N // MMA_K_QUANTUM, dtype=torch.bool,
-                                  device=device))
+            queue=_fresh_queue(BH, device))
 
 
 def _fresh_queue(BH: int, device) -> torch.Tensor:
     """The queue as a step finds it: counters zero, every position count unpublished (-1)."""
-    queue = torch.zeros(4 * BH + 2, dtype=torch.int32, device=device)
+    queue = torch.zeros(3 * BH + 2, dtype=torch.int32, device=device)
     queue[2 * BH:3 * BH] = -1
     return queue
 
@@ -239,14 +210,10 @@ def guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-def step_plane(v: torch.Tensor, descriptor: Descriptor, decay,
-               state: torch.Tensor, page_table: torch.Tensor | None) -> torch.Tensor:
+def step_plane(v: torch.Tensor, descriptor: Descriptor, decay, state: torch.Tensor) -> torch.Tensor:
     """The plane the kernel indexes, and the per-step agreement checks that find it.
 
-    The two backings have ONE shape rule each. Under a table the plane holds only the
-    slots a plan committed, so its leading extent is the arena's and not ``BH``; without
-    one the plane IS the leaf space. Both are handed to the ABI in the shape the kernel
-    indexes, so the reshape below is the whole difference.
+    The plane IS the leaf space: ``[BH, N / 16, page_bytes]``, every page resident.
     """
     if v.dim() != 4:
         raise ValueError(f"v must be [B, 1, H, d_v], got {tuple(v.shape)}")
@@ -260,23 +227,12 @@ def step_plane(v: torch.Tensor, descriptor: Descriptor, decay,
             f"the descriptor says decay={launch.decay} but decay is "
             f"{'absent' if decay is None else 'present'}; the descriptor is for the "
             "sequence and the decay arm is part of it")
-    page_bytes = page_layout(d_v).bytes
-    if page_table is None:
-        #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the dense
-        #: plane is the same page sequence with every page resident, and `N` is page
-        #: aligned by construction (docs/internals/state.md#format).
-        expected = (BH, launch.N // MMA_K_QUANTUM, page_bytes)
-        if tuple(state.shape) != expected:
-            raise ValueError(f"a dense state is [BH, N / {MMA_K_QUANTUM}, page_bytes] = {expected}, "
-                             f"got {tuple(state.shape)}")
-        return state
-    if state.dim() != 2 or state.shape[1] != page_bytes:
-        raise ValueError(
-            f"under a page table the state is the arena's plane, [slots, {page_bytes}], got {tuple(state.shape)}")
-    if tuple(page_table.shape) != (BH, launch.N // MMA_K_QUANTUM):
-        raise ValueError(
-            f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "
-            f"{(BH, launch.N // MMA_K_QUANTUM)}, got {tuple(page_table.shape)}")
+    #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the plane is the page sequence
+    #: with every page resident, and `N` is page aligned by construction (docs/internals/state.md#format).
+    expected = (BH, launch.N // MMA_K_QUANTUM, page_layout(d_v).bytes)
+    if tuple(state.shape) != expected:
+        raise ValueError(f"a dense state is [BH, N / {MMA_K_QUANTUM}, page_bytes] = {expected}, "
+                         f"got {tuple(state.shape)}")
     return state
 
 
@@ -304,12 +260,8 @@ def step(launch: DecodeLaunch, *, ctas: int | None = None, eps: float = READOUT_
     atomic and is bitwise reproducible; ``y`` is reproducible to the order the visits add
     its sums in (docs/internals/decode/decode.md#determinism).
 
-    THE ADMISSION QUESTION IS PART OF IT: the write map the walk needs is the map the
-    residency test reads, so the test is a pass over shared memory rather than a launch,
-    and the verdict it publishes is per batch-head
-    (docs/internals/decode/decode.md#absorbed-verdict).
     """
-    op, pool = launch.operands, launch.workspace.pool
+    op = launch.operands
     scratch = launch.workspace.scratch
     y = extension().fsla_decode_forward(
         read=list(op.read),
@@ -324,43 +276,12 @@ def step(launch: DecodeLaunch, *, ctas: int | None = None, eps: float = READOUT_
         state=op.state_plane,
         yacc=scratch.yacc,
         queue=scratch.queue,
-        growth=scratch.growth,
-        growth_any=scratch.growth_any,
-        growth_ctr=scratch.growth_ctr,
-        done=scratch.done,
-        atom_bits=scratch.atom_bits,
         ctas=-1 if ctas is None else ctas,
         eps=eps,
         descriptor=list(launch.descriptor.words),
-        page_table=op.page_table,
-        pool_slots=None if pool is None else pool.pool_slots,
-        pool_cursor=None if pool is None else pool.pool_cursor,
     )
     B, _T, H, d_v = op.v.shape
     return y.view(B, H, 1, d_v).permute(0, 2, 1, 3).contiguous()
-
-
-def _write_atom_bitmap(write_live, widths: tuple[int, ...], lattice: tuple[int, int]) -> torch.Tensor:
-    """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY, from each write level's live
-    digits: the write masks' bits (:meth:`~fsla.routing.masks.Masks.bits`), ``[B, 1, H, width_l]`` bool a level.
-
-    AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
-    gate's reference; calling it on a shipped path would delete the gate's independence
-    (docs/internals/decode/decode.md#second-derivation). It derives the CANONICAL leaf
-    support digit by digit and crosses into lattice order through ``pi``, so it shares no
-    step of the kernel's own enumeration.
-    """
-    device = write_live[0].device
-    index = torch.arange(math.prod(widths), device=device)
-    live = None
-    for level, width in enumerate(widths):
-        digit = (index // math.prod(widths[level + 1:])) % width
-        column = _fold(write_live[level])[:, digit]
-        live = column if live is None else (live & column)
-    pi = permutation(widths, *lattice, device=device)
-    lattice_live = torch.empty_like(live)
-    lattice_live.index_copy_(1, pi, live)
-    return lattice_live.view(-1, math.prod(widths) // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
 
 
 def _decode_step(
@@ -372,8 +293,6 @@ def _decode_step(
     *,
     decay=None,
     workspace: DecodeScratch | None = None,
-    page_table: torch.Tensor | None = None,
-    pool=None,
     ctas: int | None = None,  #: reserved: a gate's forced CTA count, the step's own keyword
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
     """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
@@ -381,7 +300,7 @@ def _decode_step(
     ``routes`` is a one-token :class:`~fsla.routing.factors.RouteFactors`, ``values`` a one-token
     :class:`~fsla.values.Values` and ``masks`` their DECODE-layout :class:`~fsla.routing.masks.Masks`; the kernel
     reads their rows, scales, values and mask words as they are. ``state`` is the dense
-    ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``.
+    ``[BH, N / 16, page_bytes]`` plane.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
@@ -400,7 +319,7 @@ def _decode_step(
     logical_d_v = values.d_v
     launch = decode_launch(descriptor)
     v = pad_v(values.v, launch.d_v)
-    plane = step_plane(v, descriptor, decay, state, page_table)
+    plane = step_plane(v, descriptor, decay, state)
     BH = values.batch * values.heads
     if workspace is None:
         workspace = DecodeScratch.build(descriptor, BH, v.device)
@@ -409,6 +328,6 @@ def _decode_step(
         operands=DecodeOperands(
             read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
             read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, descriptor, v.device), v=v,
-            v_scale=values.scale, state_plane=plane, page_table=page_table),
-        workspace=DecodeWorkspace(scratch=workspace, pool=pool)), ctas=ctas)
+            v_scale=values.scale, state_plane=plane),
+        workspace=DecodeWorkspace(scratch=workspace)), ctas=ctas)
     return slice_y(y, logical_d_v), state, workspace

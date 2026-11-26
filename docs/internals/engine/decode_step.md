@@ -3,24 +3,17 @@
 `fsla/engine/decode_step.py`. The kernel-side page is
 [`internals/decode/decode.md`](../decode/decode.md); this one is the HOST side — what
 the step's values are, in what order they are found, and how the two properties a decode
-step lives or dies by are held: it must be capturable, and its growth must self-correct.
+step lives or dies by is held: it must be capturable.
 
 Symbols used below: `B` batch, `H` heads, `BH = B*H`, `D` level count, `N` leaf count,
 `d_v` value width, **atom** = 16 consecutive leaves = the page granule.
 
-## <a id="the-two-backings"></a>1. Dense and paged are the two BACKINGS, and a growth step is neither
+## <a id="the-state"></a>1. The step is ONE function over the dense state
 
-The step is ONE function for both backings — a dense call simply never finds
-an atom the table does not map, because it has no table. The host-visible verdict READ is
-not a step: `growth_pending` makes it at the caller's synchronization, and answers `False`
-for a dense state without reading, since a dense step has no residency fact to read back.
-
-**A GROWTH STEP IS NOT A THIRD KIND OF STEP.** It is `decode_step_gated` run twice around an
-admission the host performs between the two runs. The backing selects nothing in the call;
-growth selects the same call, which is exactly why a CUDA graph captured over the step stays
-valid across an admission and why a replay is self-correcting: the verdict is INSIDE the
-captured region, so on the second run a batch-head that could not advance the first time
-carries no done flag yet and the step it had skipped performs.
+The step reads and updates the state's plane in place and returns `(y, state)`; the state is the one dense implementation
+of the interface ([`state.md#interface`](../state.md#interface)), and `backing` below reaches it only through the interface's seam,
+`_decode_entry`. There is no host-visible verdict to read: nothing in the step is conditional on a fact the host holds, which is what
+makes a CUDA graph captured over it valid for the sequence's life.
 
 ## <a id="the-order"></a>2. The step, read top to bottom
 
@@ -31,7 +24,7 @@ carries no done flag yet and the step it had skipped performs.
 | `decode_call` | `BH`, `device` (refuses a grouped bundle) |
 | `descriptor_of` | the call's descriptor, from the bundle's declaration, `d_v`, whether a decay is handed, `BH` and the device |
 | `scratch` | the per-sequence buffers |
-| `backing` | `carried_plane`, `page_table`, `pool` |
+| `backing` | `carried_plane` |
 | `state_plane` | the plane the kernel indexes |
 | `build_launch` | the launch |
 | `step` | `y` |
@@ -40,51 +33,33 @@ Each step runs inside a profiler range under its own name ([`engine.md`](engine.
 
 **THERE IS NO OPERAND STEP AND NO ADMISSION STEP.** The step's per-token operands are
 folded inside the step kernel, from the producer's own views
-([`decode/decode_fold.md`](../decode/decode_fold.md)), and the residency question the
-call needs answered is asked off the write map that same kernel builds for itself, in the
-same launch ([`decode.md#absorbed-verdict`](../decode/decode.md#absorbed-verdict)). So a
-decode step is ALWAYS one launch, dense or paged, growing or steady, and neither backing
-has a stage whose only output is a widened copy of an input or a residency answer for a
+([`decode/decode_fold.md`](../decode/decode_fold.md)). So a
+decode step is ALWAYS one launch, and has no stage whose only output is a widened copy of an input or a residency answer for a
 launch still to come. The detached clock is the write rows' own shares
 ([`decode.md#detached-clock`](../decode/decode.md#detached-clock)), so it is not a stream
 of its own either.
 
-`backing` is `FSLAState._decode_entry`: the plane, table and slack pool the state already
-has, over the residency it already has — it admits nothing itself. `build_launch` derives the decay arm's `dials`: a per-HEAD constant, and the one
+`backing` is `FSLAState._decode_entry`: the plane the state holds, checked against the bound format. `build_launch` derives the decay arm's `dials`: a per-HEAD constant, and the one
 operand the step kernel does not fold. Everything else on the launch's `operands` is a view the producer
 already holds; its `descriptor` is the one `descriptor_of` built, and the state plane's leaf order is the lattice of the descriptor's level widths, solved by the launch function
 ([`decode_launch.md`](../common/plan/decode_launch.md); `fsla.ops.decode.lattice_of` reads the same solve for the oracle and test seam).
 
 `state_plane` carries the per-step SHAPE agreements — `d_v` against the descriptor's arm,
-the plane's extent against the backing, the page table's against `[BH, N/16]`. They are
+the plane's extent against `[BH, N/16, page_bytes]`. They are
 checked per step and not when the descriptor is made because that is where the plane the step actually
 indexes is known.
 
-## <a id="the-verdict"></a>3. The verdict is the step's own output, read by its caller
-
-`decode_step_gated` returns after `step`, and the
-caller owns the verdict, at whatever synchronization it already has, through
-`growth_pending` and `admit_growth` ([`decode.md#capture`](../decode/decode.md#capture)).
-`growth_pending` is a single copy of the step's own `growth_any` output into a pinned
-mirror, and it cannot be enqueued ahead of the step: the verdict the step publishes is its
-own last finisher's write, so the read is behind it by data dependence. The layer's
-one-token `forward` is that caller (`FSLA._step`, then the verdict, the admission and the
-step again), and a serving loop that captures `_step` reads it at the sync that samples
-its token.
-
-## <a id="capturable"></a>4. The step is capturable: no host read of a device value, no allocation a step
+## <a id="capturable"></a>3. The step is capturable: no host read of a device value, no allocation a step
 
 Nothing the step calls reads a device value on the host or allocates per step, which is
-precisely what a capture requires — which is exactly why the verdict read lives in
-`growth_pending`, outside the step, and never inside it. The scratch is allocated once per
-sequence ([section 5](#the-scratch)), so the first step builds it and every later step finds it.
+precisely what a capture requires. The scratch is allocated once per
+sequence ([section 4](#the-scratch)), so the first step builds it and every later step finds it.
 
 The property is stated here and proven by `tests/integration/test_decode_graph_step.py`,
-which captures the layer's one-token step and replays it across an admission against the
-eager run. A step added to the call that reads a device value, or allocates per step, fails
+which captures the step and replays it against the eager run. A step added to the call that reads a device value, or allocates per step, fails
 there at someone's first `graph.replay()`.
 
-## <a id="the-scratch"></a>5. The descriptor and the scratch, and why the scratch is held the way it is
+## <a id="the-scratch"></a>4. The descriptor and the scratch, and why the scratch is held the way it is
 
 THERE IS NO DECODE PLAN. The decode op builds the validated `Descriptor` itself (`descriptor_of`, over `fsla.ops.produce._decode_descriptor`: every device fact and every call fact, immutable, hashable; the
 key of the scratch), and what the call derives is the descriptor's or the launch function's: the widths, each side's walk of each level (`write_dense` derived from it) and `d_v` are call facts the descriptor states and
@@ -99,43 +74,18 @@ carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
 `scratch` holds its buffers in one module-level `WeakKeyDictionary` keyed on the sequence's state object, each
-value a dict keyed `(descriptor, BH, device)`; the terminal values beside it — the folded amplitudes, the plane, the verdict buffers —
+value a dict keyed `(descriptor, BH, device)`; the terminal values beside it — the folded amplitudes, the plane, the kernel's required buffers —
 are per-call and never held.
 
 The weakness is REQUIRED and not incidental: a dropped
 sequence must drop its buffers, and two live sequences must never share one. Holding the scratch
-is also what hoists the allocation, and the once-only initialization of `yacc`,
-`queue`, `growth_ctr` and `done`, above any captured region — the step's own finishers and
+is also what hoists the allocation, and the once-only initialization of `yacc`
+and `queue`, above any captured region — the step's own finishers and
 last CTA out reset each of them, so no `memset` ever stands between two decode steps
 ([`decode.md#capture`](../decode/decode.md#capture)). The state is the table's key and never an input of the
 build, so two scratches built for one geometry are interchangeable by construction
 (`tests/unit/test_decode_scratch.py`).
 
 Because the descriptor is FIXED for the sequence, a state has exactly one live
-scratch; `growth_pending` and `admit_growth` read it through that table and refuse a
-state holding more than one, which is the observable form of the decay arm changing
-mid-sequence.
-
-## <a id="reference-only"></a>6. `write_atom_bitmap` — the enumerated gate reference, called by no step
-
-`write_atom_bitmap` is a plain function and no step calls it. It is the gate's
-INDEPENDENT second derivation of the write-atom set, written from the definition rather
-than from the kernel's structure
-([`decode.md#second-derivation`](../decode/decode.md#second-derivation)); the shipped path
-derives that set on the device, inside the step, as `atom_bits`. Calling it from the step
-would make the gate compare the step against itself.
-
-## <a id="the-pool"></a>7. The slack pool is storage mechanics, and no step of its own
-
-A step admits into its state's slack pool INSIDE the kernel, from the pool buffers
-`backing` hands the launch — there is no step for it, because it is not a fact the host
-finds: the claim is the kernel's own, made by the batch-head's owner and written into the
-page table ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
-`pool_headroom` and `refill_pool` (`fsla/engine/decode_step.py`) are HOST reads and
-writes off the step's path entirely — a serving loop polls the first at leisure and calls
-the second on its own schedule, never as a precondition of a step. Pool-covered growth
-raises no verdict, because nothing is urgent for the host: `growth_pending` stays `False`
-and the batch-head simply advanced. Exhaustion is not a third path — an unpooled or
-pool-exhausted batch-head is `needy` exactly as it always was, and the existing
-`growth_pending` / `admit_growth` pair is what a caller reaches for it. The pool's own
-design is [`paging/paging.md` §the-slack-pool](../paging/paging.md#the-slack-pool).
+scratch; `_scratch_of` reads it through that table and refuses a state holding more than
+one, which is the observable form of the decay arm changing mid-sequence.

@@ -19,12 +19,11 @@ writes).
 Registration is host-only. Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit, and every
 architecture added to the built set multiplies that cost. Every declaration it names is a host header
 (`src/decode/decode_api.cuh`, `src/common/plan/plan_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/mask_prepare/mask_prepare.cuh`, `src/common/geom_api.cuh`,
-`src/paging/vmm_owner.cuh`, `common/arm_switch.cuh`), so no device body is in scope.
+`common/arm_switch.cuh`), so no device body is in scope.
 
 ## <a id="one-library"></a>2. One library, registered here only
 
-Every family registers into the one `fsla` namespace, because they are halves of one contract: the carry reads the page
-table the arena publishes, and the decode step is a sibling of the prefill, not a specialization of it. Every `m.def`
+Every family registers into the one `fsla` namespace, because they are halves of one contract: the carry and the decode step read and write one state page format, and the decode step is a sibling of the prefill, not a specialization of it. Every `m.def`
 and `m.impl` is in this file, so there is one place to read to know what the extension offers;
 `tests/unit/test_closed_world_arch_gate.py` scans exactly these registrations.
 
@@ -46,12 +45,10 @@ reaches into the module itself.
 | the prefill's mask-preparation pass | `mask_prepare`, `mask_prepare_bytes` (`mask_prepare(Tensor[] masks, int[] slots, int[] widths, int[] heads, int tokens, Tensor density, Tensor(a!) workspace) -> ()`; `mask_prepare_bytes(int[] widths, int[] masked, int[] heads, int tokens, int device) -> int`, `device` the card's index: the op derives the card's window) |
 | the planner's descriptor | `fsla_call_facts`, `fsla_descriptor`, `fsla_owed_kernels` |
 | the T=1 decode path | `fsla_decode_forward`, `fsla_decode_launch`, `fsla_decode_lattice`, `fsla_decode_lattice_box`, `fsla_decode_build_stamp`, `fsla_decode_arms`, `fsla_decode_ledger_bind`, `fsla_decode_ledger_warps`, `fsla_decode_capacity`, `fsla_decode_producer_width_mirror` |
-| the VMM owner, by handle | `vmm_probe`, `vmm_create`, `vmm_release`, `vmm_base`, `vmm_grow`, `vmm_rollback_to`, `vmm_reset`, `vmm_close`, `vmm_facts` |
 
 Every operator that launches a kernel opens with `check_arch_table()`, the closed-world refusal of an architecture the
 binary was never measured on ([`common/arch_runtime.md`](common/arch_runtime.md)). A schema names every argument, so
-`torch.ops.fsla` takes the same keywords the pybind binding did; the defaults (`sm_clock_ghz`'s spin, the decode step's
-optional page table and slack pool, `vmm_create`'s chunk size) are the schema's.
+`torch.ops.fsla` takes the same keywords the pybind binding did; the default (`sm_clock_ghz`'s spin) is the schema's.
 
 Three of the decode entries are gates rather than operations: `fsla_decode_capacity` reports the decode path's maximum
 level width, which must be `>=` the producer's `MAX_BRANCH_WIDTH` (`tests/unit/test_decode_capacity.py` pins the pair);
@@ -60,39 +57,13 @@ stale mirror cannot satisfy the capacity `static_assert`; and <a id="decode-buil
 is the device-side fact a stale extension cannot fake ([`decode/decode_api.md`
 §build-stamp](decode/decode_api.md#build-stamp)).
 
-The page table a kernel reads is published by the torch arena in `fsla/ops/paging.py`; no device entry produces one.
+## <a id="the-step"></a>5. `fsla_decode_forward` — the whole step, one launch
 
-## <a id="vmm-binding"></a>5. The VMM owner, by handle
+The decode step is ONE kernel: the operand fold, the `(k, m)` lattice's factor tables and the token-stationary walk are
+phases of it, so what the boundary passes is the caller's raw `[B, 1, H, *]` views and not a widened plane. There is no
+separate fold entry and no `heads` argument -- `v`'s own shape carries `H`
+([`decode/decode_fold.md`](decode/decode_fold.md)).
 
-An operator can return tensors, integers, floats, strings and lists of them, and not a native object. So the owner
-lives in this file's registry, `std::unordered_map<int64_t, std::shared_ptr<VmmOwner>>`, and a caller holds the integer
-`vmm_create` returns. `vmm_release` drops the registry's reference; every other operator takes the handle.
-
-The `shared_ptr` is required rather than stylistic: `VmmOwner` is `enable_shared_from_this`, and every tensor view
-`vmm_base` returns captures a `shared_from_this` in its deleter, so a view keeps the driver mapping alive past the
-handle's release ([`paging/vmm_owner.md`](paging/vmm_owner.md#view-lifetime)).
-
-`fsla/ops/_ext.py`'s `FSLAVmmOwner` is the handle's Python face and keeps the surface the arena reads: the verbs
-(`grow`, `rollback_to`, `reset`, `close`) are methods, the seven observables `closed`, `mapped_capacity_pages`,
-`dense_limit_pages`, `committed_bytes`, `virtual_bytes`, `allocation_granularity` and `chunk_pages` are
-read-only properties over one `vmm_facts` call, `backing_kind` is a plain class constant (`"cuda_driver_vmm"`,
-naming the backing rather than reading it), and dropping the object releases the handle. `fsla_vmm_probe` returns
-`vmm_probe`'s four facts as a dict (`device`, `supported`, `allocation_granularity`, `reason`), and `fsla_vmm_create`
-is the factory.
-
-The page geometry arrives as two extents, `page_rows` and `page_cols`, and the owner never learns what either counts --
-the arena passes `MMA_K_QUANTUM` and `d_v + 1`, the fused-mass page it addresses. `target_chunk_bytes` defaults to
-64 MiB at this boundary; the arena overrides it with the device's own allocation granularity.
-
-## <a id="the-step"></a>6. `fsla_decode_forward` — the whole step, one launch
-
-The decode step is ONE kernel: the operand fold, the `(k, m)` lattice's factor tables, the token-stationary walk and the
-step's own per-batch-head residency verdict are phases of it, so what the boundary passes is the caller's raw
-`[B, 1, H, *]` views and not a widened plane. There is no separate fold entry and no `heads` argument -- `v`'s own shape
-carries `H` -- and no separate admission-probe entry: the residency test reads the write map the walk was going to build
-anyway ([`decode/decode_fold.md`](decode/decode_fold.md), [`decode/decode.md` §4c](decode/decode.md#absorbed-verdict)).
-
-`growth`, `growth_any`, `growth_ctr`, `done` and `atom_bits` are the verdict's own buffers, required whichever backing
-the call is, so one schema serves both. `yacc` and `queue` are the work queue's sums and counters
-([`decode/decode.md#queue`](decode/decode.md#queue)). `pool_slots` and `pool_cursor` are the slack pool, present exactly
-on a paged step whose state reserved one ([`decode/decode_api.md` §4-5](decode/decode_api.md#the-verdict)).
+`state` is the dense `[BH, N / 16, page bytes]` plane ([`decode/decode_api.md` §3](decode/decode_api.md#dense-state)).
+`yacc` and `queue` are the work queue's sums and counters
+([`decode/decode.md#queue`](decode/decode.md#queue)); `queue` is `[3 BH + 2]`.

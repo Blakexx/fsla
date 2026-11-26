@@ -52,15 +52,13 @@ call's steps: the prefill's holds the leaf groups' mask words and counts the
 mask-preparation pass prepares ([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)), and its layout is [`mask_prepare_layout.h`](internals/common/plan/mask_prepare_layout.md); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 
-`decode_step_gated` has no host participation and is capturable in a CUDA graph. A batch-head whose write atoms the state can neither address nor
-admit is a no-op that sets the growth flag; the caller owns the check, at its own synchronization: `growth_pending(state)`, then
-`admit_growth(state)` and the step again (a captured step's replay). `fsla.growth_pending`, `fsla.admit_growth`, `fsla.pool_headroom` and
-`fsla.refill_pool` are exported beside it. The step's second call builds its descriptor by a memoized lookup: no device read and no allocation.
+`decode_step_gated` has no host participation and is capturable in a CUDA graph: it reads and updates the state's plane in place and returns
+`(y, state)`. The step's second call builds its descriptor by a memoized lookup: no device read and no allocation.
 
-<a id="batch-heads"></a>A decode step serves B times H from 1 to 536870911 (`2^29 - 1`: the largest the step's work queue of `4 B H + 2` int32
+<a id="batch-heads"></a>A decode step serves B times H from 1 to 536870911 (`2^29 - 1`: within what the step's work queue of `3 B H + 2` int32
 counters indexes); the step's descriptor states it as the `batch_heads` fact and a step outside it is refused when the descriptor is made.
 
-`state` is `None` (a stateless call, returning `(y, None)`) or a `fsla.state()` object,
+`state` is `None` (a stateless call, returning `(y, None)`) or a `fsla.dense_state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
 is no second flag, because a stateless call runs a kernel variant with no state I/O
 compiled into it at all. Read the carried state with
@@ -68,15 +66,9 @@ compiled into it at all. Read the carried state with
 capacity; that is a bridge for the oracle and for a test, never a measured path. See
 [`docs/internals/state.md`](internals/state.md).
 
-`fsla.state(backing="paged")` chooses the state's backing when the state is made (the state owns its format): `"paged"`, the default, or `"dense"`, one dense
-plane, which the bit-identity gate compares the paged backing against. `fsla.state(pool_slack=0.0)` is the paged backing's other storage-mechanics knob:
-a fraction of full residency, reserved per batch-head as physical slots a `T = 1` decode
-step can admit into itself, with no host round trip. `0.0` — the default — is exact
-commitment. Two calls read and refill it off the
-step's own path: `fsla.pool_headroom(state)` (the slack slots the
-thinnest batch-head still has) and `refill_pool(state)` (restock what the device spent).
-See [`internals/state.md`](internals/state.md#the-slack-pool) and
-[`internals/paging/paging.md`](internals/paging/paging.md#the-slack-pool).
+`fsla.FSLAState` is the state INTERFACE and `fsla.dense_state()` builds its one implementation, the dense state: one plane of the stored page
+format, the whole leaf space resident, taking no argument. A paged state is future work and will be built by its own constructor, taking the parameters
+its storage needs (see [`internals/state.md`](internals/state.md#interface)).
 
 There is no plan object. There is no configuration argument and no statistics argument: those are not model facts -- they are
 how the op RUNS. The descriptor and the workspace are internal to each call: it builds them from its operands through the producer's cached
@@ -126,7 +118,7 @@ is computed by a family's ONE launch function in `common/plan/`, right before th
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
 `descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
 and the workspace's builder (`fsla.ops.prefill`'s private builder) belong to the library's own code and tests, and are not on the top level. The
-state's BACKING is the state's own, chosen when it is made -- `fsla.state(backing="paged")`, the default, or `"dense"`, one dense plane, the bit-identity gate's -- never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
+state's storage is the state's own, chosen by the constructor (`fsla.dense_state()`), never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and the descriptor of a call answers the same question before it.
 
 **The envelope is narrow, and that is stated rather than softened.** Shapes outside the
@@ -141,7 +133,7 @@ raises `BackwardNotImplemented`, is the last line, loud if the first is ever byp
 
 ### 1.2 Continuation is LAYERED
 
-The op's state is the paged tensor and nothing else
+The op's state is the dense state and nothing else
 ([`docs/internals/state.md`](internals/state.md)). Each level of the stack returns its
 OWN thin bundle, and the rule is a membership test:
 
@@ -149,7 +141,7 @@ OWN thin bundle, and the rule is a membership test:
 > Op: the factored sparse state. Layer: `LayerContinuation`. Model: the per-layer bundles.
 
 So `FSLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
-one back. `LayerContinuation.state` is the op's paged tensor; it is the container's
+one back. `LayerContinuation.state` is the op's state; it is the container's
 only field today, and any future layer-level recurrence is a field ON IT, never on the
 op's state. The container is the contract in both directions: a bare `FSLAState` or a
 `(state, conv_rings)` tuple is refused by name, because accepting a lookalike would make
@@ -164,7 +156,7 @@ are stated apart.
 
 | | what it accepts | what it does with the rest |
 |---|---|---|
-| **the API** (this page: `prefill`, `FSLA`, `fsla.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` with zero columns to a width its kernel takes (the decode: the next shipped `DV`; the prefill's carry: a whole number of 64-channel slices) |
+| **the API** (this page: `prefill`, `FSLA`, `fsla.dense_state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` with zero columns to a width its kernel takes (the decode: the next shipped `DV`; the prefill's carry: a whole number of 64-channel slices) |
 | **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a value width its kernel takes (the decode: a shipped `DV`; the carry: 64-channel slices), `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
 
 **The seam is the only translator.** A padded digit gets amplitude *exactly* zero
@@ -505,7 +497,7 @@ rest on that property.
 ```python
 FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, memory_budget=None)
 
-y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.state()))
+y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.dense_state()))
 y, continuation = layer(next_tokens, continuation=continuation)
 y, _ = layer(hidden_states)                            # stateless -> (y, LayerContinuation(state=None))
 ```
@@ -517,13 +509,10 @@ the container (§1.2).
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
 default, 64, is the intra's value width.
 
-<a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `FSLA._step(x, state)`
+<a id="one-token-step"></a>**One token of a carried sequence is `_step`.** `FSLA._step(x, state)`
 is the whole token with no host read inside it -- the producer's one launch, the gated decode
 step, the output projection -- so a caller can capture it in a CUDA graph and replay it a
-token. A batch-head whose write atoms the state can neither address nor admit skips itself;
-`forward` then asks `growth_pending(state)`, admits and steps again, which advances every
-sequence exactly once (`docs/internals/decode/decode.md#capture`). Reading the verdict is a
-4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
+token (`docs/internals/decode/decode.md#capture`).
 
 A convolution over the value or routing-source stream, if one is added, is a field on
 `LayerContinuation`.

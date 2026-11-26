@@ -2,12 +2,6 @@
  "lint": "constant_parameters",
  "findings": [
   {
-   "path": "fsla/_state.py",
-   "message": "clone(..., strategy=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "a8c1f7f9dd959c89",
-   "count": 1
-  },
-  {
    "path": "fsla/layer.py",
    "message": "forward(..., attention_mask=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "7f344b4b34f30beb",
@@ -40,18 +34,6 @@
   {
    "path": "fsla/ops/decode.py",
    "message": "_decode_step(..., decay=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "c36ddf7ee69c2d2d",
-   "count": 1
-  },
-  {
-   "path": "fsla/ops/decode.py",
-   "message": "_decode_step(..., page_table=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "c36ddf7ee69c2d2d",
-   "count": 1
-  },
-  {
-   "path": "fsla/ops/decode.py",
-   "message": "_decode_step(..., pool=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "c36ddf7ee69c2d2d",
    "count": 1
   },

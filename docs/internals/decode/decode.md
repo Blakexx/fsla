@@ -80,280 +80,51 @@ With one token there is nothing to amortize across a block of leaves, so the dec
 states no launch-shape `BC` (decode's schema names none, `hardware/kernels/decode/schema.json`; `tests/integration/test_decode_bc_blindness.py`). The `(k, m)`
 lattice's `BC = prod_l s_l` is the leaf count one OWNER holds, one unit of the partition the
 walk enumerates ([`decode_lattice.md`](decode_lattice.md)): a LAYOUT fact (`λ / BC = O` by
-construction). No address in either backing is computed from it: both are keyed to the
-16-leaf ATOM ([§4](#paged-address)), so `BC` is the walk's unit boundary and nothing more.
+construction). No address is computed from it: the state's address is keyed to the
+16-leaf ATOM ([§4](#dense-address)), so `BC` is the walk's unit boundary and nothing more.
 
-<a id="decode-step-kernel-note-l397"></a><a id="decodeparams-note-l250"></a>
-## <a id="paged-address"></a>4. Paged and dense are ONE walk
+## <a id="dense-address"></a>4. The state is one dense plane
 
 <a id="the-atom"></a><a id="katomshift"></a>The page granule is the **atom** — `kAtomLeaves = 16`
-consecutive leaves in LATTICE leaf order, the paged state's page size
+consecutive leaves in LATTICE leaf order, the state page's size
 (`MMA_K_QUANTUM` in Python). Under the mixed-radix intra-box order an atom is 16
 consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
 every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
 level straddling it keeps an aligned contiguous sub-run, and the levels below are free
-(`lattice_atom_rectangle`, [`../common/plan/lattice.md`](../common/plan/lattice.md)). One condition survives, `16 | BC` (an atom lies inside one
-owner), refused by the launch function (`decode_paged_refusal`, [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)) where a page table is
-present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
-membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
-fixed across every config forever, which is exactly why the paged address addresses
-through the atom rather than through `BC` ([§3](#bc-absent)).
+(`lattice_atom_rectangle`, [`../common/plan/lattice.md`](../common/plan/lattice.md)).
+`kAtomLeaves` is geometry-owned and fixed across every config forever, which is exactly why
+the address goes through the atom rather than through `BC` ([§3](#bc-absent)).
 
-The walk resolves an atom's page as a BYTE offset from `p.state`, and the two backings
-differ in that offset and in nothing else:
+The state is ONE plane, `[BH, N / 16, page bytes]`, atom-major, every page resident. The walk
+resolves an atom's page as a BYTE offset from the head's plane,
+`plane + atom * Page::kBytes` with `plane = state + bh * atoms_per_bh * Page::kBytes`, and a
+leaf's row is `leaf & 15` inside the page's planes
+([`common/state_page.md#geometry`](../common/state_page.md#geometry)). The address is plain
+arithmetic at each use: no table stands between an atom and its page and the walk caches
+nothing per atom, so it is correct whatever order it reaches leaves in. `N` is a whole number of
+atoms by the admission law ([`docs/internals/state.md`](../state.md)).
 
-| backing | `page_tbl` | page base | slot |
-|---|---|---|---|
-| dense | `nullptr` | `(bh * atoms_per_bh + atom) * kBytes` | the atom itself |
-| paged | `[BH, N/16]` int32 | `slot * kBytes` | `page_tbl[bh * atoms_per_bh + atom]` |
+A leaf never deposited into holds zeros, and the self-normalizing readout then contributes
+exactly nothing through it — the mechanical form of the dead-leaf argument.
 
-and a leaf's row is `leaf & 15` inside the page's planes
-([`common/state_page.md#geometry`](../common/state_page.md#geometry)). The dense backing is the
-same atom-major page sequence with every page resident, which is what makes the two
-backings one addressing law. `N` is a whole number of atoms by the admission law
-([`docs/internals/state.md`](../state.md)).
+## <a id="capture"></a>4b. CUDA-graph capture — `decode_step_gated`
 
-**The resolve is once per touched ATOM, not per row.** It is a value-keyed cache
-(`if ((leaf >> 4) != cached_atom) reload`), so it costs at most one `int32` load per
-16-leaf atom, and — the part worth stating — it is correct whatever order the walk
-reaches leaves in. The lattice's own ASCENDING `C` order ([§26](#aligned-subranges)) is
-what makes 16 consecutive leaves share a slot and makes the cache CHEAP; nothing about
-its correctness depends on that order.
-
-The table row is pinned as a plain origin and everything per atom is a displacement
-from it, the addressing discipline the SASS gate patrols: the widening multiply that forms
-the page base is paid once per atom, never per row.
-
-<a id="absent-atom"></a><a id="decode-step-kernel-note-l516"></a>**An absent atom (`slot < 0`) reads as zeros and is not
-written.** That is exact rather than defensive: a step's plan admits its write set
-EXACTLY (the step's own published condensation, [§4b](#atom-bits)), and a batch-head
-whose write set it cannot cover does not walk at all ([§4c](#per-bh-verdict)), so an atom
-with no slot is outside the write set, and a never-deposited leaf holds zeros in the dense backing too. The
-self-normalizing readout then contributes exactly nothing through it — the
-mechanical form of the dead-leaf argument, gated by
-`tests/integration/test_decode_paging.py`.
-
-## <a id="growth"></a>4b. Growth — the step's own new work, and its own question
-
-A step may deposit into an atom that is not resident. At `T = 1` the write support is
-a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is the
-per-level exact-nonzero indicators' product ORed 16-deep.
-
-<a id="absorbed-verdict"></a><a id="paged"></a>**THE STEP ASKS THE QUESTION ITSELF, IN ITS OWN PROLOGUE.**
-the exact admission is dear against the launch it precedes, and a sequence whose routing
-has settled writes atoms that are already resident. What makes the question nearly free is
-that the step has already built the objects it is asked about: the write-side factor tables
-([`decode_lattice.md`](decode_lattice.md)) are the ones the walk itself resolves units from,
-so the residency test is a pass over the WRITE list's candidate atoms
-([§4b](#candidate-atoms)) and a page-table indirection each, and no second launch, no second
-fold and no second factor pass exist at all. There is nothing left for a probe kernel to be.
-
-So the order per step is ONE kernel, and then, only where the answer was yes and no pool
-covered it, the gated step's order at `L = 1`:
-
-```
-decode_step        ->  fold, expand, THE VERDICT, walk, and the write-ATOM set,
-                       per batch-head, in one launch
-growth_host.copy_  ->  the ONE 4-byte read, after the launch that produced it
-  no  -> done                      ->  the walk ran, against the residency it had
-  yes -> state._decode_entry_arena ->  plan_exact(scratch.atom_bits, fresh=False)
-         arena.wait()              ->  the ONE event the launch waits on
-         _decode_step              ->  the same step again, and the batch-heads that
-                                       already ran do not run twice ([§4c](#done-flags))
-```
-
-<a id="the-table-test"></a><a id="a"></a>**THE TABLE TEST.** The count of atoms that are written and unmapped
-is a block reduction (`cub::BlockScan::ExclusiveSum`) over one `page_row[a] < 0` test per
-candidate atom. The batch-head's OWNER computes it, once, from its own factor tables and
-the page table, and publishes the outcome to every other visit
-([the admission](#queue-admission)).
-
-<a id="candidate-atoms"></a><a id="win-bits"></a><a id="torch-check"></a><a id="decodeparams-note-l233"></a>
-<a id="fill-lattice-note-l960"></a>**THE CANDIDATE ATOMS ARE ENUMERATED FROM THE SAME LATTICE
-PRODUCT THE WALK USES, RESTRICTED TO THE WRITE LIST.** A unit's leaves are a CONTIGUOUS
-ALIGNED RUN ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so an atom and a
-unit nest one way or the other and the index says which: the low `atoms_per_unit_shift`
-bits of `i` pick an atom INSIDE a unit, and `lat_units_per_atom_shift` consecutive units
-make ONE atom. Exactly one of the two shifts is ever non-zero, and both are PAGED-ONLY
-quantities the host derives once (`decode_lattice.md#the-refusals`).
-
-`candidate_atom(i)` therefore resolves the write-side unit (or the `1 <<
-lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over the CANDIDATE TERM
-SLOT `D + 1` — the write product in the `live owners x run radix` space, which is the only
-one monotone in atom id and is exactly the enumeration this claim was ratified on
-([`decode_lattice.md#the-candidate-slot`](decode_lattice.md#the-candidate-slot)); it shares
-the walk's owner lists and needs no list plane of its own — and an atom is live where a resolved unit is `valid && live_w` and the
-ALIGNED WINDOW of its innermost write slice that the atom covers is non-zero. At the
-flagship spans `(8, 16)` a unit IS an atom, both shifts are zero, and the test is "the
-unit's 16-bit write slice is non-zero".
-
-The whole enumeration is
-`n_candidates = (units[D + 1] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
-a PARTITION mapping monotonically onto ascending atom ids by construction, because unit
-rank and the atom index inside a unit are BOTH ascending in the lattice's own leaf order.
-That
-ordering is not a convenience: the pool claim's canonical ranks ([§4e](#the-claim)) are
-defined in ascending atom id and this enumeration is where that order comes from. The same
-enumeration serves the table test, the claim and the condensation below.
-
-<a id="atom-bits"></a><a id="decode-step-kernel-note-l355"></a>
-<a id="atombits"></a>**THE CONDENSATION IS PUBLISHED, and it is the only thing that is.**
-the test already has the write-atom set in hand, so writing it out costs one byte per atom
-and removes the host derivation from a growth step entirely: `plan_exact` plans from
-`scratch.atom_bits` and derives no support. The batch-head's owner publishes it,
-UNCONDITIONALLY — a dead atom's `false` is as much of the set as a live one's `true`,
-and publishing only the growing batch-heads would leave the buffer carrying an older step's
-answer for the others, which is the very buffer the admission then plans from. It is two
-passes, a clear over the row and a set over the candidate rectangle, because "everything
-outside the write support is false" is a statement about the whole row while the support
-is not. The clear is the one remaining term in a steady step that scales with `N`, and it
-is one byte per atom on the batch-head's owner.
-
-The leaf-granular map is published by NOTHING. The factor tables live and die inside the
-CTA that built them ([§12](#factor-tables)); the step's one leaf-level output is this
-16-deep condensation of the write side's.
-
-`fsla.ops.decode._write_atom_bitmap` survives as the ENUMERATED REFERENCE for that
-condensation — the same set derived from the Cartesian-product definition in torch,
-held by `fsla/engine/decode_step.py`'s `write_atom_bitmap`, which no step calls, and exercised directly by the paging/growth
-integration tests (`tests/integration/test_decode_growth_trigger.py`,
-`test_decode_graph_step.py`, `test_decode_paging.py`, `test_page_arena_vmm.py`). It
-is not a fallback and not a second path a caller may select — no step of the decode call invokes it — it is what makes the gate a
-check rather than the kernel agreeing with itself ([§39](#second-derivation)).
-
-## <a id="the-gate"></a>4c. The verdict is PER BATCH-HEAD, and the done flags are what make a replay idempotent
-
-<a id="per-bh-verdict"></a><a id="growth-2"></a>**WHY A VERDICT AT ALL.** A deposit into an ABSENT atom is
-DROPPED ([§4](#absent-atom)) — `if (in_w && atom_present)`. So a host that read the growth
-verdict LAZILY (every `K` steps, a pinned poll) would run steps whose writes are silently
-lost. Laziness is not an available design at any `K > 1`; the only sound shapes are
-per-step synchronization, or a step that DECLINES TO RUN where its writes are not yet
-addressable. This is the second, and it is what turns the verdict from a host decision into
-a device one — which is in turn what lets the step be enqueued before any host has seen it,
-and captured in a graph ([§4d](#capture)).
-
-A NEEDY batch-head — one whose write set it can neither address nor admit — runs nothing:
-its owner publishes a position count of zero, so no warp claims, and finishes it with its
-growth flag set ([the finish](#queue-finish)) — no walk, no `y`, no state. Its verdict lands
-in `growth[bh]` and its write-atom set in `atom_bits`, which is exactly what the host
-admission needs and all of it.
-
-The skip is PER BATCH-HEAD and not all-or-nothing, and what makes that safe is the done
-flags below. A batch that shares one verdict wastes every resident
-sequence's step on the rarest one's growth; a batch that skips per sequence must answer
-what a replay does to the sequences that already deposited.
-
-<a id="done-flags"></a>
-<a id="decodeparams-note-l265"></a>**THE DONE FLAGS.** `DecodeScratch.done` is `[BH]` int32, zeroed
-ONCE at build. A batch-head that advances sets its flag. On the caller's replay a done
-batch-head **walks and reads but does not deposit** — and reproduces its `y` while doing
-so, up to the order its sums are added in ([§16](#determinism)), because
-[update-then-read](#update-then-read) means the rows it would deposit into already hold the
-deposit and the same expression is their readout. So `y` is
-complete for the whole batch after the replay without `y` ever becoming a buffer that
-survives between steps, and the contract the caller sees is:
-
-> gated step -> `growth_pending` -> `admit_growth` -> replay
-> advances every sequence EXACTLY ONCE.
-
-`tests/integration/test_decode_growth_trigger.py` states it as `torch.equal` on the
-gathered plane, and the reordering bound on `y`, against the admit-everything-first order, over a MIXED batch — one
-batch-head needy, the rest not — which is the cell that can tell the per-batch-head
-contract from a global skip.
-
-<a id="one-writer"></a>**EVERY CROSS-LAUNCH MUTATION HAS ONE WRITER, AND THAT IS THE WHOLE RACE
-ARGUMENT.** The page table, the pool cursor and the done flag are read by every visit to a
-batch-head. The table and the cursor are written by the head's OWNER inside its admission,
-before it publishes, and no other visit reads either until it has seen that publication
-([the admission](#queue-admission)). The done flag is written by the head's FINISHER, which
-runs only once every position has been claimed and walked ([the finish](#queue-finish)): a
-visit that reads the flag set has no position left to take. Without that, a done flag set
-early would make a sibling visit skip its own share of the SAME step.
-
-<a id="growth-reduction"></a><a id="seen"></a>
-<a id="growthany"></a>**THE REDUCTION, AND THE RESET.** The last of those per-batch-head
-writers to arrive at `growth_ctr` ORs `growth` into the `[1]` `growth_any` the host reads.
-Nothing needy is the same statement as every batch-head done, so that one test also decides
-whether the done flags are zeroed for the next step: the flags reset themselves exactly
-when the round is over, no `memset` launch stands between two decode steps, and the whole
-thing is safe to capture. `growth_ctr` resets itself the same way the queue's words do
-([the work queue](#queue)).
-
-## <a id="the-claim"></a><a id="decodeparams-note-l275"></a>4e. The slack pool — a growth step that admits itself
-
-Where the state reserves slack ([`paging.md#the-slack-pool`](../paging/paging.md#the-slack-pool)),
-a batch-head whose write set is not resident does not have to go to the host at all: it
-takes slots from its own pool region and advances. `pool_cap = 0` — the shipped default —
-is exact commitment, and the paragraphs below describe machinery that does not run.
-
-<a id="queue-claim-pool"></a>**THE ASSIGNMENT IS THE OWNER'S.** The batch-head's owner
-([the admission](#queue-admission)) maps its touched-unmapped atoms, in ASCENDING ATOM ID, to
-`pool_slots[bh][cursor + rank]`, with `rank` from a block scan over the candidate atoms; it
-writes the slots into the page table and advances the cursor by the demand, all before it
-publishes the head's count. It is ALL-OR-NOTHING: a demand larger than the batch-head's
-remaining pool is a needy batch-head and the host path exactly ([§4c](#per-bh-verdict)),
-because a partial claim would deposit part of a step and leave the replay to deposit the rest
-twice.
-
-**IT WRITES THE TABLE ITSELF.** No other visit reads the head's table row before the owner's
-publication, so the claim is ordinary residency the moment the walk can see it, and the walk
-addresses through the one table it always does: the walk's body knows nothing about pools.
-**AN ADMITTED ATOM IS AN ADMITTED ATOM.** Pool slots are ordinary arena slots, committed
-and ZEROED by the host before they are named, so an atom the device admitted is
-indistinguishable from one `plan_exact` admitted: same bytes, same table format, no
-migration and no copy anywhere. That is what keeps the dense-vs-paged `torch.equal` gate a
-statement about ADDRESSING, and it is asserted directly — a pooled arena and a
-host-admitted one reach the same state and the same `y`.
-
-## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
-
-With no host read inside it the step is capturable, and `fsla.decode_step_gated`
+The step has no host read inside it, so it is capturable, and `fsla.decode_step_gated`
 (`fsla/engine/decode_step.py`) is the decode entry. It takes its inputs only -- `decode_step_gated(routes, values, masks, state, decay=None)` -- and builds its
-descriptor itself, by a memoized lookup (`fsla.ops.produce._decode_descriptor`) that after the call's first reads no device and allocates nothing. The CALLER owns the verdict, at whatever synchronization it already has
-(a decode loop syncs once per token to sample):
+descriptor itself, by a memoized lookup (`fsla.ops.produce._decode_descriptor`) that after the call's first reads no device and allocates nothing.
 
-```
-y, state = decode_step_gated(...)   # or graph.replay()
-if growth_pending(state):           # one 4-byte read, at the caller's own sync
-    admit_growth(state)             # plan_exact from the step's own condensation
-    y, state = decode_step_gated(...)  # or graph.replay(); now it runs
-```
+Nothing in the loop reallocates: the workspace is built once and every counter is reset by the
+last CTA that reads it, so a graph captured over a step replays for the sequence's life. The
+layer's one-token `forward` runs the step eagerly; `FSLA._step` -- the producer's launch, the
+step and the output projection -- is the same step whole, and a caller that captures it replays
+one graph a token (`tests/integration/test_decode_graph_step.py`); capture is an optimization
+the caller selects.
 
-**A REPLAY IS SELF-CORRECTING**, which is what makes one captured graph enough: the verdict
-is re-derived inside it, so after the admission it is 0 and the same graph performs the
-step it had skipped — for the batch-heads that had skipped it, and for no others
-([§4c](#done-flags)). Nothing in the loop reallocates — the workspace is built once, every
-counter and flag is reset by the last CTA that reads it, and the arena's base address and
-page table are objects an admission writes IN PLACE (the reservation never moves), so a
-graph captured over them survives growth. The layer's one-token `forward` runs this loop
-eagerly; `FSLA._step` -- the producer's launch, the gated step and the output projection --
-is the same step whole, and a caller that captures it replays one graph a token
-(`tests/integration/test_decode_graph_step.py`); capture is an optimization the caller
-selects, not a fallback either way.
+## <a id="phase-ledger"></a>4c. The phase ledger
 
-Measured before the absorption (RTX 3080 Ti, ampere branch, unreproducible here, medians of 15 x 50, one steady paged step,
-`d_v = 64`, `BH = 6`), a loop of steps with one synchronize at the end, against the
-admit-preamble-every-step order that preceded the device-side verdict:
-
-| cell | steady, S4b order | steady, verdict order | steady, CAPTURED |
-|---|---|---|---|
-| 16x16 BC64    | 0.2468 | 0.2046 | **0.0367** |
-| 8x8x8x8 BC128 | 0.3254 | 0.2220 | **0.0573** |
-| 64x64 BC256   | 0.2811 | 0.2127 | **0.0553** |
-
-The host time the caller's thread spends per steady step falls from 0.259–0.318 ms to
-0.008–0.010 ms under capture: the host-wait floor S4b measured (launch-to-visible ~0.05–0.08
-ms on this WSL2 host) is not tuned away, it is left with nothing to sit in front of.
-
-Host-side ADMISSION is what the slack pool removes for a growth step that fits it
-([§4e](#the-claim)); a step that overruns the pool, or a state with no pool at all,
-surfaces to the host exactly as it always did.
-
-## <a id="phase-ledger"></a>4f. The phase ledger
-
-`DecodePhase` books every warp's cycles into five phases -- FOLD (phase A of
-[the prologue](#prologue)), FACTOR (phases B and C), ADMIT (the head's positions and its
-admission, through the admission's barrier), WALK (the claims and the leaves) and COMBINE (the
+`DecodePhase` books every warp's cycles into four phases -- FOLD (phase A of
+[the prologue](#prologue)), FACTOR (phases B and C), WALK (the head's positions and their count,
+the claims and the leaves) and COMBINE (the
 fold, the head's sums and its finish, and the choice of the next head) -- with the shared
 `PhaseClock` (`common/phase_clock.md`), summed over every head the CTA visits; every warp
 publishes its row at the CTA's exit. The ledger is bound by `fsla_decode_ledger_bind` as
@@ -452,8 +223,8 @@ kernel.**
 
 ## <a id="state-in-place"></a><a id="state"></a>11. `state` is read and written in place
 
-`state` is the dense `[BH, N / 16, page bytes]` or the arena's `[slots, page bytes]` uint8, one
-int8-format page a slot ([the int8 page](#int8-state), [§4](#paged-address)), and it is read AND
+`state` is the dense `[BH, N / 16, page bytes]` uint8, one
+int8-format page an atom ([the int8 page](#int8-state), [§4](#dense-address)), and it is read AND
 written in place: a row's read contribution and its write-back are performed by the SAME lane
 group in program order, so the read-then-write ordering costs a register and no barrier. The semantics of that order
 are [§27](#update-then-read).
@@ -465,8 +236,8 @@ are [§27](#update-then-read).
 [§2](#kronecker-support)'s exact support is served by the `(k, m)` lattice's factor tables
 — the digit masks and the two owner-coordinate lists
 ([`decode_lattice.md`](decode_lattice.md)) — built in SHARED MEMORY by the CTA that is
-about to walk them. NOTHING PUBLISHES ANYTHING: the step's one leaf-level output is the
-write map's 16-deep condensation ([§4b](#atom-bits)), and the tables themselves die with
+about to walk them. NOTHING PUBLISHES ANYTHING: the step's leaf-level output is the
+state's own deposits, and the tables themselves die with
 the CTA.
 
 The walk is COUNTED, NOT SCANNED, in the same sense a leaf-space bitmap walk never was:
@@ -480,7 +251,7 @@ second index over it.
 
 ## <a id="queue-buffers"></a>13. The queue's buffers
 
-`yacc` is `[BH, cols]` fp32, a head's readout sums, and `queue` is `[4 BH + 2]` int32, the work
+`yacc` is `[BH, cols]` fp32, a head's readout sums, and `queue` is `[3 BH + 2]` int32, the work
 queue's counters. Both are allocated once per sequence and reset by the kernel that last reads
 them ([the work queue](#queue)).
 
@@ -538,7 +309,7 @@ operands alone. No atomic touches `state`, and the gates compare it bit for bit.
 ## <a id="no-barrier"></a>17. No barrier per LEAF, and that is the axis that matters
 
 A visit costs a FIXED number of barriers: the prologue's three ([`#prologue`](#prologue)),
-the admission's one (a paged owner's claim and condensation add their own), the fold's one,
+the position count's one, the fold's one,
 and two around the choice of the next head. None is per position and none is per leaf; the
 count never grows with `N` or with the support.
 
@@ -601,7 +372,7 @@ with 32 would collide; `gcd(cols + 3, 32)` is 4 at `DV = 64` and at `DV = 32`.
 
 Every visit a CTA pays to a batch-head folds and factors that head itself
 ([`#prologue`](#prologue)), then walks the positions it claims. The tables live and die in its
-shared memory; nothing is published but the admission's outcome.
+shared memory; nothing is published but the head's position count ([the positions](#queue-positions)).
 
 That redundancy is the price of the factor tables never reaching DRAM. A shared per-head table
 would have to be written by someone and read by everyone -- a global round trip on the walk's
@@ -661,12 +432,7 @@ Term 0 IS the write product, and it is the ONE term whose rank space is not
 sparse INSIDE the owners it touches, so that space enumerated 2048 units for 256 live ones
 at the flagship's scattered cell — and the dead ones, interleaved one-in-eight, idled seven
 of every CTA's eight warps. It enumerates LIVE DIGITS instead
-([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)). The
-CANDIDATE-ATOM enumeration ([§4d](#candidate-atoms)) does NOT follow it there: a flat digit
-rank is not monotone in atom id, and the pool claim's canonical ranks are defined in that
-order, so a term slot `D + 1` holds the write product in the old space and the candidates
-read that. Two enumerations of one set, each in the order its consumer needs.
-
+([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)).
 <a id="the-unit-partition"></a><a id="units"></a>The queue hands out each term's UNIT INDEX SPACE directly -- a
 position is a unit of a whole-atom write term, or `kGroups` consecutive units of any other
 term, one a lane group ([the positions](#queue-positions)) -- so there is no separate
@@ -691,10 +457,8 @@ write product, `cr` for a read-remainder term, already conditioned by `resolve_u
 ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
 leaves ARE the innermost level's run in order. A dead innermost digit costs one `__ffs`
 step and no address at all, and the two sides' membership comes off the already-resolved
-`cr`/`cw` bitfields with no division anywhere. That ascending order is what makes
-`cached_atom` — the paged base translation's one piece of reuse ([§4](#paged-address)) —
-correct and cheap at once: at the flagship spans the whole unit is ONE atom, so the
-translation is resolved once per unit.
+`cr`/`cw` bitfields with no division anywhere. That ascending order keeps a
+unit's leaves on one page ([§4](#dense-address)): at the flagship spans the whole unit is ONE atom.
 
 The trip count per unit is `popcount(cr | cw) <= s_{D-1} <= kDecodeMaxSpan`
 ([`decode_lattice.md#capacities`](decode_lattice.md#capacities)) — a small,
@@ -840,37 +604,6 @@ The decode kernels have no backward. The layer's decode envelope check already
 refuses training mode and gradient reachability before the decode fork is reached, so
 the module's own check exists for a direct caller.
 
-## <a id="verdict-read"></a>38. The verdict's read is ONE BLOCKING pinned copy, and it cannot be anything else
-
-The step publishes `growth_any` at the end of its own launch, so the eager path's read is
-behind it BY DATA DEPENDENCE and there is nothing left to enqueue it in front of: the step
-is the only launch either way. It is one `[1]` int32 into a workspace-owned PINNED buffer,
-copied blocking. That was already the measured choice for a read standing in front of a
-kernel (0.093 ms against 0.152 for an asynchronous copy plus an event, RTX 3090, medians of
-15 × 100 — the host must wait for the kernel either way, and the event adds a record and a
-query on top of the wait the copy already performs), and with the ordering forced there is
-no second shape to compare.
-
-Under capture the read leaves the step entirely — the caller performs it, at its own
-synchronization ([§4d](#capture)) — which is where the host's participation in a steady
-step actually goes.
-
-## <a id="second-derivation"></a>39. `_write_atom_bitmap` is the gate's independent second derivation
-
-The shipped path derives the write-atom set on the device (the step publishes it), so
-`_write_atom_bitmap` has no production caller and is not meant to acquire one. It
-survives deliberately as a SECOND derivation of an object the kernel computes, written
-from the definition rather than from the kernel's structure, so the equality
-`tests/integration/test_decode_growth_trigger.py` asserts is a real check and not the
-kernel agreeing with itself. The decode paging and VMM gates plan from it for the same
-reason: a fixture using the kernel's own answer could not catch the kernel.
-
-The derivation, from the definition: at `T = 1` a leaf is written iff every level's write
-digit is nonzero, so the write support is the Cartesian product of the per-level
-exact-nonzero indicators and the atom set is that product ORed 16-deep. It is the same
-object `fsla.engine.facts.planes.atom_bits` folds from the prefill masks and the same
-one the step condenses, reached by neither's route.
-
 ## <a id="elsewhere"></a>40. Declarations whose reasoning lives on another page
 
 Each declaration below is documented by the page that owns its mechanism.
@@ -884,8 +617,6 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="units-2"></a>the term's row of the packed table, hoisted once a term:
   [`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)
 - <a id="u"></a>the two resolvers, one walk: [`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)
-- <a id="ncandidates"></a>`n_candidates`, from the candidate slot:
-  [`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)
 - <a id="near-line-150"></a>the write side's live-digit list:
   [`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)
 - <a id="decode-step-kernel-note-l474"></a>the enumerated run is the term's:
@@ -893,8 +624,6 @@ Each declaration below is documented by the page that owns its mechanism.
 - <a id="decodeparams-note-l190"></a>the walk's unit: [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)
 - <a id="decodeparams-note-l221"></a>the compacted owner lists:
   [`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)
-- <a id="candfld"></a>`cand_fld`, the candidate slot's row:
-  [`decode_lattice.md#the-candidate-slot`](decode_lattice.md#the-candidate-slot)
 - <a id="kunitblockwarps"></a>`kUnitBlockWarps`, the rotation's block:
   [`decode_lattice.md#krotlevel`](decode_lattice.md#krotlevel)
 - <a id="kdecodemaxspan"></a>`kDecodeMaxSpan`, the lattice's one capacity:
@@ -904,13 +633,10 @@ Each declaration below is documented by the page that owns its mechanism.
   [`decode_lattice.md#the-refusals`](decode_lattice.md#the-refusals)
 - <a id="decode-arm-0"></a>the declared arm list: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
 - <a id="fsladecodearms"></a>`fsla_decode_arms`: [`decode_api.md#arm-subset`](decode_api.md#arm-subset)
-- <a id="note-l1083"></a>the two backings' validation: [`decode_api.md#paged-state`](decode_api.md#paged-state)
-- <a id="note-l1131"></a>the admission buffers: [`decode_api.md#the-step`](decode_api.md#the-step)
 - <a id="launch"></a>the one launch site: [`../common/arm_switch.md`](../common/arm_switch.md)
 - <a id="rowsf16"></a>the rows' storage type: [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)
 - <a id="spanof"></a>`span_of`, the fold as an address: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)
 - <a id="span"></a>`Span`: [`decode_fold.md#the-identity`](decode_fold.md#the-identity)
-- <a id="pooled"></a>the slack pool, both or neither: [`paging.md#the-slack-pool`](../paging/paging.md#the-slack-pool)
 
 # Part D — the int8 step: the page, the lanes, the prologue, the work queue
 
@@ -924,18 +650,13 @@ THE STATE'S PAGE IS THE INT8 STATE FORMAT -- `[16 x DV hi s16][16 x DV lo u8][16
   eight consecutive channels ([`#leaf-lanes`](#leaf-lanes)), so a GROUP is four lanes, and its exponent is their
   max of `|v|` (eight maxima in the lane, then two shuffles); each value is rounded once to its group's s24 quantum, and
   the group's first lane stores the exponent and the row's first lane the fp32 mass beside it. The readout then reads the STORED value, so the next step reads exactly what this
-  one wrote. The plane choice keys on `in_w`, the step's own write set, and NOT on whether THIS PASS performs the
-  deposit: a gated step's third outcome is "re-read without depositing" (`done[bh]`), and a re-read of a leaf the
-  step wrote must see the same bytes the depositing pass saw, or two admission orders would compute different `y`
-  for the same step. `deposit` gates the STORE and nothing else;
+  one wrote. The plane choice keys on `in_w`, the step's own write set;
 * a leaf this step only READS pulls the **hi plane alone**, `hi * 2^(e + 8)` -- the s16 operand every readout
   takes, a DECLARED statement of the arithmetic rather than an approximation of it -- and the fp32 mass. The
   gates mirror the declared store in fp64 (`tests/oracle/fixtures.py`, `state_rounded`) and allow its quantum.
 
-The address is a BYTE offset now: `slot * Blocks<DV>::kBytes` under a page table, and
-`(bh * atoms_per_bh + atom) * kBytes` dense -- the dense backing is the same
-atom-major page sequence with every page resident, which is what makes the two
-backings one addressing law rather than two.
+The address is a BYTE offset: `atom * Blocks<DV>::kBytes` into the head's plane, the
+atom-major page sequence with every page resident ([§4](#dense-address)).
 
 PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the descriptor. `N`
 comes from the level widths and must be a whole number of pages, which a lawful routing
@@ -981,15 +702,13 @@ Every visit derives its head's tables itself before it walks
   `DECAY` step warp `2 D - 1 + l` write level `l`'s row sum ([`decode_fold.md#row-sum`](decode_fold.md#row-sum)).
 - **Phase C.** The decay's share scale and the term layout, whose barrier ends it.
 
-The visit then lays out the head's positions and takes its admission
-([the admission](#queue-admission)).
+The visit then lays out the head's positions and publishes their count
+([the positions](#queue-positions)).
 
-MEASURED (sm_86 (ampere branch, unreproducible here), N 64K at (256, 256), d_v 64, H 16, k ~5, the phase ledger): the prologue it
-replaced was 16.5K cycles a warp -- the digit masks 5.8K (sixteen threads each reading 32
-digits one shared load at a time), the operand fold 5.0K (a global round trip per level
-and side, one after another), the owner masks, compaction, term layout and admission 5.2K
-over four more barriers. This one is 5.85K: phase A 2.9K, B 1.2K, C 0.9K, the dense
-admission 0.8K. Its floor is the per-warp instruction count: phase A issues ~250
+The digit pass takes the thread's index through `denseref::ops::opaque`, so a slot's level and
+offsets are formed a head and not held in registers across every head's walk.
+
+The prologue's floor is the per-warp instruction count: phase A issues ~250
 instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 32 warps
 (both measured) -- so the next cut is fewer, fuller warps, not a shorter chain.
 
@@ -1008,6 +727,27 @@ term whose innermost level is sparse, keeps a leaf a lane group
 ([`#leaf-lanes`](#leaf-lanes)); both forms run one statement of the leaf's arithmetic
 ([`decode_leaf.md`](decode_leaf.md)).
 
+<a id="atom-loads"></a>THE LOADS' PLACE IS STATED, NOT LEFT TO THE ASSEMBLER. An atom's update is bound by memory latency: a warp walks its atoms one
+after another, and each waits one round trip for its leaves. The four leaves' sixteen loads are therefore issued together, ahead of the first
+leaf's arithmetic, and each leaf's loads sit under `resident` (`ops::launch_known(p.atoms_per_bh)`, [warp.md](../common/atoms/warp.md#launch-known)), a predicate only the launch knows. Without it the
+assembler issues some leaves' loads after the first leaf's shuffles, which wait on the first leaf's data, and the atom pays two round trips in
+a row.
+
+THE RECORD (2026-11-26; this kernel at sm_90a, toolkit 13.5, the library built four times with only the loads' condition changed; the loop
+read is the whole-atom walk of the arm at two levels, 64 channels, no decay; the count is of loads issued after their trip has waited for
+another load, over the sixteen arms; the time is a step of 65,536 leaves a head at 64 heads with decay, on an H100 against the commit before
+this form, interleaved on one box):
+
+| the loads' condition | loads behind the first shuffle, of 16 | loads behind another's wait, an arm | a step |
+|---|---|---|---|
+| none (`true`) | 5 | 2 to 14 | 1.60 ms |
+| `ops::opaque(1) != 0` | 8 | 2 to 14 | not timed |
+| a `ops::once(true)` loop | 5 | 3 to 14 | not timed |
+| `ops::launch_known(p.atoms_per_bh)` | 0 | 1 | 0.77 ms |
+
+The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. What moves the loads in
+this kernel and not in a small loop of the same shape is not known.
+
 ONLY THE WRITE SUPPORT IS THE TERM'S. A dense declaration does not make every stored digit
 nonzero -- a softmax digit can quantize to a zero u8 -- and a leaf outside the write support
 belongs to a read term, which reads it. So the atom walk reads and deposits a leaf only under
@@ -1019,7 +759,7 @@ token writes would be a fuzzy threshold (KERNEL_STANDARDS R9). A topology that d
 innermost write side walks its write term a leaf a lane group, correctly, at the pieces' rate.
 
 MEASURED (sm_86 (ampere branch, unreproducible here), N 64K at (256, 256), d_v 64, B 1, 16 warps of <= 128 registers, no spill): H 16
-at k ~27, 159 -> 116 us dense (124 paged) -- the write term moves its 43.8 MB of pages at ~650
+at k ~27, 159 -> 116 us -- the write term moves its 43.8 MB of pages at ~650
 GB/s against the page pattern's ~820, the read terms their ~19 MB of pieces at ~475 against the
 pieces' ~480; H 4 at k ~5, 23 -> 16 us. The read terms are at their pattern's ceiling: the next
 lever there is the page's layout, not the walk.
@@ -1046,43 +786,32 @@ left steals the head with the most work outstanding ([the next head](#queue-next
 runs the prologue for its head, walks the POSITIONS its warps claim, and adds its partial into
 the head's sums.
 
-The queue is `[4 BH + 2]` int32 (`DecodeScratch.queue`): per head the positions CLAIMED, the
-positions FINISHED, the position COUNT (`-1` until published) and the admission STATE, then the
+The queue is `[3 BH + 2]` int32 (`DecodeScratch.queue`): per head the positions CLAIMED, the
+positions FINISHED and the position COUNT (`-1` until published), then the
 unstarted-head CURSOR and the EXIT count. The sums are `yacc`, `[BH, cols]` fp32. Both are
 allocated once per sequence: a head's finisher zeroes its row of sums, and the last CTA to exit
 resets every word, so no `memset` launch stands between two steps and the step stays
-capturable ([§4d](#capture)).
+capturable ([§4b](#capture)).
 
-Nothing waits on a CTA that is not running: a follower waits only on its head's owner, which is
-running because it won the swap ([the admission](#queue-admission)), and no CTA waits for
-another to exit. The one-wave grid is for cost, not for progress.
+Nothing waits on another CTA: a visit's claims, its adds and its choice of next head are atomics
+on words. The one-wave grid is for cost, not for progress.
 
 <a id="queue-positions"></a><a id="near-line-122"></a>**THE POSITIONS.** A head's positions are its terms' shares, laid
 end to end, term by term ([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)): a
 whole-atom write term ([`#whole-atoms`](#whole-atoms)) gives one position a unit, since a warp
 walks the unit whole, and every other term `ceil(units / kGroups)`, since a warp's lane groups
 take `kGroups` consecutive units ([`#leaf-lanes`](#leaf-lanes)). Thread 0 writes the terms'
-first positions to `s_first` and the count past the last. A head whose support is empty still
+first positions to `s_first` and the count past the last, then publishes the head's count to
+`s_blocks` and to `q_blocks(bh)` for the stealers (every visitor derives the same one), and one
+barrier makes it visible to the CTA. A head whose support is empty still
 has one position, which walks nothing, so its finish runs and writes its `y` as
-`0 / (0 + eps)`; a needy head has none.
+`0 / (0 + eps)`.
 
 <a id="queue-claim"></a>**THE CLAIM.** Lane 0 of a warp claims a position with one `atomicAdd`
 on the head's claimed word, and the warp walks it; a claim at or past the count ends the warp's
 walk of the head. The NEXT claim is issued before the current position is walked, so its round
 trip hides behind the walk. Each warp therefore overshoots the count by one claim a visit,
 which is harmless: the word is only ever compared with the count, and reset at exit.
-
-<a id="queue-admission"></a>**THE ADMISSION.** A paged head's admission -- the table test, the
-pool claim and the condensation (§4b, [§4e](#queue-claim-pool)) -- is decided once and
-published. The first visit to swap the head's state from 0 to 1 is its OWNER: it runs all
-three and writes the count (0 if needy); every thread fences its own writes; then one swap
-publishes the state word `kQueueReady`, with `kQueueNeedy` if the head is needy. Every other
-visit is a FOLLOWER: thread 0 polls the state (`atomicAdd` of 0, `__nanosleep(64)` between
-polls) until it is ready, and after the barrier that follows every thread fences and reads the
-state and the count itself (`KERNEL_STANDARDS.md` §12: a fence orders only its own thread). A
-stealing visit never owns: it only takes a head whose count is published. An unpaged head, and
-a paged head a replay re-reads (its done flag set), has nothing to decide: every visit derives
-the same count from its own prologue and writes it.
 
 <a id="queue-finish"></a>**THE FINISH.** After its last claim each warp sums its lane groups'
 partials by the butterfly ([`#leaf-lanes`](#leaf-lanes)) and writes a row of `fold`: its
@@ -1091,10 +820,7 @@ warp 0 sums the rows a column a lane and adds the CTA's partial into the head's 
 `atomicAdd` a column a visit; then every lane fences its adds and lane 0 adds the visit's
 positions to the head's finished word. The visit that brings that word to the count is the
 FINISHER: it fences, reads the sums through `__ldcg` (past L1, which the other SMs' adds never
-reached), writes `y = sums / (den + eps)`, zeroes the sums for the next step, and on a paged
-step sets the head's done flag and clears its growth flag before
-[the verdict's reduction](#growth-reduction). A needy head's owner finishes that head instead,
-with its growth flag set. A visit that walked nothing adds nothing and counts nothing.
+reached), writes `y = sums / (den + eps)`, and zeroes the sums for the next step. A visit that walked nothing adds nothing and counts nothing.
 
 ONE SET OF ATOMICS A VISIT, NOT A WARP. Each warp adding its own partial measured a 12.9K-cycle
 combine at `H = 4`: sixteen warps' adds to the same 65 addresses serialize at L2. The fold costs
@@ -1113,15 +839,11 @@ number of ways) against the queue:
 
 | cell | split-K grid | work queue |
 |---|---|---|
-| k ~27, H 16, dense | 116 us | 105.4 us |
-| k ~27, H 16, paged | 124 us | 116.0 us |
-| k ~5, H 16, dense | 31 us | 30.2 us |
-| k ~5, H 16, paged | -- | 36.0 us |
-| k ~5, H 4, dense | 16.3 us | 18.2 us |
+| k ~27, H 16 | 116 us | 105.4 us |
+| k ~5, H 16 | 31 us | 30.2 us |
+| k ~5, H 4 | 16.3 us | 18.2 us |
 
-The dense cells gain where heads are uneven; the thin `H = 4` cell loses 1.9 us, because a visit
+The cells gain where heads are uneven; the thin `H = 4` cell loses 1.9 us, because a visit
 costs more than a split CTA did: a single visit's prologue-to-walk span is ~5.3K cycles against
-~3.8K (the positions, the admission's barrier, and the fold's and the next head's barriers), a
-sparse head pays a claim's round trip for every few leaves, and a paged head's followers wait
-out its owner's admission -- and then fence and read its publication thread by thread, ~0.8 us
-of each paged cell.
+~3.8K (the positions, the position count's barrier, and the fold's and the next head's barriers), and a
+sparse head pays a claim's round trip for every few leaves.

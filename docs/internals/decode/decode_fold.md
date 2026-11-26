@@ -25,8 +25,7 @@ step took the step to 24.6 µs on 2 launches. Each step of that is the same argu
 work was always the consuming CTA's own business, and every boundary drawn around it cost
 more than the work.
 
-So the fold is a HEADER. The step folds its own operands, the growth probe folds its own
-write side, and between them there is no launch, no plane and no ordering constraint.
+So the fold is a HEADER. The step folds its own operands: there is no launch, no plane and no ordering constraint before it.
 
 ## <a id="the-identity"></a>2. The fold is an address, not a copy pass
 
@@ -53,7 +52,7 @@ that through the step's own output, on strided views as well as contiguous ones.
 word. A lane loads its digit and its row's fp32 scale together, one round trip, and the warp loads the supplied mask's word
 (one warp-uniform load; a digit whose bit is off stages zero, so the fold computes with the coefficient times its bit),
 which every lane stores as the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask));
-and the lane stages `raw * (scale / 255)`. Slots past a level's width keep no bit: the loaded word is ANDed with the width's bits, and every lane stores it.
+and the lane stages `raw * (scale / 255)`. The thread's index enters through `denseref::ops::opaque`, so a slot's level and offsets are formed a head and not held in registers across every head's walk. Slots past a level's width keep no bit: the loaded word is ANDed with the width's bits, and every lane stores it.
 
 ## <a id="the-dtype-arms"></a>3. The storage types are the format's, and the step's template axes are not
 
@@ -90,8 +89,7 @@ except at one leaf `s0`. Then `y[c] = a * e[c] / (a * m + eps)` with `a = raw[s0
 and of nothing else, and the reference computes exactly that.
 
 `fsla.ops.decode.fold_levels` is the torch fold those references are built on, kept for
-that purpose and called from nowhere on the shipped path — the same arrangement as
-`_write_atom_bitmap` and for the same reason: a fold checked against its own output proves
+that purpose and called from nowhere on the shipped path: a fold checked against its own output proves
 nothing.
 
 ## <a id="no-allocation"></a>6. Nothing here allocates, and nothing is left behind

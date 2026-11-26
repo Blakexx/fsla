@@ -28,7 +28,15 @@ __device__ __forceinline__ LeafAddr leaf_addr(uint8_t* page, int row, int ch0) {
                   reinterpret_cast<uint32_t*>(page + Page::kMass) + row};
 }
 
-//: The slice as loaded: an absent atom's leaf reads as zeros; `full` loads the lo plane too; the mass is the row's first lane's.
+//: The leaf `rows` leaves past `a` in the same page and lane: every word a constant past `a`'s, so no second address is held.
+template <int DV>
+__device__ __forceinline__ LeafAddr leaf_after(const LeafAddr& a, int rows) {
+  using Page = state_page::Blocks<DV>;
+  return LeafAddr{a.hi + rows * DV * 2, a.lo + rows * DV, a.ex + rows * Page::kGroups,
+                  a.mass + rows};
+}
+
+//: The slice as loaded: a lane group with no leaf this trip reads as zeros; `full` loads the lo plane too; the mass is the row's first lane's.
 struct LeafSlice {
   uint4 hi;
   uint2 lo;
@@ -36,10 +44,10 @@ struct LeafSlice {
   float mass;
 };
 
-__device__ __forceinline__ LeafSlice load_leaf(const LeafAddr& a, bool present, bool full,
+__device__ __forceinline__ LeafSlice load_leaf(const LeafAddr& a, bool live, bool full,
                                                bool row_lead) {
   LeafSlice s{make_uint4(0u, 0u, 0u, 0u), make_uint2(0u, 0u), 0, 0.0f};
-  if (present) {
+  if (live) {
     s.hi = *reinterpret_cast<const uint4*>(a.hi);
     if (full) s.lo = *reinterpret_cast<const uint2*>(a.lo);
     s.e = *reinterpret_cast<const int8_t*>(a.ex);
@@ -59,22 +67,11 @@ __device__ __forceinline__ void read_hi(const LeafSlice& s, float ar, bool row_l
   if (row_lead) acc_m += ar * s.mass;
 }
 
-//: A written leaf re-read without depositing (a gated replay's third outcome): its full stored value.
-__device__ __forceinline__ void read_full(const LeafSlice& s, float ar, bool row_lead,
-                                          float (&acc)[8], float& acc_m) {
-#pragma unroll
-  for (int c = 0; c < 8; ++c) {
-    acc[c] = fmaf(static_cast<float>(state_page::mantissa8(s.hi, s.lo, c)),
-                  ar * state_page::pow2(s.e), acc[c]);
-  }
-  if (row_lead) acc_m += ar * s.mass;
-}
-
 //: THE DEPOSIT, UPDATE FIRST THEN READ THE STORED VALUE: fp32 update, the group's exponent over its four lanes -- see docs/internals/decode/decode_leaf.md#deposit
 template <bool DECAY>
 __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr& a, float ar,
                                              float aw, float rate, float share, const float* v_tok,
-                                             int ch0, bool present, bool row_lead, bool exp_lead,
+                                             int ch0, bool live, bool row_lead, bool exp_lead,
                                              float (&acc)[8], float& acc_m) {
   float keep = 1.0f;
   if (DECAY) keep = expf(fminf(aw * share * log1pf(-rate), kDecodeMaxExponent));
@@ -95,7 +92,7 @@ __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr&
   int m[8];
 #pragma unroll
   for (int c = 0; c < 8; ++c) m[c] = state_page::mantissa(sv[c], en);
-  if (present) {
+  if (live) {
     *reinterpret_cast<uint4*>(a.hi) = state_page::pack_hi8(m);
     *reinterpret_cast<uint2*>(a.lo) = state_page::pack_lo8(m);
     if (exp_lead) *reinterpret_cast<int8_t*>(a.ex) = static_cast<int8_t>(en);
@@ -105,7 +102,7 @@ __device__ __forceinline__ void deposit_leaf(const LeafSlice& s, const LeafAddr&
   for (int c = 0; c < 8; ++c) acc[c] = fmaf(static_cast<float>(m[c]), arp, acc[c]);
   if (row_lead) {
     const float mass = keep * s.mass + aw;
-    if (present) *a.mass = __float_as_uint(mass);
+    if (live) *a.mass = __float_as_uint(mass);
     acc_m += ar * mass;
   }
 }

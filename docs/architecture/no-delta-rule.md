@@ -59,8 +59,6 @@ legal execution. Everything the engine gets from that follows:
   state at the window's start;
 - **split-K** — partial outputs over an arbitrary partition of the contraction,
   reduced afterwards (the decode step's units);
-- **the paged arena** — residency decided from the plan, ahead of execution,
-  rather than discovered during it;
 - **plan-side specialization in general** — any reordering of independent units for
   locality is free, because no kernel line depends on the order. That entire class of
   optimization exists only because order is not load-bearing, and order is not

@@ -29,9 +29,19 @@ Mirrors `csrc/fsla/src/common/atoms/warp.cuh`, a concern of the baseline operati
   parity passed through it makes each offset formed where it is used, a few instructions there, instead of a register
   held across the window.
 
+- <a id="launch-known"></a>`launch_known(positive)`: a condition true of every lawful launch that only the launch knows -- a parameter that is
+  never 0, compared with 0. THE DECODE STEP'S WHOLE-ATOM WALK USES IT, AND THE EVIDENCE IS THAT KERNEL'S ALONE: with its four leaves'
+  loads unconditional, under `opaque(1) != 0` or inside a `once(true)` loop, the compiled walk issued two leaves' loads after the first
+  leaf's shuffles and a step of 65,536 leaves a head took 1.60 ms on an H100; under `launch_known` all sixteen loads are issued together
+  and it takes 0.77 ([decode.md](../../decode/decode.md#atom-loads)). A small loop of the same shape (four wide loads, then each unit's
+  work with its shuffles, registers at their limit) compiled with its loads together in all four forms, so this is not a general statement
+  about where the assembler puts a load. It orders the ISSUE of loads; the data dependency is still what orders a value's use.
+
 - <a id="once"></a>`once(cond)`: `for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
   warp-uniform value would be if-converted and every warp would issue the body predicated off (KERNEL_STANDARDS §20).
-  The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips. Never
+  The bound is hidden from ptxas by an empty `asm volatile`, so the loop cannot be flattened as 0-or-1 trips -- for a `cond` it
+  cannot know: given a constant (`once(true)`) the assembler moved the body's loads out of the loop
+  ([decode.md](../../decode/decode.md#atom-loads)). Never
   around a step loop: there the guard is the plain vote -- `for (k = __any_sync(full, s < n) ? 1 : 0; k > 0; --k) do
   { step } while (__any_sync(full, ++s < n));` -- since `once`'s opaque bound hides the loop's trip structure from
   ptxas (measured on the carry's skeleton: branches inside the step, extra MMA sites, spills; the plain vote clean).

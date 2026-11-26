@@ -97,11 +97,11 @@ def test_a_grad_bearing_prefill_is_refused_loudly():
 
 
 def test_prefill_has_no_consumer_only_kwargs_to_silently_ignore():
-    """`prefill`'s signature carries no CUDA-consumer-only parameter (paging, scheduling): passing one is a plain
+    """`prefill`'s signature carries no CUDA-consumer-only parameter (scheduling): passing one is a plain
     `TypeError`, an unknown keyword, not a case the op has to notice and refuse."""
     v, routes, masks, density = _tiny_routing(requires_grad=True)
     with pytest.raises(TypeError):
-        fsla.prefill(routes, v, masks, density, paging=object())
+        fsla.prefill(routes, v, masks, density, schedule=object())
 
 
 def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():

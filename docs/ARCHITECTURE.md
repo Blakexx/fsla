@@ -76,7 +76,7 @@ equals the oracle, which is the identity that licenses two kernels.
 
 **The canonical order is MSB-first mixed radix**: leaf `n` decomposes as `d_l(n) = (n / stride_l) mod B_l` with
 `stride_l = Π_{l' > l} B_{l'}`, so level `0` is the most significant digit and level `D-1` varies fastest. Every
-derivation in the repository — the oracle's own strides, the page table, the atom keying, the kernels' addressing —
+derivation in the repository — the oracle's own strides, the atom keying, the kernels' addressing —
 is this one order, and it is carried as a FIELD of the state's descriptor rather than assumed, so a second order
 would be a refusal and never a silent reinterpretation of somebody's bytes (`docs/internals/state.md`).
 
@@ -116,8 +116,8 @@ quality.
 
 ## 3. The state
 
-The carried state is a paged tensor of `[B, H, N, cols]` logical shape and nothing more. Its full contract — the
-membership test that keeps launch machinery off it, binding, the backings, clone, the layer's continuation
+The carried state is a tensor of `[B, H, N, cols]` logical shape and nothing more. Its full contract — the
+membership test that keeps launch machinery off it, binding, the interface, clone, the layer's continuation
 container — is [`internals/state.md`](internals/state.md); this section states the architecture that contract
 encodes.
 
@@ -133,7 +133,7 @@ itself, and carries:
 | `page_bits` | the page rectangle: the trailing four canonical bits, which may span levels |
 | `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
 | `dtype` | the stored form, `fsla._state.STATE_DTYPE` (§3.2) |
-| `ids` | the page-table id space, `BH · N / 16` |
+| `ids` | the page id space, `BH · N / 16` |
 
 **Later calls are CHECKED against it, and a mismatch is a refusal at the seam naming the field that differs.** The
 descriptor is fixed for the state's life — a re-layout is an explicit state operation, never something a call does —
@@ -142,7 +142,7 @@ and it travels with the layer's continuation.
 **Prefill and decode share ONE admission law: the descriptor.** Decode accepts exactly what prefill accepts — the
 same depth, the same widths, the same `N`, the same value width, the same operand format, therefore the same
 topologies. A second admission law would be a second contract to keep in step with the first, and the two kernels
-partition ONE paged state.
+partition ONE state.
 
 **There is no ragged state.** `N = Π_l B_l` over powers of two, so a lawful state is page-aligned by construction; a
 leaf axis that is not a whole number of pages is REFUSED — not padded, not carried in a tail page.
@@ -165,27 +165,27 @@ is fp32. Three properties are the architecture:
 - **The zero page is zero bytes.** An all-zero group stores exponent 0, so a freshly zeroed page is the zero state and
   an absent atom reads as zeros without a conversion.
 
-### 3.3 Two backings, one set of bytes
+### 3.3 The interface and its one implementation
 
-**Paged** is the default: a page arena, a `[BH, N/16]` page table of slot ids, and residency planned exactly from the
-call's own write set. Resident state scales with the atoms the routing REALIZES, not with the `N` the topology
-provisions. **Dense** is the same page sequence with every page resident. Dense and paged are one kernel, one ABI and
-one base translation (`slot · kBytes`, the slot the atom itself under no table), and the gate between them is byte
-identity on the storage ([`internals/paging/paging.md`](internals/paging/paging.md)). A caller cannot observe which
-backing a state has except by asking.
+The state is an INTERFACE, `fsla.FSLAState`: what a caller may ask (format, bound shape, device, dtype, whether it carries
+anything, `materialize`, `clone`) and the seam the ops take the plane in and hand it back through. It has ONE
+implementation, the **dense state**, built by `fsla.dense_state()`: one `[BH, N/16, page_bytes]` plane of the §3.2 page
+sequence with every page resident, addressed by the atom index, taking no argument. The kernel reads the plane as it
+is; a decode step updates it in place. v1 is dense only (the ruling is recorded in [`internals/DELETIONS.md`](internals/DELETIONS.md)): an implementation whose storage is not
+the whole plane takes whatever parameters it needs, is built by its own constructor and is matched on its type where
+a call builds its descriptor, and that is future work ([`internals/state.md#interface`](internals/state.md#interface),
+[`open-work.md`](open-work.md)).
 
 `materialize()` decodes the pages back to the logical `[B, H, N, cols]` tensor. It is for the oracle and a test —
-never on a measured path, since allocating that tensor is exactly what paging exists to avoid.
+never on a measured path.
 
 ### 3.4 Activity
 
-Residency is the arena's fact; **activity is the masks' fact**, and only the second decides what a call touches
-(CONSTITUTION §R14). Per atom, one READ bit and one WRITTEN bit, never pre-ORed, folded on the host from the masks
-(`fsla.engine.facts.planes.atom_bits`): exact allocation admits an atom iff it is WRITTEN this call; a
-state sweep LOADS an atom iff it is resident and `(read ∨ written)` and STORES it iff `written`. Dense and paged touch
-the identical atom set, so the byte gate certifies the skip logic and not merely the addressing, and a resident but
-idle atom costs no state traffic. The price is the in-place law: an atom a sweep skips must already hold what it
-carried in, so a continuation's exit plane IS its entry plane.
+**Activity is the masks' fact** (CONSTITUTION §R14), and a state has no residency for it to refine: every atom of the
+dense plane is resident, so the prefill's sweep loads and stores whole pages and folds no per-atom activity byte from
+the masks. Which blocks run at all is the run table's decision ([`internals/engine/rules.md#run-table`](internals/engine/rules.md#run-table)).
+The price is the in-place law: an atom a sweep skips must already hold what it carried in, so a continuation's exit
+plane IS its entry plane.
 
 ---
 
@@ -215,8 +215,7 @@ every kernel still working for whatever it returns.
 | **decode unit** | an owner and every run offset but the innermost: a contiguous run, one atom at the flagship | the decode step |
 
 **The grains nest on the page and nowhere else** (CONSTITUTION §R14). Prefill and decode ownership are
-decoupled: two kernels partitioning the same paged state, whose shared contract is the atom, the page table and the
-activity bits.
+decoupled: two kernels partitioning the same state, whose shared contract is the atom.
 
 ---
 
@@ -320,8 +319,7 @@ a work queue: a visit builds its head's factor tables in a three-phase prologue,
 head's terms (the union of the read and write products as a disjoint sum), and each lane group walks a unit:
 resolve, update-then-read — the deposit lands before the readout reads the row, which IS the semantics — and
 accumulate; a visit adds its partial into the head's sums and the head's last visit writes `y`. A read-only leaf
-pulls the hi plane alone (§3.2). The step asks its own residency question in its prologue and, under a slack pool,
-admits its own growth ([`internals/decode/decode.md`](internals/decode/decode.md),
+pulls the hi plane alone (§3.2). The step updates the state's plane in place ([`internals/decode/decode.md`](internals/decode/decode.md),
 [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md)).
 
 ---
@@ -394,13 +392,12 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | storing factors, expanding transiently | [`architecture/factored-representation.md`](architecture/factored-representation.md) |
 | dead routes are exact zeros | [`architecture/self-masking-theorem.md`](architecture/self-masking-theorem.md) |
 | the bundle, the public surface | [`api.md`](api.md), [`internals/fsla_api.md`](internals/fsla_api.md) |
-| the state contract, descriptor, backings | [`internals/state.md`](internals/state.md) |
+| the state contract, descriptor, interface | [`internals/state.md`](internals/state.md) |
 | the page's planes and its codec | [`internals/common/state_page.md`](internals/common/state_page.md) |
-| the arena, the page table, the slack pool | [`internals/paging/paging.md`](internals/paging/paging.md) |
 | the carve: the box and the operation plans | [`internals/engine/rules.md#carve`](internals/engine/rules.md#carve) |
 | the host order of a call | [`internals/engine/prefill_call.md`](internals/engine/prefill_call.md), [`internals/engine/decode_step.md`](internals/engine/decode_step.md) |
-| the digits, the row alignment law and the atom byte | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
-| decode: the step, the walk, growth, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
+| the digits and the row alignment law | [`internals/facts/liveness_contract.md`](internals/facts/liveness_contract.md) |
+| decode: the step, the walk, capture | [`internals/decode/decode.md`](internals/decode/decode.md), [`internals/decode/decode_lattice.md`](internals/decode/decode_lattice.md) |
 | the mask-preparation pass and its layout | [`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md) |
 | the entmax solves | [`internals/entmax/entmax.md`](internals/entmax/entmax.md), [`internals/entmax/factor.md`](internals/entmax/factor.md) |
 | the architecture capability table and the per-product rates | [`internals/common/arch_caps.md`](internals/common/arch_caps.md), [`internals/common/hardware.md`](internals/common/hardware.md) |

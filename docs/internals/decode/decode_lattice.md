@@ -124,7 +124,7 @@ owner list plus a fallback term walking it whenever it is smaller is a policy
 with no threshold in it at all, and it targets exactly the scattered cell above.
 It was built, gated green and benchmarked, and it LOST:
 
-* its fifth list costs one more `cub::BlockScan` per level in a prologue that is
+* its fifth list costs one more list build per level in a prologue that is
   the step's dominant cost wherever `BH` is small (`decode.md#per-cta-prologue`),
   which cost every cell 1 to 5 %;
 * and the unit count it selects on DOES NOT PREDICT THE WALL — at `BH = 1` the
@@ -159,8 +159,8 @@ findings: `-7.3 us` measured against `+0.4 us` predicted from `c_u` alone).
 <a id="resolve-write-unit"></a><a id="near-line-421"></a>**SO TERM 0 ENUMERATES LIVE DIGITS** at every level but
 the innermost (`resolve_write_unit`, which hands back the identical `Unit<D>` conditioned the same way), from a
 per-level
-WRITE DIGIT LIST (`dlist`, `sum_{l < D-1} B_l` entries, built by the same block scan that
-builds the owner lists — a third 10-bit field in the same packed `int`). The innermost
+WRITE DIGIT LIST (`dlist`, `sum_{l < D-1} B_l` entries, built by the same warp-ballot compaction that
+builds the owner lists, [2.1](#the-owner-lists)). The innermost
 level keeps its owner, because it contributes a whole run as ONE SLICE rather than a digit.
 A digit splits back into `(owner, run)` by shifts (`o = d >> lat_sbits[l]`,
 `r = d & (lat_s[l] - 1)`), so the unit's base is assembled exactly as before and a unit is
@@ -204,25 +204,12 @@ order was chosen by measurement:
   one owning CTA, warp and lane per row — is exactly the one it was. At `D == 1` there is no outer level to rotate
   into, and the level index `kRotLevel` is clamped rather than guarded.
 
-### <a id="the-candidate-slot"></a>The candidate atoms keep the old space, and that is the whole of the compatibility argument
+### The term slots
 
-A flat digit rank is **not monotone in atom id**: at the flagship spans
-`base = 2048*o_0 + 128*o_1 + 16*r_0`, so ascending `(d_0, o_1)` runs `..., 1920, 16, ...`.
-The walk does not care. The CANDIDATE-ATOM enumeration does — the pool claim's canonical
-ranks are defined in ASCENDING ATOM ID ([`decode.md#queue-claim-pool`](decode.md#queue-claim-pool)) — so
-<a id="kmaxterms"></a>term slot `D + 1` (the last of `kMaxTerms`, `D + 2`: the write product, one per level, the
-candidate layout) holds the write product AGAIN in the old `owners x run radix` space, and
-`candidate_atom` reads that slot through `resolve_candidate_unit` -- <a id="candidateunit"></a>a `CandidateUnit`
-resolver of its own,
-because the candidate enumeration asks the write mask a MEMBERSHIP question and nothing
-else. It needs neither side's amplitude product, neither decay rate and not the read slice,
-and its kind is `kKindW` at every level by definition, so the term table and the
-kind-indexed addressing collapse to constants. Resolving it through the WALK's resolver
-made it pay for all of that once per candidate rank -- sixteen ranks per thread at the dense
-cell -- and `ncu` priced that at **5.9 % of the step's whole instruction count**. It is the
-enumeration the claim was ratified on, byte for byte. `tests/integration/
-test_decode_paging.py` is what holds that: it exercises growth, the pool claim and the
-replay path.
+<a id="kmaxterms"></a>A step holds `kMaxTerms = D + 1` term slots: the write product and one
+per level. A flat digit rank is not monotone in atom id (at the flagship spans
+`base = 2048*o_0 + 128*o_1 + 16*r_0`, so ascending `(d_0, o_1)` runs `..., 1920, 16, ...`), and
+the walk does not care: the positions partition the units in whatever order they are claimed.
 
 ## <a id="the-owner-lists"></a>2.1 `build_lists` — one warp a level, four kinds, running ranks
 
@@ -247,10 +234,9 @@ barrier ([`decode.md#prologue`](decode.md#prologue)).
 <a id="compact-owner-lists"></a>**WHY THE LIST SURVIVES — MEASURED.** Reading the bitmask
 directly at USE time (`select(i-th set bit)` by `__fns`, no list plane at all) was
 built and benchmarked, and it LOST BADLY: `__fns` is not one instruction on sm_86
-but roughly 56 SASS with reconvergence-stack ops, and the ADMISSION resolves one
-owner rank per LEVEL per CANDIDATE ATOM per CTA per step — 4096 candidates at the
-flagship — so the select cost **+2.42 M instructions on the dense `BH = 1` step,
-+25 % of the whole step**, against a prologue saving roughly a tenth of that. The
+but roughly 56 SASS with reconvergence-stack ops, and the walk resolves one
+owner rank per LEVEL per UNIT per CTA per step, so the select is paid at every unit a
+CTA resolves, against a prologue that builds the list once. The
 per-CTA replication is what makes a use-time cost so much more expensive than a
 build-time one, and it is the same fact [`decode.md#per-cta-prologue`] states about
 the derivation generally.
@@ -273,7 +259,7 @@ integer division in the walk's innermost enumeration.
 
 <a id="term-layout"></a><a id="publish-term-layout"></a>`term_layout` turns those counts into each term's
 rank space and its unit count, and `publish_term_layout` calls it ONE THREAD PER TERM because the terms are
-independent — `D + 2` threads doing at most `D` `ceil_log2_dev`s each, rather than one
+independent — `D + 1` threads doing at most `D` `ceil_log2_dev`s each, rather than one
 thread doing twenty-four in series while the rest wait at the barrier. The unit
 count is zero wherever any of that term's kinds is empty, so an absent owner set
 kills a term outright rather than walking zero-width ranges.
@@ -341,19 +327,16 @@ the innermost, their amplitudes are resolved ONCE HERE and a slot below costs a
 single innermost amplitude rather than `D` of them.
 
 THERE IS NO SECOND UNIT SHAPE. A topology whose innermost span is thinner than
-an atom does not get a deeper walk: it gets SEVERAL UNITS PER ATOM, which the
-CANDIDATE enumeration absorbs (`lat_units_per_atom_shift`,
-`decode.md#candidate-atoms`) and the walk never sees. A unit depth that varies at
+an atom does not get a deeper walk: its atom holds SEVERAL UNITS, and the walk takes
+them as separate units. A unit depth that varies at
 runtime, so that a unit is always at least an atom, SPILLS the step's register
 budget at `D = 2` and `D = 3` (measured): the extra loop level holds every live
 value of the walk's tightest scope across a trip count of one at every shipped
 topology. This is the "no branch to dodge edge cases" rule applied: one
-strategy, uniformly, and the degenerate config pays at the candidate enumeration
-instead of in the walk.
+strategy, uniformly.
 
-`Unit` is the object the step's walk (`decode.md#the-unit-partition`) and the
-candidate-atom enumeration (`decode.md#candidate-atoms`) both resolve a unit
-into; neither reads the mask or owner-list arrays through any other route.
+`Unit` is the object the step's walk (`decode.md#the-unit-partition`) resolves a unit
+into; the walk reads the mask and owner-list arrays through no other route.
 
 ## <a id="capacities"></a>4. The lattice's declared capacity
 
@@ -393,15 +376,9 @@ atom then spans more than one level. What IS refused is a capacity no span
 vector can carry — `sum_l a_l != log2 m` (`kDoesNotFit`, words of
 `lattice_refusal`).
 
-A PAGED backing adds ONE more, checked only where `page_table` is present
-(`fsla_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
-`BC >= kAtomLeaves`, i.e. an owner holds a whole number of atoms
-(`DecodeLayout::owner_holds_atom`, refused in the words of `decode_paged_refusal`). That is what
-makes an atom and a unit nest one way or the other, which is what makes the
-candidate enumeration a PARTITION. Mixed radix needs nothing more: an atom is 16
-consecutive `local` values at a multiple of 16, hence an aligned digit rectangle
-for EVERY admissible span vector (`lattice_atom_rectangle`). A DENSE backing never asks an atom a liveness question and
-carries no constraint.
+The atom adds no constraint: an atom is 16 consecutive `local` values at a multiple of 16,
+hence an aligned digit rectangle for EVERY admissible span vector (`lattice_atom_rectangle`),
+and the walk asks an atom no liveness question.
 
 The launch function ([`../common/plan/decode_launch.md`](../common/plan/decode_launch.md)) solves `(k, m)` for the
 call's level widths and lays out the suffix products and shift widths `resolve_unit` reads
@@ -422,8 +399,7 @@ No shipped kernel path ever calls `permutation` or converts a plane — a
 kernel never HOLDS a plane in canonical order to begin with, so there is
 nothing on the production path to convert. The seam exists for the oracle
 (which is canonical forever, `docs/internals/DELETIONS.md`'s standing rule)
-and for a test that must compare the two: `_write_atom_bitmap`
-(`decode.md#second-derivation`) and the fp64 oracle battery both cross through
+and for a test that must compare the two: the fp64 oracle battery crosses through
 here exactly once, on the way into or out of the comparison, and never inside
 a measured step.
 

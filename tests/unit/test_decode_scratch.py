@@ -67,7 +67,7 @@ def test_two_live_sequences_never_share_a_scratch(builds):
 
 def test_a_dropped_sequence_drops_its_scratch(builds):
     """The weakness is required, not incidental: a table keyed on dead sequences is a leak of exactly the device
-    allocations paging exists to bound."""
+    allocations a serving process must be able to free."""
     sequence = _Sequence()
     decode_step.scratch(sequence, "d64", 2, "cpu")
     assert sequence in decode_step._SCRATCH
@@ -101,7 +101,7 @@ def test_the_scratch_reads_the_state_as_a_KEY_and_never_as_an_INPUT(monkeypatch)
     sequence can enter what is held, and two scratches built for one geometry are interchangeable BY CONSTRUCTION
     rather than by inspection. The CROSS-STEP half -- that a reused scratch carries nothing from one step to the
     next -- is gated where a real step runs: `DecodeScratch`'s counters are self-resetting and
-    `tests/integration/test_decode_graph_step.py` replays a captured step across an admission against eager.
+    `tests/integration/test_decode_graph_step.py` replays a captured step against eager.
     """
     from fsla.ops.descriptor import Descriptor
 

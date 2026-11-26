@@ -61,7 +61,7 @@ struct LeafLanes {
 };
 
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
-enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
+enum DecodePhase : int { kPhFold, kPhFactor, kPhWalk, kPhCombine, kDecodePhases };
 
 constexpr int kAtomShift =
     fsla::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift
@@ -107,32 +107,20 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int olist_total;
   int dlist_off[kMaxLevels];  // write side's live-digit list, outer only; decode.md#near-line-150
   int dlist_total;
-  int atoms_per_unit_shift;  // atom+unit reconciled, PAGED only; decode.md#decodeparams-note-l233
-  int lat_units_per_atom_shift;
+  int atoms_per_unit_shift;  // the atoms a whole-atom write unit holds, as log2; decode.md#whole-atoms
 
   const float* dials;  // [H, total_rows] or nullptr
 
-  uint8_t*
-      state;  // DENSE [BH, atoms, page bytes] or PAGED [slots, page bytes]; see decode.md#state
-  int32_t* page_tbl;  // [BH, atoms_per_bh], -1=ABSENT, null=dense; decode.md#decodeparams-note-l250
-  int32_t* growth;    // [BH] int32, per-batch-head verdict; see decode.md#growth-2
-  int32_t* growth_any;  // [1] int32, OR of growth over batch-heads; see decode.md#growthany
-  int32_t* growth_ctr;
-  int32_t* done;    // [BH] int32, done flags; see decode.md#decodeparams-note-l265
-  bool* atom_bits;  // [BH, atoms_per_bh] bool, this step's write set; see decode.md#atombits
-
-  const int32_t* pool_slots;  // pre-zeroed by the host; decode.md#decodeparams-note-l275
-  int32_t* pool_cursor;
-  int pool_cap;
-  float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
+  uint8_t* state;  // [BH, atoms, page bytes]; see decode.md#state
+  float* y;        // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
   float* yacc;  // [BH, cols] -- a head's readout sums, zeroed by its finisher; see decode.md#queue
-  int32_t* queue;  // [4 BH + 2] -- the work queue's counters; see decode.md#queue
+  int32_t* queue;  // [3 BH + 2] -- the work queue's counters; see decode.md#queue
   long long*
       ledger;  // [ctas][the plan's warps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
 
   int64_t N;
-  int atoms_per_bh;  // ceil(N / kAtomLeaves): the PAGE count per bh, both backings.
+  int atoms_per_bh;  // N / kAtomLeaves: the pages a batch-head.
   int BH;
   int H;
   int D;
@@ -144,13 +132,6 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
       [kMaxLevels];  // digit-packed words [B, H, ceil(B_l / 32)] a level, contiguous: `fold_digits`' liveness
   const int32_t* write_mask[kMaxLevels];
 };
-
-//: THE WORK QUEUE'S ADMISSION WORDS: a head's published state (ready, needy) and a visiting CTA's -- see docs/internals/decode/decode.md#queue-admission
-constexpr int kQueueReady = 2;
-constexpr int kQueueNeedy = 4;
-constexpr int kQueueOwner = 8;
-constexpr int kQueueFollower = 16;
-constexpr int kQueueDecided = 32;
 
 //: `ceil(n / d)` for non-negative ints, used on host and device.
 __host__ __device__ __forceinline__ int ceil_div_int(int n, int d) { return (n + d - 1) / d; }

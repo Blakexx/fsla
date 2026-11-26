@@ -623,6 +623,14 @@ with masking by predication; ThunderKittens' producer and consumer warpgroups.
    ordering; the one sanctioned device is a data dependency, one primitive in a common header (§32.6). No fence for
    ordering (it orders memory operations and costs runtime), no clock trick. The burst-tier lint refuses a fence in a
    burst.
+   ONE EXCEPTION, FOR THE ISSUE OF INDEPENDENT LOADS (the owner, 2026-11-26: "The amendment I'd propose" ok; "Record the
+   decode kernel itself as the evidence"). A dependency orders a USE after a value; it cannot say that several loads no
+   one of which needs another are all issued before the first wait. Those may sit under `ops::launch_known`, a condition
+   true of every launch that only the launch knows (`common/atoms/warp.cuh`), and under nothing else, where the kernel's
+   OWN compiled listing shows the loads split without it and together with it, and a count of loads issued behind
+   another load's wait confirms it. The evidence is a kernel's, never a general claim about the assembler: the decode
+   step's whole-atom walk is the one case ([`decode.md`](internals/decode/decode.md#atom-loads)), and a small loop of
+   the same shape compiled with its loads together in every form.
 3. `[COMPILER]` LOADS FIRST, ALL OF THEM, THEN THE ARITHMETIC ON THEM. The canonical hand schedule spaces the loads and
    pushes the stores down (Gray, SGEMM: 98.5% useful cycles); the measured good attention kernel keeps about eight
    instructions between an `ldmatrix` and its consumer, the bad one one or two, and the cause was register pressure

@@ -4,16 +4,10 @@
 // enumerated from, and nothing else.
 // see docs/internals/decode/decode_lattice.md#note-l3
 
-#include <cub/block/block_scan.cuh>
-
 #include "decode.cuh"
 
 namespace fsla {
 namespace decode {
-
-//: THE STEP'S BLOCK SCAN, over its plan's threads.
-template <int kThreads>
-using LatticeScan = cub::BlockScan<int, kThreads>;
 
 //: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one -- see docs/internals/decode/decode_lattice.md#kkindw
 constexpr int kKindW = 0;
@@ -22,12 +16,12 @@ constexpr int kKindRW = 2;   // R_l & W_l
 constexpr int kKindRmW = 3;  // R_l & ~W_l
 constexpr int kKinds = ::fsla::plan::kDecodeListKinds;
 
-//: `D + 2` term slots: the write product, one per level, and -- LAST -- the -- see docs/internals/decode/decode_lattice.md#kmaxterms
-constexpr int kMaxTerms = kMaxLevels + 2;
+//: `D + 1` term slots: the write product and one per level -- see docs/internals/decode/decode_lattice.md#kmaxterms
+constexpr int kMaxTerms = kMaxLevels + 1;
 
 //: THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product, -- see docs/internals/decode/decode_lattice.md#termkind
-__device__ __forceinline__ int term_kind(int term, int l, int D) {
-  if (term == 0 || term > D) return kKindW;  // term 0 and the candidate slot are `prod W`
+__device__ __forceinline__ int term_kind(int term, int l) {
+  if (term == 0) return kKindW;
   const int split = term - 1;
   return l < split ? kKindRW : (l == split ? kKindRmW : kKindR);
 }
@@ -148,7 +142,7 @@ __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t*
   bool empty = false;
 #pragma unroll
   for (int l = D - 1; l >= 0; --l) {
-    const int count = (term >= 1 && term <= D)   ? n_o[term_kind(term, l, D) * kMaxLevels + l]
+    const int count = (term >= 1 && term <= D)   ? n_o[term_kind(term, l) * kMaxLevels + l]
                       : (term == 0 && l < D - 1) ? n_d[l]
                                                  : n_o[kKindW * kMaxLevels + l];
     const int width = ceil_log2_dev(count);
@@ -166,7 +160,7 @@ __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const
                                                     const int32_t* n_d, int32_t* fld,
                                                     int32_t* units) {
   const int t = threadIdx.x;
-  if (t <= D + 1) units[t] = term_layout<D>(p, n_o, n_d, t, fld + t * kMaxLevels);
+  if (t <= D) units[t] = term_layout<D>(p, n_o, n_d, t, fld + t * kMaxLevels);
   __syncthreads();
 }
 
@@ -207,7 +201,7 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   const int rank = local >> p.lat_outer_bits;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
-    const int kind = term_kind(term, l, D);
+    const int kind = term_kind(term, l);
     int i = field_index(fld[l], rank);
     if (i >= field_count(fld[l])) {
       u.valid = false;
@@ -236,7 +230,7 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   }
   //: THE CONDITIONING the walk's one expression rests on, and the whole of the term's -- see docs/internals/decode/decode_lattice.md#alive
   const bool alive = u.valid && live_kind;
-  if (term == 0 || term > D) {
+  if (term == 0) {
     if (!alive) {
       u.cr = 0u;
       u.cw = 0u;
@@ -246,46 +240,6 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
     u.cw = 0u;
     u.live_w = false;
     u.live_r = true;
-  }
-  u.base = (owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
-  return u;
-}
-
-//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`. -- see docs/internals/decode/decode_lattice.md#candidateunit
-struct CandidateUnit {
-  int base;
-  bool valid;
-  bool live_w;
-  uint32_t cw;
-};
-
-template <int D>
-__device__ __forceinline__ CandidateUnit resolve_candidate_unit(const DecodeParams& p,
-                                                                const uint32_t* mask_w,
-                                                                const int32_t* olist,
-                                                                const int32_t* fld, int unit) {
-  CandidateUnit u;
-  int owner = 0;
-  u.valid = true;
-  u.live_w = true;
-  const int outer = unit & ((1 << p.lat_outer_bits) - 1);
-  const int rank = unit >> p.lat_outer_bits;
-#pragma unroll
-  for (int l = 0; l < D; ++l) {
-    int i = field_index(fld[l], rank);
-    if (i >= field_count(fld[l])) {
-      u.valid = false;
-      i = 0;
-    }
-    const int o = olist[kKindW * p.olist_total + p.olist_off[l] + i];
-    owner += o * p.lat_gsuf[l];
-    const int run_base = o * p.lat_s[l];
-    if (l == D - 1) {
-      u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
-    } else {
-      const int digit = run_base + ((outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
-      u.live_w = u.live_w && mask_bit(p, mask_w, l, digit);
-    }
   }
   u.base = (owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
   return u;

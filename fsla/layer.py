@@ -45,7 +45,7 @@ import torch
 import torch.nn as nn
 
 from fsla._inference_copy import InferenceCopy, reads_copy
-from fsla.engine.decode_step import admit_growth, decode_step_gated, growth_pending
+from fsla.engine.decode_step import decode_step_gated
 from fsla.engine.facts.call import refuse_backward
 from fsla.interface import (
     BackwardNotImplemented,
@@ -76,7 +76,7 @@ class LayerContinuation:
     """The LAYER's own recurrence bundle -- everything ``FSLA.forward`` needs handed
     back to continue a sequence, and nothing the op already owns.
 
-    ``state`` is the op's paged tensor (:class:`~fsla._state.FSLAState`) or ``None``
+    ``state`` is the op's state (:class:`~fsla._state.FSLAState`) or ``None``
     for a fresh sequence. It is the only field today; a future layer-level recurrence
     is a field on THIS container, never on the op's state, per the membership rule
     (docs/internals/state.md §7): an object holds exactly the recurrences its own
@@ -100,7 +100,7 @@ def _unpack_continuation(continuation):
         raise TypeError(
             "FSLA.forward's `continuation` is a LayerContinuation -- the container a "
             f"previous forward returned -- got {type(continuation).__name__}. A bare "
-            "fsla.state() is the OP's half: pass LayerContinuation(state=fsla.state()) "
+            "fsla.dense_state() is the OP's half: pass LayerContinuation(state=fsla.dense_state()) "
             "for a fresh sequence, and hand back what forward returned for a "
             "continuation. The old (state, conv_rings) tuple is retired "
             "(docs/internals/DELETIONS.md).")
@@ -230,7 +230,7 @@ class FSLA(nn.Module):
         """``(y, LayerContinuation)`` -- ALWAYS the container. CONTINUATION IS LAYERED.
 
         ``continuation`` is ``None`` (a stateless call) or the container a previous
-        forward returned. The op's paged tensor lives on it as ``.state``; a bare
+        forward returned. The op's state lives on it as ``.state``; a bare
         :class:`~fsla.FSLAState` or the retired ``(state, conv_rings)`` tuple is
         refused by name (docs/api.md §1.2).
         """
@@ -257,12 +257,7 @@ class FSLA(nn.Module):
         carrying = state is not None and state.carries
 
         if L == 1 and carrying:
-            #: THE STEP, THE VERDICT, THE ADMISSION: a batch-head whose write atoms are absent skipped itself, and the
-            #: same step run again after the admission performs it (docs/api.md section 4)
             projected = self._step(x, state)
-            if growth_pending(state):
-                admit_growth(state)
-                projected = self._step(x, state)
             self.last_execution_backend = "decode"
             return projected, LayerContinuation(state=state)
 
@@ -273,10 +268,7 @@ class FSLA(nn.Module):
     def _step(self, x: torch.Tensor, state) -> torch.Tensor:
         """ONE DECODED TOKEN WITH NO HOST READ INSIDE: the producer's launch, the gated decode step and the output
         projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable: the step builds its
-        descriptor on every call (memoized process-wide: no device read after the first). A batch-head
-        whose write atoms the state can neither address nor admit is a no-op; the caller owns the verdict at its own
-        synchronization -- ``growth_pending(state)``, then ``admit_growth(state)`` and the step again (a captured
-        step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
+        descriptor on every call (memoized process-wide: no device read after the first).
         """
         decay = None if self.decay is None else self.decay()
         routes, values, masks = produce_decode(x, self.routing, self._weights(x))

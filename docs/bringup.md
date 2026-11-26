@@ -73,8 +73,7 @@ bazel test //:lane --//:archs=90a,100a     # every tier, on a library built for 
 
 The ORACLE tier says the kernel computes the right function on this hardware. The
 INTEGRATION tier says it computes the same function at every geometry the built
-matrix carries there, and
-under both state backings — which
+matrix carries there, which
 is the part a new register file is most likely to disturb, because it is the part
 that depends on how the compiler laid the kernel out.
 

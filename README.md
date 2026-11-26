@@ -27,8 +27,8 @@ measured in the lab before it is written into the library.
 | piece | state |
 |---|---|
 | fp64 oracle, routing declaration, activations, the layer's modules | built, tested against the oracle |
-| decode (the `T = 1` step, over the paged fixed-size state) | **built** |
-| entmax / softmax row solves, the paged state | built |
+| decode (the `T = 1` step, over the dense fixed-size state) | **built** |
+| entmax / softmax row solves, the dense state | built |
 | prefill: the mask-preparation pass | built (a kernel and its op, `fsla.ops.mask_prepare.prepare_masks`) and writing each side's leaf groups' mask words and counts; exact on an H100 against its host reference (`tests/oracle`), its time's record owed ([`docs/lab/mask_prepare_time.md`](docs/lab/mask_prepare_time.md)) ([`docs/internals/mask_prepare/mask_prepare.md`](docs/internals/mask_prepare/mask_prepare.md)) |
 | prefill: the carry, the intra, the producer kernel | **not built.** Designed and measured in [`docs/lab/`](docs/lab/README.md); `fsla.prefill` refuses every prefill call by name until the carry exists |
 | backward | **not built.** `fsla.prefill` refuses any call that carries a gradient; there is no training path yet |
@@ -64,7 +64,7 @@ routing = fsla.Routing([fsla.split_routing(256, alpha=1.5, sparse_duty="write"),
                         fsla.split_routing(256, alpha=1.5, sparse_duty="read")])
 layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 
-cont = fsla.LayerContinuation(state=fsla.state())
+cont = fsla.LayerContinuation(state=fsla.dense_state())
 y, cont = layer(prompt, continuation=cont)   # prompt: [B, T, 1024]; the prefill (refused by name until the carry is built)
 y, cont = layer(token, continuation=cont)    # token:  [B, 1, 1024]; one decode step against the fixed-size state
 ```
@@ -87,15 +87,12 @@ weights = ProducerWeights(
 
 # prefill: the masks come in the prefill layout (refused by name until the carry is built, as in the layer)
 routes, values, masks, density = produce_prefill(x, routing, weights)  # H, hidden and d_v are read off the weights and x
-state = fsla.state()
+state = fsla.dense_state()
 y, state = fsla.prefill(routes, values, masks, density, state=state)
 
 # decode: the decode producer and the masks in the decode layout
 routes, values, masks = produce_decode(x_token, routing, weights)  # x_token: [B, 1, hidden]
 y, state = fsla.decode_step_gated(routes, values, masks, state)
-if fsla.growth_pending(state):                  # a head whose state needed one more atom skipped itself
-    fsla.admit_growth(state)
-    y, state = fsla.decode_step_gated(routes, values, masks, state)
 ```
 
 The masks' layouts: **prefill**, int32 `[B, H, ceil(T / 32), width_l]` per level and side, token-packed (bit `t % 32` of
@@ -120,7 +117,7 @@ bazel test //:gate                     # the commit checks: lints, docrefs, the 
 bazel test //tests:cpu                 # each unit's public contract, no device
 bazel test //tests:unit_cuda           # the unit tier's CUDA rows
 bazel test //tests:oracle              # kernels against the fp64 oracle
-bazel test //tests:integration         # composition: the layer, dispatch, paging
+bazel test //tests:integration         # composition: the layer, dispatch
 bazel run  //:ratify -- --census       # every instantiation's registers and spills
 ```
 
@@ -182,7 +179,7 @@ An architecture that is not built refuses to load. Bringing one up is a measurem
 | path | what lives there |
 |---|---|
 | `fsla/` | the Python package: the oracle, routing, the layer, the state, the engine's plans and graphs |
-| `csrc/fsla/` | the CUDA kernels (decode, the entmax solves, paging) and the code they share |
+| `csrc/fsla/` | the CUDA kernels (decode, the entmax solves) and the code they share |
 | `tests/` | `oracle/`, `integration/`, `unit/` |
 | `measure/` | the cells, the timing subjects, and the lab (`measure/lab/`: small CUDA experiments on the machine) |
 | `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's support table) |

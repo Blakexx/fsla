@@ -41,9 +41,6 @@ class Launch:
     outside_allocator: Callable[[], int] | None = None
 
 
-#: the arena's allocation extent in leaves the seed binds with: allocator policy a decode step is blind to (tests/integration/test_decode_bc_blindness.py)
-ARENA_EXTENT = 64
-
 #: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). The layer subject is one stateless segment: a
 #: call the layer splits into segments carries a state between them, which the prefill refuses until the carry's segment
 #: boundary is built (`docs/open-work.md` C-e). The op-level paths are the stateless prefill and decode's step.
@@ -178,8 +175,8 @@ def decode_step(fx) -> Launch:
     """ONE carried single-token step, on a state the seeding call populated.
 
     The state is MUTATED by the call, which is what a decode step is, so the launch's reset
-    seeds a fresh state from the prefill before every call: each timed call is the same
-    step, at the same context position, over the same residency.
+    seeds a fresh state before every call: each timed call is the same step, at the same
+    context position, over the same plane.
     """
     import fsla
     from fsla.engine.facts import planes
@@ -188,24 +185,18 @@ def decode_step(fx) -> Launch:
     spec = fx["cell"]
     if spec.decode_steps == 0:
         raise ValueError(f"{spec.name} is a prefill-only cell; it has no decode subject")
-    #: The seed binds through the facade's own entry and commits exactly the pages the
-    #: routing writes -- a decode step's cost is a function of residency and routing,
-    #: not of the numbers stored, so nothing has to have computed them.
+    #: The seed binds through the state's own entry and commits a zeroed plane -- a decode step's
+    #: cost is a function of the routing, not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
     routes = fx["routes"]
-    #: the seed needs the atom bits, which the fold states bit for bit from the masks the producer emits beside the rows
-    with torch.no_grad():
-        masks = layer._produce(fx["x"][:, :spec.tokens].contiguous())[2]
-    bits = planes.atom_bits(masks, routes)
     seeded: dict = {}
 
     def reset():
         seeded.clear()
-        state = fsla.state()
-        with torch.no_grad():
-            _s, arena = state._kernel_entry(routes, bits, d_v=spec.dv, BC=ARENA_EXTENT)
-            arena.wait()
-        seeded.update(state=state, arena=arena)
+        state = fsla.dense_state()
+        state._kernel_entry(routes, d_v=spec.dv)
+        state._kernel_commit(planes.state_plane(routes, d_v=spec.dv, zeros=True))
+        seeded.update(state=state)
 
     reset()
     token = fx["x"][:, spec.tokens:spec.tokens + 1]
@@ -215,16 +206,10 @@ def decode_step(fx) -> Launch:
         with torch.no_grad():
             routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token))
             values = fsla.Values.from_projection(v_token)
-            y, state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
-            if fsla.growth_pending(state):
-                fsla.admit_growth(state)
-                y, state = fsla.decode_step_gated(routes, values, masks, state)
+            y, _state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
         return y
 
-    #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory
-    #: measurement adds its own receipt; the dense bridge's one plane is a torch tensor the allocator already counts.
-    return Launch(name=f"decode_step|{spec.name}|{fx['construction'].name}", call=run, reset=reset,
-                  outside_allocator=lambda: seeded["arena"].committed_bytes if seeded["arena"].backing == "vmm" else 0)
+    return Launch(name=f"decode_step|{spec.name}|{fx['construction'].name}", call=run, reset=reset)
 
 
 #: THE ROSTER: one entry per kernel this line carries. The op-level subjects' `symbol` is the carry's, the first launch of the op
@@ -245,8 +230,8 @@ SUBJECTS = {
                         "the op alone on the layer's own bundle: den, carry, intra, glue and readout",
                         level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
     "decode_step": Subject("decode_step", "layer", decode_step,
-                           "one carried single-token step through the engine: the pages it commits "
-                           "and the kernels, as the op runs them",
+                           "one carried single-token step through the engine over the dense plane, "
+                           "as the op runs it",
                            level="op", symbol="decode_step_kernel", stamp="fsla_decode_build_stamp"),
 }
 

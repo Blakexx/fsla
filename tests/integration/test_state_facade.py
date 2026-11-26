@@ -4,10 +4,9 @@
 
 Until the K31 batch (baseline = tag `baseline/pre-k31`) this file walked the
 whole stateful surface through the prefill op -- bind-then-continue, chained
-halves vs one whole call, clone independence, dense-vs-paged agreement, the BC
-flip over a live arena. Those claims are claims about the PREFILL BINDING PATH,
+halves vs one whole call, clone independence. Those claims are claims about the PREFILL BINDING PATH,
 which is deleted, and they return with it; what remains gated
-here is the state object's own contract -- construction refusals, the engine's
+here is the state object's own contract -- the engine's
 state-type refusal, and the decode continuation's carrying requirement.
 """
 from __future__ import annotations
@@ -63,18 +62,11 @@ def test_a_raw_tensor_is_not_a_state():
                                         state=torch.zeros(1), want_state=True))
 
 
-def test_an_unbuilt_strategy_is_refused_by_name():
-    with pytest.raises(NotImplementedError, match="cow"):
-        fsla.state("cow")
-    with pytest.raises(ValueError, match="strategy must be"):
-        fsla.state("mutable-ish")
-
-
 def test_a_fresh_state_carries_nothing_and_decode_refuses_it():
     """`carries` is contents, not binding, and a decode step CONTINUES: with the
     prefill arm deleted there is nothing in production to charge a fresh state,
     and the decode entry's refusal must still say so by name."""
-    state = fsla.state()
+    state = fsla.dense_state()
     assert not state.bound and not state.carries
     with pytest.raises(RuntimeError, match="carries nothing"):
         state._require_carrying()

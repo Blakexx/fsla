@@ -21,7 +21,7 @@
         "lo": 1,
         "hi": 536870911
       },
-      "declared_by": "docs/api.md#batch-heads: a decode step serves B times H from 1 to 536870911, the largest the step's work queue indexes (csrc/fsla/src/decode/decode.cu: `int BH` and the queue of 4 B H + 2 int32 counters)"
+      "declared_by": "docs/api.md#batch-heads: a decode step serves B times H from 1 to 536870911, within what the step's work queue indexes (csrc/fsla/src/decode/decode.cu: `int BH` and the queue of 3 B H + 2 int32 counters)"
     }
   }
 }
