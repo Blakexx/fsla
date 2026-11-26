@@ -729,10 +729,24 @@ term whose innermost level is sparse, keeps a leaf a lane group
 
 <a id="atom-loads"></a>THE LOADS' PLACE IS STATED, NOT LEFT TO THE ASSEMBLER. An atom's update is bound by memory latency: a warp walks its atoms one
 after another, and each waits one round trip for its leaves. The four leaves' sixteen loads are therefore issued together, ahead of the first
-leaf's arithmetic, and each leaf's loads sit under `resident` (`ops::launch_known(p.atoms_per_bh)`, [warp.md](../common/atoms/warp.md#launch-known)), a predicate only the launch knows. With the loads
-unconditional the assembler moves two leaves' loads below the first leaf's shuffles, which wait on the first leaf's data, and the atom pays
-two round trips in a row: measured on an H100 at 65,536 leaves a head and 64 heads, 1.60 ms a step against 0.77 with the loads together.
-A fence whose input is a constant (`ops::opaque(1)`, a `ops::once(true)` loop) does not hold them: the assembler sees through it.
+leaf's arithmetic, and each leaf's loads sit under `resident` (`ops::launch_known(p.atoms_per_bh)`, [warp.md](../common/atoms/warp.md#launch-known)), a predicate only the launch knows. Without it the
+assembler issues some leaves' loads after the first leaf's shuffles, which wait on the first leaf's data, and the atom pays two round trips in
+a row.
+
+THE RECORD (2026-11-26; this kernel at sm_90a, toolkit 13.5, the library built four times with only the loads' condition changed; the loop
+read is the whole-atom walk of the arm at two levels, 64 channels, no decay; the count is of loads issued after their trip has waited for
+another load, over the sixteen arms; the time is a step of 65,536 leaves a head at 64 heads with decay, on an H100 against the commit before
+this form, interleaved on one box):
+
+| the loads' condition | loads behind the first shuffle, of 16 | loads behind another's wait, an arm | a step |
+|---|---|---|---|
+| none (`true`) | 5 | 2 to 14 | 1.60 ms |
+| `ops::opaque(1) != 0` | 8 | 2 to 14 | not timed |
+| a `ops::once(true)` loop | 5 | not counted (the count reads innermost loops, and the one-trip loop is one) | not timed |
+| `ops::launch_known(p.atoms_per_bh)` | 0 | 1 | 0.77 ms |
+
+The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. What moves the loads in
+this kernel and not in a small loop of the same shape is not known.
 
 ONLY THE WRITE SUPPORT IS THE TERM'S. A dense declaration does not make every stored digit
 nonzero -- a softmax digit can quantize to a zero u8 -- and a leaf outside the write support
