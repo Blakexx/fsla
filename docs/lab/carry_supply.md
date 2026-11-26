@@ -72,6 +72,26 @@ register-loaded one on every call, by 7 to 20 percent. THE WRONG PRICES, by the 
 - THE WHOLE CALL IS LATENCY-BOUND A STAGE: its 32 stages a window are each about 390 of expansion, 260 of issue and
   217 of waiting -- a group asked one stage ahead does not land under one chunk's work.
 
+A HELD CLIMB SINCE THE RECORD (one box, 43 minutes; timed rows of three repetitions, every check exact where a row is
+kept; NOT ON RECORD -- the kept state is to be recorded). The rows are the cell / both levels / whole / one digit /
+crossed; the record's kernel on that box 5,064 / 5,059 / 29,536 / 4,880 / 3,092.
+- KEPT, in order: a set's last round issues nothing (4,806 / 4,840 / 29,637 / 4,686 / 2,886); the bases the call's
+  and the window an offset (4,792 / 4,771 / 29,543 / 4,645 / 2,845); a stage as many chunks as fit its slot (4,841 /
+  4,848 / 23,922 / 4,696 / 2,873); a window's hand-offs behind its first stage's issue (4,665 / 4,286 / 23,655 /
+  4,759 / 2,507). A row moves about 1 percent between two runs of one binary.
+- DROPPED: the columns' products by the packed bf16 multiply (exact here; 1 to 3 percent, and a rounding more once
+  the rows carry scales); the list's tokens loaded a round ahead (3 to 7 percent SLOWER); the bytes loaded into
+  registers a chunk ahead, the form before the staged one, on this build (the cell 7 percent and whole 5 SLOWER).
+- READINGS whose checks fail by construction: with no byte copies at all the rows are 4,107 / 3,821 / 19,605 / 4,497
+  / 2,356 -- the bytes' whole fetch is 12 percent of the cell's window and 17 of the dense call's, and the expansion
+  with its waits the larger part of what the coefficients added.
+- THE FOLD'S CODE AGAINST ITS REGISTERS (the kept state compiled at a working count, its spills declared for the
+  reading): at 104 registers 4,840 / 4,330 / 25,055 / 4,764 / 2,618 with under 80 bytes of spill stores; at 72, 5,494
+  / 5,265 / 29,511 / 5,729 / 3,097 with 1.4 to 2.0 KB; at 48 -- what the fold's 176 leave beside its 128 accumulator
+  registers -- 6,669 / 6,366 / 29,918 / 7,047 / 4,192 with 3.5 to 4.1 KB. A spilled value is reloaded where it is
+  used and the warp waits for it. A switch on which fold a thread is in freed none of them.
+- carry_skeleton on the kept state: 810 and 1,749 (a call of no tokens lists its empty set before its hand-offs).
+
 A PROFILE OF THE CELL'S TIMED LAUNCH (the same card class, a session of its own on the experiment at ace683c8, the
 kernel's code as recorded above; the pinned profiler's source counters and warp samples; its dump is not kept in the
 repository, so this is one reading and NOT ON RECORD). A fold warp EXECUTES 996 INSTRUCTIONS A WINDOW and is issuing

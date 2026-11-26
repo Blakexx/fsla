@@ -47,7 +47,8 @@ constexpr int kCoefRoundBytes = (ops::kBallotLanes / kStepTokens) * kCoefStepByt
 
 //: WHERE A STEP'S COEFFICIENTS ARE READ, a position: token 0's line of the block its first digit lies in, that digit's place in the block, and a tile of the level's 64 tokens in bytes -- see docs/internals/carry/carry_coefs.md#source
 struct CoefSource {
-  const std::uint8_t* block[kLevels];
+  const std::uint8_t* rows[kLevels];
+  std::uint32_t block[kLevels];
   int inside[kLevels];
   int tile_bytes[kLevels];
 };
@@ -70,6 +71,16 @@ struct StageShape {
   static constexpr int kPitch = kLines | 1;
   static constexpr int kBytes = ops::kBallotLanes * kPitch * (1 << kRowBlockBits);
 };
+
+//: THE CHUNKS A STAGE HOLDS, as bits: as many of a set's `1 << chunk_bits` as keep a token's blocks within the widest stage's 5 lines -- see docs/internals/carry/carry_coefs.md#stage
+constexpr int stage_chunk_bits(int levels, int b0, int b1, int b2, int b3, int chunk_bits) {
+  const auto blocks = [](int b) { return b > kRowBlockBits ? 1 << (b - kRowBlockBits) : 1; };
+  const int rest =
+      (levels > 1 ? blocks(b1) : 0) + (levels > 2 ? blocks(b2) : 0) + (levels > 3 ? blocks(b3) : 0);
+  int held = chunk_bits;
+  while (held > 0 && blocks(b0 + held) + rest > 5) --held;
+  return held;
+}
 
 //: THE WIDEST STAGE of the classes built: 64 digits of a level and a block of another, a pitch of 5 lines
 constexpr int kStageMost = ops::kBallotLanes * 5 * (1 << kRowBlockBits);
@@ -168,8 +179,8 @@ __host__ __device__ __forceinline__ FoldPositions fold_positions(const Operands&
 
 //: WHERE CHUNK `chunk` OF SET `set` IS READ: a position's first digit of it, in its block -- see docs/internals/carry/carry_coefs.md#source
 template <int LEVELS, int B0, int B1, int B2, int B3, int CHUNK_BITS>
-__host__ __device__ __forceinline__ CoefSource coef_source(const FoldPositions& f, int set,
-                                                           int chunk) {
+__host__ __device__ __forceinline__ CoefSource coef_source(const FoldPositions& f, int tiles,
+                                                           int set, int chunk) {
   constexpr int kExtent[kLevels] = {B0 + CHUNK_BITS, B1, B2, B3};
   CoefSource s{};
 #pragma unroll
@@ -177,7 +188,8 @@ __host__ __device__ __forceinline__ CoefSource coef_source(const FoldPositions& 
     const int digit = f.first[at] + (((set >> f.shift[at]) & f.mask[at]) << kExtent[at])
                       + (at == 0 ? chunk << B0 : 0);
     const int block = digit >> kRowBlockBits, in_block = digit & ((1 << kRowBlockBits) - 1);
-    s.block[at] = f.rows[at] + block * kRowBlockBytes;
+    s.rows[at] = f.rows[at];
+    s.block[at] = static_cast<std::uint32_t>(tiles * f.tile_bytes[at] + block * kRowBlockBytes);
     s.inside[at] = in_block;
     s.tile_bytes[at] = f.tile_bytes[at];
   }
@@ -186,19 +198,20 @@ __host__ __device__ __forceinline__ CoefSource coef_source(const FoldPositions& 
 
 //: THE COPIES OF A POSITION'S BLOCKS of a lane's token, into its slot of the stage
 template <int B>
-__device__ __forceinline__ void stage_position(ops::SmemAddr to, const std::uint8_t* from,
-                                               bool live) {
+__device__ __forceinline__ void stage_position(ops::SmemAddr to, const std::uint8_t* rows,
+                                               std::uint32_t from, bool live) {
   constexpr int kBlocks = kPositionBlocks<B>;
 #pragma unroll
   for (int k = 0; k < kBlocks; ++k) {
     ops::stage_tile_if(to + static_cast<ops::SmemAddr>(k << kRowBlockBits),
-                       from + k * kRowBlockBytes, live);
+                       rows + (from + static_cast<std::uint32_t>(k * kRowBlockBytes)), live);
   }
 }
 
 //: WHERE A LANE'S TOKEN'S BLOCKS ARE COPIED FROM AND TO, a chunk: formed apart from the copies, so that a stage's loads and arithmetic all stand before its copies -- see docs/internals/carry/carry_coefs.md#stage
 struct StagePlan {
-  const std::uint8_t* from[kLevels];
+  const std::uint8_t* rows[kLevels];
+  std::uint32_t from[kLevels];
   ops::SmemAddr to;
   bool on;
 };
@@ -218,6 +231,7 @@ __device__ __forceinline__ StagePlan stage_plan(const CoefSource& c, const std::
   plan.to = stage + static_cast<ops::SmemAddr>(lane * (G::kPitch << kRowBlockBits));
 #pragma unroll
   for (int p = 0; p < LEVELS; ++p) {
+    plan.rows[p] = c.rows[p];
     plan.from[p] = c.block[p] + static_cast<std::uint32_t>(tile_of * c.tile_bytes[p] + line);
   }
   return plan;
@@ -228,16 +242,16 @@ template <int LEVELS, int B0, int B1, int B2, int B3>
 __device__ __forceinline__ void stage_bytes(const StagePlan& plan) {
   using G = StageShape<LEVELS, B0, B1, B2, B3>;
   if constexpr (LEVELS > 0) {
-    stage_position<B0>(plan.to + (G::kAt[0] << kRowBlockBits), plan.from[0], plan.on);
+    stage_position<B0>(plan.to + (G::kAt[0] << kRowBlockBits), plan.rows[0], plan.from[0], plan.on);
   }
   if constexpr (LEVELS > 1) {
-    stage_position<B1>(plan.to + (G::kAt[1] << kRowBlockBits), plan.from[1], plan.on);
+    stage_position<B1>(plan.to + (G::kAt[1] << kRowBlockBits), plan.rows[1], plan.from[1], plan.on);
   }
   if constexpr (LEVELS > 2) {
-    stage_position<B2>(plan.to + (G::kAt[2] << kRowBlockBits), plan.from[2], plan.on);
+    stage_position<B2>(plan.to + (G::kAt[2] << kRowBlockBits), plan.rows[2], plan.from[2], plan.on);
   }
   if constexpr (LEVELS > 3) {
-    stage_position<B3>(plan.to + (G::kAt[3] << kRowBlockBits), plan.from[3], plan.on);
+    stage_position<B3>(plan.to + (G::kAt[3] << kRowBlockBits), plan.rows[3], plan.from[3], plan.on);
   }
 }
 
@@ -275,11 +289,12 @@ __device__ __forceinline__ void position_floats(ops::SmemAddr blocks, int inside
 }
 
 //: A ROUND'S COEFFICIENT LINES, a chunk: lane `i` reads its token's staged bytes, multiplies them out over the step's columns and stores its line in `tile`; a place with no token stores zeros -- see docs/internals/carry/carry_coefs.md#expand
-template <int LEVELS, int B0, int B1, int B2, int B3>
+template <int LEVELS, int S0, int B0, int B1, int B2, int B3>
 __device__ __forceinline__ void expand_round(const CoefSource& c, const std::uint16_t* tokens,
-                                             ops::SmemAddr stage, ops::SmemAddr tile) {
+                                             ops::SmemAddr stage, int block0, ops::SmemAddr tile) {
   using S = StepShape<B0, B1, B2, B3>;
-  using G = StageShape<LEVELS, B0, B1, B2, B3>;
+  //: the stage's shape: position 0's blocks are the stage's chunks', this chunk's from `block0` of them
+  using G = StageShape<LEVELS, S0, B1, B2, B3>;
   constexpr int kBits[kLevels] = {B0, B1, B2, B3};
   constexpr int kLow = 1 << B0, kHigh = 1 << S::kHighBits;
   const int lane = static_cast<int>(threadIdx.x) & (ops::kBallotLanes - 1);
@@ -289,7 +304,7 @@ __device__ __forceinline__ void expand_round(const CoefSource& c, const std::uin
   //: a position the call has no level for is 1
   float f0[1 << B0] = {1.0f}, f1[1 << B1] = {1.0f}, f2[1 << B2] = {1.0f}, f3[1 << B3] = {1.0f};
   if constexpr (LEVELS > 0) {
-    position_floats<B0>(from + (G::kAt[0] << kRowBlockBits), c.inside[0], f0);
+    position_floats<B0>(from + ((G::kAt[0] + block0) << kRowBlockBits), c.inside[0], f0);
   }
   if constexpr (LEVELS > 1) {
     position_floats<B1>(from + (G::kAt[1] << kRowBlockBits), c.inside[1], f1);

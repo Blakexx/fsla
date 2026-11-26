@@ -29,8 +29,8 @@ constexpr int kRoundBytes = ops::kBallotLanes * kRowBytes<CHANNELS>;
 //: THE COPIES OF A ROUND'S VALUE LINES into its rows at `tiles`, left uncommitted for the stage that issues them; a place copies nothing and its row is written zero where `live` is false: `tokens` the round's 32 places of the warp's list, a token's line `stride` bytes on from the token before's; `tiles` on a 1,024-byte boundary -- see docs/internals/carry/carry_values.md#fetch
 template <int CHANNELS>
 __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint8_t* values,
-                                            std::int64_t stride, const std::uint16_t* tokens,
-                                            bool live) {
+                                            std::uint32_t at, std::int64_t stride,
+                                            const std::uint16_t* tokens, bool live) {
   constexpr int kLanes = ops::kBallotLanes, kPieces = CHANNELS / kPieceChannels;
   constexpr int kTokens = kLanes / kPieces;
   static_assert(kRowBytes<CHANNELS> == 128, "a row is the 128 bytes the step's swizzle turns");
@@ -47,7 +47,8 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
       ops::step_row_piece(tiles + static_cast<ops::SmemAddr>(which * kRowBytes<CHANNELS>), turned);
   const ops::SmemAddr odd = ops::step_row_piece(
       tiles + static_cast<ops::SmemAddr>((kTokens + which) * kRowBytes<CHANNELS>), turned);
-  const std::uint8_t* const lines = values + piece * kPieceBytes;
+  //: the lane's piece of the window's lines, an offset of 32 bits from the call's
+  const std::uint32_t lines = at + static_cast<std::uint32_t>(piece * kPieceBytes);
   //: a line's place in a window fits 32 bits
   const int line = static_cast<int>(stride);
 #pragma unroll
@@ -55,7 +56,7 @@ __device__ __forceinline__ void fetch_round(ops::SmemAddr tiles, const std::uint
     const int from = listed[i];
     const auto on = static_cast<ops::SmemAddr>((i / 2) * 2 * kTokens * kRowBytes<CHANNELS>);
     const ops::SmemAddr to = ((i & 1) != 0 ? odd : even) + on;
-    ops::stage_tile_if(to, lines + static_cast<std::uint32_t>(from * line),
+    ops::stage_tile_if(to, values + (static_cast<std::uint32_t>(from * line) + lines),
                        live && from != kNoToken);
   }
 }

@@ -20,7 +20,16 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   once, at the head of its branch: two counts in one warpgroup hang the CTA. WHERE A ROLE'S STATE DOES NOT FIT ITS
   COUNT the remedies are taken in the owner's order (2026-11-25: "If we hit register issues we should first try loop re
   ordering, uniform switches, etc  and then try seeing if we can save registers from other phases, before going to
-  smem"): a per-call value moves to shared memory last.
+  smem"): a per-call value moves to shared memory last. THE FOLD'S ACCUMULATORS ARE TO BE SET ASIDE FIRST (the
+  owner, 2026-11-26: "Should we pre allocate the accumulator registers before writing anything else so we know what
+  we are working with"): 128 registers a fold thread (`kStateRegisters`), which at the lab's count of 176 leave its
+  code 48. NOT YET SO, AND THE CODE SAYS SO where the fold's count is set: compiled at 48 the supply and the
+  coefficients spill 3.5 to 4.1 KB a kernel and run 43 to 67 percent longer; at 72, 1.4 to 2.0 KB and 18 to 25
+  percent; at 104, under 80 bytes and 2 to 6 percent (held readings: [`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
+  The fold's code wants about 105 to 110 registers; its round loop alone fits 48, and what does not is the state it
+  carries from set to set. TRIED OF THE FIRST REMEDY: a switch on which fold a thread is in freed no register (the
+  assembler keeps no CTA-wide value in a uniform register), and forming the window's state where it is used freed
+  few and cost cycles.
 - <a id="handoff"></a>A HAND-OFF between roles is a NAMED BARRIER of the two roles' threads: the producer's warps
   arrive and go on (`hand`), the waiter's sync (`take`). There are twelve -- a tile group's "published" (the folds to
   the readout) and "read" (the readout to the folds), a panel's "filled" (the readout to the drain) and "drained" --
@@ -40,7 +49,12 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   issued and landed. `round(fold, set, window, round, token, rows)` is the supply's: a fold warp calls it when it has issued a
   round's copies, which is how the lab copies a round's tokens and rows out with no test code in the library
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
-- <a id="fold"></a>`fold_role`. THE IMAGE GOES OUT A TILE GROUP AT A TIME so that the readout starts on the first
+- <a id="fold"></a>`fold_role`. A WINDOW'S HAND-OFFS STAND BEHIND ITS FIRST SET'S LISTING AND FIRST STAGE'S ISSUE,
+  so that the stage lands under them (and under the image, when it is built): the listing and the copies' issue
+  change no state, so the image is still the state as of the window's start. A held reading: the cell's window 3
+  percent shorter, both levels' and the crossed call's 11 and 12; a window whose first set is empty gains nothing and
+  its hand-offs stand a set's listing later (one digit 1.3 percent longer, the call of no tokens 8)
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). THE IMAGE GOES OUT A TILE GROUP AT A TIME so that the readout starts on the first
   group while the folds store the rest, and each group waits on the readout's read of the window before because the
   image is overwritten in place: the state has one image, not a ring of them
   ([`../../architecture/hopper-carry.md`](../../architecture/hopper-carry.md#a-window)). The warpgroup meets at its own
@@ -83,12 +97,17 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
   to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
   ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
-  nothing. A STAGE IS A CHUNK OF A ROUND, and its copies one committed group: the chunk's coefficient bytes
-  ([`carry_coefs.md`](carry_coefs.md#stage)) and, with a round's first chunk, the round's value lines. A set's first
+  nothing. A STAGE IS AS MANY OF A ROUND'S CHUNKS AS FIT ITS SLOT, and its copies one committed group: those chunks'
+  coefficient bytes ([`carry_coefs.md`](carry_coefs.md#stage)) and, with a round's first stage, the round's value
+  lines. The dense call's set of four chunks is one stage a round so: one issue and one wait where there were four
+  (its window 23,655 cycles a CTA where it was 29,536, a held reading). A set's first
   stage is issued behind its lay; then each stage ISSUES THE STAGE AFTER IT, WAITS FOR ITS OWN, AND EXPANDS
   ([`carry_coefs.md`](carry_coefs.md#expand)) -- two groups in flight, the newer one's latency under this stage's work.
-  Where a set has no round after, the next stage's copies are predicated off and its group is committed empty: no
-  branch, and the wait is the same instruction. A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
+  A SET'S LAST ROUND ISSUES NOTHING: a branch on a value every lane holds (a vote), and its wait is for its own
+  stage alone -- where it issued a stage of copies that moved nothing, each still wrote its place zero, about a
+  twentieth of the cell's window. THE BASES ARE THE CALL'S AND THE WINDOW IS AN OFFSET: the value lines and each
+  level's rows are addressed from a pointer that does not change, the window's and the token's place a 32-bit
+  offset, so no pointer is stepped a window. A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
   COPIES, THEN THE BYTES', under the wait for the stage that is landing. MEASURED: with the bytes' copies first the
   cell's window was 5,487 cycles a CTA and with them last 5,066, the crossed call's 3,274 and 3,079
   ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). WHY IS ONE PROFILE'S READING, not on record: its largest

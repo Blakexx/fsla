@@ -33,9 +33,14 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   set's index that pick its group there (`fold_levels`' `shift` and `mask`:
   [`carry_groups.md`](carry_groups.md#sets)). A position the call has no level for holds nothing and is never read. EACH OF THE CARVE'S ARRAYS IS READ BEFORE THE LEVEL IS COMPARED WITH ANYTHING, as in
   `fold_levels`. It runs on the host as it does in a thread: the lab forms a call's positions with it.
-- <a id="source"></a>`CoefSource`, `coef_source<levels, bits a position, chunk bits>(positions, set, chunk)`: where a chunk of
-  a set is read -- a position's pointer at token 0's line of the block its first digit lies in, and that digit's place
+- <a id="source"></a>`CoefSource`, `coef_source<levels, bits a position, chunk bits>(positions, tiles, set, chunk)`: where a chunk of
+  a set is read -- a position's rows (a pointer the call's, never stepped), the 32-bit offset of token 0's line of the block its first
+  digit lies in, in the window's tiles (`coef_source` takes the window's place in tiles), and that digit's place
   inside the block. The digit is the fold's first, the set's group on, the chunk on at position 0.
+- <a id="stage-chunks"></a>`stage_chunk_bits(levels, bits a position, chunk bits)`: A STAGE HOLDS AS MANY OF A SET'S
+  CHUNKS AS KEEP A TOKEN'S BLOCKS WITHIN THE WIDEST STAGE'S 5 LINES: position 0's blocks for all of them, one after
+  another, and the other positions' once. The expansion of a chunk reads position 0 from the block its digits start
+  at (`expand_round`'s `block0`).
 - <a id="stage"></a>`stage_plan<levels, bits a position>(source, tokens, stage, live)`, `stage_bytes<levels, bits a position>(plan)`, `StagePlan`, `StageShape`, `kStageMost`: THE
   BYTES ARRIVE AS THE VALUE LINES DO, by asynchronous copies into shared memory (the owner, 2026-11-25: "I thought we
   were losing coefficents to smem async like values, and then expanding them from smem into operand areas? Why not?"
@@ -58,10 +63,12 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   32 lanes' words fall on the banks at most four to a bank, as the copies do. WHY NOT REGISTER LOADS, which this was first: a token's bytes loaded from global memory
   into registers took about 700 cycles to land and held the warp there, a set's first round 1,237 cycles in its
   coefficient phase where its later rounds were about 500
-  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's own result is waited for once, at the stage's wait, where a load's was at its first use. AS MEASURED the
-  staged form's window was not the faster of the two as first built, and is by a little once a stage's bytes are
-  issued last ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)).
-- <a id="expand"></a>`expand_round<levels, bits a position>(source, tokens, stage, tile)`, `position_floats`: A LANE A
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)); a copy's own result is waited for once, at the stage's wait, where a load's was at its first use. AS MEASURED
+  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)): on record the staged form is the faster on the cell
+  alone once a stage's bytes are issued last, and 7 to 18 percent the slower on the other four calls; in a held
+  reading of the two forms on one build otherwise the same, the staged form is the faster on the cell (7 percent)
+  and the dense call (5), and within 2 percent on the rest.
+- <a id="expand"></a>`expand_round<levels, the stage's position-0 bits, bits a position>(source, tokens, stage, block0, tile)`, `position_floats`: A LANE A
   TOKEN. Lane `i` reads its token's staged bytes a position -- a block a 16-byte load, fewer digits the word or the
   pair of the block they lie in -- converts them to fp32, multiplies positions 1 on
   into the columns' high bits once, and then a column is one multiplication, rounded to bf16 as the packed pair is
