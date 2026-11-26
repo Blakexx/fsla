@@ -38,6 +38,7 @@ and the op decides how it runs, inside the call.
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `FSLA`, `LayerContinuation` | STABLE |
 | state | `dense_state()`, `FSLAState` | STABLE |
+| segmentation | `max_tokens(n)`, `max_memory(bytes)`, `segment_plan(length, maximum)` | STABLE |
 | configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting` | STABLE |
 | oracle | `naive_fsla` | STABLE signature, EXACT semantics — it is the definition |
 """
@@ -71,6 +72,7 @@ from fsla.routing.types import (
     entmax,
     softmax,
 )
+from fsla.segmentation import max_memory, max_tokens, segment_plan
 from fsla.values import Values
 
 __all__ = [
@@ -100,6 +102,10 @@ __all__ = [
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
     "dense_state",
     "FSLAState",
+    # segmentation: the handles a layer is given and the one function that plans a call (fsla/segmentation.py)
+    "max_tokens",
+    "max_memory",
+    "segment_plan",
     # oracle — ships in the wheel; it is the definition (docs/testing.md)
     "naive_fsla",
     # configuration

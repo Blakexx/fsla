@@ -45,6 +45,7 @@ import torch
 import torch.nn as nn
 
 from fsla._inference_copy import InferenceCopy, reads_copy
+from fsla._state import dense_state
 from fsla.engine.decode_step import decode_step_gated
 from fsla.engine.facts.call import refuse_backward
 from fsla.interface import (
@@ -53,7 +54,6 @@ from fsla.interface import (
     prefill,
     requires_backward,
 )
-from fsla.ops._ext import not_built
 from fsla.ops.produce import (
     ProducerWeights,
     hidden_contiguous,
@@ -64,6 +64,8 @@ from fsla.ops.produce import (
 from fsla.routing.decay import validate_decay_source
 from fsla.routing.producer import Routing, _init_packed_router
 from fsla.routing.side_gain import init_side_gain_bias
+from fsla.routing.types import activation_properties
+from fsla.segmentation import SegmentContext, SegmentHandle, SegmentPlan, segment_plan
 
 if TYPE_CHECKING:
     from fsla._state import FSLAState
@@ -121,10 +123,10 @@ class FSLA(nn.Module):
         decay: a decay source (:mod:`fsla.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
-        memory_budget: the caller's declared working-set budget in bytes, or ``None`` for none (one prefill is one op call). The
-            layer's, not the op's: with a budget the layer asks the planner how many tokens of the call fit it beside the state (a
-            function of the prefill launch function, docs/open-work.md row A-f) and loops over segments carrying the state. That
-            question cannot be answered yet, so a budgeted prefill is refused by name (:func:`fsla.ops._ext.not_built`, kernel ``prefill``).
+        segments: a segment handle (:func:`fsla.max_tokens`, :func:`fsla.max_memory`, or any function from a
+            :class:`~fsla.segmentation.SegmentContext` to the most tokens a step may hold), or ``None`` for none (one prefill is
+            one op call). The layer's, not the op's: the plan of a call is made once (:func:`fsla.segment_plan`), and the layer
+            loops over its steps carrying the state (docs/api.md section 4.2).
     """
 
     def __init__(
@@ -136,7 +138,7 @@ class FSLA(nn.Module):
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
-        memory_budget: int | None = None,  #: reserved: the segment loop, once the prefill launch function (open-work A-f) answers how many tokens fit
+        segments: SegmentHandle | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(routing, Routing):
@@ -146,8 +148,9 @@ class FSLA(nn.Module):
                 "callable feature map is not taken (docs/api.md section 2).")
         if type(d_v) is not int or d_v < 1:
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
-        if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
-            raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
+        if segments is not None and not callable(segments):
+            raise TypeError(f"segments is a segment handle (fsla.max_tokens, fsla.max_memory, a function of the call's context), or None; "
+                            f"got {type(segments).__name__}")
         for name, value in (("hidden_size", hidden_size), ("num_heads", num_heads)):
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive exact int, got {value!r}")
@@ -160,7 +163,7 @@ class FSLA(nn.Module):
         self.routing = routing
         self.decay = decay
         self.layer_idx = layer_idx
-        self.memory_budget = memory_budget
+        self.segments = segments
 
         #: ONE ROUTING PARAMETER, and the write gain's columns are its trailing span: the gain is a function of the
         #: same stream as the routing logits, so its column is one more column of the same GEMM.
@@ -300,14 +303,41 @@ class FSLA(nn.Module):
         return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
-        """THE PREFILL (docs/api.md section 4.2). With no ``memory_budget`` it is one op call: the producer's one call and :func:`fsla.prefill`, which builds its own descriptor and workspace. WITH a budget the layer must ask the planner how many tokens fit it beside the state -- the answer is the prefill
-        launch function's (docs/open-work.md row A-f), which is not written -- and loop over segments carrying the state; until then a budgeted
-        prefill is refused by name here, the one place the layer would have segmented."""
-        if self.memory_budget is not None:
-            not_built("prefill")
+        """THE PREFILL (docs/api.md section 4.2). With no ``segments`` it is one op call: the producer's one call and
+        :func:`fsla.prefill`, which builds its own descriptor and workspace. With a handle the plan is made once
+        (:func:`fsla.segment_plan`) and each step projects its own stretch of tokens, runs the op on it and carries the state
+        to the next, so the projections are bounded with the op. A stateless call that spans steps carries a state of its own
+        and hands none back."""
+        plan = self._segment_plan(x)
+        if plan.steps == 1:
+            return self._prefill_step(x, state, decay)
+        carried = dense_state() if state is None else state
+        outs = []
+        for start, end in plan.bounds():
+            out, carried = self._prefill_step(x[:, start:end], carried, decay)
+            outs.append(out)
+        return torch.cat(outs, dim=1), (None if state is None else carried)
+
+    def _prefill_step(self, x: torch.Tensor, state, decay):
+        """One step: one stretch of tokens through the producer and the op."""
         routes, values, masks, density = self._produce(x)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
         return prefill(routes, values, masks, density, state=state, decay=decay)
+
+    def _segment_plan(self, x: torch.Tensor) -> SegmentPlan:
+        """The plan of this call: one step with no handle; else the handle's maximum for the call's context, and the plan under it."""
+        length = x.shape[1]
+        if self.segments is None:
+            return SegmentPlan(steps=1, tokens=length, length=length)
+        from fsla.ops.window import window_of
+
+        levels = self.routing.topology.levels
+        masked = tuple(sum(1 << l for l, level in enumerate(levels) if activation_properties(level.activation(duty)).exact_zeros)
+                       for duty in ("read", "write"))
+        batch_heads = x.shape[0] * self.num_heads
+        context = SegmentContext(widths=tuple(self.routing.topology.widths), masked=masked, heads=(batch_heads, batch_heads),
+                                 device=x.device, window=window_of())
+        return segment_plan(length, self.segments(context), window=context.window)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

@@ -429,8 +429,8 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
     signature = inspect.signature(fsla.FSLA.__init__)
     assert list(signature.parameters) == [
         "self", "routing", "hidden_size", "num_heads",
-        "d_v", "decay", "layer_idx", "memory_budget"]
-    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "memory_budget"):
+        "d_v", "decay", "layer_idx", "segments"]
+    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "segments"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 

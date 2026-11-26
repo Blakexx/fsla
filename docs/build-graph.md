@@ -157,7 +157,7 @@ among them: it is a report, on demand ([below](#census)).
   `vendored_pin`); then the record, `tools/build_record.py`'s writer.
 - THE SASS GATE (KERNEL_STANDARDS section 20, `tools/sass_gate.py`) on the linked library, with the graph's
   `cuobjdump` and `nvdisasm` (`@cuda_tools`, the pinned toolkit, one `bin/` for both as an installed toolkit has
-  them) and no verdict cache: Bazel's is the cache. It compares the checker's facts of every function and of the units' ptxas notices with the declarations
+  them) and no verdict cache: Bazel's is the cache. It compares the checker's manifest of every function and of the units' ptxas notices with the declarations
   ([above](#declarations)), and reds a PTX image too: closed-world rule 2 on the binary itself.
 - THE ARM GATE (`bazel/gates.py`, `bazel/arms.py`): the built arm table against the declared arms, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the

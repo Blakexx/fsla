@@ -495,7 +495,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, memory_budget=None)
+FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, segments=None)
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.dense_state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -552,16 +552,38 @@ environment the FlashAttention comparison arm runs in.
 
 ### 4.2 Segments: the layer bounds its own working set
 
-The layer's `memory_budget` (bytes, or `None`) is the LAYER's declaration, no fact of the op's call: the op runs one segment and knows
-nothing of segmentation. With no budget a prefill is one op call. With a budget the layer asks the planner how many tokens of the call fit it
-beside the state -- the answer is the prefill launch function's (`common/plan/`, `docs/open-work.md` row A-f), never a knob of the caller's -- and
-loops over segments of that length: per segment it projects that stretch's routes and values, runs `prefill` on it and carries the state to the
-next, so the projections are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. The window grid is
-global, so a boundary on a window boundary moves no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
-`tests/integration/test_layer_segments.py`), and a stateless call that spans segments carries an internal state and hands none back.
+The op runs one segment and knows nothing of segmentation. The layer is handed a SEGMENT HANDLE (`segments=`, or `None`: one prefill is
+one op call), a function from the call's context to the MOST TOKENS a step may hold, and the plan of a call is made once, by one host
+function (the owner, 2026-11-26: "they all should return a token answer, the memory handle is like a function the user calls that returns a
+fucntion they give us"; "i was thinking we could just call it once and it yields the whole exceution plan"):
 
-The launch function is not written, so the question cannot be answered: a budgeted prefill is refused by name (`KernelNotBuilt`, kernel
-`prefill`) in the layer, before the producer or any descriptor.
+```python
+fsla.max_tokens(8192)             # a handle: no step longer than 8,192 tokens
+fsla.max_memory(1 << 30)          # a handle: no step whose workspace, at its worst case, passes 1 GiB
+fsla.segment_plan(length, maximum)   # the plan: its steps, and the tokens a step
+```
+
+- **A handle states a maximum and the plan takes the largest whole number of windows under it**, so a caller never needs the card's
+  window ("so the user doesnt need to be aware of our window sematncis"). The window grid is global, so a boundary on a window boundary
+  moves no pair: a segmented call is the whole call (the op's readout to fp32 ULPs, `tests/integration/test_layer_segments.py`). Per
+  step the layer projects that stretch's routes and values, runs `prefill` on it and carries the state to the next, so the projections
+  are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. A stateless call that spans
+  steps carries a state of its own and hands none back.
+- **A sequence of any length is served, and the caller pads nothing.** One no longer than the maximum is ONE step, a partial window
+  included (the kernels run a partial last window). The last step of a longer one holds what is left.
+- **A maximum below one window is refused where the sequence must be split.** Tokens of one window interact, so a split sits on a
+  window boundary and the least step of a split sequence is one window: 10,000 tokens under a maximum of 500, or 800 under 500, has no
+  plan, and `segment_plan` refuses it, naming the window (the owner, 2026-11-26: "sure we can not allow such a case").
+- **`max_memory` bounds the op's own workspace at its WORST CASE**, a function of the call's shape alone (its levels' digits, which
+  levels each side can hold a mask on, its batch-heads): the prepared masks of the most leaf groups the shape allows, a sixteenth of its
+  leaves a side ([`internals/common/plan/leaf_groups.md`](internals/common/plan/leaf_groups.md#most)), so the bound holds whatever the
+  data and no density is read. Where one window does not fit the limit, no segmentation serves it and the call is refused ("will refuse
+  if there is no form of segmentation that exists that can serve it"). The state and a step's own projected inputs are beside it.
+- **A handle is any function of the context** (`fsla.segmentation.SegmentContext`: the levels' digits, each side's maskable levels
+  and batch-heads, the device, the window) that returns a token maximum, or `None` for no limit.
+
+A call of the layer needs the producer and the prefill, which are not built on this line (`KernelNotBuilt`); the plan, the handles and
+their refusals are host functions and are (`tests/unit/test_segmentation.py`).
 
 ## 5. What is deliberately not here
 

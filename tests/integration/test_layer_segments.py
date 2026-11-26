@@ -1,10 +1,9 @@
 """THE OP ON ONE SEGMENT, AND THE LAYER'S SEGMENTS.
 
 `fsla.prefill` runs the prefill call over the segment it is handed, building its own descriptor and workspace, and continues
-the state it is handed; the layer splits a sequence into segments by a declared memory budget, so its projections are bounded with the op.
+the state it is handed; the layer splits a sequence into the steps of its segment handle's plan, so its projections are bounded with the op.
 Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
-readout to fp32 ULPs, the layer's through its bf16 output projection), and the budget's refusal by name while the prefill launch function
-that derives the segment length is not built (docs/api.md section 4.2).
+readout to fp32 ULPs, the layer's through its bf16 output projection), and the refusal of a plan no split can serve (docs/api.md section 4.2).
 """
 from __future__ import annotations
 
@@ -96,13 +95,13 @@ def test_segments_carried_through_a_state_are_the_whole_call():
 
 
 @_LAYER_PREFILL
-def test_a_budgeted_layer_segments_and_matches_the_whole_call():
+def test_a_segmented_layer_matches_the_whole_call():
     layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
         whole, whole_cont = layer(x)
     assert whole_cont.state is None
-    layer.memory_budget = 2 * window_of() * 4096
+    layer.segments = fsla.max_tokens(2 * window_of())
     with torch.no_grad():
         segmented, cont = layer(x)
     assert cont.state is None, "a stateless call hands no state back, however many segments it ran"
@@ -116,19 +115,16 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     x = torch.randn(1, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
         _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
-        layer.memory_budget = window_of() * 4096
+        layer.segments = fsla.max_tokens(window_of())
         _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
 
 
-def test_a_budgeted_prefill_is_refused_by_name_before_anything_runs():
-    """A budget is the LAYER's: it would ask the planner how many tokens fit beside the state and loop over segments, and the planner's answer
-    is the prefill launch function's, which is not built. So a budgeted prefill is refused as `KernelNotBuilt` naming the prefill kernel at the
-    one place the layer would have segmented -- before the producer, the descriptor or any kernel -- and never as a call outside the contract."""
-    from fsla.ops._ext import KernelNotBuilt
-
-    layer = _layer(memory_budget=10 ** 9).cuda().eval()
-    with torch.no_grad(), pytest.raises(KernelNotBuilt, match=r"\bprefill kernel\b") as refused:
+def test_a_maximum_below_one_window_is_refused_before_anything_runs_when_the_sequence_must_be_split():
+    """A split sits on a window boundary, so a sequence longer than a maximum that is below one window has no plan: the layer
+    refuses it, naming the window, before the producer or any kernel. A sequence no longer than the maximum is one step."""
+    layer = _layer(segments=fsla.max_tokens(window_of() - 1)).cuda().eval()
+    with torch.no_grad(), pytest.raises(ValueError, match=rf"the window is {window_of()} tokens"):
         layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
-    assert "outside FSLA's prefill contract" not in str(refused.value)
+    assert layer._segment_plan(torch.empty(2, window_of() - 1, 64, device="cuda")).steps == 1
