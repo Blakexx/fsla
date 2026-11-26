@@ -24,7 +24,7 @@ the same way (`@p LDS`, 0 where `live` is false). A read-modify-write whose stor
 load too, so a dead lane reads no word a live lane of its warp writes (the carry's panel adds: a tile's rows past its
 run alias its first row's slot). `load_global_u32_if(p, live, otherwise)` is the
 same from global memory (`@p LDG`): where `live` is false no address is read and the word is `otherwise` -- a
-per-call flag picks whether a word is read with no branch on it (the carry's levels that are not listed:
+value every lane holds picks whether a word is read with no branch on it (the carry's fold, where a warp with no set to list loads no line:
 [`../../carry/carry_kernel.md`](../../carry/carry_kernel.md#supply)).
 
 - <a id="store-bf16"></a>`store_bf16`: one fp32 to one bf16, rounded as `pack_bf16x2` rounds each half, for a

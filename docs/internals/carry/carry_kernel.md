@@ -92,11 +92,12 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   warp takes every fourth set, whole; with two, two warps share a set, and with one, all four -- and SHARERS SPLIT A
   SET BY BIT, each a half or a quarter of every word's tokens ([`carry_list.md`](carry_list.md#share)), listing its
   part and running its own rounds -- so a fold's four warps issue copies together whatever its sets. A SET'S WORD a lane
-  is the call's own tokens ANDed with the set's group's word on each level the side lists; its parts are formed
-  outside the loop over sets -- a level's `base`, `shift` and `mask` once a fold, a level's row once and then a step
-  on a window ([`carry_groups.md`](carry_groups.md#word)). THE WORDS ARE LOADED A SET AHEAD AND ANDed AT THEIR USE:
-  a warp issues in order, so a word ANDed where it is loaded holds the warp there until it lands, whatever was meant
-  to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
+  is one word of the set's line, the write side's leaf group of that index ([`carry_groups.md`](carry_groups.md#lines)): the fold's sets are the write
+  side's consecutive leaf groups from `first_leaf`, the leaf group of the fold's first group a level
+  (`plan::leaf_group_of` of `plan::leaf_groups(carve, false)`, [`../common/plan/leaf_groups.md`](../common/plan/leaf_groups.md#order)), so the set `i` of a fold is line
+  `first_leaf + i`. The line holds the call's own tokens alone, so nothing is masked and nothing is ANDed in the fold. Its address is formed once a fold and a step on a window. THE WORD IS
+  LOADED A SET AHEAD AND USED WHERE IT IS NEXT NEEDED: a warp issues in order, so a word used where it is loaded holds the warp there until it lands, whatever
+  was meant to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch
   ([`carry_values.md`](carry_values.md)) lands their lines in the warp's rows; a set with no live token issues
   nothing. A STAGE IS AS MANY OF A ROUND'S CHUNKS AS FIT ITS SLOT, and its copies one committed group: those chunks'
   coefficient bytes ([`carry_coefs.md`](carry_coefs.md#stage)) and, with a round's first stage, the round's value
@@ -109,7 +110,7 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   ([`../../KERNEL_STANDARDS.md` section 29](../../KERNEL_STANDARDS.md#s29)), put to the owner with its record -- where it issued a stage of copies that moved nothing, each still wrote its place zero, about a
   twentieth of the cell's window. THE BASES ARE THE CALL'S AND THE WINDOW IS AN OFFSET: the value lines and each
   level's rows are addressed from a pointer that does not change, the window's and the token's place a 32-bit
-  offset, so no pointer is stepped a window; a call whose head's lines or rows pass 4 GB traps where the fold starts
+  offset, so no pointer is stepped a window; a call whose head's value lines pass 4 GB (an unsigned offset), or whose widest level's rows of a head (its tokens times that level's digits, a byte each) pass 2 GB -- the rows' offset is formed in signed 32-bit arithmetic -- traps where the fold starts
   (the op's own refusal of it is owed with the op). A STAGE'S ORDER IS ITS LOADS AND ADDRESSES, THEN THE VALUE LINES'
   COPIES, THEN THE BYTES', under the wait for the stage that is landing. MEASURED: with the bytes' copies first the
   cell's window was 5,487 cycles a CTA and with them last 5,066, the crossed call's 3,274 and 3,079
@@ -118,20 +119,16 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   lanes ask for 32 different lines each. The positions' rows are formed once a fold and stepped a window on. ONE SWITCH A CALL: `fold_role` switches on its fold's CLASS
   ([`carry_coefs.md`](carry_coefs.md#class)) -- the call's levels and its step's shape -- and each arm is
   `fold_windows<CLASS>`, the warp's windows COMPILED FOR THAT DEPTH AND THAT STEP SHAPE: a level the call has not has
-  no word, no row and no instruction, and a column's digits are picked as the code is compiled. WHICH OF THE CALL'S
-  LEVELS ITS SIDE LISTS IS READ AS IT RUNS, WITH NO BRANCH: a flag a level, set once a call; a level that is not listed
-  has its word's load predicated off (`load_global_u32_if`: no address is read) and ANDs all ones, its row a step of
-  nothing a window. THE OWNER'S, 2026-11-25, when a switch on the 16 listed patterns nested with the class's made 304
+  no instruction, and a column's digits are picked as the code is compiled. WHICH LEVELS A SIDE LISTS IS NOT A MATTER OF THE FOLD'S CODE: the pass has formed
+  the side's leaf groups' lines over them ([`carry_groups.md`](carry_groups.md#lines)), so the fold reads one line a set whatever the levels it lists, and the
+  switch is on the class alone. THE OWNER'S, 2026-11-25, when a switch on the 16 listed patterns nested with the class's made 304
   copies of these windows and the compiler ran the host out of memory: "The tensor step is basically coupled to group
   size right, up to a max of 64? I think that's the more important thing to switch on, for the listing should we
-  switch on depth and runtime on listed pattern?", and to that form laid out in answer with its estimate, "Ok" -- the switch he ruled the day before ("switching uniformly to
-  precomputed things defined for those patterns ... We are just templating in the code instead of at the arm") stays,
-  on the pattern that changes the most code. WHAT THE FLAGS COST is about 3 instructions a set for a level of the call
-  that is not listed -- NOT MEASURED APART (the runs that have them have the coefficients too); the form before it, which tested every one of four levels at every set by a
-  branch, was 6 to 10 percent of a window slower than the switch on the listed patterns
-  ([`../../lab/carry_supply.md`](../../lab/carry_supply.md)). A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
-  value lines start is a step on, and THE CALL'S OWN TOKENS a lane -- all 32 of its word, or the first of them where the call ends inside it, which a set's AND starts from so that a side whose levels are all whole lists no place past the call's last -- are the windows its word is whole in, then one word,
-  then none -- no multiplication and no division a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
+  switch on depth and runtime on listed pattern? What's the cost?", answered, to the branch-free form laid out with its estimate, "Ok": the fold's one switch a call is on the
+  call's depth and its step's shape, and which levels are listed is read at run time, with no branch. The switch he ruled the day before ("switching uniformly to
+  precomputed things defined for those patterns ... We are just templating in the code instead of at the arm") stays, on the pattern that changes the most code. The
+  leaf groups' lines carry that listing for the whole fold, so the run-time part of the ruling is held by the pass and the fold has no flag a level. A WINDOW'S OWN ARITHMETIC IS KEPT FROM WINDOW TO WINDOW: where its
+  value lines start is a step on, and where its set's line is a step of `leaf_step` words on, an address formed once a fold, with no multiplication and no division a window. The loops are bounded by values every lane holds (a shuffle from lane 0,
   a vote, a warp reduction) ([`../../lab/collective_branch.md`](../../lab/collective_branch.md)).
   NOT BUILT: sides of different head counts (one head index reads both); the steps that consume a round and its
   coefficients. THE COEFFICIENTS' BUDGET, stated before the code: a round a warp, a chunk -- a lane a shared load of
@@ -141,8 +138,7 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   instructions a lane at 64 columns, 2.8 a column; its floor is the columns', 64 multiplications and 32 roundings a
   lane. THE BUDGET, stated before the code
   ([`../../KERNEL_STANDARDS.md` section 19](../../KERNEL_STANDARDS.md#s19)): a set a window, a warp -- one load a
-  lane for each level the side lists, the listing's running sums (5 shuffles, about 20 instructions a lane) and an AND
-  a level; the lay, about 15 instructions a lane a trip of the fullest word's tokens; a round of 32 places -- 8 shared loads and
+  lane of the set's line, the listing's running sums (5 shuffles, about 20 instructions a lane); the lay, about 15 instructions a lane a trip of the fullest word's tokens; a round of 32 places -- 8 shared loads and
   8 copy instructions (about 35). THE FLOOR is the copies' own: 2.1 to 3.0 cycles
   a line a CTA with 16 warps issuing ([`../../lab/carry_fetch.md`](../../lab/carry_fetch.md)), 5.8 with 4
   ([`../../lab/value_fetch.md`](../../lab/value_fetch.md)); a CTA's folds have 8. MEASURED in the composed CTA, stamped: a

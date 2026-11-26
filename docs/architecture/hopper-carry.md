@@ -31,9 +31,9 @@ then the fold of the window's writes into the state.
   sizes get multiplied to get the overall leaf group size per side. CTAs own their own leaf segments per side. So often
   times, a cta will own a segment of many leaf groups"). Leaf groups tile the leaf space across CTAs; a group and a CTA's
   extent on a level nest, so on a level where the group is the larger the CTAs along it are in one group, and where it is
-  the smaller a CTA holds several. A GROUP'S TOKENS are those live in its group on every masked level -- the AND of the
-  level-sides' group words; a level-side whose group is the level's size is WHOLE and adds nothing, its
-  mask never read (one with no mask is whole by its byte of 255). "Within a group, the
+  the smaller a CTA holds several. A LEAF GROUP'S TOKENS are those live in its group on every masked level -- the AND of the
+  level-sides' group words, formed by the mask-preparation pass into the leaf group's line; a level-side whose group is the level's size is WHOLE and adds nothing, and
+  one with no mask is taken whole whatever its density byte. "Within a group, the
   CTAs all share the exact same token schedule. That's the definition of a group."
 - EACH SIDE HAS ITS OWN LOOP ORDER over the levels, its sparsest outermost (Blake, 2026-11-25: "Obviously each side has
   its own loop order. That's why publish has to order the smem state in a different orientation than the registers"):
@@ -65,10 +65,11 @@ then the fold of the window's writes into the state.
 THERE IS NO GATHER KERNEL (Blake, 2026-11-25: "if we can drop the gather that would be great. If it is actually
 possible to do the in cta scatter loads for both sides it's ideal"; "Today's thinking is my preferred design. Should we
 just build it for real"). A carry CTA makes everything it uses, on both sides, from the bundle's planes and the
-prepared group words ([the mask-preparation pass](mask-preparation.md#the-mask-preparation-pass)).
+prepared leaf groups' lines ([the mask-preparation pass](mask-preparation.md#the-mask-preparation-pass)).
 
-- ITS LISTS. For each of its groups, a side: the group's live tokens of the window, in order -- the group words ANDed
-  across the side's masked levels and counted inline, a popcount and a running sum over the window's words. One form
+- ITS LISTS. For each of its sets, a side: the set's live tokens of the window, in order -- a set is one leaf group of the side, whose line the mask-preparation pass has
+  written (a bit a token, the side's masked levels' group words ANDed, the call's own tokens in it), so a fold reads ONE LINE A SET and counts it inline, a popcount
+  and a running sum over the window's words. One form
   whether a side has one masked level or several (Blake, 2026-11-25: "the counts are useless anyway? We need to find a
   way to do the counting inline anwyay"). NOT BUILT. MEASURED of a lab's read-side listing, its counts handed to it
   ([`lab/carry_token.md`](../lab/carry_token.md), paragraphs (k) and (l)): 107 to 238 cycles a window a CTA over the same
@@ -192,8 +193,8 @@ time, each exact against the fp64 oracle at the skeleton's cell before the next.
 
 1. The prefill launch function (its carve, units and window are built: [`internals/common/plan/prefill_launch.md`](../internals/common/plan/prefill_launch.md)): the carve, the folds' split, each side's loop order, the schedule, the window and
    the grid, from the descriptor's facts alone, and the workspace's layout.
-2. The mask-preparation pass ([`mask-preparation.md`](mask-preparation.md#the-mask-preparation-pass)), reduced to the group
-   words and totals.
+2. The mask-preparation pass ([`mask-preparation.md`](mask-preparation.md#the-mask-preparation-pass)), reduced to each side's leaf
+   groups' mask words and counts.
 3. The carry's skeleton at the cell, then its components, the state zero at entry: the lists; the value lines' fetch;
    the coefficients; the fold's steps; the image; the readout; the panel and the drain -- `num` exact at the skeleton's
    cell; then the scales; then the den.

@@ -13,12 +13,15 @@ namespace detail {
 constexpr int kSides = plan::kLevelSides;
 constexpr int kLevels = plan::kCarveMaxLevels;
 
+//: FIXED by the carve's own order (`plan::PrefillCarve` and the prepared layout: the read side first): the write side among its two
+constexpr int kWriteSide = 1;
+
 //: THE CALL'S OPERANDS a role reads its groups from -- see docs/internals/carry/carry_groups.md#operands
 struct Operands {
-  const std::uint32_t* mask[kSides];
   const std::uint8_t* workspace;
-  std::int64_t prepared[kSides];
+  std::int64_t prepared[plan::kCarveSides];
   const std::uint8_t* density;
+  int masked[plan::kCarveSides];
   const std::uint8_t* values;
   const std::uint8_t* rows[kSides];
   std::int64_t tokens;
@@ -26,7 +29,6 @@ struct Operands {
   int line_bytes;
   int width_bits[kLevels];
   int levels;
-  int words;
   int windows;
 };
 
@@ -40,25 +42,15 @@ __device__ __forceinline__ plan::PrefillCarve carve_of(const Operands& o) {
   for (int l = 0; l < kLevels; ++l) {
     width[l] = o.width_bits[l];
     if (l < o.levels) {
-      read[l] = static_cast<int>(o.density[l]) + 1;
-      write[l] = static_cast<int>(o.density[o.levels + l]) + 1;
+      //: a level-side with no mask is walked whole, whatever its density byte: the mask's absence is the dense flag
+      read[l] =
+          (o.masked[0] >> l & 1) != 0 ? static_cast<int>(o.density[l]) + 1 : plan::kWholeDensity;
+      write[l] = (o.masked[kWriteSide] >> l & 1) != 0
+                     ? static_cast<int>(o.density[o.levels + l]) + 1
+                     : plan::kWholeDensity;
     }
   }
   return plan::prefill_carve(o.levels, width, write, read);
-}
-
-//: WHETHER A LEVEL-SIDE IS WHOLE: its group is the level's size, and that alone -- see docs/internals/carry/carry_groups.md#whole
-__device__ __forceinline__ bool whole(const plan::PrefillCarve& c, bool read, int level) {
-  const int group = read ? c.read_group_bits[level] : c.write_group_bits[level];
-  return group == c.width_bits[level];
-}
-
-//: THE LEVELS A SIDE LISTS, a bit a level: those that are not whole -- see docs/internals/carry/carry_groups.md#whole
-__device__ __forceinline__ int listed_levels(const plan::PrefillCarve& c, bool read) {
-  int listed = 0;
-#pragma unroll
-  for (int l = 0; l < kLevels; ++l) listed |= l < c.levels && !whole(c, read, l) ? 1 << l : 0;
-  return listed;
 }
 
 //: A CTA'S PLACE IN THE CALL: its head, its slice of the value channels and its index along each level -- see docs/internals/carry/carry_groups.md#place
@@ -105,29 +97,20 @@ __host__ __device__ __forceinline__ void fold_levels(const plan::PrefillCarve& c
   }
 }
 
-//: A LANE'S ROW of a level-side's words in a window: `row[group]` is its word of the group, the mask's own at a group of one digit and the prepared words otherwise -- see docs/internals/carry/carry_groups.md#word
+//: A SIDE'S LEAF GROUPS' LINES of a batch-head's first window, as mask words: leaf group `leaf`'s line is `WORDS` words from `leaf * WORDS`, a word a mask word of the window -- see docs/internals/carry/carry_groups.md#lines
 template <int WORDS>
-__device__ __forceinline__ const std::uint32_t* level_row(const Operands& o, int s, int group_bits,
-                                                          std::int64_t head, int window, int word) {
-  const int wb = o.width_bits[s % kLevels], groups = 1 << (wb - group_bits);
-  const std::int64_t at = std::int64_t{window} * WORDS + word;
-  //: a word past the mask's last reads the mask's first word; the call's own tokens then count it for nothing
-  const std::uint32_t* const raw = o.mask[s] + ((head * o.words + (at < o.words ? at : 0)) << wb);
-  const std::int64_t block = (head * o.windows + window) * plan::prepared_block_bytes(wb, WORDS);
-  const std::uint8_t* const words =
-      o.workspace + o.prepared[s] + block + plan::prepared_words_at(groups);
-  const std::uint32_t* const made = reinterpret_cast<const std::uint32_t*>(words) + word * groups;
-  return group_bits == 0 ? raw : made;
+__device__ __forceinline__ const std::uint32_t* leaf_lines(const Operands& o, int side, int bits,
+                                                           std::int64_t head) {
+  const std::int64_t block = head * o.windows * plan::leaf_block_bytes(bits, WORDS);
+  const std::uint8_t* const lines =
+      o.workspace + o.prepared[side] + block + plan::leaf_lines_at(bits, WORDS);
+  return reinterpret_cast<const std::uint32_t*>(lines);
 }
 
-//: A LEVEL-SIDE'S ROW A WINDOW ON, in words from the window before's -- see docs/internals/carry/carry_groups.md#word
+//: A SIDE'S LINES A WINDOW ON, in words from the window before's -- see docs/internals/carry/carry_groups.md#lines
 template <int WORDS>
-__device__ __forceinline__ std::int64_t level_step(const Operands& o, int s, int group_bits) {
-  const int wb = o.width_bits[s % kLevels];
-  const std::int64_t raw = std::int64_t{WORDS} << wb;
-  const std::int64_t made =
-      plan::prepared_block_bytes(wb, WORDS) / static_cast<int>(sizeof(std::uint32_t));
-  return group_bits == 0 ? raw : made;
+__device__ __forceinline__ std::int64_t leaf_step(int bits) {
+  return plan::leaf_block_bytes(bits, WORDS) / static_cast<int>(sizeof(std::uint32_t));
 }
 
 }  // namespace detail

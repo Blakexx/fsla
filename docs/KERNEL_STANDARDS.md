@@ -811,10 +811,10 @@ method is a procedure with a gate, not a memory.
    totals), the per-token factor products -- and nothing of a card's: no exponent, no coefficient in an operand's
    format, no layout offset. What a card's step needs beyond the entry it forms where it expands the byte, once at
    the outermost level its inputs allow (item 2). ON HOPPER (amended 2026-11-13, twice; 2026-11-15; 2026-11-24) NO PASS HANDS THE CARRY A LIST OR AN
-   OPERAND: the mask-preparation pass reads each side's masks once and writes the group words the carry reads blind
+   OPERAND: the mask-preparation pass reads each side's masks once and writes each side's leaf groups' mask words and counts, which the carry reads blind
    (`docs/architecture/mask-preparation.md#the-mask-preparation-pass`), and THERE IS NO GATHER PASS (Blake, 2026-11-25: "if
    we can drop the gather that would be great. If it is actually possible to do the in cta scatter loads for both sides
-   it's ideal"): a carry CTA lists its own groups' live tokens from the prepared words, fetches their value lines by
+   it's ideal"): a carry CTA lists its own sets' live tokens from the prepared leaf groups' lines (a set is one line), fetches their value lines by
    token index straight into shared memory and loads their rows by it (`docs/architecture/hopper-carry.md`,
    `docs/lab/value_fetch.md`). A coefficient is one carry CTA's alone, and that
    CTA forms it where it stages its step's operands (Blake, 2026-11-15: "the expansion is unique to each final cta,

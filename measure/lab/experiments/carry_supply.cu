@@ -244,30 +244,31 @@ inline Device up(const Call& c) {
     d.held.push_back(p);
     return p;
   };
+  //: THE MASK-PREPARATION PASS, the library's kernel: the write side's leaf groups' lines and counts, a CTA a (batch-head, window)
   pass::Args a{};
-  int side_bits[pass::kSides] = {};
-  std::int64_t heads[pass::kSides] = {};
+  int masked[pass::kSides] = {};
+  const std::int64_t heads[pass::kSides] = {1, 1};
   for (int l = 0; l < kLevels; ++l) {
+    a.width_bits[l] = kWidthBits;
     if (c.mask[l].empty()) continue;
     //: the write side's slots are the second four
-    const int s = pass::kSides / 2 + l;
-    a.mask[s] = static_cast<const uint32_t*>(put(c.mask[l].data(), c.mask[l].size() * 4));
-    a.width_bits[s] = side_bits[s] = kWidthBits;
-    a.heads[s] = 1;
-    heads[s] = 1;
-    d.o.mask[s] = a.mask[s];
+    a.mask[pass::kLevels + l] = static_cast<const uint32_t*>(put(c.mask[l].data(), c.mask[l].size() * 4));
+    masked[carry::kWriteSide] |= 1 << l;
   }
+  a.tokens = static_cast<std::int64_t>(c.tokens);
   a.words = static_cast<int>(c.tokens / 32);
   a.windows = c.windows;
   a.levels = kLevels;
-  for (int l = 0; l < kLevels; ++l) a.level_bits[l] = kWidthBits;
-  const plan::PreparedLayout layout = plan::prepared_layout(side_bits, heads, c.windows, kWords);
-  std::int64_t ctas = 0;
-  for (int s = 0; s < pass::kSides; ++s) {
-    a.out[s] = d.o.prepared[s] = layout.offset[s];
-    a.first_cta[s] = static_cast<int>(ctas);
-    ctas += pass::ctas_of(heads[s], c.windows, side_bits[s]);
+  //: THE READ SIDE'S DENSITIES SHAPE THE CARVE and its masks are not laid here: its levels under the whole count as masked, and the pass is launched over the write side alone
+  for (int l = 0; l < kLevels; ++l) masked[0] |= c.density[l] != 255 ? 1 << l : 0;
+  const plan::PreparedLayout layout = plan::prepared_layout(kLevels, a.width_bits, masked, heads, c.windows, kWords);
+  for (int side = 0; side < pass::kSides; ++side) {
+    a.out[side] = d.o.prepared[side] = layout.offset[side];
+    a.masked[side] = d.o.masked[side] = masked[side];
+    a.heads[side] = 1;
   }
+  const std::int64_t ctas = pass::ctas_of(heads[carry::kWriteSide], c.windows);
+  a.first_cta[carry::kWriteSide] = 0;
   a.first_cta[pass::kSides] = static_cast<int>(ctas);
   uint8_t* const density = static_cast<uint8_t*>(put(c.density, sizeof(c.density)));
   uint8_t* const work = static_cast<uint8_t*>(put(nullptr, static_cast<size_t>(layout.bytes)));
@@ -277,13 +278,12 @@ inline Device up(const Call& c) {
   d.o.density = density;
   d.o.values = static_cast<const uint8_t*>(put(c.values.data(), c.values.size()));
   for (int l = 0; l < kLevels; ++l)
-    d.o.rows[pass::kSides / 2 + l] = static_cast<const uint8_t*>(put(c.level[l].data(), c.level[l].size()));
+    d.o.rows[pass::kLevels + l] = static_cast<const uint8_t*>(put(c.level[l].data(), c.level[l].size()));
   d.o.tokens = static_cast<std::int64_t>(c.tokens);
   d.o.ctas = c.ctas;
   d.o.line_bytes = kLine;
   for (int l = 0; l < kLevels; ++l) d.o.width_bits[l] = kWidthBits;
   d.o.levels = kLevels;
-  d.o.words = static_cast<int>(c.tokens / 32);
   d.o.windows = c.windows;
   return d;
 }
@@ -336,7 +336,7 @@ void run(lab::Bench& b, unsigned long long* rows, const std::string& name, carry
   //: the call's class, as a fold thread derives it: its step's columns a position and its sets' chunks
   carry::Operands host{};
   for (int l = 0; l < kLevels; ++l) {
-    host.rows[pass::kSides / 2 + l] = c.level[l].data();
+    host.rows[pass::kLevels + l] = c.level[l].data();
     host.width_bits[l] = kWidthBits;
   }
   host.tokens = static_cast<std::int64_t>(c.tokens);

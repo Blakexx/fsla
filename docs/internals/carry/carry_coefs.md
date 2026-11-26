@@ -41,7 +41,7 @@ the lab checks every coefficient of the calls it runs ([`../../lab/carry_supply.
   CHUNKS AS KEEP A TOKEN'S BLOCKS WITHIN THE WIDEST STAGE'S 5 LINES: position 0's blocks for all of them, one after
   another, and the other positions' once. The expansion of a chunk reads position 0 from the block its digits start
   at (`expand_round`'s `block0`).
-- <a id="stage"></a>`stage_plan<levels, bits a position>(source, tokens, stage, live)`, `stage_bytes<levels, bits a position>(plan)`, `StagePlan`, `StageShape`, `kStageMost`: THE
+- <a id="stage"></a>`stage_plan<levels, bits a position>(source, tokens, stage)`, `stage_bytes<levels, bits a position>(plan)`, `StagePlan`, `StageShape`, `kStageMost`: THE
   BYTES ARRIVE AS THE VALUE LINES DO, by asynchronous copies into shared memory (the owner, 2026-11-25: "I thought we
   were losing coefficents to smem async like values, and then expanding them from smem into operand areas? Why not?"
   -- and to the form laid out in answer, "Ok go"). Lane `i` takes place `i` of the round's 32 and copies its token's

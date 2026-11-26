@@ -6,8 +6,8 @@ Mirrors `measure/lab/experiments/carry_skeleton.cu`, an experiment of the lab
 Does the LIBRARY's carry skeleton ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md)) -- its
 three roles at their registers, their hand-offs and their order of work -- run a call's windows to the end on every
 multiprocessor, and what does a window of nothing but its hand-offs cost? THE CALL HAS NO TOKENS -- two levels of 256 digits, whole on both sides, a fold's class needing the call's levels
-([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#class)) -- so the folds' supply lists nothing
-and no coefficient is expanded. The call of no levels the experiment first handed has no arm in the fold's switch on its class.
+([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#class)) -- so each side is one leaf group whose line, in every window, is zero (a workspace of zeros stands for the pass's output), the folds' supply lists nothing
+and no coefficient is expanded. A window is then a line's load and its hand-offs. The call of no levels the experiment first handed has no arm in the fold's switch on its class.
 
 THE FORM. This file compiles the library's device code and puts a clock around `carry_cta`: a CTA an SM of 512
 threads, a call 256 windows. Every warp adds its windows to its CTA's word when its role has returned; a CTA that

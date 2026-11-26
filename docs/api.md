@@ -48,7 +48,7 @@ agreed: yes. A call carries ALL ITS INPUTS and nothing else: the rows, the value
 mathematics. Each call builds its own DESCRIPTOR -- the validated run-time context, every device fact and every call fact, checked against the
 contract before any launch -- from what it is handed: the bundles' extents and declaration, whether a decay and a state are handed, and the
 operands' device (`fsla.ops.produce`'s memoized builders). The WORKSPACE is internal, sized by the call's descriptor and passed between the
-call's steps: the prefill's holds the words and totals the
+call's steps: the prefill's holds the leaf groups' mask words and counts the
 mask-preparation pass prepares ([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)), and its layout is [`mask_prepare_layout.h`](internals/common/plan/mask_prepare_layout.md); decode needs
 none. The state is its own argument, in and out. None of these changes the mathematical output, at most rounding within the oracle's tolerance.
 

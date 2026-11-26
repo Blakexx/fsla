@@ -155,12 +155,11 @@ __device__ __forceinline__ void take(Tr& tr, int id, int threads) {
   tr.wait_end(id);
 }
 
-//: A FOLD WARP'S WINDOWS, compiled for its fold's class (`CLASS`): the call's levels and a step's shape; which of the levels its side lists (`listed`, a bit a level) is read as it runs, a level that is not listed loading nothing -- see docs/internals/carry/carry_kernel.md#supply
+//: A FOLD WARP'S WINDOWS, compiled for its fold's class (`CLASS`): the call's levels and a step's shape. A set's tokens are one line of the write side's leaf groups, the fold's sets the leaf groups from `first_leaf` on -- see docs/internals/carry/carry_kernel.md#supply
 template <class Bt, class Tr, int CLASS>
 __device__ __forceinline__ void fold_windows(const Operands& o, const plan::PrefillCarve& c,
                                              const Place& p, const FoldPositions& positions,
-                                             const int* base, const int* shift, const int* mask,
-                                             int listed, Tr& tr) {
+                                             int leaf_bits, int first_leaf, Tr& tr) {
   constexpr int kWords = plan::window_of_cc(Bt::build.cc) / 32;
   constexpr FoldClass kClass = kFoldClasses[CLASS];
   constexpr int kDepth = kClass.levels;
@@ -197,34 +196,14 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
   std::uint32_t line_at = 0;
   int tiles_at = 0;
   constexpr int kWindowTiles = (kWords * 32) >> kRowTileBits;
-  const std::uint32_t* row[kLevels];
-  std::int64_t step[kLevels];
-  //: THE CALL'S OWN TOKENS a lane a window, without a window's arithmetic: the windows its word is whole in, then one word of the call's last tokens, then none
-  const std::int64_t mine_on = o.tokens - std::int64_t{lane} * 32;
-  const int whole_windows =
-      mine_on >= 32 ? static_cast<int>((mine_on - 32) / (kWords * 32)) + 1 : 0;
-  const std::int64_t left_on = mine_on - std::int64_t{whole_windows} * (kWords * 32);
-  const std::uint32_t last_word = left_on > 0 ? (1u << static_cast<int>(left_on)) - 1u : 0u;
-  std::uint32_t ours = whole_windows > 0 ? ~0u : last_word;
   const std::int64_t window_bytes = std::int64_t{kWords} * 32 * o.line_bytes;
   const std::uint8_t* const from = lines + p.head * o.tokens * o.line_bytes;
-  //: A LEVEL IS LISTED OR NOT FOR THE WHOLE CALL, a flag every lane holds: no branch is taken on it
-  bool reads[kLevels] = {};
-#pragma unroll
-  for (int l = 0; l < kDepth; ++l) {
-    const int s = side_at(false) + l;
-    reads[l] = (listed >> l & 1) != 0;
-    row[l] = level_row<kWords>(o, s, c.write_group_bits[l], p.head, 0, lane);
-    step[l] = reads[l] ? level_step<kWords>(o, s, c.write_group_bits[l]) : 0;
-  }
-  //: THE WORDS A SET IS LISTED FROM ARE LOADED A SET AHEAD AND ANDed AT THEIR USE: ANDed where they are loaded, the warp waits there for them
-  std::uint32_t got[kLevels];
-#pragma unroll
-  for (int l = 0; l < kDepth; ++l) {
-    got[l] = ops::load_global_u32_if(row[l] + (base[l] + ((first_set >> shift[l]) & mask[l])),
-                                     reads[l] && mine > 0, ~0u);
-  }
-  std::uint32_t whose = mine > 0 ? ours : 0u;
+  //: THE LANE'S WORD OF THE FOLD'S FIRST SET'S LINE, the window's; a window on is `step` words on. A line holds the call's own tokens alone, so nothing is masked here
+  const std::uint32_t* line = leaf_lines<kWords>(o, kWriteSide, leaf_bits, p.head)
+                              + std::int64_t{first_leaf} * kWords + lane;
+  const std::int64_t step = leaf_step<kWords>(leaf_bits);
+  //: THE WORD A SET IS LISTED FROM IS LOADED A SET AHEAD: loaded where it is used, the warp waits there for it
+  std::uint32_t got = ops::load_global_u32_if(line + first_set * kWords, mine > 0, 0u);
 
 #pragma unroll 1
   for (int w = 0; w < o.windows; ++w) {
@@ -243,28 +222,14 @@ __device__ __forceinline__ void fold_windows(const Operands& o, const plan::Pref
 #pragma unroll 1
     for (int i = 0; i < mine; ++i) {
       tr.phase(kSiteSet);
-      std::uint32_t word = whose & part;
-#pragma unroll
-      for (int l = 0; l < kDepth; ++l) word &= got[l];
-      const Listing s = listing_of<kWords>(word);
+      const Listing s = listing_of<kWords>(got & part);
       lay_tokens<kWords>(s, list);
       tr.phase(kSiteListed);
-      //: the set after's words: the window's last set loads the next window's first, a level's row a step on; the call's last its own again
+      //: the set after's word: the window's last set loads the next window's first, a window's lines a step on; the call's last its own again
       const bool turn = i + 1 == mine, on = turn && w + 1 < o.windows;
-      if (on) {
-        const std::int64_t at = (std::int64_t{w} + 1) * kWords + lane;
-        ours = w + 1 < whole_windows ? ~0u : w + 1 == whole_windows ? last_word : 0u;
-        //: a lane past the mask's last word keeps its row: the call's own tokens count its word for nothing
-#pragma unroll
-        for (int l = 0; l < kDepth; ++l) row[l] += at < o.words ? step[l] : 0;
-      }
+      line += on ? step : 0;
       const int set_after = first_set + ((turn ? 0 : i + 1) << shared_bits);
-      whose = ours;
-#pragma unroll
-      for (int l = 0; l < kDepth; ++l) {
-        got[l] = ops::load_global_u32_if(row[l] + (base[l] + ((set_after >> shift[l]) & mask[l])),
-                                         reads[l], ~0u);
-      }
+      got = ops::load_global_u32_if(line + set_after * kWords, true, 0u);
       tr.phase(kSiteWord);
       const int set = first_set + (i << shared_bits);
       int round = 0;
@@ -356,15 +321,21 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   int base[kLevels], shift[kLevels], mask[kLevels];
   fold_levels(c, p, fold, base, shift, mask);
   const FoldPositions positions = fold_positions(o, c, p, fold, shift, mask);
-  const int listed = listed_levels(c, false);
-  //: a head's value lines and a level's rows are addressed by 32-bit offsets from the call's bases
-  if (o.tokens * o.line_bytes >= (std::int64_t{1} << 32)
-      || (o.tokens << 8) >= (std::int64_t{1} << 32)) {
+  //: THE FOLD'S SETS ARE CONSECUTIVE LEAF GROUPS of the write side, from its levels' first groups' on -- see docs/internals/common/plan/leaf_groups.md#order
+  const plan::LeafGroups leaves = plan::leaf_groups(c, false);
+  const int first_leaf = plan::leaf_group_of(leaves, base);
+  //: a head's value lines are addressed by an unsigned 32-bit offset from the call's base, a level's rows by a signed one
+  std::int64_t rows_most = 0;
+#pragma unroll
+  for (int l = 0; l < kLevels; ++l) {
+    const std::int64_t rows = l < c.levels ? o.tokens << o.width_bits[l] : 0;
+    rows_most = rows > rows_most ? rows : rows_most;
+  }
+  if (o.tokens * o.line_bytes >= (std::int64_t{1} << 32) || rows_most >= (std::int64_t{1} << 31)) {
     __trap();
   }
   uniform_switch<kFoldClassCount>(positions.fold_class, [&](auto member) {
-    fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, positions, base, shift, mask, listed,
-                                                  tr);
+    fold_windows<Bt, Tr, decltype(member)::value>(o, c, p, positions, leaves.bits, first_leaf, tr);
   });
 }
 

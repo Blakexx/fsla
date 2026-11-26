@@ -5,8 +5,8 @@ Mirrors `csrc/fsla/src/carry/carry_list.cuh`: a carry CTA's own list of a group'
 skeleton's components ([`carry_kernel.md`](carry_kernel.md)). The fold's supply calls it ([`carry_kernel.md`](carry_kernel.md#supply)); the lab checks and times it alone
 ([`../../lab/carry_list.md`](../../lab/carry_list.md)).
 
-WHY THIS FORM. A side's group has a window of mask words (the prepared group words of each of the side's masked
-levels, ANDed); a warp takes a word a lane. The owner asked for the count inline and for one form whether a side has
+WHY THIS FORM. A side's leaf group has a window of mask words (its line, which the mask-preparation pass has formed
+from the side's masked levels' group words, ANDed); a warp takes a word a lane. The owner asked for the count inline and for one form whether a side has
 one masked level or several (25 November 2026: "the counts are useless anyway? We need to find a way to do the
 counting inline anwyay"), and shared memory is conflict-free by construction
 ([`../../KERNEL_STANDARDS.md` section 30](../../KERNEL_STANDARDS.md#s30)). THE LIST IS LAID: each

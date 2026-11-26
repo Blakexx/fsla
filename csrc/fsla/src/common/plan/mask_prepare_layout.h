@@ -1,44 +1,61 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE PREPARED MASKS' PLACE (docs/internals/common/plan/mask_prepare_layout.md): where the mask-preparation pass writes and the carry reads. Pure, constexpr, total.
+// THE LEAF GROUPS' MASKS' PLACE (docs/internals/common/plan/mask_prepare_layout.md): where the mask-preparation pass writes a side's leaf groups' mask words and counts, and where the carry reads them. Pure, constexpr, total.
 #pragma once
 
 #include <cstdint>
 
 #include "cta_carve.h"
+#include "leaf_groups.h"
 
 namespace fsla::plan {
 
-inline constexpr int kLevelSides = 2 * kCarveMaxLevels;
+//: FIXED by the op's mathematics: a call has a read side and a write side, the read side first
+inline constexpr int kCarveSides = 2;
+inline constexpr int kLevelSides = kCarveSides * kCarveMaxLevels;
 
-//: in a block of `groups` groups: the totals at 0 (uint16 a group), then the words (uint32, word-major; none at a group of one digit, whose words are the mask's)
-FSLA_CARVE_FN constexpr std::int64_t prepared_words_at(int groups) {
-  return (std::int64_t{2} * groups + 3) & ~std::int64_t{3};
+//: A LEAF GROUP'S LINE of a window of `words` mask words, in bytes: a word a mask word, a bit a token of the window
+FSLA_CARVE_FN constexpr std::int64_t leaf_line_bytes(int words) { return std::int64_t{4} * words; }
+
+//: in a block of `1 << bits` leaf groups: the counts at 0 (uint16 a leaf group), then the lines, on a line's boundary
+FSLA_CARVE_FN constexpr std::int64_t leaf_lines_at(int bits, int words) {
+  const std::int64_t line = leaf_line_bytes(words), counts = std::int64_t{2} << bits;
+  return (counts + line - 1) / line * line;
 }
 
-//: A WINDOW'S BLOCK of a level-side `width_bits` wide, in bytes, whatever its group, a window `words` mask words: the larger of a total a digit and, at groups of 2 digits, the totals and a word a mask word a group
-FSLA_CARVE_FN constexpr std::int64_t prepared_block_bytes(int width_bits, int words) {
-  const std::int64_t ones = prepared_words_at(1 << width_bits);
-  if (width_bits < 2) return ones;
-  const int groups = 1 << (width_bits - 1);
-  const std::int64_t twos = prepared_words_at(groups) + std::int64_t{4} * words * groups;
-  return twos > ones ? twos : ones;
+//: A WINDOW'S BLOCK of a side at `1 << bits` leaf groups, in bytes: its counts and a line a leaf group
+FSLA_CARVE_FN constexpr std::int64_t leaf_block_bytes(int bits, int words) {
+  return leaf_lines_at(bits, words) + (leaf_line_bytes(words) << bits);
 }
 
 struct PreparedLayout {
-  std::int64_t offset[kLevelSides];
+  std::int64_t offset[kCarveSides];
   std::int64_t bytes;
 };
 
-//: THE PLACE of a call's prepared masks: `width_bits[s]` and `heads[s]` (batch times the side's heads) of each level-side, 0 heads where it has no mask, over `windows` windows of `words` mask words
-constexpr PreparedLayout prepared_layout(const int* width_bits, const std::int64_t* heads,
-                                         std::int64_t windows, int words) {
+//: THE PLACE of a call's leaf groups' masks, sized at the most leaf groups its shape allows: `width_bits` of its `levels` levels, and of each side `masked` (a bit a level it has a mask on)
+//: and `heads` (batch times the side's heads), over `windows` windows of `words` mask words
+constexpr PreparedLayout prepared_layout(int levels, const int* width_bits, const int* masked,
+                                         const std::int64_t* heads, std::int64_t windows,
+                                         int words) {
   PreparedLayout p{};
-  for (int s = 0; s < kLevelSides; ++s) {
-    p.offset[s] = p.bytes;
-    p.bytes += heads[s] * windows * prepared_block_bytes(width_bits[s], words);
+  for (int side = 0; side < kCarveSides; ++side) {
+    const int most = leaf_group_bits_most(levels, width_bits, masked[side]);
+    p.offset[side] = p.bytes;
+    p.bytes += heads[side] * windows * leaf_block_bytes(most, words);
   }
   return p;
 }
+
+namespace layout_proof {
+
+static_assert(leaf_lines_at(0, 32) == 128 && leaf_block_bytes(0, 32) == 256,
+              "one leaf group: a line of counts and its line");
+static_assert(leaf_lines_at(6, 32) == 128 && leaf_block_bytes(6, 32) == 128 + 64 * 128,
+              "the cell's 64 leaf groups: their counts fill a line");
+static_assert(leaf_lines_at(12, 32) == 8192 && leaf_block_bytes(12, 32) == 8192 + 4096 * 128,
+              "4,096 leaf groups: 8,192 bytes of counts, then 4,096 lines");
+
+}  // namespace layout_proof
 
 }  // namespace fsla::plan

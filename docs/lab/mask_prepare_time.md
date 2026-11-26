@@ -4,18 +4,16 @@
 recorded: [`internals/tools/lab.md`](../internals/tools/lab.md).
 
 **QUESTION.** What does the LIBRARY's mask-preparation pass
-([`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)) cost a token on a mask it reads
-once, at each of the eight group sizes it prepares on a level of 256 digits (a group of 256 is the level itself,
-whole, and nothing is prepared for it): the three the lab's own kernel measured ([`mask_prep`](mask_prep.md): 1, 4 and
-16 digits), 2 and 8, and the three whose lanes OR by warp shuffle (32 to 128 digits)?
+([`internals/mask_prepare/mask_prepare.md`](../internals/mask_prepare/mask_prepare.md)) cost a token when it writes a side's leaf groups' mask words and counts: with one listed level of 256 digits at each of the eight group sizes it forms (a group of 256 is
+the level itself, whole: 256 down to 2 leaf groups), with two listed levels at groups of 4 digits (4,096 leaf groups of 16 leaves, the most the shape allows), and
+with a side that lists no level (one leaf group, the call's own tokens)?
 
 **METHOD.** The experiment compiles the library's device code (`mask_prepare/mask_prepare_kernel.cuh`) and puts the
-lab's clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one 256-digit
-level-side of 4 to 5 live digits a token, a window 1,024 tokens. The call has a second level of 256 digits, whole on both sides and unmasked: with it a set holds 16 leaves at every group, so the carve raises none and the density byte selects the group timed. A round is the CTA's own windows (4 at a group of one
-digit, 8 at 2, 16 at 4, 32 at 8, 64 at 16 and above); a call is the rounds that cover 256 windows a CTA, each round fresh windows, so
-the mask is read once. The density byte selects the group as it does in the library. Every word and total of
-the first round is checked against the host's, in the library's layout. The library's CTA dispatches once outside its
-own loops; here that dispatch sits inside the lab's loop over rounds, which the experiment declares.
+lab's clock around `mask_prepare_cta`, the work of one CTA of the library's grid: 1,024 threads over one (batch-head, window) of a side, a window 1,024 tokens, each
+token on 4 to 5 digits of a listed level. The call has two levels of 256 digits. A row is a call's rounds a CTA, each round a fresh window, so the mask is read once.
+The density byte selects the group as it does in the library. Every line and count of a separate ragged call (one that ends inside a word, three words short of its last
+window) is checked against the host's, in the library's layout. The library's CTA dispatches once outside its own loops; here that dispatch sits inside the lab's loop
+over rounds, which the experiment declares. The MEASURED section below is the record of the experiment at the commit it names.
 
 MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM 02z2f0yn, driver 580.196.07; 2026-11-25, the experiment at
 34b9a08d; 7 repetitions; the 8 checked rows pass, every word and total of each group size's

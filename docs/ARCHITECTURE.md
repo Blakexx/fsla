@@ -194,7 +194,7 @@ carried in, so a continuation's exit plane IS its entry plane.
 **The carry's work is partitioned by ONE descriptor, the carve**
 ([`internals/engine/rules.md#carve`](internals/engine/rules.md#carve); the CTA's carve is the kernels' own, one function of the level widths and the call's densities: [`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md), `open-work.md` row A-f):
 a CARVE — an extent a level and a channel extent — and each side's OPERATION PLAN. A side's sparse levels are its LISTS
-(their live digits a window, read from the words and totals the mask-preparation pass prepares -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
+(their live digits a window, read from the leaf groups' mask words the mask-preparation pass prepares -- section 6.2) and its dense levels are its OPERAND (their slices form the MMA
 operand, in level order); every side has a dense level, so every side has an operand. The dense level is SUPPORT
 SYMMETRY by construction: the read-write overlap factorizes over levels (`Σ_n R[t,n] Wt[s,n]` is the product over `l`
 of the levels' inner products), and a full-support factor at every level makes each factor strictly positive, so every
@@ -251,13 +251,13 @@ the tenant's capacity at the seam, as a refusal (decode's step: [`internals/deco
 ## 6. The kernels
 
 Four kernel families and one pass, in one call's order: the producer writes the bundle; the mask-preparation pass (its own
-kernel, built, section 6.2) reads its masks once and writes the group words and totals the
+kernel, built, section 6.2) reads its masks once and writes each side's leaf groups' mask words and counts the
 carry's CTAs read, and the carry's CTAs make everything else they use (section 6.2); the carry and the intra compute the two halves of the recurrence into the same outputs; decode is the
 `T = 1` step. They share the window grid, the descriptor and the atom, and no code path that could make a wrong
 convention agree with itself.
 
 A buffer is judged by its LIFETIME before its size (Blake, 2026-10-15: two structures -- lifetimes pay for the
-primitives, which stay purposeful): the bundle and the prepared words and totals are working memory, one layer at a time and
+primitives, which stay purposeful): the bundle and the prepared leaf groups' lines and counts are working memory, one layer at a time and
 bounded by the segment and the heads in flight, where attention's KV cache is permanent. That pays for per-token bytes
 an attention layer does not have; it does not license waste, so a primitive's bytes are cut only where its purpose
 survives.
@@ -274,15 +274,15 @@ fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 ### 6.2 The mask-preparation pass
 
 On hopper the MASK-PREPARATION PASS, run by the op before its carry, reads the call's masks and writes into the op's own
-workspace each group's word and its window total, for both sides of every level that has a mask; the carry's CTAs read
+workspace, for each side, each LEAF GROUP's mask words (a line, a bit a token: the leaf group's live tokens, the call's own tokens only) and its live count a window, a
+side that lists no level being one leaf group of the call's own tokens; the carry's CTAs read
 those blind, and the mask's format is plain bits
 ([`architecture/mask-preparation.md`](architecture/mask-preparation.md#the-mask-preparation-pass)). THERE IS NO GATHER KERNEL
-(RULED 2026-11-25): a carry CTA makes everything it uses, on both sides -- its lists from the prepared group words,
-ANDed across a side's masked levels and counted inline; its value lines, fetched by token index straight into shared
+(RULED 2026-11-25): a carry CTA makes everything it uses, on both sides -- its lists from the prepared leaf groups' lines
+(a fold's set is one line, the side's masked levels' group words already ANDed) counted inline; its value lines, fetched by token index straight into shared
 memory; its coefficients, each token's row loaded by its index and expanded in registers
-([`architecture/hopper-carry.md`](architecture/hopper-carry.md#what-a-cta-makes)). The counts are to go from the pass
-(NOT BUILT). A mask bit of 0 is the caller's guarantee that the entry's row is zero and a 1 guarantees nothing: the pass reads no
-row to decide what to skip. The mask-preparation pass is its own kernel, built, and exact against its host reference on an H100 (`tests/oracle/test_mask_prepare.py`; [`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), its layout [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md)). Where the factor
+([`architecture/hopper-carry.md`](architecture/hopper-carry.md#what-a-cta-makes)). A mask bit of 0 is the caller's guarantee that the entry's row is zero and a 1 guarantees nothing: the pass reads no
+row to decide what to skip. The mask-preparation pass is its own kernel, built and exact on an H100 (graded by `tests/oracle/test_mask_prepare.py` against its host reference; [`internals/mask_prepare/mask_prepare.md`](internals/mask_prepare/mask_prepare.md), its layout [`internals/common/plan/mask_prepare_layout.md`](internals/common/plan/mask_prepare_layout.md)). Where the factor
 products and the tile unions come from is open ([`open-work.md`](open-work.md), row A-e).
 
 ### 6.3 The carry — the inter-window term

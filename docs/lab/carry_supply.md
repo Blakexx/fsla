@@ -5,19 +5,19 @@ Mirrors `measure/lab/experiments/carry_supply.cu`, an experiment of the lab
 
 Does the LIBRARY's carry CTA ([`internals/carry/carry_kernel.md`](../internals/carry/carry_kernel.md#supply)), its
 fold warpgroups' supply and coefficients built and every other component a stub, list each of its sets' live tokens
-from a call's real operands -- the masks, the mask-preparation pass's prepared words, the densities the carve is
+from a call's real operands -- the masks, the mask-preparation pass's leaf groups' lines, the densities the carve is
 derived from, the write side's rows -- land their value lines in its rows and expand their coefficients into its
 tiles ([`internals/carry/carry_coefs.md`](../internals/carry/carry_coefs.md#expand)), exactly; and what does a window
 cost a CTA with them running?
 
-THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first. A call
+THE FORM. This file compiles the library's device code and launches the mask-preparation pass's kernel first, over the write side alone (a CTA a (batch-head, window)); the pass is told which level-sides have a mask. A call
 of one head: two levels of 256 digits, 64 value channels, a window 1,024 tokens. Its five calls: THE CELL, the write
 side masked on level 0 at 4 to 5 live digits a token and whole on level 1 (the carve 32 x 16, 4 sets a fold); and the
 write side masked on both, level 1 a run of 40 digits a token (the carve 64 x 8, 8 sets a fold of 32 leaves); THE WRITE SIDE WHOLE on both levels, no mask of its own (a fold is
 one set and every token is live in it: the dense end); and ONE DIGIT A TOKEN on each level (sets of 16 leaves that are
 mostly empty: the sparse end); and THE BOTH-LEVELS MASKS WITH THE READ SIDE'S DENSITIES CROSSED (level 0's the write
-side's of level 1 and the reverse), which changes nothing the supply reads but the carve the densities give. The read side's densities are the cell's mirror and its masks are never read (its role is a
-stub). The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
+side's of level 1 and the reverse), which changes nothing the supply reads but the carve the densities give. The read side's densities are the cell's mirror and its masks are not laid (its role is a
+stub): only its densities, which shape the carve, are given. The grid is the head's CTAs. A CALL HAS THREE ROWS. CHECKED through the kernel's tracer (4 windows of the
 cell, the sparse call and the crossed call, 2 of the others): the tracer waits for a round's copies and copies its tokens and rows out, and on the
 host every round of every set of every fold -- of each sharer's part of it, where warps share a set -- is there once, its tokens the set's list in order, its rows their value
 lines in the step's swizzle order, a dead place's row zero, on its boundary; the sets' leaves tile the leaf space

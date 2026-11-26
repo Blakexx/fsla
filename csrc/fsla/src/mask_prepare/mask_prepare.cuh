@@ -9,13 +9,14 @@
 namespace fsla {
 namespace mask_prepare {
 
-//: the pass over a call's masks: `masks[i]` of level-side `slots[i]`, `widths` the digits of each of the call's levels, `density` its `[2, D]` uint8
+//: the pass over a call: each side's leaf groups' mask words and counts into the workspace -- see docs/internals/mask_prepare/mask_prepare.md#entry
 void mask_prepare(const std::vector<Tensor>& masks, const std::vector<int64_t>& slots,
-                  const std::vector<int64_t>& widths, const Tensor& density, Tensor& workspace);
+                  const std::vector<int64_t>& widths, const std::vector<int64_t>& heads,
+                  int64_t tokens, const Tensor& density, Tensor& workspace);
 
-//: the bytes of the prepared masks' layout, from the call's shape alone
-int64_t mask_prepare_bytes(const std::vector<int64_t>& width_bits,
-                           const std::vector<int64_t>& heads, int64_t words, int64_t device);
+//: the bytes of the leaf groups' masks' layout, from the call's shape alone: its levels' digits, each side's masked levels (a bit a level) and batch-heads, its tokens a head
+int64_t mask_prepare_bytes(const std::vector<int64_t>& widths, const std::vector<int64_t>& masked,
+                           const std::vector<int64_t>& heads, int64_t tokens, int64_t device);
 
 }  // namespace mask_prepare
 }  // namespace fsla

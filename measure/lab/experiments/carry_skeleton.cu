@@ -38,16 +38,19 @@ struct Stamps {
 //: THE LIBRARY'S CTA: the clock is the lab's, the work the library's
 template <int TRACE>
 __global__ void __launch_bounds__(carry::kThreads, 1)
-    timed(long long* times, int* done, unsigned long long* trace, const uint8_t* density, int windows) {
+    timed(long long* times, int* done, unsigned long long* trace, const uint8_t* density, const uint8_t* workspace,
+          int windows) {
   Stamps<TRACE != 0> tr;
   tr.row.bind(trace);
   lab::WarpSpan clock;
   clock.start();
-  //: a call of no tokens, two levels of 256 digits whole on both sides: every warp's lists are empty, so a window is its hand-offs
+  //: a call of no tokens, two levels of 256 digits whole on both sides: a side is one leaf group and its line of every window is zero, so every warp's lists are
+  //: empty and a window is its line's load and its hand-offs
   carry::Operands o{};
   o.levels = 2;
   o.width_bits[0] = o.width_bits[1] = 8;
   o.density = density;
+  o.workspace = workspace;
   o.windows = windows;
   o.ctas = 1;
   o.line_bytes = 2 * carry::kChannels;
@@ -61,11 +64,12 @@ __global__ void __launch_bounds__(carry::kThreads, 1)
 
 //: a row: the skeleton, its warps' timelines stamped where `TRACE`
 template <int TRACE>
-void run(lab::Bench& b, int* done, unsigned long long* rows, const uint8_t* density, const std::string& name) {
+void run(lab::Bench& b, int* done, unsigned long long* rows, const uint8_t* density, const uint8_t* workspace,
+         const std::string& name) {
   using namespace carry_skeleton;
   constexpr int kWindows = TRACE != 0 ? 64 : 256, kWarps = carry::kThreads / 32;
   LAB_CHECK(cudaMemset(done, 0, static_cast<size_t>(b.sms) * sizeof(int)));
-  timed<TRACE><<<b.sms, carry::kThreads>>>(b.times, done, rows, density, kWindows);
+  timed<TRACE><<<b.sms, carry::kThreads>>>(b.times, done, rows, density, workspace, kWindows);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<int> got(b.sms);
   LAB_CHECK(cudaMemcpy(got.data(), done, got.size() * sizeof(int), cudaMemcpyDeviceToHost));
@@ -74,7 +78,7 @@ void run(lab::Bench& b, int* done, unsigned long long* rows, const uint8_t* dens
   b.check(name, wrong == 0,
           std::to_string(wrong) + " of " + std::to_string(b.sms) + " CTAs did not return from every warp");
   const lab::Samples cycles =
-      b.variant([&] { timed<TRACE><<<b.sms, carry::kThreads>>>(b.times, done, rows, density, kWindows); },
+      b.variant([&] { timed<TRACE><<<b.sms, carry::kThreads>>>(b.times, done, rows, density, workspace, kWindows); },
                 [&] { return b.span(kWarps) / kWindows; });
   b.record(name, "cycles a window a CTA", cycles);
   if constexpr (TRACE != 0) {
@@ -119,7 +123,13 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&density, 16));
   LAB_CHECK(cudaMemset(density, 0xff, 16));
   const std::string base = "the carry on a call of no tokens, a window its hand-offs";
-  run<0>(b, done, rows, density, base);
-  run<1>(b, done, rows, density, base + ", every warp's timeline stamped");
+  //: the leaf groups' lines of such a call, as the mask-preparation pass leaves them: a CTA is a batch-head here, each side one leaf group a window, every line and count zero
+  constexpr size_t kWindowsMost = 256;
+  const size_t lines = static_cast<size_t>(b.sms) * kWindowsMost * static_cast<size_t>(fsla::plan::leaf_block_bytes(0, 32));
+  uint8_t* workspace = nullptr;
+  LAB_CHECK(cudaMalloc(&workspace, lines));
+  LAB_CHECK(cudaMemset(workspace, 0, lines));
+  run<0>(b, done, rows, density, workspace, base);
+  run<1>(b, done, rows, density, workspace, base + ", every warp's timeline stamped");
   return 0;
 }

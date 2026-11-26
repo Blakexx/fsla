@@ -11,6 +11,7 @@
 #include "plan/decode/contract.h"
 #include "plan/decode_launch.h"
 #include "plan/lattice.h"
+#include "plan/leaf_groups.h"
 #include "plan/mask_prepare/contract.h"
 #include "plan/planner.h"
 #include "plan/prefill/contract.h"
@@ -263,9 +264,39 @@ void print_cta_carve(const std::string& widths_text, const std::string& write_te
   const PrefillLaunch p = prefill_launch_of(c.width_bits, c.levels);
   std::printf("{");
   print_carve_fields(c, ", ");
-  std::printf(", \"ctas_per_head\": %lld, \"units_per_head\": %lld}\n",
+  std::printf(", \"ctas_per_head\": %lld, \"units_per_head\": %lld",
               static_cast<long long>(p.ctas_per_head),
               static_cast<long long>(p.ctas_per_head / c.unit_ctas));
+  //: each side's leaf groups, and the most its shape allows: a level is masked here where its density is under the whole
+  for (int side = 0; side < 2; ++side) {
+    const bool is_read = side == 1;
+    const char* const name = is_read ? "read" : "write";
+    const LeafGroups g = leaf_groups(c, is_read);
+    int masked = 0;
+    for (int l = 0; l < c.levels; ++l) {
+      const int density = is_read ? c.read_density[l] : c.write_density[l];
+      masked |= density < kWholeDensity ? 1 << l : 0;
+    }
+    //: a leaf group's index is its levels' groups, one to one: every leaf group up to 65,536 of them, an odd stride over more
+    bool one_to_one = true;
+    const std::int64_t count = std::int64_t{1} << g.bits;
+    const std::int64_t stride = count > 65536 ? (count >> 16) | 1 : 1;
+    for (std::int64_t at = 0; at < count && one_to_one; at += stride) {
+      const int leaf = static_cast<int>(at);
+      int group[kCarveMaxLevels] = {};
+      leaf_group_levels(g, leaf, group);
+      one_to_one = leaf_group_of(g, group) == leaf;
+    }
+    std::printf(
+        ", \"%s_leaf_bits\": %d, \"%s_leaf_inner_bits\": %d, \"%s_leaf_inner\": %s, "
+        "\"%s_leaf_inner_at\": %s, \"%s_leaf_outer\": %s, \"%s_leaf_outer_at\": %s, "
+        "\"%s_leaf_bits_most\": %d, \"%s_leaf_one_to_one\": %s",
+        name, g.bits, name, g.inner_bits, name, json_list(g.inner, c.levels).c_str(), name,
+        json_list(g.inner_at, c.levels).c_str(), name, json_list(g.outer, c.levels).c_str(), name,
+        json_list(g.outer_at, c.levels).c_str(), name,
+        leaf_group_bits_most(c.levels, c.width_bits, masked), name, one_to_one ? "true" : "false");
+  }
+  std::printf("}\n");
 }
 
 //: ONE ENTMAX KERNEL ON A DEVICE AND A CALL: the descriptor, the arm and the launch; `widths` (the levels' widths of the launch) are held to the launch's one width class

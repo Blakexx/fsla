@@ -43,6 +43,7 @@ include_root(
     #: with the plan's pure headers a kernel includes, under the root the library's units spell them by (`plan/...`)
     hdrs = glob(["src/**/*.cuh"]) + [
         "src/common/plan/cta_carve.h",
+        "src/common/plan/leaf_groups.h",
         "src/common/plan/levels.h",
         "src/common/plan/mask_prepare_layout.h",
         "src/common/plan/rules.h",
