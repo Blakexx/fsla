@@ -421,8 +421,10 @@ decode_step_kernel(DecodeParams p) {
           const int cand = base + lane;
           int left = 0;
           if (cand < p.BH) {
+            //: both counters are loaded before either is read: the claim's load does not wait behind the count's
             const int count = __ldcg(&q_blocks(cand));
-            if (count > 0) left = count - __ldcg(&q_claim(cand));
+            const int claimed = __ldcg(&q_claim(cand));
+            if (count > 0) left = count - claimed;
           }
           int top = left;
           int who = cand;

@@ -12,8 +12,8 @@ rules are loaded once and one way.
     project_ledger()                the notice ledger every build is read against: the checker's base rows with the project's (`tools/notice_ledger.json`)
     declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the production gate's, from the
                                     graph's declarations beside the arms, and the lab's, from `b.expect`, are this one form)
-    compare(kernels, rules, ...)    THE ONE JUDGMENT, the lab's and the production gate's: the facts of the kernels under the named rules and of the build's
-                                    notices (counted under their rows' rules), compared with the declarations under fsla's notes: (comparison, facts)
+    compare(kernels, rules, ...)    THE ONE JUDGMENT, the lab's and the production gate's: the manifest of the kernels under the named rules and of the build's
+                                    notices (counted under their rows' rules), compared with the declarations under fsla's notes: (comparison, manifest)
     check(kernels, rules, ...)      its refusals
     profile_refusal(dump, ...)      the profile rule `shared_wavefronts_excess` on one kernel's SourceCounters dump, its declaration a CTA-window's: its refusal or None
 
@@ -50,10 +50,10 @@ def checker() -> SimpleNamespace:
         raise SystemExit("the checker is warpline's, which the graph hands the tool: bazel run //tools:<tool> -- ...")
     if root not in sys.path:
         sys.path.insert(0, root)
-    from warpline.checker import declare, facts, model, ncu, readers, rules
+    from warpline.checker import declare, manifest, model, ncu, readers, rules
     from warpline.checker import notices as ledgers
     from warpline.checker.rules import _steps as steps
-    return SimpleNamespace(declare=declare, facts=facts, model=model, ncu=ncu, readers=readers, rules=rules, ledgers=ledgers, steps=steps,
+    return SimpleNamespace(declare=declare, manifest=manifest, model=model, ncu=ncu, readers=readers, rules=rules, ledgers=ledgers, steps=steps,
                            root=Path(root))
 
 
@@ -108,15 +108,15 @@ def declarations(entries: list[dict]) -> list:
 
 
 def compare(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None):
-    """THE ONE JUDGMENT: the facts of `kernels` under the rules named (the model rules of the checker's registry) and of the build's `notices`
+    """THE ONE JUDGMENT: the manifest of `kernels` under the rules named (the model rules of the checker's registry) and of the build's `notices`
     (read, counted under their rows' rules of `project_ledger()` at the function they name; none: a build with no messages), compared with
     the loaded `declarations` and fsla's `notes` (a line a rule, printed after the checker's fix). The lab's check and the production gate both
-    judge through it; returns the comparison (the refusals, the figures of bound rules with no bound declared, the stale declarations) and the facts
+    judge through it; returns the comparison (the refusals, the figures of bound rules with no bound declared, the stale declarations) and the manifest
     it compared (every rule's count and sites at every place: the production gate's report reads its figures from them)."""
     c = checker()
     registry = c.rules.registry()
-    facts = c.facts.collect(kernels, {n: registry[n] for n in sorted(rules)}, notices=notices, ledger=project_ledger())
-    return c.declare.compare(facts, declarations, notes), facts
+    manifest = c.manifest.collect(kernels, {n: registry[n] for n in sorted(rules)}, notices=notices, ledger=project_ledger())
+    return c.declare.compare(manifest, declarations, notes), manifest
 
 
 def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None) -> list:

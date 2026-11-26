@@ -3,7 +3,7 @@ of them. Runs on every build (`tools/sass_gate.py <cubin|.so> [--kernel regex] [
 [--notices LOG]...`); exit 1 on a red.
 
 What it reads, per function of every cubin (every kernel and every outlined device function; `--kernel` and
-`--member` narrow a MEASUREMENT, and a narrowing that matches nothing is red, never a silent pass): the CHECKER's facts
+`--member` narrow a MEASUREMENT, and a narrowing that matches nothing is red, never a silent pass): the CHECKER's manifest
 (warpline's, `tools/checked.py`) of the rules below, and the build's ptxas notices read against the project's ledger
 (`tools/notice_ledger.json`), compared with the declarations the build states beside its kernels (`--declare`, the file
 bazel/defs.bzl writes from them): undeclared is zero, a declaration's `allow` the count its kernels may keep, and what the
@@ -83,7 +83,7 @@ def read_notices(paths: list[Path]) -> list:
 
 
 def gate(cubin: Path, kernel: str | None, declarations: list[dict], notices: list = ()) -> tuple[bool, str]:
-    """One cubin's verdict: the checker's facts of its functions under every rule of its registry (`rules()`), and of the `notices` that name them, compared with
+    """One cubin's verdict: the checker's manifest of its functions under every rule of its registry (`rules()`), and of the `notices` that name them, compared with
     `declarations` (this architecture's entries: `kernel` a regex over the demangled name, `rule`, `allow`, `reason`)."""
     global ARCH
     ARCH = sass.machine(cubin)
@@ -92,11 +92,11 @@ def gate(cubin: Path, kernel: str | None, declarations: list[dict], notices: lis
     modelled = checked.kernels_of(cubin)
     held = [k for k in modelled if not kernel or re.search(kernel, k.name)]
     mine = {k.name for k in held}
-    comparison, facts = checked.compare(held, rules(), checked.declarations(declarations), {}, notices=[n for n in notices if n.function in mine])
+    comparison, manifest = checked.compare(held, rules(), checked.declarations(declarations), {}, notices=[n for n in notices if n.function in mine])
     refused: dict[str, list] = {}
     for r in comparison.refusals:
         refused.setdefault(r.kernel, []).append(r)
-    place = {p.name: p for p in facts.places if p.kernel}
+    place = {p.name: p for p in manifest.places if p.kernel}
 
     ok = True
     report = []

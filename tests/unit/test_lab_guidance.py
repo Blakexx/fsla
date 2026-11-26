@@ -89,7 +89,8 @@ def test_every_rule_with_triggers_fires_on_a_line_of_source_that_shows_it(rule):
 def test_a_rule_whose_entry_has_no_triggers_names_no_source_text_for_it_and_is_not_in_the_samples():
     quiet = {rule for rule, entry in entries().items() if not entry["triggers"]}
     #: the checker's own rules a source text never shows, and the notice rules (the toolkit's messages, which no source line triggers)
-    assert quiet == {"step_density", "step_gap", "profiler_verdicts", "function_size", "build_info", "local_memory_used", "register_spill",
+    assert quiet == {"step_density", "step_gap", "profiler_verdicts", "function_size", "loop_held", "load_behind_load", "build_info", "local_memory_used",
+                     "register_spill",
                      "setmaxnreg_ignored", "unreachable_loop", "unused_variable", "variable_unset", "wgmma_arrive_injected"}
     assert not quiet & set(SAMPLES)
 

@@ -745,7 +745,9 @@ this form, interleaved on one box):
 | a `ops::once(true)` loop | 5 | 3 to 14 | not timed |
 | `ops::launch_known(p.atoms_per_bh)` | 0 | 1 | 0.77 ms |
 
-The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. What moves the loads in
+The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. The counts were read with one more late load
+in every arm, the work-stealing scan's second counter loaded behind a test of the first; the scan loads both first, and the library's gate holds every kernel
+of the library at 0 (the checker's rule `load_behind_load`, no declaration). What moves the loads in
 this kernel and not in a small loop of the same shape is not known.
 
 ONLY THE WRITE SUPPORT IS THE TERM'S. A dense declaration does not make every stored digit

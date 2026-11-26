@@ -63,7 +63,7 @@ def test_the_step_lints_red_the_conversion_unit_and_global_memory_in_an_mma_loop
     clean = next(v for k, v in sass_gate.STATS.items() if "step_clean_probe" in k)
     assert xu["step_xu"] > 0 and red_rules(xu) == {"step_conversion"}, report
     #: the probe's global load is read by the trip that issued it, which `load_in_trip` (applied with every rule) refuses too
-    assert memory["step_global"] > 0 and red_rules(memory) == {"step_global", "load_in_trip"}, report
+    assert memory["step_global"] > 0 and red_rules(memory) == {"step_global", "load_in_trip", "load_behind_load"}, report
     assert clean["step_xu"] == 0 and clean["step_global"] == 0 and not clean["reds"], report
     assert not ok
 

@@ -30,8 +30,8 @@ warpgroup's `HGMMA` family alike as tensor steps, so the rules over steps read a
 | the longest run without a step in a loop of steps (`mma_gap`, the larger of inside a trip and around the back edge) | `step_gap` (a figure) |
 | the toolkit's notices (a spill, a serialized step, ...) | the rules of the ledger's rows (`register_spill`, `mma_serialized`, ...) |
 
-THE ONE JUDGMENT. The gate takes the checker's FACTS of a cubin (every rule's count and sites at every function, the build's notices counted at the functions they
-name) and COMPARES them with the declarations (`checked.compare`: `facts.collect` and `declare.compare`, the code the lab's check calls too): undeclared is zero, a
+THE ONE JUDGMENT. The gate takes the checker's MANIFEST of a cubin (every rule's count and sites at every function, the build's notices counted at the functions they
+name) and COMPARES them with the declarations (`checked.compare`: `manifest.collect` and `declare.compare`, the code the lab's check calls too): undeclared is zero, a
 declaration's `allow` is the count its kernels may keep (a bound rule's ceiling), the first declaration of a rule whose regex names the function wins, and a count above it is
 a refusal printed in the checker's lines -- the kernel, the rule, the count found and declared, the declaration's reason or `undeclared`, the sites and the fix. A refusal is red.
 The gate holds no refusal text of its own; a function's report line carries its figures and the refused rules.
