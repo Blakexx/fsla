@@ -1178,6 +1178,7 @@
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "07645c8f553c", "reviewed": true, "sha256": "f59d04900bc9f223", "target": "csrc/fsla/src/decode/decode_leaf.cuh::load_leaf"},
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "f614d9d6cb79", "reviewed": true, "sha256": "50468cd3eb1155be", "target": "csrc/fsla/src/decode/decode_leaf.cuh::read_hi"},
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "e379d33489e1", "reviewed": true, "sha256": "fb5f8a4d83e4bcf9", "target": "docs/internals/common/state_page.md#geometry"},
+  {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "23644bf1a643", "reviewed": true, "sha256": "3121ea160d77288b", "target": "docs/internals/decode/decode.md#atom-loads"},
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "f614d9d6cb79", "reviewed": true, "sha256": "d0eca75be27c0a5e", "target": "docs/internals/decode/decode.md#int8-state"},
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "f614d9d6cb79", "reviewed": true, "sha256": "e6649bc246dd3bb3", "target": "docs/internals/decode/decode.md#leaf-lanes"},
   {"doc": "docs/internals/decode/decode_leaf.md", "pinned_at": "d29831546bfd", "reviewed": true, "sha256": "ccbff6670698cdab", "target": "docs/internals/decode/decode.md#update-then-read"},

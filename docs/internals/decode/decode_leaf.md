@@ -38,6 +38,6 @@ group's exponent is shared by its four lanes, so a group rounds to one quantum; 
 first lane in fp32.
 
 The store predicate is the caller's: `live` for the lane-group form, and for the atom form
-`live` AND the leaf's write bit, since a leaf outside the write support belongs to a read
-term. A leaf that does not store also takes no clock (its rate is passed as zero), which keeps
+the leaf's write bit alone (`mine`), since a leaf outside the write support belongs to a read
+term; the atom form's loads run under `resident` ([decode.md](decode.md#atom-loads)). A leaf that does not store also takes no clock (its rate is passed as zero), which keeps
 `0 * log1pf(-1)` out of the arithmetic.

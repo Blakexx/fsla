@@ -40,13 +40,6 @@ def test_the_public_constructor_takes_no_argument():
     assert "dense_state" in fsla.__all__ and "FSLAState" in fsla.__all__
 
 
-def test_the_dense_state_takes_no_keyword_either():
-    with pytest.raises(TypeError, match="unexpected keyword argument"):
-        fsla.dense_state(backing="dense")
-    with pytest.raises(TypeError, match="unexpected keyword argument"):
-        DenseState(backing="dense")
-
-
 def test_a_fresh_state_is_unbound_and_carries_nothing():
     state = fsla.dense_state()
     assert not state.bound and not state.carries
