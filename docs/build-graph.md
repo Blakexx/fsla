@@ -71,6 +71,13 @@ fsla-devtools checkout `tools/bootstrap.py` finds.
   launch script under the budget (`--script_path`), then runs it holding none. A test or a measurement takes its own
   locks, as outside the graph: a GPU test under a held budget would deadlock against a measurement, which takes the
   GPU before the host's slots. A timing session holds every slot, so no build runs during one.
+- IT HOLDS THE MACHINE'S DISK (`fsla_devtools.disk`, fsla-devtools' README, "The machine's disk"): a `build`, `test`
+  or `run` is refused before Bazel starts while the root or, under WSL, the Windows drive WSL's virtual disk lives on
+  has less free than `host.free_floor_gb` (30 GiB) -- the refusal names each filesystem, its free space, the floor and
+  what removing the clean, merged worktrees would free; the override says why, `DISK_FLOOR_OVERRIDE="<why>"`. Every
+  command first deletes the repository cache's downloads unused for `host.downloads_max_age_days` (30), at most once a
+  day: each is pinned by its sha256 and refetched when a fetch needs it. `bazel --worktree add|remove|list` is the
+  worktree tool: the machine's cap on live worktrees and a removal that expunges the output base first.
 - Run directly, without bazelisk, it refuses; so does `bazel coverage`, whose instrumented build would differ from the
   budgeted one and run outside the budget (the graph has no coverage target).
 

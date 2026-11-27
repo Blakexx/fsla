@@ -11,7 +11,7 @@ run as the graph's target of the same name (`bazel/defs.bzl`'s `dev_run`), its a
     bazel run //:get -- <section.key>            # one value, for a person or a shell
     bazel run //:clock -- --mhz 1665             # lock this host's SM clock once, prove the round trip, record it
     bazel run //:dev_env                         # this checkout's venv over the graph's environment, its hooks' venv
-    bazel run //:worktree -- <name> <sha>        # a worktree, its venv and gate, its extension (//:library)
+    bazel run //:worktree -- <name> <sha>        # a worktree under the machine's cap, its venv and gate, its extension
     bazel run //:container_check                 # the devbox image's clean room: the host's loop inside it, recorded
     bazel run //:container_compose               # the devbox image for an editor's dev container, on its own volumes
 
@@ -604,16 +604,17 @@ def cmd_dev_env(a) -> int:
 
 
 def cmd_worktree(a) -> int:
-    """A worktree in `workspace.worktrees` at `sha`, then its venv and commit gate (`bazel run //:dev_env`) and its
+    """A worktree in `workspace.worktrees` at `sha`, created through fsla-devtools' worktree tool (the machine's cap
+    on live worktrees, `fsla_devtools.disk.worktrees`), then its venv and commit gate (`bazel run //:dev_env`) and its
     extension (`bazel run //:library`) from the graph, which serves a commit's library from its cache when any
     checkout built it."""
-    main = Path(subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"], capture_output=True,
-                               text=True, check=True).stdout.split("\n", 1)[0].split(" ", 1)[1])
+    from fsla_devtools.disk import worktrees
+
     worktree = Path(dev_config.get("workspace.worktrees")) / a.name
     for p in (worktree, dev_venv(worktree)):
         if p.exists():
             raise SystemExit(f"refusing: {p} already exists")
-    subprocess.run(["git", "-C", str(main), "worktree", "add", str(worktree), a.sha], check=True)
+    worktrees.add(ROOT, worktree, a.sha)
     if not os.access(worktree / "tools" / "git-hooks" / "pre-commit", os.X_OK):
         raise SystemExit(f"refusing: {worktree}/tools/git-hooks/pre-commit is missing or not executable")
     for target in ("//:dev_env", "//:library"):

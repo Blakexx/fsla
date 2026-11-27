@@ -13,6 +13,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     bazel run //:clock -- --mhz 1665
     bazel run //:dev_env                     # dev-env, given the checkout and the graph's environment
     bazel run //:worktree -- <name> <sha>
+    bazel --worktree remove                  # this worktree, its output base first (fsla-devtools' worktree tool)
     bazel run //:container_check             # the devbox image's clean room
     bazel run //:container_compose           # the devbox image for an editor's dev container
 
@@ -77,10 +78,19 @@ linked from their folders under `host.tools_dir`, one install a machine whicheve
 until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `fsla`, `fsla_devtools` and `torch` each import from
 where those files say.
 
-**`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
+**`worktree <name> <sha>`** creates the worktree in `workspace.worktrees` through fsla-devtools' worktree tool
+(`fsla_devtools.disk.worktrees`), which refuses past the machine's cap on live worktrees (`host.worktree_cap`, 16,
+across every FSLA repository), naming the clean, merged ones to remove; then it runs `bazel run //:dev_env` and
 `bazel run //:library` in it: its venv and commit gate, then its extension, which the graph serves from its shared
 cache when any checkout built that commit's library. It imports `fsla` and the extension from inside the worktree.
-Never a bare `git worktree add`: its commits are refused until `bazel run //:dev_env`.
+Never a bare `git worktree add`: its commits are refused until `bazel run //:dev_env`, and it bypasses the cap.
+
+**Removing a worktree** is the same tool's, through the front door, beside the create: `bazel --worktree remove` run in a
+worktree removes that one -- its Bazel output base expunged first (`bazel clean --expunge`), then the checkout
+(`git worktree remove`) -- and `bazel --worktree remove <path>` another; it refuses a dirty or unmerged worktree unless
+named with `--force`, and never removes a main checkout. It starts no Bazel build, so the free-space floor never refuses
+it ([`build-graph.md`](../../build-graph.md#front-door)); `bazel --worktree list` shows every worktree's state. The
+worktree's venv (`venv-<name>`) is left beside it.
 
 **`container`** keeps the devbox image a supported environment (§23 (3), `docs/setup.md` §2-3). Each action takes the
 image's OCI layout (`//:image`), whose manifest digest is the image's identity, and `check` and `compose` the image as

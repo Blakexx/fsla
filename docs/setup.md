@@ -35,7 +35,8 @@ bazel run //:init                       # detect, install pinned tools, wire the
 bazel run //:clock -- --mhz 1665        # once per host: lock the SM clock (one administrator prompt under WSL)
 bazel run //:check                      # every dependency, one row each; exit 1 on a red
 bazel run //:dev_env                    # this checkout's venv, which its commit gate runs from
-bazel run //:worktree -- <name> <sha>   # a worktree, its venv and gate, its extension
+bazel run //:worktree -- <name> <sha>   # a worktree under the machine's cap, its venv and gate, its extension
+bazel --worktree remove                 # in a worktree: remove it, its Bazel output base first
 ```
 
 On a machine with a Claude Code configuration (`~/.claude`), `init` also installs the dispatcher that fires the checkout's
@@ -156,7 +157,8 @@ invariants that make it safe:
   commands, so an activated venv has `ruff`, `pytest` and the rest; the checkout's library is the one
   `bazel run //:library` copies into it.
 
-`bazel run //:worktree -- <name> <sha>` adds the worktree and runs both targets in it. It verifies from inside the
+`bazel run //:worktree -- <name> <sha>` adds the worktree, refused past the machine's cap on live worktrees
+(fsla-devtools' worktree tool, [`internals/tools/dev.md`](internals/tools/dev.md)), and runs both targets in it. It verifies from inside the
 new worktree: `python -c` puts its own working directory first on `sys.path`, so a check launched from another worktree
 imports that worktree's `fsla`.
 
