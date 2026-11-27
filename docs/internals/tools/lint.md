@@ -83,7 +83,7 @@ site states more than one rule.
 4. a new `owed` row, through the ratchet: `rules_table.py --owed` prints each `owed` row's id as a finding and
    `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
    the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks;
-5. the `checker` section, against the rules of the pinned checker (`warpline.checker.declare.rule_names`, over the checker's base
+5. the `checker` section, against the rules of the pinned checker (`warpline.checker.manifest.rule_names`, over the checker's base
    ledger with the project's `tools/notice_ledger.json`): a rule with no entry, an entry whose key is a rule the pin does not have,
    and an id an entry lists under `rules` that is no row. The section is the checker's own map to fsla's mechanism, not a standard:
    an entry is keyed by the checker rule's name and carries `guidance`, one line -- the atom or
