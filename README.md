@@ -159,7 +159,7 @@ An architecture that is not built refuses to load. Bringing one up is a measurem
 | `csrc/fsla/` | the CUDA kernels (decode, the entmax solves) and the code they share |
 | `tests/` | `oracle/`, `integration/`, `unit/` |
 | `measure/` | the cells, the timing subjects, and the lab (`measure/lab/`: small CUDA experiments on the machine) |
-| `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's support table) |
+| `tools/` | the gates, the census, the toolchain pins and the generators (`tools/supported.py` writes this README's support summary and docs/support.md's contract tables) |
 | `bazel/`, `BUILD.bazel`, `MODULE.bazel` | the build graph |
 | `docs/` | the documents, one owner per topic ([`docs/README.md`](docs/README.md)) |
 

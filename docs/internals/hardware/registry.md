@@ -115,7 +115,7 @@ setting) and by releases (the build record says `iteration: True`, which `bazel 
 ## The owed folder: a descriptor that exists before its arm
 
 `kernels/<kernel>/descriptors/owed/<name>.json` is a THIRD folder beside the kernel's full contract (`descriptors/*.json`) and its narrowed ones (`descriptors/dev/`). A descriptor there composes parts exactly as any
-other (the prefill's `call` and a depth part: `hopper_prefill_d1` .. `hopper_prefill_d4`) and `registry.check` validates it against the kernel's schema, but it is NEVER in the full contract, the README's support table,
+other (the prefill's `call` and a depth part: `hopper_prefill_d1` .. `hopper_prefill_d4`) and `registry.check` validates it against the kernel's schema, but it is NEVER in the full contract, docs/support.md's contract tables,
 a narrowed contract or the arms the build compiles. It has one more field, `"owed": ["<kernel>", ...]`: the kernels its call waits on, the names `fsla.ops._ext.not_built` and the tests'
 `requires_kernel` use. The registry refuses an owed descriptor reachable from its kernel's full contract (a context in both), so an owed call cannot be promised and owed at once. A kernel whose descriptors are all owed, as the prefill's are, holds no built context.
 
@@ -133,4 +133,4 @@ function and its arm are built (`docs/open-work.md` rows A-f and A-h).
 | `//hardware:<kernel>_facts` | the device table and the kernel's schema: `plan/<kernel>/facts.h` |
 | `//hardware:<family>_contexts` | the family's contract under the build's `--//:contract` (decode and the four entmax kernels, the `ARM_FAMILIES`), a line a context (`registry.contexts_text`): `arms_gen`'s input |
 | `//hardware:<kernel>_contract` | the kernel's contract and owed contexts as tables the run time holds, and its `Kernel` definition: `plan/<kernel>/contract.h` (`registry.contract_header`), which the planner checks every descriptor against |
-| `tools/supported.py` | each kernel's contract: the README's summary, a row a kernel in a reader's terms (the card, the depth, a level's width, the value width, the activations, the toolchain, built or not), and docs/support.md's tables, a table a kernel with its call facts as columns |
+| `tools/supported.py` | each kernel's contract: the README's summary, a row a kernel, architecture and toolchain in a reader's terms (the card, the depth, a level's width, the value width, the activations, the toolchain, built or not), and docs/support.md's tables, a table a kernel with its call facts as columns |
