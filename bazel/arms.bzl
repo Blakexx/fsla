@@ -213,7 +213,7 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
         with per-arm units, whose units the graph must know at load time.
       arms_file: a label of the rows file (`{"key", "arms"}`) a host tool wrote (`arms_gen`), in place of `arms`: the arms are then
         known when the build runs, so the family has no per-arm unit.
-      unit: None, or a dict(arm_header, define, copts, host_cc, deps): the header that defines the arm macro, the macro
+      unit: None, or a dict(arm_header, define, copts, deps): the header that defines the arm macro, the macro
         (`<NAME>_ARM_DEFINE`) and the CUDA rule's options and dependencies.
       kernel: None, or the arm's kernel name up to its parameter list, as the toolkit demangles it, with `@<field>@` for a template argument
         and `@cc@` for the architecture (`bazel/cuda.bzl`'s `kernel_pattern`): `<name>_declarations` then holds each arm's exact pattern, which the SASS gate
@@ -265,7 +265,6 @@ def arm_family(name, key, includer, built_archs, arms = None, domains = None, ar
                 srcs = [":%s_arm_%d_source" % (name, i)],
                 archs = ["compute_%s:sm_%s" % (arch, arch)],
                 copts = unit["copts"],
-                host_cc = unit["host_cc"],
                 deps = unit["deps"],
             )
             units[":" + target] = json.encode({"arch": arch})

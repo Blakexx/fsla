@@ -103,7 +103,8 @@ WSL_LIB = "/usr/lib/wsl/lib"
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
 HANDOFFS = {
-    POINTER: "which config directory a child reads (set for the graph's tests by the front door, or by a test; never by a setting)",
+    POINTER: "which config directory a child reads (set by a test tier and a check of the commit from the checkout's "
+             "`.bazel/dev-config`, the front door's link, or by a test; never by a setting)",
     "PYTEST_XDIST_WORKER": "pytest-xdist's worker id",
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "FSLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
@@ -114,7 +115,6 @@ HANDOFFS = {
                             "bazel/lab.bzl's validation action)",
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
-    "FSLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
     "FSLA_DATA": "the pinned data's root (@fsla_data, MODULE.bazel's `environment.data`), which the graph hands what reads "
                  "a stored record (bazel/defs.bzl's `lab_run`, a check's or a tier's `repos`; measure/data.py)",
 }

@@ -52,7 +52,8 @@
     "https://bcr.bazel.build/modules/bazel_lib/3.0.0-beta.1/MODULE.bazel": "407729e232f611c3270005b016b437005daa7b1505826798ea584169a476e878",
     "https://bcr.bazel.build/modules/bazel_lib/3.0.0-rc.0/MODULE.bazel": "d6e00979a98ac14ada5e31c8794708b41434d461e7e7ca39b59b765e6d233b18",
     "https://bcr.bazel.build/modules/bazel_lib/3.0.0/MODULE.bazel": "22b70b80ac89ad3f3772526cd9feee2fa412c2b01933fea7ed13238a448d370d",
-    "https://bcr.bazel.build/modules/bazel_lib/3.0.0/source.json": "895f21909c6fba01d7c17914bb6c8e135982275a1b18cdaa4e62272217ef1751",
+    "https://bcr.bazel.build/modules/bazel_lib/3.3.1/MODULE.bazel": "732a0d516cf6400d9b3136e4356258aef1bf91de8d5240f87f0112f098920c1d",
+    "https://bcr.bazel.build/modules/bazel_lib/3.3.1/source.json": "8e5175d7b4125a39b8941d01e38039934d058e03804f46a2b8fd7ae6316b1ce2",
     "https://bcr.bazel.build/modules/bazel_skylib/1.0.3/MODULE.bazel": "bcb0fd896384802d1ad283b4e4eb4d718eebd8cb820b0a2c3a347fb971afd9d8",
     "https://bcr.bazel.build/modules/bazel_skylib/1.1.1/MODULE.bazel": "1add3e7d93ff2e6998f9e118022c84d163917d912f5afafb3058e3d2f1545b5e",
     "https://bcr.bazel.build/modules/bazel_skylib/1.2.0/MODULE.bazel": "44fe84260e454ed94ad326352a698422dbe372b21a1ac9f3eab76eb531223686",
@@ -75,6 +76,8 @@
     "https://bcr.bazel.build/modules/gawk/5.3.2.bcr.1/MODULE.bazel": "cdf8cbe5ee750db04b78878c9633cc76e80dcf4416cbe982ac3a9222f80713c8",
     "https://bcr.bazel.build/modules/gawk/5.3.2.bcr.3/MODULE.bazel": "f1b7bb2dd53e8f2ef984b39485ec8a44e9076dda5c4b8efd2fb4c6a6e856a31d",
     "https://bcr.bazel.build/modules/gawk/5.3.2.bcr.3/source.json": "ebe931bfe362e4b41e59ee00a528db6074157ff2ced92eb9e970acab2e1089c9",
+    "https://bcr.bazel.build/modules/gcc_toolchain/0.13.0/MODULE.bazel": "8912be8684729c2814e922aa3555d163d1c6e7dbf620e72753fe44f3761250e4",
+    "https://bcr.bazel.build/modules/gcc_toolchain/0.13.0/source.json": "41e8693ad56244dde548f7711126deda72eeff630f66f5e2d8403227d4a78097",
     "https://bcr.bazel.build/modules/google_benchmark/1.8.2/MODULE.bazel": "a70cf1bba851000ba93b58ae2f6d76490a9feb74192e57ab8e8ff13c34ec50cb",
     "https://bcr.bazel.build/modules/googletest/1.11.0/MODULE.bazel": "3a83f095183f66345ca86aa13c58b59f9f94a2f81999c093d4eeaa2d262d12f4",
     "https://bcr.bazel.build/modules/googletest/1.14.0.bcr.1/MODULE.bazel": "22c31a561553727960057361aa33bf20fb2e98584bc4fec007906e27053f80c6",
@@ -252,8 +255,8 @@
   "moduleExtensions": {
     "@@fsla_devtools+//bazel:environment.bzl%environment": {
       "general": {
-        "bzlTransitiveDigest": "VuMCgL/gWMA327qlh8oGiQAnmTxdUxedMaMWvGrAFoc=",
-        "usagesDigest": "jUDeg9GTj+SsbqFLrlMwL6NjGvaNq9Ia4ml97pQGY6k=",
+        "bzlTransitiveDigest": "lTWiB9dJ/g9QRsYPprohhmkdatVbWfamvzzNKNuzkfI=",
+        "usagesDigest": "my5PwfW/xVH35J6virTItCaTVW05FbQ/rmrvV43iqhg=",
         "recordedInputs": [
           "REPO_MAPPING:,fsla_devtools fsla_devtools+",
           "REPO_MAPPING:,uv fsla_devtools++environment+uv"
@@ -275,9 +278,7 @@
               "post_args": [
                 "@@//tools:toolchains/cu13.json"
               ],
-              "post_env": [
-                "FSLA_NVCC_THREADS"
-              ],
+              "post_env": [],
               "watch": [
                 "@@//hardware:__init__.py",
                 "@@//hardware:registry.py",
@@ -314,10 +315,6 @@
               "build_file": "@@//bazel:clang_tidy.BUILD"
             }
           },
-          "host_cc": {
-            "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_host_cc_repo",
-            "attributes": {}
-          },
           "host_gpu": {
             "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_host_gpu_repo",
             "attributes": {}
@@ -350,11 +347,56 @@
           },
           "fsla_cells": {
             "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_cells_repo",
-            "attributes": {}
+            "attributes": {
+              "uv": "@@fsla_devtools++environment+uv//:uv",
+              "uv_pin": "@@fsla_devtools+//pins:uv_pin.json"
+            }
           },
           "docrefs": {
             "repoRuleId": "@@fsla_devtools+//bazel:environment.bzl%_docrefs_repo",
             "attributes": {}
+          }
+        }
+      }
+    },
+    "@@gcc_toolchain+//:internal.bzl%non_bazel_dependencies": {
+      "general": {
+        "bzlTransitiveDigest": "2lJ032c8fOuugvP5l8O9QCbfJ0bax+IIqOgaFwlNDec=",
+        "usagesDigest": "sKYmx+ooOsbnANJqjmba+8IeuYjA9CbwKfQETYhyNuU=",
+        "recordedInputs": [
+          "REPO_MAPPING:gcc_toolchain+,bazel_tools bazel_tools",
+          "REPO_MAPPING:gcc_toolchain+,lapack gcc_toolchain++non_bazel_dependencies+lapack"
+        ],
+        "generatedRepoSpecs": {
+          "openssl": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "build_file_content": "filegroup(\n    name = \"srcs\",\n    srcs = glob(\n        include = [\"**\"],\n        exclude = [\"**/* *\"],\n    ),\n    visibility = [\"//visibility:public\"],\n)\n",
+              "sha256": "40dceb51a4f6a5275bde0e6bf20ef4b91bfc32ed57c0552e2e8e15463372b17a",
+              "strip_prefix": "openssl-1.1.1n",
+              "url": "https://www.openssl.org/source/openssl-1.1.1n.tar.gz"
+            }
+          },
+          "lapack": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "build_file_content": "filegroup(\n    name = \"srcs\",\n    srcs = glob(\n        include = [\"**\"],\n        exclude = [\"**/* *\"],\n    ),\n    visibility = [\"//visibility:public\"],\n)\n",
+              "patch_cmds": [
+                "cat > make.inc <<EOF\n####################################################################\n#  LAPACK make include file.                                       #\n####################################################################\n\nSHELL = $0\n\nCC ?=\n\nFC ?=\nFFLAGS ?=\nFFLAGS_DRV ?=\nFFLAGS_NOOPT ?=\n\nLDFLAGS ?=\n\nAR ?=\nARFLAGS = cr\nRANLIB = echo\n\nBLASLIB ?=\nCBLASLIB ?=\nLAPACKLIB ?=\nTMGLIB ?=\nLAPACKELIB ?=\n\nDOCSDIR ?=\n\nTIMER ?=\nEOF\n"
+              ],
+              "sha256": "eac9570f8e0ad6f30ce4b963f4f033f0f643e7c3912fc9ee6cd99120675ad48b",
+              "strip_prefix": "lapack-3.12.0",
+              "url": "https://github.com/Reference-LAPACK/lapack/archive/refs/tags/v3.12.0.tar.gz"
+            }
+          },
+          "avl": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "build_file": "@@gcc_toolchain+//:examples/avl/avl.BUILD.bazel",
+              "sha256": "6d62e563578b79795a84958cfe4e221a4c9847fbeb4a821d45bc049934fc6a90",
+              "strip_prefix": "Avl",
+              "url": "https://web.mit.edu/drela/Public/web/avl/avl3.40b.tgz"
+            }
           }
         }
       }

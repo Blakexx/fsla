@@ -24,6 +24,9 @@ load(
 )
 load(":entries.bzl", "diff_sides", "entry_name", "timing_entries")
 
+#: the root package's hermetic check (`//:hermetic`) reads this package's targets whole
+package(default_visibility = ["//:__pkg__"])
+
 #: the Python a timing entry's executor imports, beside the library its bundle carries: this package, the `fsla` package,
 #: the contract registry `hardware` and the arm families' one reader with the registry it reads
 filegroup(

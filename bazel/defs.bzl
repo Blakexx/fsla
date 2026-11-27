@@ -6,6 +6,7 @@
 
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
+load("@fsla_devtools//bazel:hermetic.bzl", _hermetic_test = "hermetic_test")
 load(
     "@fsla_devtools//bazel:measure.bzl",
     _diff_side = "diff_side",
@@ -22,11 +23,13 @@ load(
     _checkout_test = "checkout_test",
     _device_lane = "device_lane",
     _docrefs_test = "docrefs_test",
+    _environment = "environment",
     _pytest_tier = "pytest_tier",
     _tool_run = "tool_run",
     _tool_test = "tool_test",
     _tree_part = "tree_part",
     _tree_test = "tree_test",
+    _venv_line = "venv_line",
 )
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "VENV")
 load("@fsla_tree//:tree.bzl", "TRACKED")
@@ -36,6 +39,10 @@ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("@warpline//:checker.bzl", "WARPLINE_CHECK_ATTRS", "warpline_check_actions")
 load(":arms.bzl", "ARM_FAMILIES")
 load(":cuda.bzl", "CudaUnitInfo")
+
+#: THE GRAPH'S ENVIRONMENT BY LABEL (`@fsla_env//:flags.bzl`'s `VENV`, fsla-devtools' `environment`): what a rule here that
+#: runs on the environment takes, its completion mark resolved to the store venv where the script or action runs
+_VENV = {"_venv": attr.label(default = VENV, allow_files = True)}
 
 #: the build's parameters (the root package's settings), as every rule here reads them
 _SETTINGS = {"_archs": "//:archs", "_contract": "//:contract"}
@@ -308,19 +315,20 @@ def _extension_impl(ctx):
     for family in ARM_FAMILIES:
         arm_args.add("--header", "%s=%s" % (family, headers[family].path))
         arm_args.add("--table", "%s=%s" % (family, tables[family].path))
-    #: the environment's interpreter by its store path, which carries the environment's key
-    arm_args.add("--python", VENV + "/bin/python3")
+    #: the environment's interpreter by its execution-root path, through the environment repository's link to the venv
+    mark, env = _environment(ctx, ctx.attr._venv)
+    arm_args.add("--python", mark.dirname + "/bin/python3")
     arm_args.add("--driver-stub", stub)
     arm_args.add("--out", arm_verdict)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [arm_args],
-        inputs = ctx.files._sources + [so, stub, ctx.file._arm_gate] + headers.values() + [tables[family] for family in ARM_FAMILIES],
+        inputs = ctx.files._sources + [so, stub, ctx.file._arm_gate] + headers.values() + [tables[family] for family in ARM_FAMILIES] + env,
         outputs = [arm_verdict],
         mnemonic = "FslaArmGate",
         progress_message = "The arm table and its coverage sweep on %{label}'s library",
-        #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; its store
-        #: path on the command line keys the action by the environment
+        #: the environment's interpreter reads its packages from the store, which the sandbox does not hold; the
+        #: environment's key, an input, keys the action by it
         execution_requirements = {"no-sandbox": "1"},
     )
 
@@ -348,7 +356,7 @@ fsla_extension = rule(
     executable = True,
     fragments = ["cpp"],
     toolchains = use_cc_toolchain(),
-    attrs = _setting_attrs() | _SASS_GATE_ATTRS | {
+    attrs = _setting_attrs() | _SASS_GATE_ATTRS | _VENV | {
         "deps": attr.label_list(providers = [CcInfo], doc = "the units and the arm set"),
         "shared_libraries": attr.label_list(allow_files = [".so"], doc = "torch's libraries the extension links"),
         "torch": attr.string(mandatory = True, doc = "the environment's torch version (@fsla_env//:flags.bzl)"),
@@ -459,30 +467,30 @@ _CENSUS_TEST = """\
 # a tool on the graph's census (bazel/defs.bzl's census_test): `tools/{script}` in a copy of the tree, so a tool that
 # resolves a path reads the copy (rule 14); the census record's paths are relative to the runfiles
 set -euo pipefail
-tree="$TEST_TMPDIR/tree"
+{venv}tree="$TEST_TMPDIR/tree"
 cp -rL "$TEST_SRCDIR/_main" "$tree"
 rm -f "$tree/$TEST_BINARY"
 cd "$tree"
-unset FSLA_DEV_CONFIG
-export PATH={venv}/bin:/usr/bin:/bin
+export PATH="$venv/bin:/usr/bin:/bin"
 exec python3 tools/{script} --graph {census} --runfiles "$TEST_SRCDIR/_main" {args}
 """
 
 def _census_test_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    mark, env = _environment(ctx, ctx.attr._venv)
     ctx.actions.write(script, _CENSUS_TEST.format(
-        venv = shell.quote(VENV),
+        venv = _venv_line(mark),
         script = ctx.attr.script,
         census = shell.quote(ctx.file.census.short_path),
         args = " ".join([shell.quote(arg) for arg in ctx.attr.args_]),
     ), is_executable = True)
-    runfiles = ctx.runfiles(files = ctx.files.data).merge(ctx.attr.census[DefaultInfo].default_runfiles)
+    runfiles = ctx.runfiles(files = ctx.files.data + env).merge(ctx.attr.census[DefaultInfo].default_runfiles)
     return [DefaultInfo(executable = script, runfiles = runfiles)]
 
 census_test = rule(
     implementation = _census_test_impl,
     test = True,
-    attrs = {
+    attrs = _VENV | {
         "script": attr.string(mandatory = True, doc = "the tool under tools/ that reads the census (`--graph`, `--runfiles`)"),
         "args_": attr.string_list(doc = "its other arguments"),
         "census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)"),
@@ -498,19 +506,20 @@ _RATIFY = """\
 # census record's paths are relative to the runfiles, where `bazel run` starts
 set -euo pipefail
 runfiles="$PWD"
-cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-exec {venv}/bin/python3 tools/ratify.py --graph "$runfiles/{census}" --runfiles "$runfiles" "$@"
+{venv}cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec "$venv/bin/python3" tools/ratify.py --graph "$runfiles/{census}" --runfiles "$runfiles" "$@"
 """
 
 def _ratify_run_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _RATIFY.format(venv = shell.quote(VENV), census = ctx.file.census.short_path), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.attr.census[DefaultInfo].default_runfiles)]
+    mark, env = _environment(ctx, ctx.attr._venv)
+    ctx.actions.write(script, _RATIFY.format(venv = _venv_line(mark), census = ctx.file.census.short_path), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = env).merge(ctx.attr.census[DefaultInfo].default_runfiles))]
 
 ratify_run = rule(
     implementation = _ratify_run_impl,
     executable = True,
-    attrs = {"census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)")},
+    attrs = _VENV | {"census": attr.label(mandatory = True, allow_single_file = True, doc = "the census record (`ratify_census`)")},
     doc = "`bazel run` the census on the graph's build in the checkout: its arguments are ratify's (`--census`, `--json PATH`).",
 )
 
@@ -520,8 +529,8 @@ _WHEELS = """\
 # commit; the library's and the record's paths are relative to the runfiles
 set -euo pipefail
 runfiles="$PWD"
-cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-exec {venv}/bin/python3 tools/wheels.py --library "$runfiles/{so}" --record "$runfiles/{record}" "$@"
+{venv}cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec "$venv/bin/python3" tools/wheels.py --library "$runfiles/{so}" --record "$runfiles/{record}" "$@"
 """
 
 def _wheels_impl(ctx):
@@ -529,13 +538,14 @@ def _wheels_impl(ctx):
     so = [f for f in files if f.basename == "_C.abi3.so"][0]
     record = [f for f in files if f.basename == "_build_config.py"][0]
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _WHEELS.format(venv = shell.quote(VENV), so = so.short_path, record = record.short_path), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [so, record]))]
+    mark, env = _environment(ctx, ctx.attr._venv)
+    ctx.actions.write(script, _WHEELS.format(venv = _venv_line(mark), so = so.short_path, record = record.short_path), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = [so, record] + env))]
 
 fsla_wheels = rule(
     implementation = _wheels_impl,
     executable = True,
-    attrs = {
+    attrs = _VENV | {
         "library": attr.label(mandatory = True, doc = "the extension (`fsla_extension`), its library and record"),
     },
     doc = "`bazel run` the two wheels of the graph's library into the checkout's dist/ (docs/build.md#wheels): a " +
@@ -621,7 +631,7 @@ def committed_file(name, committed, generated):
     )
 
 #: THE GENERIC RULES are fsla-devtools' (`@fsla_devtools//bazel:rules.bzl`), each handed this workspace's environment:
-#: its store venv (VENV), its interpreter, the tracked tree (TRACKED), the pinned toolkit and the devices' identity
+#: its environment by label (VENV), its interpreter, the tracked tree (TRACKED), the pinned toolkit and the devices' identity
 
 def tree_test(**kwargs):
     """A check over the tree's tracked files, the environment's tools on PATH: one test, cached on what it reads."""
@@ -645,8 +655,8 @@ _DEV_RUN = """\
 # a tools/dev.py command as a run target (bazel/defs.bzl's dev_run): in the checkout, on the environment's interpreter,
 # the environment's tools named by their resolved paths (the runfiles' links do not outlive the run)
 set -euo pipefail
-{resolve}cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-exec {venv}/bin/python3 tools/dev.py {command} "$@"
+{venv}{resolve}cd "${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
+exec "$venv/bin/python3" tools/dev.py {command} "$@"
 """
 
 def _dev_run_impl(ctx):
@@ -654,7 +664,7 @@ def _dev_run_impl(ctx):
     if ctx.attr.checkout:
         words += ["--checkout", '"$BUILD_WORKSPACE_DIRECTORY"']
     if ctx.attr.env:
-        words += ["--env", shell.quote(VENV)]
+        words += ["--env", '"$venv"']
     tools = []
     for i, (target, flag) in enumerate(ctx.attr.tools.items()):
         found = target[DefaultInfo].files.to_list()
@@ -664,13 +674,14 @@ def _dev_run_impl(ctx):
         resolve.append('tool%d="$(readlink -f %s)"\n' % (i, shell.quote(found[0].short_path)))
         words += [flag, '"$tool%d"' % i]
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, _DEV_RUN.format(resolve = "".join(resolve), venv = shell.quote(VENV), command = " ".join(words)), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = tools))]
+    mark, env = _environment(ctx, ctx.attr._venv)
+    ctx.actions.write(script, _DEV_RUN.format(resolve = "".join(resolve), venv = _venv_line(mark), command = " ".join(words)), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = tools + env))]
 
 dev_run = rule(
     implementation = _dev_run_impl,
     executable = True,
-    attrs = {
+    attrs = _VENV | {
         "command": attr.string_list(mandatory = True, doc = "the dev.py command and its fixed arguments"),
         "checkout": attr.bool(doc = "pass the checkout (`--checkout`, $BUILD_WORKSPACE_DIRECTORY)"),
         "env": attr.bool(doc = "pass the graph's environment, its store venv (`--env`)"),
@@ -683,6 +694,11 @@ def tool_run(**kwargs):
     """A tree tool run by `bazel run` in the checkout, on its own venv or the environment's interpreter
     (docs/build-graph.md#use): its arguments follow `--`."""
     _tool_run(venv = VENV, **kwargs)
+
+def hermetic_test(**kwargs):
+    """THE HERMETIC CHECK (fsla-devtools' `hermetic_test`, docs/build-graph.md#rules): the gate's targets read whole, on
+    the environment's interpreter; the tree compiles C++, so its one toolchain is the pinned one."""
+    _hermetic_test(venv = VENV, cc = True, **kwargs)
 
 #: THIS TREE'S BUNDLE LAYOUT (docs/measurement.md#entries): the arm tables laid out where `measure/provider.py` reads a
 #: tree's (`build/generated`); `fsla` and the extension must load from inside the bundle
@@ -899,7 +915,10 @@ def _unit_lints_impl(target, ctx):
         ctx.actions.run(
             executable = ctx.file._python,
             arguments = [tool.path, "tidy", "--command", command.path, "--clang-tidy", ctx.file._clang_tidy.path, "--config", config.path, "--package", target.label.package, "--out", verdict.path],
-            inputs = depset([command, tool, config, ctx.file._clang_tidy, ctx.file._cuda_root] + ctx.files._clang_tidy_resources, transitive = [reads]),
+            #: clang reads the C and C++ libraries from the pinned toolchain's whole installation (unit_lints.py's
+            #: `toolchain_flags`), which a host compile's inputs carry only in part
+            inputs = depset([command, tool, config, ctx.file._clang_tidy, ctx.file._cuda_root] + ctx.files._clang_tidy_resources,
+                            transitive = [reads, find_cc_toolchain(ctx).all_files]),
             outputs = [verdict],
             mnemonic = "FslaClangTidy",
             progress_message = "clang-tidy on %s (sm_%s)" % (unit, arch),
@@ -938,7 +957,10 @@ unit_lints = aspect(
         "_device_config": attr.label(default = "//tools/lint:clang-tidy-device.yaml", allow_single_file = True),
         "_host_config": attr.label(default = "//:.clang-tidy", allow_single_file = True),
         "_cuda_root": attr.label(default = "//bazel:cuda_root", allow_single_file = True),
+        "_cc_toolchain": attr.label(default = "@rules_cc//cc:current_cc_toolchain"),
     },
+    toolchains = use_cc_toolchain(),
+    fragments = ["cpp"],
     doc = "Each compile under a target, linted: a clang-tidy verdict a unit, the host warnings' a host unit, and the " +
           "unit's clang command.",
 )
@@ -1002,8 +1024,10 @@ compile_database = rule(
 )
 
 #: THE TEST TIERS (docs/testing.md#running-it): each tier one target, as pytest runs it, on the environment with the
-#: pinned toolkit the tests compile with (an input, so a new one reruns them)
+#: pinned toolkit the tests compile with (an input, so a new one reruns them), and the anchor that resolves to the
+#: checkout, where the front door linked the machine's dev config the tier's locks are read from
 _TIER_TOOLKIT = {
+    "anchor": Label("//:MODULE.bazel"),
     "nvcc": Label("@cuda_tools//:bin/nvcc"),
     "toolkit": Label("@cuda_tools//:toolkit"),
 }

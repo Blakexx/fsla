@@ -127,7 +127,6 @@ def lab_experiment(name, src, includes = [], deps = []):
         hdrs = includes,
         archs = ["compute_90a:" + _ARCH],
         copts = _COPTS,
-        host_cc = "@host_cc//:identity.txt",
         deps = [
             "//csrc/fsla:harness_headers",
             ":lab_headers",

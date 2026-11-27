@@ -10,7 +10,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "docrefs_test", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "docrefs_test", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "hermetic_test", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@fsla_devtools//bazel:rules.bzl", "bazel_version_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
@@ -126,7 +126,8 @@ ratify_census(
 #: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
 #: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The README's and docs/support.md's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
 #: (docs/setup.md#the-devbox-image)
-#: the environment's interpreter by its store path (which carries the environment's key), which the sandbox does not hold
+#: on the environment's interpreter by its execution-root path, through the environment repository's link to the store
+#: venv, which the sandbox does not hold; the environment (`VENV`, its key among its files) is an input
 genrule(
     name = "readme_generated",
     srcs = [
@@ -136,9 +137,13 @@ genrule(
         "//tools:toolchains.py",
     ],
     outs = ["readme/README.md"],
-    cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath README.md) --out $@",
+    cmd = "$$(dirname $(execpath @fsla_env//:venv/.complete))/bin/python3 $(execpath //tools:supported.py) --readme $(execpath README.md) --out $@",
     tags = ["no-sandbox"],
-    tools = ["//tools:supported.py"],
+    tools = [
+        "//tools:supported.py",
+        "@fsla_env//:venv/.complete",
+        VENV,
+    ],
 )
 
 committed_file(
@@ -157,9 +162,13 @@ genrule(
         "//tools:toolchains.py",
     ],
     outs = ["support/support.md"],
-    cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath docs/support.md) --out $@",
+    cmd = "$$(dirname $(execpath @fsla_env//:venv/.complete))/bin/python3 $(execpath //tools:supported.py) --readme $(execpath docs/support.md) --out $@",
     tags = ["no-sandbox"],
-    tools = ["//tools:supported.py"],
+    tools = [
+        "//tools:supported.py",
+        "@fsla_env//:venv/.complete",
+        VENV,
+    ],
 )
 
 committed_file(
@@ -608,14 +617,41 @@ full_contract_test(
     size = "small",
 )
 
+#: THE HERMETIC CHECK (docs/build-graph.md#hermetic): every action under the gate's checks, the library, the CPU tier and
+#: the host measurements read whole -- no machine path, no machine tool but the allowlists' (fsla-devtools' default,
+#: then `tools/hermetic.json`) -- with the lockfile, `.bazelrc` and the repository rules' Starlark. A target that needs
+#: the devices' identity (a device tier, an instrument on the device) is not among them: the gate runs where no device is
+hermetic_test(
+    name = "hermetic",
+    size = "small",
+    allowlist = "//tools:hermetic.json",
+    targets = [
+        ":commit_checks",
+        ":full_contract",
+        ":library",
+        ":lints",
+        "//measure:memory",
+        "//measure:session_entmax",
+        "//measure:side_oracle",
+        "//measure:store_static_manifest",
+        "//measure/lab:checked",
+        "//tests:cpu",
+        "//tests:host_abi",
+        "//tests:lab",
+        "//tools/lint:lint_fixtures",
+    ],
+)
+
 #: THE GATE: every check the graph holds, the lab's experiments' checked build among them (docs/build-graph.md#checks)
 test_suite(
     name = "gate",
     tests = [
         ":commit_checks",
         ":full_contract",
+        ":hermetic",
         ":lints",
         "//measure/lab:checked",
+        "//tests:host_abi",
         "//tests:lab",
         "//tools/lint:lint_fixtures",
     ],

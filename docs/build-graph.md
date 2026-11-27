@@ -27,14 +27,14 @@ run, never in a build, which holds the host budget, and so does a diff over a si
 | layer | made by | stored |
 |---|---|---|
 | the host's NVIDIA driver and GPU | the host | -- |
-| the machine (base OS libraries, git, `python3`, the host C++ compiler nvcc drives) | the host, or the devbox image (`//:image`, docs/setup.md#the-devbox-image) | the image |
+| the machine (the base OS libraries a binary loads at run time, `/bin/bash` and the coreutils Bazel's actions run in, git, the `python3` the front door starts on) | the host, or the devbox image (`//:image`, docs/setup.md#the-devbox-image) | the image |
 | bazelisk, Bazel's launcher | fsla-devtools' `pins/bazelisk_pin.json`, installed by `python3 tools/bootstrap.py` under `host.tools_dir` by its pin (never a machine key), which links `bazel` on PATH to it (`toolchain.bazel`; `check` has the row), on a host and in the devbox container alike | `host.tools_dir` |
 | Bazel | `.bazelversion`, verified against `.bazeliskrc`'s digest | bazelisk's cache |
-| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (fsla-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and fsla-devtools from its module's source, by fsla-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@fsla_env`; `fsla_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, fsla-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@fsla_env//:flags.bzl`'s `VENV` names it, so a command naming it is keyed by the environment; the store is bounded by `host.store_max_gb` and `host.store_max_age_days`: each environment build sweeps the idle or oversized environments and wheels, and a swept environment is rebuilt, never read wrong |
+| the Python environment | `requirements.lock`, synced with `--require-hashes` by the pinned uv (fsla-devtools' `pins/uv_pin.json`, the graph's `@uv`, which `//:dev_env` writes venvs with too) into the pinned CPython (3.11.13), and fsla-devtools from its module's source, by fsla-devtools' environment extension (`MODULE.bazel`'s `environment.python` tag, `@fsla_env`; `fsla_devtools.graph.make_env`) | `host.build_cache/bazel/store`, one environment a key (the lock, fsla-devtools' content, the Python, uv and the torch index), under a file lock; uv's cache there hardlinks the packages; `@fsla_env//:flags.bzl`'s `VENV` is the environment BY LABEL (`@fsla_env//:venv`: the venv's completion mark through the repository's link to the store venv, and its key, `environment.key`), so an action names the interpreter by its execution-root path, a script resolves the venv from its runfiles where it runs, and the key is an input of each -- no command, script or output names the store's machine path; the store is bounded by `host.store_max_gb` and `host.store_max_age_days`: each environment build sweeps the idle or oversized environments and wheels, and a swept environment is rebuilt, never read wrong |
 | the linker | mold at fsla-devtools' `pins/mold_pin.json`'s release (`@mold`) | the shared repository cache |
 | the lints' analyzer | clang-tidy at fsla-devtools' `pins/clang_tidy_pin.json`'s wheel, its binary's digest checked (`@clang_tidy`) | the shared repository cache |
 | the pinned toolkit, the one CUDA toolkit (the graph's compile takes nvcc, its headers and the runtime from it) | fsla-devtools' `pins/cuda_toolkit_pin.json`: NVIDIA's redistributable manifest by its digest, every component it names unpacked into one tree, `@cuda_tools` -- what the compile reads and every tool too, through `dev_config.cuda_home()` (`tests/unit/test_cuda_toolkit_pin.py` holds the manifest and the declared toolchain to the pin): the disassemblers the SASS gate reads with (cuobjdump, nvdisasm), compute-sanitizer (the sanitizer lane's) and the whole toolkit the test tiers hand their tests (`FSLA_CUDA_HOME`); beside it cuRAND's headers, the graph's alone (clang's CUDA front end includes one) | the shared repository cache |
-| the host C++ compiler's identity | its version and the digests of gcc, g++ and cc1plus (`@host_cc`), an input of every compile | the output base |
+| the host C++ toolchain, the one C++ toolchain (every rules_cc action's, and nvcc's host compiler, `-ccbin`) | GCC 12.5.0 with its binutils and its own sysroot (glibc 2.26, libstdc++ to `GLIBCXX_3.4.30`), one release by its digest through the BCR module `gcc_toolchain` (`MODULE.bazel`), registered as the C++ toolchain; rules_cc never detects the machine's compiler (`.bazelrc`'s `BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1`); its files key every compile whole; `//tests:host_abi` reads its version and sysroot through a probe it compiled and holds every symbol version `_C.abi3.so` needs to its floor (glibc to torch's `manylinux_2_28`, libstdc++ to Ubuntu 22.04's runtime) | the shared repository cache |
 | the devices' identity | each device's name, UUID, driver and compute capability from `nvidia-smi` (`@host_gpu`, read at every fetch; a machine that names no device refuses), an input of every device test tier | the output base |
 
 ## <a id="front-door"></a>The front door
@@ -101,7 +101,8 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
 - THE FLAGS ARE `tools/build_flags.py`'S: the environment repository writes `@fsla_env//:flags.bzl` from it
   (`bazel/flags.py`) -- the nvcc codegen flags and torch's extension defines, the host C++ flags -- and the graph states
   none of its own. the compile adds nothing of its own (no extended lambdas, compilation-mode flags, random seed or host
-  toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `-x cu`, `-ccbin` and the include roots.
+  toolchain flags), so nvcc's command line is the build flags, the `-gencode` targets, `--threads` (their count), `-x cu`,
+  `-ccbin` (the pinned C++ toolchain's driver) and the include roots.
 - EACH UNIT IS ONE ACTION OF THE GRAPH'S OWN RULE (`bazel/cuda.bzl`'s `cuda_unit`, which runs
   `bazel/cuda_compile.py`): nvcc is the pinned toolkit's (`@cuda_tools`, the one CUDA toolkit: no second declaration), its command line written by the rule, one
   position-independent object a unit, always linked. nvcc writes a dependency file (`-MD -MF`), and every declared
@@ -109,7 +110,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   a header edit recompiles the units that include it and no other. The file
   lists what every pass read, the host's and each architecture's device pass (nvcc 13.5.37: a header included only
   under `__CUDA_ARCH__ == 900` is listed when sm_90a compiles). Only declared headers are
-  prunable: the toolkit, the host compiler and its identity (rule 4) key every compile. The action keeps nvcc's
+  prunable: the toolkit and the pinned C++ toolchain (rule 4) key every compile whole. The action keeps nvcc's
   diagnostics, ptxas's `-v` report among them, as `<unit>.ptxas.txt` (the `ptxas_reports` output group); the console
   shows them without the report's lines.
 - ONE ARCHITECTURE SPEC A CARD: the library's transition writes `//bazel:cuda_archs` as
@@ -141,8 +142,9 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
   declaration's, not where a row was typed). `tests/BUILD.bazel`'s `fixture` family exercises the macro on three rows,
   `tests/unit/test_arm_family.py` reading what it made. `ARM_FAMILIES` is the one list of shipped families: the build's parameters, record and
   gates are made for each name in it, so a family joins by being named there and declared beside its kernel.
-- `--threads` IS THE MACHINE'S `host.nvcc_threads`, which the front door hands the graph (`FSLA_NVCC_THREADS`): the
-  cicc a job runs is the count its job budget divides by.
+- `--threads` IS THE UNIT'S ARCHITECTURE COUNT (`bazel/cuda.bzl`): nvcc runs one cicc a `-gencode` target, so more buys
+  nothing; it is the build's and never the machine's, so no compile is keyed by a machine. The machine's
+  `host.nvcc_threads` is the job budget's divisor alone (the front door's schedule, [above](#front-door)).
 - THE LINK is the pinned mold's, of every unit's objects (each target `alwayslink`, so every object is linked)
   and, by path, torch's `libc10.so` and `libtorch_cpu.so`, the CUDA runtime and the driver's stub: each NEEDED by its
   soname, no search path written (no unit carries a dynamic library; the units' CUDA runtime is its headers,
@@ -177,8 +179,8 @@ among them: it is a report, on demand ([below](#census)).
   refused: closed-world rule 2 on the binary itself ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#graph)).
 - THE ARM GATE (`bazel/gates.py`, `bazel/arms.py`): the built arm table against the declared arms, and the coverage sweep -- the binary asked
   what it carries, loaded by the environment's interpreter against the toolkit's driver stub, so the answer is the
-  binary's on any machine. It runs outside the sandbox, where the environment's packages are, the environment's
-  store path on its command line (the path carries the environment's key).
+  binary's on any machine. It runs outside the sandbox, where the environment's packages are, on the environment's
+  interpreter by its execution-root path (through `@fsla_env`'s link to the store venv), the environment's key an input.
 
 ## <a id="census"></a>The census
 
@@ -228,7 +230,9 @@ index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
   action -- its command line and its inputs -- so a lint reads what the build compiled
   ([`internals/tools/lint.md`](internals/tools/lint.md#unit-lints)). The units are the library's own (the aspect follows
   its deps), read in one configuration a built architecture (a split transition), whose generated headers are that architecture's build set; each verdict is
-  cached on its unit's compile, and states the seconds it took. `bazel build //:compile_commands` makes the editor's
+  cached on its unit's compile and carries no clock (Bazel's profile holds the time it took); clang reads the C and C++
+  libraries of the pinned C++ toolchain the unit compiled with (`tools/lint/unit_lints.py`'s `toolchain_flags`: its GCC
+  installation and sysroot), never the machine's. `bazel build //:compile_commands` makes the editor's
   compile database (`.bazel/bin/compile_commands.json`, which `.clangd` names) from the same commands, for the first built architecture.
 - THE TEST TIERS (`//tests:cpu`, `unit_cuda`, `oracle`, `integration`; `//:lane` all five, with `//tests:lab`; `bazel/defs.bzl`'s
   `pytest_tier`; `//tests:lab`, the lab's and the dev config's unit tests on their own, is in the gate, its checker the
@@ -237,7 +241,7 @@ index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
   sharded by Bazel's protocol (`fsla_devtools.graph.pytest_shards`), each shard drawing a host slot, and sees no device; a device
   tier runs alone, takes the machine's GPU lock itself, and has the devices' identity among its inputs (`@host_gpu`).
   `--test_filter` is pytest's `-k`, `--test_arg` passes pytest an argument. Every tier reads the machine's dev config
-  (its locks), and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a
+  (its locks) through the checkout's `.bazel/dev-config`, the front door's link, never a path in its environment, and hands its tests the graph's copy of the pinned toolkit (`@cuda_tools`, an input of the tier, so a
   new toolkit reruns it) as `FSLA_CUDA_HOME`, which `dev_config.cuda_home()` returns; outside a tier it asks the graph for the same repository (`bazel query --output=location @cuda_tools//:bin/nvcc`). The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
@@ -299,12 +303,20 @@ names one).
    The repository cache's path never moves: Bazel 9 keeps every fetched repository's contents inside it
    (`contents/`), and each output base links into them, so a moved cache breaks every output base until it is
    expunged.
-4. EVERY TOOL AN ACTION RUNS IS DECLARED: hermetic (the toolkit), or its identity is an input of the actions that run
-   it (the host C++ compiler's version). A tool the graph does not see is one whose change shares stale results between
-   machines. An identity is never a header: a compile drops a declared header it did not read from its key (rules_cc's
-   C++ compile by its dependency file, as the CUDA units by theirs: a header nothing includes was edited and nothing
-   recompiled, 2026-11-08), so `@host_cc//:identity.txt` is a file each compile takes outright (`host_cc` on a CUDA
-   unit, `additional_compiler_inputs` on a C++ one).
+4. <a id="hermetic"></a>EVERY TOOL AN ACTION RUNS IS PINNED, and the machine gives only what an allowlist names with its
+   reason: the CUDA toolkit, the C++ toolchain (compiler, binutils and sysroot, nvcc's host compiler too), the linker,
+   the analyzer, the Python and its packages are each a release by its digest, and no action, script or output names a
+   machine path (the environment by label, never the store's path). What the machine gives by design: `/bin/bash` and
+   the coreutils on Bazel's fixed action path (plumbing: redirection, copies, literals), git for the tree and the stamp,
+   the devices and their driver for a device test, the C runtime a built binary loads, and the dev config a test that
+   takes the machine's locks reads through the checkout's `.bazel/dev-config` (never a test's environment). A
+   toolchain is never a header: a compile drops a declared header it did not read from its key (by its dependency
+   file), so a toolchain's files are never prunable -- every compile takes them whole. THE MECHANISM is `//:hermetic`
+   (fsla-devtools' `hermetic_test`, in the gate): every action under the gate's targets, the library, the test lane and
+   the measurements read through an aspect, refusing a machine path in a command line, environment or written file, a
+   machine tool and an input from a repository Bazel detected on the machine outside the allowlists (fsla-devtools'
+   default, then `tools/hermetic.json`); `MODULE.bazel.lock`'s recorded inputs of every module extension; the
+   repository rules' Starlark for a machine tool they run; and `.bazelrc`'s `BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1`.
 5. A GPU TEST'S RESULT IS THE MACHINE'S: its key carries the devices' identity (`@host_gpu`: each one's name, UUID,
    driver and compute capability, read at every fetch), so a pass is never replayed for another device; it takes the machine's GPU lock itself, since Bazel serializes tests only within one invocation and
    every worktree runs its own server.
@@ -317,8 +329,8 @@ names one).
    watching is undefined there).
 10. THE SANDBOX STAYS ON: Bazel 9's hermetic `/tmp` keeps nvcc's temporary files apart, so nothing runs
     `--spawn_strategy=local` to dodge it. Three kinds of work leave it: the arm gate, because it imports the
-    environment's packages from the store, which the sandbox does not hold (the store path on its command line carries
-    the environment's key); the checks of the commit, whose input is the checkout itself (rule 15); and the test
+    environment's packages from the store, which the sandbox does not hold (the environment's key is its input); the
+    checks of the commit, whose input is the checkout itself (rule 15); and the test
     tiers, which take the machine's locks in `/tmp`, a sandbox's own.
 11. CUDA THROUGH THE RULE'S OWN SETTINGS: the architectures through `//bazel:cuda_archs`, one spec a card
     (cubins only, no PTX); an external repository's headers through the target's include options.

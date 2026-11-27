@@ -403,7 +403,7 @@ A result is read from the store (`bazel run //:results -- show`, `history`, `lat
 terminal print.
 
 `bazel run //:results -- sql "..."` queries every label through a derived SQLite index in the machine's cache
-(`history` and `latest` for one label; views flatten the stored outputs: `cells`, `diff_cells`, `instrument_cells`,
+(`history` and `latest` for one label; views flatten the stored outputs: `cells`, `diff_cells`,
 `instrument_metrics`, `memory_rows`, `null_gates`, `timing_members`, `timing_samples`);
 `bazel run //:results -- verdict` is the regression judgement above; `bazel run //:results -- check` holds every
 sample to its label's folder and its key; `bazel run //:results -- commit -m <message>` commits the records, after that

@@ -119,13 +119,11 @@ tree_test(
 cuda_unit(
     name = "fixture_device_unit",
     srcs = ["fixtures/device_lint_unused_param.cu"],
-    host_cc = "@host_cc//:identity.txt",
 )
 
 cc_library(
     name = "fixture_host_unit",
     srcs = ["fixtures/host_warnings_unused_param.cpp"],
-    additional_compiler_inputs = ["@host_cc//:identity.txt"],
 )
 
 unit_lint_test(
@@ -173,7 +171,6 @@ cuda_unit(
     srcs = ["primitives_census_probe.cu"],
     archs = ["compute_%s:sm_%s" % (arch, arch) for arch in BUILT_ARCHS],
     copts = ["-std=c++20"],
-    host_cc = "@host_cc//:identity.txt",
     deps = ["//csrc/fsla:headers"],
 )
 

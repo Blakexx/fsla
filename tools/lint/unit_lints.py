@@ -22,7 +22,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 #: the compile's arguments clang reads as nvcc and gcc do -- the include roots, the macros, the forced includes, the
@@ -73,17 +72,32 @@ def clang_command(argv: list[str], arch: str, cuda_root: str) -> dict:
         i += 1
     if source is None:
         raise SystemExit(f"unit_lints: the compile names no source (`-c`): {' '.join(argv[:4])} ...")
-    if argv[0].endswith("nvcc"):
+    #: the compile's C++ toolchain, the root of its driver's repository (`<root>/xbin/gcc`): nvcc's host compiler, or the
+    #: C++ compile's own driver
+    nvcc = argv[0].endswith("nvcc")
+    driver = argv[argv.index("-ccbin") + 1] if nvcc else argv[0]
+    toolchain = str(Path(driver).parent.parent)
+    if nvcc:
         if set(archs) != {arch}:
             raise SystemExit(f"unit_lints: {source} compiles for {sorted(set(archs)) or 'no'} architecture(s); the lint "
                              f"reads one architecture's compile, sm_{arch}")
         flags = ["-x", "cuda", "--cuda-host-only", f"--cuda-path={cuda_root}", f"--cuda-gpu-arch=sm_{arch}",
                  "-nocudalib", *kept]
-        return {"file": source, "profile": "device", "arch": arch, "flags": flags}
-    return {"file": source, "profile": "host", "arch": arch, "flags": ["-x", "c++", *kept]}
+        return {"file": source, "profile": "device", "arch": arch, "toolchain": toolchain, "flags": flags}
+    return {"file": source, "profile": "host", "arch": arch, "toolchain": toolchain, "flags": ["-x", "c++", *kept]}
 
 
-def _verdict(lint: str, command: dict, package: str, started: float, output: str, returncode: int) -> dict:
+def toolchain_flags(root: str) -> list[str]:
+    """clang's C and C++ libraries the compile's: the pinned GCC's installation (its libstdc++) and its sysroot (its C
+    library) under the toolchain's `root`, never the machine's, which clang would otherwise search for."""
+    installs = sorted(p for p in Path(root, "lib", "gcc").glob("*/*") if (p / "include").is_dir())
+    if len(installs) != 1:
+        raise SystemExit(f"unit_lints: {root} holds {len(installs)} GCC installations (lib/gcc/<triple>/<version>), "
+                         "not one: the compile's toolchain is the pinned GCC")
+    return [f"--gcc-install-dir={installs[0]}", f"--sysroot={root}/sysroot"]
+
+
+def _verdict(lint: str, command: dict, package: str, output: str, returncode: int) -> dict:
     """The diagnostics that count: a warning or error in the unit's own package (a vendored or a toolkit header's is not
     its to fix), and any compiler error -- a unit the compiler cannot parse is a unit no lint read."""
     findings, errors = [], 0
@@ -98,22 +112,21 @@ def _verdict(lint: str, command: dict, package: str, started: float, output: str
         #: a failure no located diagnostic explains (a driver's refusal): the run is red, never clean by absence
         last = [line for line in output.splitlines() if line.strip()][-3:]
         findings.append(f"exit {returncode}, no located error: " + " | ".join(last))
-    return {"lint": lint, "file": command["file"], "arch": command["arch"], "seconds": round(time.monotonic() - started),
-            "returncode": returncode, "findings": findings}
+    #: no clock in the verdict: the same compile gives the same bytes (Bazel's profile holds the time it took)
+    return {"lint": lint, "file": command["file"], "arch": command["arch"], "returncode": returncode, "findings": findings}
 
 
 def tidy(command: dict, clang_tidy: str, config: str, package: str) -> dict:
-    started = time.monotonic()
     profile = command["profile"]
     arguments = [word.format(package=package) for word in PROFILES[profile]]
-    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", *arguments, "--", *command["flags"],
-                          "-ferror-limit=0"], capture_output=True, text=True)
-    return _verdict(f"clang-tidy {profile}", command, package, started, run.stdout + run.stderr, run.returncode)
+    run = subprocess.run([clang_tidy, command["file"], f"--config-file={config}", *arguments, "--",
+                          *toolchain_flags(command["toolchain"]), *command["flags"], "-ferror-limit=0"],
+                         capture_output=True, text=True)
+    return _verdict(f"clang-tidy {profile}", command, package, run.stdout + run.stderr, run.returncode)
 
 
 def warnings(argv: list[str], arch: str, package: str) -> dict:
     """The host compile itself, front end only (`-fsyntax-only`: no object), with the warning flags last."""
-    started = time.monotonic()
     out, source, i = [argv[0]], None, 1
     while i < len(argv):
         word = argv[i]
@@ -126,8 +139,7 @@ def warnings(argv: list[str], arch: str, package: str) -> dict:
             out.append(word)
         i += 1
     run = subprocess.run([*out, "-fsyntax-only", *HOST_WARNING_FLAGS], capture_output=True, text=True)
-    return _verdict("host warnings", {"file": source, "arch": arch}, package, started, run.stdout + run.stderr,
-                    run.returncode)
+    return _verdict("host warnings", {"file": source, "arch": arch}, package, run.stdout + run.stderr, run.returncode)
 
 
 def _exactly(findings: list[str], expect: list[str]) -> bool:
@@ -148,7 +160,7 @@ def verdicts(paths: list[str], expect: list[str]) -> int:
     for path in sorted(paths):
         v = json.loads(Path(path).read_text())
         held = _exactly(v["findings"], expect) if expect else not v["findings"]
-        print(f"== {v['lint']}: {v['file']} (sm_{v['arch']}), {v['seconds']} s, {len(v['findings'])} finding(s)"
+        print(f"== {v['lint']}: {v['file']} (sm_{v['arch']}), {len(v['findings'])} finding(s)"
               + ("" if held or not expect else ", NOT the fixture's expected findings") + " ==")
         for line in v["findings"]:
             print(f"  {line}")
@@ -188,6 +200,7 @@ def database(commands: list[str], anchor: str) -> list[dict]:
                 out.append("--cuda-path=" + absolute(word.split("=", 1)[1]))
             else:
                 out.append(word)
+        out = toolchain_flags(absolute(c["toolchain"])) + out
         entries.append({"directory": checkout, "file": absolute(c["file"]), "arguments": ["clang++", *out, absolute(c["file"])]})
     return sorted(entries, key=lambda e: e["file"])
 

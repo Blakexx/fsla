@@ -1,0 +1,18 @@
+{
+  "machine": {
+    "/bin/sh": "the lab's run script's interpreter (bazel/lab.bzl's launcher): POSIX plumbing that execs the lab, as /bin/bash is for every other script",
+    "/usr/local/share/locale": "gawk's install-path define (the BCR gawk rules_distroless builds for the devbox image's dpkg status): a string compiled into the tool, never a path the build reads",
+    "/usr/local/share/awk": "gawk's install-path define (the BCR gawk rules_distroless builds for the devbox image's dpkg status): a string compiled into the tool, never a path the build reads",
+    "/usr/local/lib/gawk": "gawk's install-path define (the BCR gawk rules_distroless builds for the devbox image's dpkg status): a string compiled into the tool, never a path the build reads",
+    "/usr/bin/env": "a path inside the devbox image (its layer's links, //:devbox_links): the container's file, never this machine's",
+    "/usr/bin/vim.nox": "a path inside the devbox image (its layer's links, //:devbox_links): the container's file, never this machine's",
+    "/usr/bin/ctags-universal": "a path inside the devbox image (its layer's links, //:devbox_links): the container's file, never this machine's",
+    "/usr/bin/fdfind": "a path inside the devbox image (its layer's links, //:devbox_links): the container's file, never this machine's",
+    "/usr/bin/clang-query-14": "a path inside the devbox image (its layer's links, //:devbox_links): the container's file, never this machine's",
+    "/usr/lib/wsl/lib": "the devbox image's LD_LIBRARY_PATH (//:image's env): where WSL mounts the driver's libraries inside the container, never read by a build",
+    "/root/.local/bin": "the devbox image's PATH entry (//:image's env): the container's home, where the bootstrap links bazel"
+  },
+  "repositories": {},
+  "environment": {},
+  "tools": {}
+}

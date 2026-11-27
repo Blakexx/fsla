@@ -27,6 +27,10 @@ once, with every amendment folded in; the numbers are permanent, so a citation n
   on it -- instructions, each pipe, shared-memory wavefronts and bytes are each kept at what the design needs; a trade
   between them is made only when forced, and priced on every card.
 - CLOSED WORLD: only measured binaries run: the declared targets (a kernel's arms in its `arms.bzl`, the built architectures, the pinned toolchain) and the gates every build runs (`docs/ratification.md`, `docs/build-graph.md#arms`).
+- HERMETIC (Blake, 2026-11-21: "we want fully hermetic everything, just like rola"; 2026-11-27, on nvcc driving the
+  machine's gcc: "Yes, and should we check for any other non hermetic things like this?"): every tool an action runs is
+  pinned, the host C++ compiler and its C libraries among them, and the machine gives only what an allowlist names with
+  its reason (`docs/build-graph.md#hermetic`).
 - ONE FORM PER MECHANISM: no fallbacks, no dead code.
 - ONE STRATEGY, APPLIED UNIFORMLY (Blake, 2026-06-26: "we shouldnt be making any 'branching' to avoid edge cases. if we
   have a strategy, we should do it uniformly"): nothing branches the algorithm to dodge one configuration's cost; that

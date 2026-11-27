@@ -7,7 +7,7 @@ from a compile with a flag list of its own.
 
 **WHAT IS AND IS NOT HERE.** The CODEGEN-AFFECTING flags: optimization level,
 language standard, the `-gencode` targets, the preprocessor defines torch's
-`CUDAExtension` adds, and `--threads`. Not here: link flags, the C++ host compiler's
+`CUDAExtension` adds. Not here: `--threads` (the compile rule's: a unit's architecture count, bazel/cuda.bzl), link flags, the C++ host compiler's
 own flags, and include directories that only one of the two callers can know (torch's
 own header locations are resolved by `include_paths` at the call site).
 
@@ -64,14 +64,9 @@ def gencodes(archs) -> list[str]:
     return [f"-gencode=arch=compute_{a},code=sm_{a}" for a in archs]
 
 
-def nvcc_flags(archs, nvcc_threads: int) -> list[str]:
-    """The codegen flag list the compile of these sources passes.
-
-    `--threads` is the machine's `host.nvcc_threads`, the architecture count and not a core count: it parallelizes
-    nvcc across `-gencode` targets, so beyond the number of targets it buys nothing while multiplying the peak
-    resident set (jobs x `--threads` cicc processes).
-    """
-    return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
+def nvcc_flags(archs) -> list[str]:
+    """The codegen flag list the compile of these sources passes."""
+    return ["-O3", "-std=c++20", "-lineinfo",
             #: MANDATORY, not optional: `tools/ratify.py`'s census parses exactly this report.
             "--ptxas-options=-v",
             #: WARN WHERE A FUNCTION SPILLS REGISTERS: ptxas prints a notice naming the function and its bytes, which the gate reads

@@ -17,7 +17,7 @@ source, and `bazel run //:init` links the `workspace.devtools` checkout into eve
 | file | keys |
 |---|---|
 | `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the graph's, `@cuda_tools` pinned by fsla-devtools' `pins/cuda_toolkit_pin.json`, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled` and `mold` (older checkouts' compiler cache and linker; this tree reads none of them, its graph links with its own mold), `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
-| `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `store_max_gb` and `store_max_age_days` (the environment store's bound), `tools_dir`, `repositories`, `worktree_cap` and `bazel_output_roots` (the machine's worktree cap and where a worktree's output base is), `free_floor_gb` and `watched_filesystems` (the free-space floor under every build), `downloads_max_age_days` (the repository cache's download trim) -- the machine's disk, fsla-devtools' (its README's "The machine's disk") -- `windows_system32`, `wsl_lib` |
+| `host.json` | `nvcc_threads`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `store_max_gb` and `store_max_age_days` (the environment store's bound), `tools_dir`, `repositories`, `worktree_cap` and `bazel_output_roots` (the machine's worktree cap and where a worktree's output base is), `free_floor_gb` and `watched_filesystems` (the free-space floor under every build), `downloads_max_age_days` (the repository cache's download trim) -- the machine's disk, fsla-devtools' (its README's "The machine's disk") -- `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a checkout of the data repository, fsla-results; fsla-devtools' section, with no default, which `init` writes as the sibling `fsla-results`) |
 | `workspace.json` | `suite` (the fsla-bench checkout that measures this tree across commits, its `measure/` sessions over this tree's bundles), `devtools` (the fsla-devtools checkout, the build graph's shared machinery, linked into every venv), `worktrees` (the one folder worktrees live in), `hook_roots` (the folders the action-hook dispatcher may run a checkout's hooks under; null: this repository's checkouts and `worktrees`), `base_venv` (a venv the checkouts on the machine whose hooks run from it read; this tree reads none of it) |
@@ -62,7 +62,8 @@ resolved value and the file it came from ([dev.md](dev.md)).
 `tools/lint/lint_standards.py` enforces this: it checks Python reads through the syntax tree (constants and
 f-string prefixes resolved) and shell expansions.
 - `HANDOFFS`: values one of the tree's own processes passes to a child it starts.
-  - `FSLA_DEV_CONFIG` itself.
+  - `FSLA_DEV_CONFIG` itself: a test tier and a check of the commit set it from the checkout's `.bazel/dev-config`, the
+    front door's link to the directory it ran with, so no test's key carries the machine's config path.
   - The graph's copy of the pinned toolkit a test tier hands its tests (`FSLA_CUDA_HOME`).
   - The root of fsla-devtools' module a test tier hands its tests, whose `pins/` they read (`FSLA_DEVTOOLS`).
   - The directory that holds warpline's Python package, which the `lab` run target hands the lab and the lab's graph
@@ -72,7 +73,6 @@ f-string prefixes resolved) and shell expansions.
   - The login name printed into the sudoers rule `bazel run //:clock` suggests (`USER`).
   - The search path bazelisk hands what it runs, the front door's directory first (`PATH`; `check` finds the user's
     `bazel` past it).
-  - `host.nvcc_threads`, which the front door hands the graph's compile flags (`FSLA_NVCC_THREADS`).
 
   The Bazel release bazelisk hands the front door (`BAZEL_REAL`) and the shared store the front door hands the
   graph's environment (`FSLA_GRAPH_STORE`) are fsla-devtools' to read, not this tree's.

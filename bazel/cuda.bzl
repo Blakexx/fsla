@@ -108,7 +108,8 @@ def _cuda_unit_impl(ctx):
     headers = depset(ctx.files.hdrs, transitive = [context.headers])
     nvcc = ctx.file._nvcc
 
-    #: the prunable inputs: the declared headers, never the host compiler's identity (`host_cc`, its own input) or a tool
+    #: the prunable inputs: the declared headers, never a tool (nvcc's files, the pinned C++ toolchain's, which key every
+    #: compile whole)
     candidates = ctx.actions.declare_file("_objs/%s/headers.txt" % ctx.label.name)
     listed = ctx.actions.args()
     listed.set_param_file_format("multiline")
@@ -127,7 +128,9 @@ def _cuda_unit_impl(ctx):
 
         #: nvcc's command line, the unit's options alone: the architectures, position-independent host code, the host compiler, the
         #: include roots (quote roots, then the rest), the defines, the options, the source and the object
-        command = ["-x", "cu"] + arch_flags + ["-Xcompiler", "-fPIC", "-ccbin", host_compiler]
+        #: `--threads` the unit's architecture count, the build's and not the machine's: nvcc runs one cicc a `-gencode`
+        #: target, so more buys nothing, and the job budget (the front door's `host.nvcc_threads`) is a schedule, never a key
+        command = ["-x", "cu"] + arch_flags + ["--threads=%d" % (len(arch_flags) // 2), "-Xcompiler", "-fPIC", "-ccbin", host_compiler]
         for include in quote_includes + context.includes.to_list():
             command += ["-I", include]
         for include in context.system_includes.to_list():
@@ -148,10 +151,12 @@ def _cuda_unit_impl(ctx):
         ctx.actions.run(
             executable = ctx.file._python,
             arguments = [args],
-            inputs = depset([src, candidates, ctx.file._script] + ctx.files.host_cc, transitive = [headers, cc_toolchain.all_files, depset(ctx.files._nvcc_files)]),
+            inputs = depset([src, candidates, ctx.file._script], transitive = [headers, cc_toolchain.all_files, depset(ctx.files._nvcc_files)]),
             outputs = [obj, report, unused],
             unused_inputs_list = unused,
-            env = {"PATH": "/usr/bin:/bin:/usr/local/bin"},
+            #: the search path every C++ action of the graph runs under (Bazel's fixed action path, never the client's):
+            #: the pinned toolchain's driver is a shell wrapper that resolves its own place with the machine's coreutils
+            env = {"PATH": "/bin:/usr/bin:/usr/local/bin"},
             mnemonic = "CudaCompile",
             progress_message = "Compiling %s" % src.path,
         )
@@ -198,7 +203,6 @@ _cuda_unit = rule(
         "srcs": attr.label_list(allow_files = [".cu"], doc = "the units, one compile each"),
         "deps": attr.label_list(providers = [CcInfo], doc = "the headers and include roots the units compile against"),
         "copts": attr.string_list(doc = "nvcc's options (tools/build_flags.py's, through @fsla_env//:flags.bzl)"),
-        "host_cc": attr.label(mandatory = True, allow_files = True, doc = "the host C++ compiler's identity: an input of every compile, never pruned"),
         "hdrs": attr.label_list(allow_files = True, doc = "headers beside the units (candidates for pruning, like the deps')"),
         "archs": attr.string_list(doc = "the architectures as `compute_XX:sm_XX`; none: the build's (`--//bazel:cuda_archs`, written by the library's transition)"),
         "declarations": attr.string_list(doc = "the declarations of the units' kernels (`declaration`), each as JSON"),
