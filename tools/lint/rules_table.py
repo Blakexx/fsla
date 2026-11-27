@@ -16,7 +16,7 @@ section that states no rule). This lint fails on
 
 The table is `{"rules": [the rows], "checker": {the guidance}}`. Check 5, THE CHECKER'S GUIDANCE (Blake, 2026-11-20), reads the `checker`
 section, which is not a standard and carries no mechanism: it runs both ways against the rules of the pinned checker
-(`warpline.checker.declare.rule_names` over the checker's base ledger with the project's `tools/notice_ledger.json`): every rule has an entry
+(`warpline.checker.manifest.rule_names` over the checker's base ledger with the project's `tools/notice_ledger.json`): every rule has an entry
 keyed by its name, no entry names a rule the pin lacks, and every id an entry lists under `rules` (the standards rows it serves, none where
 no row states the rule) is a row. An entry carries `guidance` (fsla's one line: the atom or practice, the standards anchor, the lab page with
 the evidence; where fsla has nothing to add it says "nothing beyond the generic fix"), `triggers` (the regexes over new kernel source at which
