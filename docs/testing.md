@@ -230,8 +230,13 @@ A document nothing checks is a document that drifts. These run in the commit gat
 - **The doc references (`//:docrefs`)**: every citation a doc makes of the tree is pinned to its target's content in
   `docs/references.lock.json`; a new citation is read and accepted, and a commit that changes a cited target re-reads
   its citations and re-pins them in the same commit: the gate fails on any pending, unread or broken reference. The
-  checker is fsla-devtools' `fsla_devtools.docrefs` (its README, `The doc references`, says what a reference is and
-  what moves a pin); `BUILD.bazel`'s `docrefs` target is this tree's configuration -- the package roots a dotted name
+  checker is fsla-devtools' `fsla_devtools.docrefs`. A reference is, outside fenced code blocks: a possessive (a path in
+  code font, `'s`, a name in code font: that name's primitive in the file); a dotted name in code font under one of the
+  package roots (the longest prefix that is a module, the rest a primitive in it); a path in code font with a known
+  suffix or a trailing `/`; a `data:` path in code font (that file of the pinned data, checked only to exist); a
+  markdown link (the file, or the section its anchor names). On a mirror page a bare name in code font is a primitive
+  of the mirrored source. `bazel run //:docrefs -- move OLD NEW` re-pins the citations of a moved target, its
+  functions and sections included. `BUILD.bazel`'s `docrefs` target is this tree's configuration -- the package roots a dotted name
   resolves under, the mirror rules (a page under `docs/internals/` mirrors the source at its stem under
   `csrc/fsla/src/`, one under `docs/internals/tools/` the tool under `tools/`), the deletion ledger left unread, and
   the pinned data a `data:` citation resolves in ([`measurement.md`](measurement.md#the-data)).

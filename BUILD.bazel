@@ -506,10 +506,7 @@ checkout_test(
     cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
 )
 
-#: every doc reference pinned and read (fsla-devtools' `fsla_devtools.docrefs`, under this repository's configuration): a
-#: dotted name resolves under these package roots; a page under docs/internals/ mirrors the source at its stem under
-#: csrc/fsla/src/, and one under docs/internals/tools/ the tool at its stem; the deletion ledger is never read; a
-#: `data:` citation resolves in the pinned data (@fsla_data)
+#: every doc reference pinned and read, under this tree's configuration -- see docs/testing.md (the doc references)
 docrefs_test(
     name = "docrefs",
     size = "small",
