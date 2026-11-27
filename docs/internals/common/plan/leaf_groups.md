@@ -23,7 +23,7 @@ whole is one group and adds nothing.
   `outer_at[l]`, the lowest level's lowest.
 
 WHY THIS ORDER: a box's sets are then CONSECUTIVE leaf groups. A fold (or the CTA, on the read side) holds `1 << inner_bits` sets -- the carve's `fold_sets` and
-`read_sets` -- and its set `i` is leaf group `(outer << inner_bits) + i`, `outer` its levels' outer fields, formed once. The inner fields' places are the places the fold
+a read head's `read_sets[h]` -- and its set `i` is leaf group `(outer << inner_bits) + i`, `outer` its levels' outer fields, formed once. The inner fields' places are the places the fold
 gives a set's bits a level (`fold_levels` of [`carry_groups.cuh`](../../carry/carry_groups.md), the write side's densest level's lowest), so a set's number IS the low bits.
 
 `leaf_group_of(g, group)` forms a leaf group's index from one group index a level, and `leaf_group_levels(g, leaf, group)` undoes it: one to one over the side's leaf groups.

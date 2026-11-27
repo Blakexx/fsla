@@ -1,7 +1,7 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
-// THE PREFILL'S CARVE (docs/internals/common/plan/cta_carve.md): from a call's level widths and each side's densities alone, each level's size from its density and the groups raised from the sizes, how the levels share the leaves one CTA owns,
-// the folds' split and the write and read sides' sets. Pure, constexpr, total, integers and fixed arrays alone: nothing in it is beyond a kernel's reach.
+// THE PREFILL'S CARVE (docs/internals/common/plan/cta_carve.md): from a call's level widths, the write side's densities and each read head's alone, each level's size from its density and the groups raised from the sizes, how the levels share the leaves one CTA owns,
+// the folds' split, the write side's sets and each read head's. Pure, constexpr, total, integers and fixed arrays alone: nothing in it is beyond a kernel's reach.
 #pragma once
 
 #include <cstdint>
@@ -93,7 +93,7 @@ FSLA_CARVE_FN constexpr void carve_loop_order(const int* density, int levels, in
 //: FIXED by the owner's ruling ("a minimum leaf group size, such as 16"): the least leaves of a set, as log2; 16 is the narrowest tensor step the tree's kernels run, on any card -- see docs/internals/common/plan/prefill_launch.md#least
 inline constexpr int kLeastSetBits = 4;
 
-//: A SIDE'S GROUPS RAISED until a set holds 16 leaves, where its box holds as many: the group of the side's densest level that has room in the box is doubled, and again -- see docs/internals/common/plan/prefill_launch.md#least
+//: A PARTY'S GROUPS RAISED (the write side's, a read head's) until a set holds 16 leaves, where its box holds as many: the group of the party's own densest level that has room in the box is doubled, and again; `order` is the party's own loop order -- see docs/internals/common/plan/prefill_launch.md#least
 FSLA_CARVE_FN constexpr void carve_least_sets(const int* order, int levels, const int* box_bits,
                                               int* group_bits) {
   FSLA_CARVE_TRIPS
@@ -297,7 +297,12 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
   carve_least_sets(c.write_order, levels, c.fold_bits, c.write_group_bits);
   FSLA_CARVE_UNROLL
   for (int h = 0; h < kCarveMaxReadHeads; ++h) {
-    if (h < read_heads) carve_least_sets(c.read_order, levels, c.carve_bits, c.read_group_bits[h]);
+    if (h < read_heads) {
+      //: a head's set is raised along the head's OWN densest level; `read_order`, of the heads together, is the schedule's
+      int own[kCarveMaxLevels] = {};
+      carve_loop_order(c.read_density[h], levels, own);
+      carve_least_sets(own, levels, c.carve_bits, c.read_group_bits[h]);
+    }
   }
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {

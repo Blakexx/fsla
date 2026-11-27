@@ -201,6 +201,17 @@ def _total_saving_carve(widths: list[int], parties: list[list[int]], read_partie
     return carve
 
 
+def _raised(order: list[int], box: list[int], sizes: list[int]) -> list[int]:
+    """A set's least, restated: four times, where the set is under 16 leaves, the group of the last level of `order`
+    (the densest) with room in the box is doubled. Bits in, bits out."""
+    group = list(sizes)
+    for _ in range(4):
+        room = [level for level in order if group[level] < box[level]]
+        if sum(min(g, b) for g, b in zip(group, box)) < 4 and room:
+            group[room[-1]] += 1
+    return group
+
+
 def test_several_read_heads_are_parties_of_the_one_rule_over_a_fixed_sample():
     rng = random.Random(20261127)
     calls = []
@@ -221,6 +232,9 @@ def test_several_read_heads_are_parties_of_the_one_rule_over_a_fixed_sample():
             assert all(g >= s for g, s in zip(out["read_group_bits"][head], out["read_size_bits"][head], strict=True)), call
             assert out["read_set_leaves"][head] >= min(16, out["cta_leaves"]), call
             assert out["read_leaf_one_to_one"][head] is True, call
+            #: a head's set is raised along ITS OWN densest level with room, whatever the heads together are densest on
+            own = sorted(range(len(widths)), key=lambda level, head=head: (out["read_density"][head][level], level))
+            assert out["read_group_bits"][head] == _raised(own, out["carve_bits"], out["read_size_bits"][head]), call
 
 
 def test_read_heads_that_are_alike_pull_the_carve_toward_the_level_they_need():
@@ -236,3 +250,36 @@ def test_the_tool_refuses_more_read_heads_than_the_carve_takes_and_a_head_of_ano
     for reads in ("/".join(["256,4"] * 9), "256,4/256"):
         run = subprocess.run([str(TOOL), "--cta-carve", "8,8", "--write-density", "4,256", "--read-density", reads], capture_output=True, text=True, timeout=60)
         assert run.returncode != 0 and "--read-density" in run.stderr, reads
+
+
+def test_a_read_heads_set_is_raised_along_its_own_densest_level_not_the_heads_together():
+    # two levels of 256 digits, the write side one digit on each; head 0 lives on 1 digit of level 0 and 4 of level 1,
+    # head 1 on 32 of level 0 and 1 of level 1. The carve is 32 x 16. Together the heads are densest on level 0 (33
+    # against 5 256ths), so the one read order is level 1 outside level 0; head 0's own densest level is level 1. Its
+    # set, 1 x 4 leaves, is raised to 16 along level 1 -- 1 x 16 -- and not along level 0, which would be 4 x 4;
+    # head 1's set is 32 leaves already
+    out = _run_heads([([8, 8], [1, 1], [[1, 4], [32, 1]])])[0]
+    assert (out["carve_bits"], out["read_order"]) == ([5, 4], [1, 0])
+    assert out["read_size_bits"] == [[0, 2], [5, 0]]
+    assert out["read_group_bits"] == [[0, 4], [5, 0]]
+    assert out["read_set_leaves"] == [16, 32]
+
+
+def test_the_step_by_step_carve_against_the_least_fetches_over_a_fixed_sample_of_several_heads():
+    # docs/internals/common/plan/cta_carve.md#policy states these counts: with several read heads of different densities
+    # the rule's carve is not always the one of the least fetches (the sum of every party's left) of all carves
+    rng = random.Random(20261128)
+    calls = []
+    for _ in range(3000):
+        depth, heads = rng.choice((1, 2, 3, 4)), rng.choice((2, 3, 4, 8))
+        calls.append(([rng.choice((2, 4, 6, 8)) for _ in range(depth)], [rng.choice((1, 4, 32, 255, 256)) for _ in range(depth)],
+                      [[rng.choice((1, 4, 32, 255, 256)) for _ in range(depth)] for _ in range(heads)]))
+    least, worst = 0, 1.0
+    for (widths, _write, _reads), out in zip(calls, _run_heads(calls)):
+        parties = [out["write_size_bits"], *out["read_size_bits"]]
+        carves = [c for c in itertools.product(*(range(w + 1) for w in widths)) if sum(c) == min(9, sum(widths))]
+        got = sum(_left(party, out["carve_bits"]) for party in parties)
+        best = min(sum(_left(party, c) for party in parties) for c in carves)
+        least += got == best
+        worst = max(worst, got / best)
+    assert (least, round(worst, 3)) == (2998, 1.077)
