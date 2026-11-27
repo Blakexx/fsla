@@ -36,6 +36,7 @@ _DEPS = {
     "carry_skeleton": ["//csrc/fsla:headers"],
     "carry_supply": ["//csrc/fsla:headers"],
     "mask_prepare_time": ["//csrc/fsla:headers"],
+    "newton_row": ["//csrc/fsla:headers"],
 }
 
 [lab_experiment(
