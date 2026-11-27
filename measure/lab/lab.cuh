@@ -783,7 +783,7 @@ class Bench {
   }
 
   //: THE INSTRUCTION BUDGET (KERNEL_STANDARDS section 29): a kernel whose demangled name matches `kernel` executes at
-  //: most `max` instructions of opcode class `cls` (`tools/sass.py`'s `OPCODE_CLASSES`) per tensor-pipe instruction,
+  //: most `max` instructions of opcode class `cls` (warpline's `instruction_class` classes: `tensor`, `shared load`, `global`, ...) per tensor-pipe instruction,
   //: stated from the design's operation count before its code; `tools/lab.py run` reads the executed counts (ncu) and
   //: refuses to record a variant over it
   void budget(const std::string& kernel, const char* cls, double max) const {

@@ -46,10 +46,8 @@ which version wrote it. It is defined beside `scan`, which is what decides which
 reach the digest, and bumping it is that function's obligation.
 
 **THE LINES ARE WARPLINE'S GRAMMAR** (`readers.INSTRUCTION`, `ENCODING`, `FUNCTION`, `ARCH`,
-through `tools/checked.py`): the instruction lines are the lines it reads as instructions, so
-this instrument and the SASS gate read one listing one way. On `cuobjdump -sass` the
-instruction grammar selects exactly the address-marked lines version 2 hashed (checked on the
-SASS probes' listings, 2026-11-27), so the digests did not move and the version stands.
+through `tools/checked.py`): the hashed lines are a function's instruction lines and encoding
+lines as warpline reads them, so this instrument and the SASS gate read one listing one way.
 
 Two uses, both binary verdicts:
 

@@ -96,11 +96,9 @@ def _check(name: str, obligation: str, value, at: str, rows) -> list[str]:
     if isinstance(value, dict) and ("owed" in value or value.get("exempt")):
         return []
     if obligation == "overlap":
-        #: THE OVERLAP MECHANISM HAS NO ROW YET (KERNEL_STANDARDS section 28): warpline's `bound` checker over the kernel's run
-        #: manifest, its bound written from the floor model by a Bazel action; until a kernel's first row lands, a pointer names nothing
-        return [f"{at}: `{name}`'s overlap points at {value!r}, but no kernel has an overlap row yet (KERNEL_STANDARDS section 28: "
-                f"warpline's `bound` over the kernel's run manifest, its bound written by the floor model's Bazel action) -- "
-                f"state it owed until the first row lands"]
+        #: THE OVERLAP OBLIGATION ADMITS ONLY `owed` OR `exempt` (KERNEL_STANDARDS section 28): a pointer names no row of anything
+        return [f"{at}: `{name}`'s overlap points at {value!r}; the overlap obligation admits only `owed` or `exempt` (KERNEL_STANDARDS "
+                f"section 28: warpline's `bound` over the kernel's run manifest, its bound written by the floor model's Bazel action)"]
     if obligation == "sanitizer":
         row = rows["sanitizer"].get(value)
         if row is None:
