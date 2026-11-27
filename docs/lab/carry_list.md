@@ -32,7 +32,7 @@ A second level's words ANDed in cost nothing measurable: the intersected case is
 FOLDS EVERY TOKEN IT LISTS INTO A SUNK WORD: a listing whose only output is a shared-memory store no instruction
 reads is work the compiler drops.
 
-Record: `data:lab/carry_list/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/carry_list.run/20261125T041550Z-3206139f/output.json`.
 
 SINCE THE RECORD: the select (`listed_token`) is the lab's own code (`measure/lab/carry_select.cuh`), shared with `carry_fetch`. The library's supply lays a set's
 tokens in a list ([`internals/carry/carry_list.md`](../internals/carry/carry_list.md#lay)), which

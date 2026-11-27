@@ -1,6 +1,25 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""A record's rows by name, for the page generators: a row a page names and the record lacks is refused by name."""
+"""The page generators' one lookup: a record's newest sample in the pinned data (measure/data.py's `lab_record`, on the lab's
+architecture), and its rows by name -- a row a page names and the record lacks is refused by name."""
+
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from measure.data import LabSample, lab_record  # noqa: E402 -- the path insert above must precede it
+
+#: the architecture every page's records are of
+ARCH = "sm_90a"
+
+
+def read(data: pathlib.Path, experiment: str, blocks: int = 0, variant: str | None = None) -> LabSample:
+    """The newest sample of `experiment`'s record in the pinned data `data` (the grid `blocks`, the condition `variant`),
+    refused by name where none is stored."""
+    return lab_record(experiment, ARCH, blocks=blocks, variant=variant, data=data)
 
 
 class Record(dict):

@@ -54,4 +54,4 @@ THREAD 0'S TRIP BY PHASE (the clocked form; thread 0 alone stores the packet):
 - THREAD 0, THE VALUES' STORES AND THEIR BARRIER: 551 cycles a trip, 16% of thread 0's 3,340.
 - THREAD 0, THE PACKET'S STORE: 329 cycles a trip, 10% of thread 0's 3,340.
 
-Record: `data:lab/gather_group/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/gather_group.run/20261120T235125Z-9e8e6e00/output.json`.

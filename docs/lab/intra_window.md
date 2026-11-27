@@ -72,4 +72,4 @@ WHAT IT SHOWS.
 - NOT MEASURED HERE: a window whose tile pairs are skipped by unions; rows the cache does not hold. The two kernels
   launched together are [`call_pair`](call_pair.md)'s.
 
-Record: `data:lab/intra_window/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/intra_window.run/20261113T210155Z-df0ea0ad/output.json`.

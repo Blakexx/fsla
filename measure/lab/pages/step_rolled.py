@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/step_rolled.md`, generated from `data:lab/step_rolled/`.
+"""The measured section of `docs/lab/step_rolled.md`, generated from the newest samples of `step_rolled`'s two records.
 
-`write(root, data, instance)` reads, in the pinned data `data`, `sm_90a.blocks1.json` and `sm_90a.blocks132.json` (one CTA and the full grid) under
-`root` and rewrites `docs/lab/step_rolled.md` under `root` from its `MEASURED` line to its end (where the page has none,
+`write(root, data, instance)` reads, in the pinned data `data`, the records of one CTA and of the full grid (`blocks` 1 and 132) and
+rewrites `docs/lab/step_rolled.md` under `root` from its `MEASURED` line to its end (where the page has none,
 it appends the section after the page's text), every figure the records' own and every comparative word chosen by the
 figures it compares. It REFUSES, naming what is missing, where a record is absent, holds none of the experiment's three
 rows, or holds a row whose check failed. `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits
@@ -13,11 +13,10 @@ docs/internals/tools/lab.md).
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 
-from _record import Record, against, card
+from _record import Record, against, card, read
 
 UNIT = "cycles a step"
 #: the experiment's rows, as `run` in the source names them: (the row's name, its label in the table)
@@ -33,16 +32,8 @@ GRIDS = (1, 132)
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    records = {}
-    for n in GRIDS:
-        path = data / f"lab/step_rolled/sm_90a.blocks{n}.json"
-        if not path.exists():
-            raise SystemExit(
-                f"lab page: no record at data:lab/step_rolled/sm_90a.blocks{n}.json -- the page's measured "
-                "section is generated from runs of the experiment recorded with `lab run step_rolled --record` at one "
-                "CTA and at the full grid on an sm_90a card"
-            )
-        records[n] = json.loads(path.read_text())
+    samples = {n: read(data, "step_rolled", blocks=n) for n in GRIDS}
+    records = {n: sample.body() for n, sample in samples.items()}
     R = {}
     for n, d in records.items():
         failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
@@ -86,7 +77,7 @@ spread of a row {100 * spread:.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 WHAT IT SHOWS.
 {chr(10).join(lines)}
 
-Record: `data:lab/step_rolled/sm_90a.blocks1.json` and `sm_90a.blocks132.json`.
+Record: `{samples[1].cited}` (one CTA) and `{samples[132].cited}` (the full grid).
 """
     p = root / "docs/lab/step_rolled.md"
     s = p.read_text()

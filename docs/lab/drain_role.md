@@ -51,4 +51,4 @@ WHAT IT SHOWS.
   in flight). Beside the two-warp role they add 2.9; beside the four-warp role, where the path is near full, 4.4
   (16.1 against 11.7) -- 42% of their own time, neither hidden nor added whole.
 
-Record: `data:lab/drain_role/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/drain_role.run/20261112T024640Z-2be030a9/output.json`.

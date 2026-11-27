@@ -4,24 +4,28 @@
 
 An experiment is one `measure/lab/experiments/<name>.cu` built on `measure/lab/lab.cuh`, and one target of the graph
 (`//measure/lab:<name>`, bazel/lab.bzl): the graph's CUDA rule compiles it for sm_90a, its disassemblers read its code, and
-this driver reads what the target built -- it runs no compiler and no disassembler. It reads the SASS and refuses to measure unless every expectation the experiment
-declares holds (an instruction the experiment means to time is really there -- ptxas deletes work whose result is dead)
-and every notice the toolkit printed is allowed by the ledger (a kernel that touches local memory is the toolkit's
-own warning); then it checks the GPU is quiet, runs the repetitions, flags a result whose samples
-spread, and writes a record keyed by the architecture.
+its run target (`//measure/lab:<name>.run`) hands this driver what the target built -- it runs no compiler, no disassembler
+and no build. It reads the SASS and refuses to measure unless every expectation the experiment declares holds (an
+instruction the experiment means to time is really there -- ptxas deletes work whose result is dead) and every notice the
+toolkit printed is allowed by the ledger (a kernel that touches local memory is the toolkit's own warning); then it checks
+the GPU is quiet, runs the repetitions, flags a result whose samples spread, and stores the record through the results
+store (`fsla_devtools.results`) at its run target's label: a sample of the record its question keys (`measure/data.py`'s
+`lab_semantics`), its traced rows the sample's parts.
 
+    bazel run //measure/lab:smem_rates.run [-- run [--reps 7] [--force] [--blocks N] [--no-store]]
+    bazel run //measure/lab:smem_rates.run -- sass [KERNEL_REGEX] [--full]
+    bazel run //measure/lab:smem_rates.run -- ncu --metric lts__t_sectors_srcunit_tex_op_read.sum [--no-store]
     bazel run //tools:lab -- list
-    bazel run //tools:lab -- sass smem_rates [KERNEL_REGEX] [--full]
-    bazel run //tools:lab -- run smem_rates [--reps 7] [--record] [--force]
-    bazel run //tools:lab -- ncu smem_rates --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
+    bazel run //tools:lab -- trace carry_window [--blocks N] [--row REGEX]
     bazel run //tools:lab -- page carry_window --instance LABEL
 
-`--record` writes `lab/<name>/<sm_XX>.json` in the store's checkout (or `<sm_XX>.counters.json` for `ncu`), the file a
-KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `pack` builds the target with its checks (a
-refusal fails the build) and copies its outputs; every other command builds the target without them and prints the checks' findings itself. `ncu` reads hardware counters per kernel
-(the median over its launches) where a question is about traffic rather than time. An experiment that reads data (a
-cell's routing, say) has a `<name>.inputs.py` beside it whose `write(directory)` writes the files; the driver runs it
-first, passes `--inputs <directory>`, and records each file's digest.
+A record is stored in the store's checkout (the dev config's `store.root`), cited once a pushed commit of it is the
+pin; `--no-store` keeps it in a store under the scratch space, which `trace` and `path` read with `--data`. Every
+command that reads the experiment's build runs from its run target; the build's validation is its checks (a refusal
+fails the build), and `run`, `ncu` and `pack` check again what they read. `ncu` reads hardware counters per kernel (the
+median over its launches) where a question is about traffic rather than time. An experiment that reads data (a cell's
+routing, say) has a `<name>.inputs.py` beside it whose `write(directory)` writes the files; the driver runs it first,
+passes `--inputs <directory>`, and records each file's digest.
 """
 from __future__ import annotations
 
@@ -32,7 +36,6 @@ import functools
 import hashlib
 import importlib.util
 import json
-import os
 import re
 import shutil
 import statistics
@@ -67,8 +70,8 @@ def _dev_config():
 
 
 def _pinned():
-    """The pinned data (measure/data.py: the data repository at the commit MODULE.bazel pins, which the lab's run target
-    hands it), imported where a command reads a record: the graph's actions read none."""
+    """The pinned data and the lab's records (measure/data.py: the data repository at the commit MODULE.bazel pins, which
+    the lab's run targets hand it), imported where a command reads or stores a record: the graph's actions do neither."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     from measure import data
@@ -76,15 +79,27 @@ def _pinned():
     return data
 
 
-def _recorded(name: str) -> Path:
-    """Where `--record` writes an experiment's records: the store's checkout (the dev config's `store.root`), under
-    `lab/<name>/` -- never this tree; the pinned data is what reads them, once a commit of the store holds them."""
-    return Path(_dev_config().get("store.root")) / "lab" / name
+#: WHAT AN EXPERIMENT'S RUN TARGET HANDS THE DRIVER (`--built`, `--stamp`, `--label`; bazel/defs.bzl's `lab_run`): the
+#: directory its build lies in, the workspace's stamp and its own label, which its records are stored at; empty where the
+#: driver runs from `//tools:lab`, which hands no build
+HANDED: dict[str, object] = {}
 
 
-def _record_path(spelled: str) -> Path:
-    """A `--record` to read: `data:lab/...` is the pinned data's file, anything else a path as given."""
-    return _pinned().resolve(spelled)
+def workspace_stamp() -> dict:
+    """The workspace's stamp the run target hands (`workspace_stamp`): the commit, branch, checkout and the digest of
+    its uncommitted diff, which a record names."""
+    return json.loads(HANDED["stamp"].read_text())
+
+
+def stamped_git() -> dict:
+    """The stamp as a record's body states its commit: the sha and whether the tree held uncommitted changes."""
+    found = workspace_stamp()
+    return {"sha": found["git_sha"], "dirty": found["diff_sha256"] is not None}
+
+
+def scratch_store() -> Path:
+    """`--no-store`'s store: a data repository's layout under the scratch space (`records/`), read by `--data`."""
+    return _dev_config().scratch("lab") / "store"
 
 
 def experiments() -> dict[str, Path]:
@@ -152,31 +167,18 @@ class Built:
         return self.text("toolkit").strip().splitlines()[-1]
 
 
-def build(name: str, arch: str, checks: bool = False) -> Built:
-    """THE EXPERIMENT'S TARGET, BUILT: `bazel build //measure/lab:<name>` (bazel/lab.bzl: the graph's CUDA rule, its disassemblers), cached
-    and shared as any target is -- an unchanged experiment compiles nothing. `checks` builds it with its validations (the SASS checker, the
-    notices' ledger and the declarations' check), where a refusal fails the build with its text; without them the target is built and the
-    command prints the findings itself (`check`)."""
-    if name not in experiments():
-        raise SystemExit(f"lab: no experiment {name!r}; `list` names them")
+def build(name: str, arch: str, command: str) -> Built:
+    """THE EXPERIMENT'S BUILD, as its run target hands it (`//measure/lab:<name>.run`: the graph's CUDA rule, its
+    disassemblers, its checks as the build's validation), cached and shared as any target is; `command` is refused where
+    the driver was handed no build (`//tools:lab`)."""
+    if "built" not in HANDED:
+        raise SystemExit(f"lab: `{command}` reads the experiment's build: `bazel run //measure/lab:{name}.run -- {command} ...`")
     if arch != ARCH:
         raise SystemExit(f"lab: the graph builds the lab's experiments for {ARCH} alone, not {arch}")
-    label = f"//measure/lab:{name}"
-    bazel = _dev_config().get("toolchain.bazel")
-    #: a command of this run's own: bazelisk, as the machine's `bazel` is, not the one Bazel's `run` reached through the front door (which
-    #: bazelisk's own variables would skip, and with it the environment's store)
-    env = {k: v for k, v in os.environ.items() if k not in ("BAZELISK_SKIP_WRAPPER", "BAZEL_REAL")}
-    flags = [] if checks else ["--norun_validations"]
-    if subprocess.run([bazel, "build", label, *flags], cwd=ROOT, env=env, check=False).returncode:
-        raise SystemExit(f"lab: building {label} failed: bazel's output is above")
-    root = Path(subprocess.run([bazel, "info", "execution_root"], cwd=ROOT, env=env, capture_output=True, text=True, check=True).stdout.strip())
-    out = subprocess.run([bazel, "cquery", label, "--output=files", *flags], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
-    #: the target's outputs, each by its path under the execution root
-    files = {Path(line).name: root / line for line in out.stdout.splitlines()}
-    binary = files.get(f"{name}.{arch}")
-    if binary is None:
-        raise SystemExit(f"lab: {label} built no {name}.{arch}: {sorted(files)}")
-    return Built(binary.parent, name, arch)
+    exp = Built(HANDED["built"], name, arch)
+    if not exp.binary.exists():
+        raise SystemExit(f"lab: the run target handed no {exp.binary.name} in {HANDED['built']}")
+    return exp
 
 
 def notices(binary: Built) -> Path:
@@ -827,16 +829,6 @@ def quiet() -> int:
     return min(looks)
 
 
-def git_state() -> dict:
-    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    #: the sources a record depends on; the records themselves are outputs
-    #: MODULE.bazel holds the pin of the stamp header every experiment compiles against
-    sources = ["measure/lab/lab.cuh", "measure/lab/experiments", "tools/lab.py", "MODULE.bazel"]
-    dirty = subprocess.run(["git", "status", "--porcelain", "--", *sources], cwd=ROOT, capture_output=True,
-                           text=True).stdout.strip()
-    return {"sha": sha, "dirty": bool(dirty)}
-
-
 def summarize(samples: list[float]) -> dict:
     lo, hi = min(samples), max(samples)
     return {"median": statistics.median(samples), "min": lo, "max": hi,
@@ -916,15 +908,13 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
         print(f"  {r['name']:<{width}}  {r['median']:10.3f} [{r['min']:.3f}, {r['max']:.3f}] {r['unit']}{flag}")
 
 
-def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
-         record: bool, digests: dict[str, str], counters: dict[str, dict], refused: dict | None = None,
-         built: dict | None = None, into: Path | None = None, blocks: int = 0, toolkit: str | None = None) -> Path:
-    """The run's record: into the store's checkout (`lab/<name>/`) under `--record`, else the scratch space (`into`: that directory
-    instead). `refused`: the written exception of a host that grants no counters, in their place. `built`: a pack's
-    toolkit and commit, where the binary was built on another machine (`pack`); else `toolkit` is the version of the
-    graph's that built it."""
+def body_of(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
+            digests: dict[str, str], counters: dict[str, dict], refused: dict | None, built: dict, blocks: int) -> dict:
+    """THE RUN'S RECORD BODY: what ran (the experiment, its question, the device, driver, toolkit and commit -- `built`, the
+    graph's toolkit and the stamp, or a pack's), how (repetitions, the utilization before, the inputs' digests, the grid
+    held to `blocks`), the results with their samples and checks, each kernel's registers and leading opcodes, and the
+    counters -- or `refused`, the written exception of a host that grants none, in their place."""
     driver, = smi("driver_version")
-    built = built or {"toolkit": toolkit, "git": git_state()}
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "device": device.get("name"),
             "checks": device.get("_checks", []),
             "driver": driver, "toolkit": built["toolkit"], "git": built["git"], "reps": reps,
@@ -937,28 +927,69 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
         body["counters_exception"] = refused
     if blocks:
         body["blocks"] = blocks
-    target = (into / name if into else _recorded(name) if record
-              else _dev_config().scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
+    return body
+
+
+def traces_of(device: dict) -> list[str]:
+    """THE TRACES (a traced row's timelines, `lab trace`): a warpline record a traced row, in the order the rows ran (the
+    record's `variant` its name), each as its file holds it."""
+    return [json.dumps(item["record"], separators=(",", ":")) + "\n" for item in device.get("_traces", [])]
+
+
+def store_record(name: str, arch: str, body: dict, *, kind: str, provenance: dict, blocks: int = 0, traces: list[str] = (),
+          no_store: bool = False, store_root: Path | None = None) -> str:
+    """THE RECORD STORED (`fsla_devtools.results`): a sample at the run target's own label, its semantics `lab_semantics`,
+    its body the output and each traced row a part (`trace/row<i>.json`); in the store's checkout (`store.root`),
+    `store_root`, or under `--no-store` the scratch store. Returns the sample's output as a doc cites it once a pushed
+    commit holds it."""
+    from fsla_devtools.results import Store, run_id
+
+    data = _pinned()
+    run = run_id()
+    staged = _dev_config().scratch("lab") / "staged" / run
+    staged.mkdir(parents=True)
+    output = staged / f"{arch}.json"
+    output.write_text(json.dumps(body, indent=1) + "\n")
+    parts = {}
+    for i, text in enumerate(traces):
+        parts[f"trace/row{i}.json"] = staged / f"row{i}.json"
+        parts[f"trace/row{i}.json"].write_text(text)
+    root = scratch_store() / "records" if no_store else store_root
+    lab = Store(HANDED["label"], root)
+    sample = lab.put(data.lab_semantics(name, arch, kind=kind, blocks=blocks), output_file=output, parts=parts or None,
+                     provenance={"run": run, **provenance}, run=run)
+    shutil.rmtree(staged, ignore_errors=True)
+    print(f"lab: stored {lab.label} sample {sample['run']}: {lab.output(sample)}"
+          + (f" (the scratch store: `--data {scratch_store()}`)" if no_store else ""))
+    return data.LabSample(lab, sample).cited
+
+
+def keep(name: str, arch: str, body: dict, traces: list[str], into: Path, blocks: int) -> Path:
+    """A CARRIED RUN'S RECORD (`carried`, a box with no toolkit): its body and its traces as files under `into/<name>/`,
+    `<arch>[.blocks<N>].json` and `<arch>[.blocks<N>].trace/row<i>.json`, which the box hands back."""
+    target = into / name / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
-    #: THE TRACES (a traced row's timelines, `lab trace`), beside the record: a directory, a warpline record a traced
-    #: row (`row<i>.json`, in the order the rows ran, the record's `variant` its name)
-    traces = target.with_name(target.name.replace(".json", ".trace"))
-    shutil.rmtree(traces, ignore_errors=True)
-    if device.get("_traces"):
-        traces.mkdir()
-        for i, item in enumerate(device["_traces"]):
-            (traces / f"row{i}.json").write_text(json.dumps(item["record"], separators=(",", ":")) + "\n")
+    rows = target.with_name(target.name.replace(".json", ".trace"))
+    shutil.rmtree(rows, ignore_errors=True)
+    if traces:
+        rows.mkdir()
+        for i, text in enumerate(traces):
+            (rows / f"row{i}.json").write_text(text)
     return target
 
 
 def pack(name: str, arch: str, into: Path) -> int:
-    """AN EXPERIMENT BUILT FOR A CARD ELSEWHERE: the graph's target with its checks (`build`: its SASS held to what `run` holds it to, a
-    refusal failing the build) and its outputs copied -- the binary, and beside it what a record needs of the build: the kernels'
+    """AN EXPERIMENT BUILT FOR A CARD ELSEWHERE: the graph's target with its checks (`build`, and `check`: its SASS held to what `run`
+    holds it to) and its outputs copied -- the binary, and beside it what a record needs of the build: the kernels'
     registers and opcodes, the toolkit, the commit and the binary's digest -- so a box with a driver and no toolkit runs it
     (`carried`). The copy compiles nothing: an unchanged experiment is Bazel's cache."""
-    exp = build(name, arch, checks=True)
+    exp = build(name, arch, "pack")
     table = kernels(exp)
+    failures = check(exp, table)
+    if failures:
+        print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
+        return 1
     if budgets(exp.binary):
         print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: it runs where the toolkit is")
         return 1
@@ -978,7 +1009,7 @@ def pack(name: str, arch: str, into: Path) -> int:
     carried_binary.chmod(0o755)
     for part in PARTS:
         shutil.copyfile(exp.part(part), into / exp.part(part).name)
-    body = {"experiment": name, "arch": arch, "toolkit": exp.toolkit(), "git": git_state(),
+    body = {"experiment": name, "arch": arch, "toolkit": exp.toolkit(), "git": stamped_git(),
             "sha256": hashlib.sha256(exp.binary.read_bytes()).hexdigest(),
             "kernels": {k: {"regs": v.get("regs"), "ops": dict(v["ops"])} for k, v in table.items()}}
     (into / f"{exp.binary.name}.pack.json").write_text(json.dumps(body, indent=1) + "\n")
@@ -991,7 +1022,9 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
     """THE DEVICE'S HALF OF A RUN, the one sequence `run` and `carried` share: the inputs, a quiet GPU, the timed
     repetitions under the kill timeout, the checks, then the counters -- the profiler's, gated against the budgets, or,
     where the caller DECLARES a host that grants none (`--no-counters HOST`, KERNEL_STANDARDS section 16 addendum 4),
-    the written exception naming that host. A profiler that fails undeclared fails the run."""
+    the written exception naming that host. A profiler that fails undeclared fails the run. A run's record is stored
+    (`store_record`), its provenance the stamp, the binary's digest and the machine's facts; a carried run's (`built`, a pack's
+    toolkit and commit) is written under `into` (`keep`)."""
     extra, digests = inputs(name)
     #: `--blocks N`: the experiment's grid held to N CTAs (a lighter load on the card), its record its own
     if opts.blocks:
@@ -1041,9 +1074,16 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
             print(f"lab: {name} OVER ITS INSTRUCTION BUDGET, not recorded (--force to record anyway):", *over,
                   sep="\n  ")
             return 1
-    target = keep(name, arch, device, results, table, opts.reps, utilization, opts.record, digests, raw, refused,
-                  built, into, opts.blocks, toolkit)
-    print(f"lab: recorded {target.relative_to(ROOT) if opts.record else target}")
+    body = body_of(name, arch, device, results, table, opts.reps, utilization, digests, raw, refused,
+                   built or {"toolkit": toolkit, "git": stamped_git()}, opts.blocks)
+    if into is not None:
+        print(f"lab: recorded {keep(name, arch, body, traces_of(device), into, opts.blocks)}")
+        return 0
+    store_record(name, arch, body, kind="run", blocks=opts.blocks, traces=traces_of(device), no_store=opts.no_store,
+                 store_root=opts.store_root,
+                 provenance={"checkouts": {"fsla": workspace_stamp()}, "device": body["device"], "driver": body["driver"],
+                             "toolkit": body["toolkit"], "binary": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                             "inputs": digests})
     return 0
 
 
@@ -1110,7 +1150,7 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
 
 def run(name: str, opts) -> int:
     arch = sass.device_arch()
-    exp = build(name, arch)
+    exp = build(name, arch, "run")
     table = kernels(exp)
     failures = check(exp, table)
     if failures:
@@ -1137,9 +1177,10 @@ def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str
     return {k: {m: statistics.median(v) for m, v in ms.items()} for k, ms in seen.items()}
 
 
-def counters(name: str, metrics: list[str], record: bool) -> int:
+def counters(name: str, metrics: list[str], no_store: bool, store_root: Path | None) -> int:
+    """THE PROFILER'S COUNTERS per kernel (`ncu_counters`), stored as a record of their own (kind `counters`)."""
     arch = sass.device_arch()
-    exp = build(name, arch)
+    exp = build(name, arch, "ncu")
     failures = check(exp, kernels(exp))
     if failures:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
@@ -1149,13 +1190,12 @@ def counters(name: str, metrics: list[str], record: bool) -> int:
     width = max(len(k) for k in found)
     for k, ms in found.items():
         print(f"  {k:<{width}}  " + "  ".join(f"{m} {v:,.0f}" for m, v in ms.items()))
-    body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": git_state(),
+    body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": stamped_git(),
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "metrics": metrics,
             "inputs": digests, "kernels": found}
-    target = (_recorded(name) if record else _dev_config().scratch("lab") / "results" / name) / f"{arch}.counters.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(body, indent=1) + "\n")
-    print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
+    store_record(name, arch, body, kind="counters", no_store=no_store, store_root=store_root,
+                 provenance={"checkouts": {"fsla": workspace_stamp()},
+                             "binary": hashlib.sha256(exp.binary.read_bytes()).hexdigest(), "inputs": digests})
     return 0
 
 
@@ -1204,7 +1244,7 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
             print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
             return 1
     #: a packed binary is read as its pack holds it (`pack` copies the target's outputs beside it), the built target's otherwise
-    exp = Built(packed.parent, name, arch) if packed else build(name, arch)
+    exp = Built(packed.parent, name, arch) if packed else build(name, arch, "ledger")
     if packed and exp.binary != packed:
         print(f"lab: {packed} is not `{name}.{arch}`, which a pack of this experiment and architecture holds")
         return 1
@@ -1300,30 +1340,29 @@ def is_wait(site: str) -> bool:
     return " waits on " in site or "rendezvous" in site or "fence" in site
 
 
-def timelines(name: str, pattern: str | None, record: Path | None, skip: int, out: Path | None) -> int:
-    """A RECORD'S TRACED ROWS read by `lab_trace`: its traces beside it, its windows' cycles from it."""
-    path = record or (_pinned().lab(name) / f"{sass.device_arch()}.json")
-    traces = path.with_name(path.name.replace(".json", ".trace"))
+def timelines(name: str, pattern: str | None, selected: dict, skip: int, out: Path | None) -> int:
+    """A RECORD'S TRACED ROWS read by `lab_trace`: the newest sample's (`lab_record`, the record `selected` names), its
+    traces its parts, its windows' cycles from its body."""
+    sample = _pinned().lab_record(name, ARCH, blocks=selected["blocks"], variant=selected["variant"], data=selected["data"])
+    traces = sample.part("trace")
     if not traces.is_dir():
-        print(f"lab: no traces beside {path} (a record's traced rows write {traces.name})")
+        print(f"lab: {sample.cited} holds no traced rows (a run's traced rows are its sample's parts, `trace/row<i>.json`)")
         return 1
-    windows = {r["name"]: r["median"] for r in json.loads(path.read_text())["results"]
-               if r.get("unit") == "cycles a window a CTA"}
+    windows = {r["name"]: r["median"] for r in sample.body()["results"] if r.get("unit") == "cycles a window a CTA"}
     import lab_trace
 
     return lab_trace.report(lab_trace.load(traces), pattern, skip, windows, out)
 
 
-def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
+def critical_path(name: str, pattern: str | None, selected: dict) -> int:
     """THE WINDOW'S PATH (KERNEL_STANDARDS 22): for each clocked row of a record -- a row in cycles a window a CTA whose
     sites, `<row>: a <role> warp ...` in cycles a window a warp, its roles' warps clocked -- each role's waits (its
     sites that `wait on` something, and its rendezvous and fences; a warpgroup's first warp's left out), its busy
     cycles (the window less those waits) and its phases -- a phase that holds a wait marked so; the role whose waits
     are least is the window's path, and only its phases can shorten the window. A row whose two least-waiting roles
     are within `PATH_MARGIN` of the window of each other names no path."""
-    arch = sass.device_arch() if record is None else None
-    path = record or (_pinned().lab(name) / f"{arch}.json")
-    rows = {r["name"]: r for r in json.loads(path.read_text())["results"]}
+    sample = _pinned().lab_record(name, ARCH, blocks=selected["blocks"], variant=selected["variant"], data=selected["data"])
+    rows = {r["name"]: r for r in sample.body()["results"]}
     windows = {n for n, r in rows.items() if r.get("unit") == "cycles a window a CTA"}
     sites: dict[str, list[tuple[str, str, float]]] = {}
     for n, r in rows.items():
@@ -1362,7 +1401,7 @@ def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
         for role, site, v in sorted((x for x in found if x[0] == least[0] and not is_wait(x[1])), key=lambda x: -x[2]):
             print(f"      {v:7,.0f}  {site[:100]}{'  (a wait in it)' if ' wait on ' in site else ''}")
     if not shown:
-        print(f"lab: no clocked row of {path} matches {pattern!r}")
+        print(f"lab: no clocked row of {sample.cited} matches {pattern!r}")
         return 1
     return 0
 
@@ -1382,9 +1421,9 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
     call in the kernel's body the instruction was inlined from), its phases (the source's `//:` headings) and its
     kinds. A loop's cost a unit is this count times its trips, which the source states; a card that grants no
     profiler counters has no executed ledger, and this one stands in its place."""
-    arch = arch or sass.device_arch()
+    arch = arch or ARCH
     path = experiments()[name]
-    exp = build(name, arch)
+    exp = build(name, arch, "ledger")
     heads = phases(path)
     source = path.read_text().splitlines()
     mangled = {pretty: m for m, pretty in exp.demangle(exp.functions()).items()}
@@ -1448,7 +1487,7 @@ def own_section(disassembly: str, mangled: str) -> str:
 
 
 def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> int:
-    exp = build(name, arch or sass.device_arch())
+    exp = build(name, arch or ARCH, "sass")
     table = kernels(exp)
     #: a loop of steps' longest run without one: the checker's `step_gap` rule
     step_gap = checked.checker().rules.registry()["step_gap"]
@@ -1464,6 +1503,26 @@ def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> i
     return 0
 
 
+#: the commands that read an experiment's build, run from its run target (`//measure/lab:<name>.run -- <command>`, `run`
+#: when none is given); the others read records or a pack, from `//tools:lab`
+BUILT_COMMANDS = ("run", "sass", "ncu", "ledger", "waits", "steps", "pack")
+
+
+def handed(argv: list[str]) -> list[str]:
+    """An experiment's run target's command line (`--built DIR --stamp FILE --label LABEL NAME [COMMAND ARGS...]`,
+    bazel/defs.bzl's `lab_run`) as the driver's own (`COMMAND NAME ARGS...`), its build, stamp and label kept in
+    `HANDED`."""
+    if argv[:1] != ["--built"]:
+        return argv
+    _, built, _, stamped, _, label, name, *rest = argv
+    HANDED.update(built=Path(built), stamp=Path(stamped), label=label)
+    command, *rest = rest or ["run"]
+    if command not in BUILT_COMMANDS:
+        raise SystemExit(f"lab: an experiment's run target runs {', '.join(BUILT_COMMANDS)}; "
+                         f"`bazel run //tools:lab -- {command} {name} ...` runs `{command}`")
+    return [command, name, *rest]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1472,10 +1531,9 @@ def main() -> int:
     s.add_argument("experiment")
     s.add_argument("kernel", nargs="?")
     s.add_argument("--full", action="store_true")
-    s.add_argument("--arch", help="compile for this architecture (sm_90a, ...) in place of the device's: SASS only")
+    s.add_argument("--arch", help="the build's architecture (the graph builds the lab's for sm_90a alone)")
     r = sub.add_parser("run")
     r.add_argument("experiment")
-    r.add_argument("--record", action="store_true", help="write the record into the store's checkout, lab/<experiment>/")
     k = sub.add_parser("pack", help="build and check an experiment here for a card elsewhere")
     k.add_argument("experiment")
     k.add_argument("--arch", required=True)
@@ -1491,13 +1549,20 @@ def main() -> int:
     c.add_argument("experiment")
     c.add_argument("--from", dest="source", required=True, type=Path)
     c.add_argument("--into", required=True, type=Path)
-    c.set_defaults(record=False)
+    n = sub.add_parser("ncu")
+    n.add_argument("experiment")
+    n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
+    for stored in (r, n):
+        stored.add_argument("--no-store", action="store_true",
+                            help="keep the record in a store under the scratch space, not the data repository's")
+        stored.add_argument("--store-root", type=Path, help="the records directory to store into (default: records/ "
+                                                            "of the dev config's store.root)")
     for timed in (r, c):
         timed.add_argument("--reps", type=int, default=7)
         timed.add_argument("--force", action="store_true", help="measure on a busy GPU")
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
         timed.add_argument("--blocks", type=int, default=0,
-                           help="the grid held to N CTAs, a lighter load: its record <arch>.blocks<N>.json")
+                           help="the grid held to N CTAs, a lighter load: a record of its own")
         timed.add_argument("--no-counters", metavar="HOST",
                            help="this host grants no profiler counters: name it, and the record carries the "
                                 "exception in their place (a box that holds the pinned profiler reads them)")
@@ -1515,14 +1580,15 @@ def main() -> int:
     c2 = sub.add_parser("path", help="each clocked row's roles' waits and busy cycles: the role the window waits on")
     c2.add_argument("experiment")
     c2.add_argument("--row", help="a regex over the rows' names")
-    c2.add_argument("--record", type=_record_path, help="the record to read, a path or `data:lab/...` (default: this card's "
-                                                        "in the pinned data)")
     t = sub.add_parser("trace", help="a traced row's timelines: each role's time by state, who released its waits, "
                                      "and the window's path walked back through those releases")
     t.add_argument("experiment")
     t.add_argument("--row", help="a regex over the traced rows' names")
-    t.add_argument("--record", type=_record_path, help="the record whose traces to read, a path or `data:lab/...` "
-                                                       "(default: this card's in the pinned data)")
+    for read in (c2, t):
+        read.add_argument("--blocks", type=int, default=0, help="the record of the grid held to N CTAs")
+        read.add_argument("--variant", help="the record of a named condition (`unlocked`)")
+        read.add_argument("--data", type=Path, help="a data repository's root to read in place of the pinned data (the "
+                                                    "store's checkout, or `--no-store`'s scratch store)")
     t.add_argument("--skip", type=int, default=3, help="the first windows left out of the steady span")
     t.add_argument("--html", type=Path, help="write three windows of each row's first CTA here, a lane a warp")
     pg = sub.add_parser("page", help="regenerate an experiment's page's measured section from its record")
@@ -1534,11 +1600,7 @@ def main() -> int:
     m.add_argument("--into", required=True, type=Path)
     m.add_argument("--kernel", action="append", required=True, help="a regex over the demangled kernel names; repeat")
     m.add_argument("--skip", type=int, default=0, help="each kernel's launches passed before the one profiled")
-    n = sub.add_parser("ncu")
-    n.add_argument("experiment")
-    n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
-    n.add_argument("--record", action="store_true", help="write the counters into the store's checkout, lab/<experiment>/")
-    args = ap.parse_args()
+    args = ap.parse_args(handed(sys.argv[1:]))
 
     if args.cmd == "list":
         for name, path in experiments().items():
@@ -1550,21 +1612,22 @@ def main() -> int:
     if args.cmd == "pack":
         return pack(args.experiment, args.arch, args.into)
     if args.cmd == "waits":
-        print(*waits_report(build(args.experiment, args.arch)), sep="\n")
+        print(*waits_report(build(args.experiment, args.arch, "waits")), sep="\n")
         return 0
     if args.cmd == "steps":
-        print(*steps_report(build(args.experiment, args.arch)), sep="\n")
+        print(*steps_report(build(args.experiment, args.arch, "steps")), sep="\n")
         return 0
     if args.cmd == "carried":
         return carried(args.experiment, args.source, args.into, args)
     if args.cmd == "sass":
         return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
-        return counters(args.experiment, args.metric, args.record)
-    if args.cmd == "path":
-        return critical_path(args.experiment, args.row, args.record)
-    if args.cmd == "trace":
-        return timelines(args.experiment, args.row, args.record, args.skip, args.html)
+        return counters(args.experiment, args.metric, args.no_store, args.store_root)
+    if args.cmd in ("path", "trace"):
+        selected = {"blocks": args.blocks, "variant": args.variant, "data": args.data}
+        if args.cmd == "path":
+            return critical_path(args.experiment, args.row, selected)
+        return timelines(args.experiment, args.row, selected, args.skip, args.html)
     if args.cmd == "page":
         return page(args.experiment, args.instance)
     if args.cmd == "ledger-dumps":

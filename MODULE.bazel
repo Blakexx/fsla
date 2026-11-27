@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "851dc9946b01fe8a7f330f7c112884f1f309253a",
+    commit = "5fbc02109e5f9fd53bc8950e7e1882af0485606c",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -81,13 +81,13 @@ environment.cuda_toolkit(
     delete = ["curand/lib"],
     pin = "@fsla_devtools//pins:cuda_toolkit_pin.json",
 )
-#: THE DATA, at ONE commit of the data repository (fsla-results): every record a doc cites (`data:lab/...`) and a tool
+#: THE DATA, at ONE commit of the data repository (fsla-results): every record a doc cites (`data:records/fsla/measure/lab/...`) and a tool
 #: reads (the lab's pages, the floor model, the rates) is the file at this pin, fixed content by the archive's digest
 environment.data(
     name = "fsla_data",
-    commit = "77748901adb7f4aefe7b88fbdd5003504d4cca8d",
+    commit = "a889deedd6b6b1c6f1081a92af66ae8f79ac0882",
     remote = "https://github.com/Blakexx/fsla-results",
-    sha256 = "50d05603fa2b770fe38a0c321a557a71c825211005f6a06ea65e1ddd5b63e5a9",
+    sha256 = "b8c239b7fb4dac1a62c680686d0d3004158811293ccf6eba228a300fba700532",
 )
 #: every central cell's description as a target (`@fsla_cells//:<cell>`), which a timing entry takes (docs/measurement.md)
 environment.cells(name = "fsla_cells")

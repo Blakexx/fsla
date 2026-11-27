@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/fold_forms.md`, generated from `data:lab/fold_forms/sm_90a.json`.
+"""The measured section of `docs/lab/fold_forms.md`, generated from the newest sample of `fold_forms`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/fold_forms.md` under `root` from its
 `MEASURED (` line (the page ends before it, at the end of THE FORM, until a record is written) to its end, every
@@ -12,10 +12,9 @@ line. It returns the files it wrote (`lab page fold_forms --instance LABEL`, doc
 
 from __future__ import annotations
 
-import json
 import pathlib
 
-from _record import Record, against, card
+from _record import Record, against, card, read
 
 UNIT = "cycles a window a CTA"
 #: the experiment's rows by their names, in the table's order
@@ -32,13 +31,8 @@ ROWS = (
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    path = data / "lab/fold_forms/sm_90a.json"
-    if not path.exists():
-        raise SystemExit(
-            "lab page: no record at data:lab/fold_forms/sm_90a.json -- the page's measured section is "
-            "generated from a run of the experiment recorded with `lab run fold_forms --record` on an sm_90a card"
-        )
-    d = json.loads(path.read_text())
+    rec = read(data, "fold_forms")
+    d = rec.body()
     rows = {r["name"]: r for r in d["results"]}
     R = Record({n: r["median"] for n, r in rows.items()})
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
@@ -84,7 +78,7 @@ WHAT IT SHOWS.
 {line(TABLE, "THE TILE FORM, ITS DENSE LINES FETCHED FROM THE LEVEL")}
 - THE CHEAPEST FORM is {cheapest.split(':')[0]}: {least:,.0f} {UNIT}, {least / tile:.2f} of the tile form's.
 
-Record: `data:lab/fold_forms/sm_90a.json`.
+Record: `{rec.cited}`.
 """
     p = root / "docs/lab/fold_forms.md"
     s = p.read_text()

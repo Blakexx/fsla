@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/mask_prepare_time.md`, generated from `data:lab/mask_prepare_time/sm_90a.json`.
+"""The measured section of `docs/lab/mask_prepare_time.md`, generated from the newest sample of `mask_prepare_time`'s record.
 
-`write(root, data, instance)` reads that record in the pinned data `data`, and the lab kernel's record
-`data:lab/mask_prep/sm_90a.json` it is set beside, and rewrites `docs/lab/mask_prepare_time.md` under `root`
+`write(root, data, instance)` reads that record in the pinned data `data`, and the lab kernel's record (`mask_prep`'s
+newest sample) it is set beside, and rewrites `docs/lab/mask_prepare_time.md` under `root`
 from its `MEASURED (` line to its end: every figure a record's own or arithmetic on one. It REFUSES, naming what is
 missing, where a record is absent, the record lacks one of the experiment's rows or holds a row whose check
 failed, the record is not the one the predictions were written for (`PREDICTED_FOR`), or its misses are not the ones
@@ -13,10 +13,9 @@ the files it wrote (`lab page mask_prepare_time --instance LABEL`, docs/internal
 
 from __future__ import annotations
 
-import json
 import pathlib
 
-from _record import Record, card
+from _record import Record, card, read
 
 UNIT = "SM-cycles a token"
 #: the sizes the pass prepares on the experiment's level of 256 digits: a group of 256 is the level whole
@@ -53,20 +52,18 @@ def stored(group: int) -> float:
     return groups * (2 + (4 * WORDS if group > 1 else 0)) / (WORDS * TOKENS)
 
 
-def _load(data: pathlib.Path, experiment: str) -> dict:
-    path = data / "lab" / experiment / "sm_90a.json"
-    if not path.exists():
-        raise SystemExit(f"lab page: no record at data:lab/{experiment}/sm_90a.json")
-    d = json.loads(path.read_text())
+def _load(data: pathlib.Path, experiment: str) -> tuple[dict, str]:
+    sample = read(data, experiment)
+    d = sample.body()
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
     if failed:
         raise SystemExit(f"lab page: the record of {experiment} holds failed checks, {failed}: its figures are not the page's to state")
-    return d
+    return d, sample.cited
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    d = _load(data, "mask_prepare_time")
-    lab = _load(data, "mask_prep")
+    d, cited = _load(data, "mask_prepare_time")
+    lab, lab_cited = _load(data, "mask_prep")
     if not d["git"]["sha"].startswith(PREDICTED_FOR) or d["git"].get("dirty"):
         raise SystemExit(
             f"lab page: the predictions here were written for the run of the experiment at {PREDICTED_FOR}, and the "
@@ -128,7 +125,7 @@ leaner form since that reading.
 
 {READING}
 
-Record: `data:lab/mask_prepare_time/sm_90a.json`; the lab kernel's: `data:lab/mask_prep/sm_90a.json`.
+Record: `{cited}`; the lab kernel's: `{lab_cited}`.
 """
     p = root / "docs/lab/mask_prepare_time.md"
     s = p.read_text()

@@ -58,7 +58,7 @@ is its target's ([`measurement.md`](../../measurement.md#instruments)).
 | `region_ledger.py` | executed instructions and stall samples per COMPONENT, against the kernel's budget file | a person, attributing a phase | `--json` |
 | [`budgets.md`](budgets.md) | the budget's form and price table: an instruction budget by class, per MMA (KERNEL_STANDARDS §29); no `budgets/` directory exists yet, each kernel's budget file is owed | `region_ledger.py`, the lab | — |
 | [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |
-| [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `data:lab/` |
+| [`lab.py`](lab.md) | the lab: small SASS-gated CUDA experiments whose measurements become kernel rules ([`docs/lab/`](../../lab/README.md)) | a person | `data:records/fsla/measure/lab/` |
 | [`lab_facts.py`](lab.md#graph) | what the graph's disassemblers read of one lab experiment's binary, written once: the cubin, the listings, the demangled names, the toolkit's version | the graph (`bazel/lab.bzl`'s `lab_experiment`) | `//measure/lab:<name>`'s outputs |
 | [`lab_check.py`](lab.md#graph) | the lab's checks (the SASS checker, the notices' ledger, the declarations) over a built experiment's files: a refusal fails the build | the graph (the target's validation) | `<name>.sm_90a.check` |
 

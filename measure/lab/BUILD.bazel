@@ -1,14 +1,18 @@
 """THE LAB'S EXPERIMENTS: one target each (bazel/lab.bzl, docs/internals/tools/lab.md#graph), built by the graph's CUDA rule for sm_90a,
-read by the graph's disassemblers, checked by the lab's checks as the target's validation. `bazel build //measure/lab:<name>`, or
-`bazel run //tools:lab -- pack <name> --arch sm_90a --into DIR`, which builds it with its checks and copies its outputs."""
+read by the graph's disassemblers, checked by the lab's checks as the target's validation, and run by its run target:
+`bazel build //measure/lab:<name>`; `bazel run //measure/lab:<name>.run`, which measures it and stores its record in the data
+repository (at its run target's label); `bazel run //measure/lab:<name>.run -- pack --arch sm_90a --into DIR`, which copies its checked outputs."""
 
-load("//bazel:defs.bzl", "include_root", "tree_part")
+load("//bazel:defs.bzl", "include_root", "tree_part", "workspace_stamp")
 load("//bazel:lab.bzl", "lab_checked_test", "lab_experiment")
 
 package(default_visibility = ["//visibility:public"])
 
 #: this package's part of the tree the checks read
 tree_part()
+
+#: the workspace's stamp: the commit every experiment's run stores its record against
+workspace_stamp(name = "stamp")
 
 #: `carry_select.cuh`, the select two experiments measure, and `lab.cuh`, which every experiment includes (with the harness's own kernel headers, `//csrc/fsla:harness_headers`, and warpline's `@warpline//:stamp`)
 include_root(

@@ -382,7 +382,7 @@ tree_test(
     data = [":tree"],
     git = True,
     #: the rates' check reads the lab records the measured rates name, in the pinned data
-    repos = {"@fsla_data//:lab": "FSLA_DATA"},
+    repos = {"@fsla_data//:records": "FSLA_DATA"},
 )
 
 #: THE GRAPH RUNS THE TOOLCHAIN (KERNEL_STANDARDS#s14-graph): no tracked code runs a toolkit tool, a build tool, an install or a

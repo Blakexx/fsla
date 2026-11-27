@@ -40,4 +40,4 @@ What each step found (each measured in this lab on the way; the dropped forms ar
   its latency at eight to sixteen warps are what is left to cut. The vote-only 1.07x is this geometry's floor on sm_86:
   one level-side in four reads 64-byte runs.
 
-Record: `data:lab/facts_block/sm_86.json`.
+Record: `data:records/fsla/measure/lab/facts_block.run/20261008T192404Z-d7d39241/output.json`.

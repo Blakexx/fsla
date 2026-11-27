@@ -3,7 +3,7 @@
 No hopper carry exists. This model prices one before it does: for a declared routing shape, a box and a cluster it
 counts what a token costs an SM, term by term, so a design is compared by one calculation and not by arithmetic redone
 each time the question is asked. Its rates are of two kinds and every line of its report says which: MEASURED, read at
-run time from an H100 lab's record under `data:lab/` (the tool refuses a record or a row that is gone), and
+run time from an H100 lab's record under `data:records/fsla/measure/lab/` (the tool refuses a record or a row that is gone), and
 ESTIMATED, a constant of the file with its reason. A total built on an estimate is an estimate.
 
     bazel run //tools:carry_floor -- --widths 256 256 --read-sparse 0 1 --write-sparse 1 0 --k 4 \

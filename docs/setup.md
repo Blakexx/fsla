@@ -193,7 +193,7 @@ bazel run //measure:session_entmax
 ```
 
 The first builds the graph's library (whose build runs the SASS gate) and records its static manifests. The session builds the entmax solve's timing entry on its layer cell
-(`measure/BUILD.bazel`) and times it under the GPU and clock locks, stored as one `timing/session` record. A member
+(`measure/BUILD.bazel`) and times it under the GPU and clock locks, stored as one sample at its label, `@fsla//measure:session_entmax`. A member
 this binary cannot run is recorded as that member's failure in the session's output, not skipped, and a session in
 which nothing set up fails -- which is the check this step stands in for: that the graph's build in the container
 carries the subjects a session measures.

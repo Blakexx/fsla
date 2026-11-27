@@ -51,7 +51,7 @@ WHAT IT DECIDES.
   1829.2 cycles a microsecond at the full grid across the five bodies.
 - A STEP IN REAL TIME, locked against unlocked: a wgmma step (one CTA: 52.5 ns locked is shorter than 52.9 ns unlocked by 0.8%; full grid: 52.6 ns locked is the same as 52.5 ns unlocked); an integer step (one CTA: 15.8 ns locked is longer than 14.5 ns unlocked by 9.0%; full grid: 15.8 ns locked is longer than 14.6 ns unlocked by 8.2%).
 
-A READ'S COST, one CTA, the clock locked (`sm_90a.reads.blocks1.json`: the experiment at 756547b3 (a dirty tree), 7 repetitions, driver 580.173.02,
+A READ'S COST, one CTA, the clock locked (`data:records/fsla/measure/lab/clock_time.run/20261118T172613Z-8072ad45/output.json`: the experiment at 756547b3 (a dirty tree), 7 repetitions, driver 580.173.02,
 2026-11-18; every check passed): the integer body beside the same body with one 32-bit read a step of the cycle counter
 and of the nanosecond timer's low word, the read's value xor-ed into a value the step keeps:
 
@@ -64,5 +64,6 @@ and of the nanosecond timer's low word, the read's value xor-ed into a value the
 WHAT IT DECIDES, the reads: a read of the cycle counter costs 53.0 cycles a step (82.0 against the integer body's 29.0, 2.8 times) and 29.0 ns (44.8 against 15.8); a read of the nanosecond timer costs 53.0 cycles a step (82.0 against the integer body's 29.0, 2.8 times) and 29.0 ns (44.8 against 15.8). THE TWO READS COST THE SAME: the timer's step is 82.0 cycles and 44.8 ns, the counter's 82.0 cycles and 44.8 ns (called the same within 0.5%).
 THE RATE IS ONE FOR ALL THREE BODIES: they run 1830.0 to 1830.0 cycles a microsecond, within 0.0% of one another.
 
-Record: `data:lab/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
-and `sm_90a.unlocked.blocks1.json` (unlocked), these four of five bodies; `sm_90a.reads.blocks1.json` (locked, one CTA, all seven bodies).
+Record: `data:records/fsla/measure/lab/clock_time.run/20261118T074315Z-bc6e9dc5/output.json` and `data:records/fsla/measure/lab/clock_time.run/20261118T074318Z-3aaf9f55/output.json` (the clock locked; the full grid, one CTA) and
+`data:records/fsla/measure/lab/clock_time.run/20261118T073842Z-67c88068/output.json` and `data:records/fsla/measure/lab/clock_time.run/20261118T073846Z-abc40c3c/output.json` (unlocked), these four of five bodies; `data:records/fsla/measure/lab/clock_time.run/20261118T172613Z-8072ad45/output.json` (locked, one CTA,
+all seven bodies).

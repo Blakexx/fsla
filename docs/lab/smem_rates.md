@@ -84,4 +84,4 @@ What it settles:
 - `cp.async.ca` fills L1, reads the line back and writes shared memory, and holds the pipe beyond its bank passes: 5.3
   cycles a 128 bytes, the `ldmatrix` beside it 4.4x slower. Never where the pipe binds.
 
-Records: `data:lab/smem_rates/sm_86.json`, `sm_86.counters.json`.
+Records: `data:records/fsla/measure/lab/smem_rates.run/20261019T014951Z-43bc11e6/output.json`, `data:records/fsla/measure/lab/smem_rates.run/20261007T013710Z-a8b310e0/output.json` (its counters).

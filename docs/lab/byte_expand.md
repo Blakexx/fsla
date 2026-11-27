@@ -39,5 +39,5 @@ WHAT IT SHOWS.
 - AN SM EXPANDS A TILE EVERY 24 CYCLES, under the 32 its tensor pipe takes one ([`wgmma_rate`](wgmma_rate.md)), and
   no faster past four warps. What holds it at 24 is not separated; the accesses' wavefronts are the candidate.
 
-Record: `data:lab/byte_expand/sm_90a.json`; its counters are the written exception (no profiler on that
+Record: `data:records/fsla/measure/lab/byte_expand.run/20261111T054741Z-e65d3d8f/output.json`; its counters are the written exception (no profiler on that
 box).

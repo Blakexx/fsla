@@ -59,8 +59,8 @@ DEVBOX_REPO = "fsla-devbox"
 DEVBOX_DIGEST = ROOT / "tools" / "devbox_image.json"
 #: the clean room's container and the prefix of its volumes
 CHECK_VOLUMES = "fsla-devbox-check"
-#: the store's location of the container checks (`fsla_devtools.results`), one record per image digest
-RESULTS_ENVIRONMENT = "environment"
+#: the label the container checks are stored at (`fsla_devtools.results`): the target that runs them, a sample a run
+RESULTS_ENVIRONMENT = "@fsla//:container_check"
 
 
 def _bazelisk_version(path: str) -> str:
@@ -433,8 +433,8 @@ def cmd_check(a) -> int:
         "point workspace.suite at a fsla-bench checkout carrying its root declare.py")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     store = dev_config.get("store.root")
-    row(store is not None and (Path(store) / "records").is_dir() and (Path(store) / "lab").is_dir(),
-        f"store.root is a checkout of the data repository (records/, lab/): {store}",
+    row(store is not None and (Path(store) / "records").is_dir(),
+        f"store.root is a checkout of the data repository (records/): {store}",
         "clone fsla-results to store.root, or point store.root at a checkout (`bazel run //:init` names the sibling one)")
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "fsla_devtools" / "mirror.py").is_file(), f"workspace.devtools is a fsla-devtools checkout: {devtools}",
@@ -819,7 +819,8 @@ def _container_gate() -> int:
         return json.loads(blob.stdout)["digest"] if blob.returncode == 0 else None
 
     staged = named("")
-    if staged != named("HEAD") and not Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"image_digest": staged}))):
+    checks = Store(RESULTS_ENVIRONMENT).samples(record_key({"image_digest": staged}))
+    if staged != named("HEAD") and not any(s["ok"] for s in checks):
         print(f"§23 (3): the commit changes the devbox image to {str(staged)[:19]}, which has no passing container check: "
               f"bazel run //:container_check")
         return 1

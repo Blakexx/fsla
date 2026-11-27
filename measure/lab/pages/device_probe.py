@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/device_probe.md` and THE CANDIDATE DEVICE PART, generated from `data:lab/device_probe/sm_90a.json`.
+"""The measured section of `docs/lab/device_probe.md` and THE CANDIDATE DEVICE PART, generated from the newest sample of `device_probe`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data`, writes `hardware/parts/device/<id>.candidate.json` (`candidate`: every device fact the
 schema declares, each with its value and the record row that measured it) and rewrites `docs/lab/device_probe.md` under `root` from its `MEASURED (`
@@ -16,10 +16,8 @@ import pathlib
 import re
 import sys
 
-from _record import Record, card
+from _record import Record, card, read
 
-#: the record, by its path in the pinned data
-RECORD = "lab/device_probe/sm_90a.json"
 #: the schema's device facts the probe reads, each the record's row of the same name
 READ = ("cc", "regs_per_sm", "smem_per_sm", "smem_per_cta_optin", "max_threads_per_sm", "sm_count", "l2_bytes")
 #: the facts only an experiment or a document establishes, which the probe cannot read: `tensor` from the rates' MMA kinds of the architecture of the same compute
@@ -56,15 +54,16 @@ def instructions_of(root: pathlib.Path, cc: int) -> tuple[str, list[str]] | None
     return None
 
 
-def candidate(root: pathlib.Path, record: dict) -> tuple[str, dict]:
-    """The record's candidate part: `(id, part)`. Each device fact the probe read is `{"value", "measured_by"}` naming its row of the record; `tensor` and
+def candidate(root: pathlib.Path, record: dict, cited: str) -> tuple[str, dict]:
+    """The record's candidate part: `(id, part)`. Each device fact the probe read is `{"value", "measured_by"}` naming its row of the record
+    (`cited`, its sample's output as a doc cites it); `tensor` and
     `instructions` come from the rates and the registry's device part of the device's compute capability (`documented_by`, never re-measured here) and are left out,
     named in `unestablished`, where either has none. A record with a failed check is refused."""
     assert all(c["ok"] for c in record["checks"]), "lab page: the record holds a check that failed"
     rows = Record({r["name"]: r["median"] for r in record["results"]})
     cc = int(rows["cc"])
     ident = model_id(cc, record["device"])
-    by = f"data:{RECORD}: the row {{row}} (experiment device_probe on {record['device']}, driver {record['driver']}, {record['date'][:10]}, the experiment at {record['git']['sha'][:8]})"
+    by = f"{cited}: the row {{row}} (experiment device_probe on {record['device']}, driver {record['driver']}, {record['date'][:10]}, the experiment at {record['git']['sha'][:8]})"
     facts: dict = {n: {"value": int(rows[n]), "measured_by": by.format(row=n)} for n in READ}
     unestablished: list[str] = []
     kinds, held = mma_kinds(root, cc), instructions_of(root, cc)
@@ -87,8 +86,9 @@ def candidate(root: pathlib.Path, record: dict) -> tuple[str, dict]:
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    d = json.loads((data / RECORD).read_text())
-    ident, part = candidate(root, d)
+    sample = read(data, "device_probe")
+    d = sample.body()
+    ident, part = candidate(root, d, sample.cited)
     out = root / "hardware/parts/device" / f"{ident}.candidate.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(part, indent=2) + "\n")
@@ -108,12 +108,11 @@ WHAT IT DECIDES.
   come from the rates and the registry's device part of compute capability {int(R["cc"])}{"" if part["unestablished"] == [] else " -- which has none, so they are named in `unestablished` for the reviewer"}.
 - THE MODEL KEY is the compute capability and the driver's name; the PCI slot the driver reports (`pci_device_id_slot`) is the machine's, not the model's.
 
-Record: `data:{RECORD}`.
+Record: `{sample.cited}`.
 """
     p = root / "docs/lab/device_probe.md"
     s = p.read_text()
     i = s.index("MEASURED (") if "MEASURED (" in s else s.index("NOT YET MEASURED")
-    rec = f"Record: `data:{RECORD}`.\n"
-    j = s.index(rec, i) + len(rec) if rec in s[i:] else len(s)
+    j = s.index("\n", s.index("Record: `", i)) + 1 if "Record: `" in s[i:] else len(s)
     p.write_text(s[:i] + text + s[j:])
     return [out, p]

@@ -45,4 +45,4 @@ tokens neighbours, as this producer takes them, and 67 with a warp's accesses on
 producer's 773 cycles here is not the expansion, and its lane layout is the conflicting one; what the rest is, among
 the barrier waits, the warp's synchronization and the loads' issue, no row separates.
 
-Record: `data:lab/row_ring/sm_90a.json`; its counters are the written exception (no profiler on that box).
+Record: `data:records/fsla/measure/lab/row_ring.run/20261111T044541Z-7e72e388/output.json`; its counters are the written exception (no profiler on that box).

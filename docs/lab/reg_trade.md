@@ -52,5 +52,5 @@ body in its own branch) with the raised group's work replaced by that one step; 
 against the ENTRY count: a step of 256 columns cannot be issued by a kernel that enters at 128, whatever its warpgroups
 raise themselves to.
 
-Record: `data:lab/reg_trade/sm_90a.json`; its counters are the written exception (no profiler on that
+Record: `data:records/fsla/measure/lab/reg_trade.run/20261111T044002Z-68cff01d/output.json`; its counters are the written exception (no profiler on that
 box).

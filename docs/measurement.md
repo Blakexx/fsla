@@ -51,7 +51,7 @@ taken. Each rep's order is drawn from a seed of the run's own identity, stored w
 one order. An entry that cannot set up (a kernel this binary lacks) is recorded in the session and the rest are timed;
 two stopwatches in one session fail it, and so does a session in which nothing set up, naming the first refusal.
 
-The session is stored as ONE sample at `timing/session`: its semantics are what ran -- each entry's executor, parameters,
+The session is stored as ONE sample at its own label (`@fsla//measure:session_entmax`): its semantics are what ran -- each entry's executor, parameters,
 cells and bundle digest, the rounds, reps and warm-up, whether the clock was locked, and the card -- and its provenance
 each bundle's stamped commit. `-- --no-store` measures and keeps `session.json` in the scratch directory; a session that
 fails stores nothing and says where its samples were kept.
@@ -91,7 +91,7 @@ session on that card follows; sizing a cell to fit is the same arithmetic there.
   `torch.cuda.set_per_process_memory_fraction` as the backstop.
 * **A row near the card's cap is discarded, never caveated.** Under WSL2 the driver falls back to host memory over PCIe
   when VRAM is exhausted (Blake: "if we measure above the vram size, it spills into system memory and then it is just
-  going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (`timing/memory`) is read
+  going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (a memory pass's sample) is read
   beside its times where a memory pass measured it -- fsla-bench's; fsla's own sessions carry none yet
   ([open-work M-f](open-work.md#measurement-and-gates)); to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
 * **A foreign consumer of the GPU inflates every number.** Another context time-slices the card and stretches wall
@@ -341,31 +341,35 @@ provenance does not name, for every checkout it ran, that checkout's commit (`ch
 
 <a id="the-data"></a>THE DATA THIS TREE READS AND CITES is the data repository at ONE commit, pinned in `MODULE.bazel`
 (fsla-devtools' `environment.data` tag, `@fsla_data`, by the commit's archive digest), never the live checkout: a doc
-cites a record as `data:lab/<experiment>/<arch>.json` (or `data:records/<location>/<key>.json`), which `//:docrefs` resolves inside the
-pin, and the tools that read a record -- the lab's pages and its `trace`/`critical-path`, the floor model
-(`tools/carry_floor.py`), the rates' check (`measure/rates.py`) -- read it there, handed its root by the graph
-(`FSLA_DATA`, `measure/data.py`). The lab's records are under the data repository's `lab/`, moved from this tree with
-their history, byte-identical; `bazel run //tools:lab -- run NAME --record` writes a new one into the store's checkout
-(`lab/<name>/`), never this tree, and it becomes citable when a commit of the data repository holding it is pushed and
-the pin moves to it.
+cites a record by a sample's output, `data:records/<workspace>/<package>/<target>/<run>/output.json` (fixed bytes: a
+stored sample is never rewritten), which `//:docrefs` resolves inside the pin, and the tools that read a record -- the lab's pages and its
+`trace`/`path`, the floor model (`tools/carry_floor.py`), the rates' check (`measure/rates.py`) -- read it there, handed
+its root by the graph (`FSLA_DATA`, `measure/data.py`). A LAB RECORD is read through one function, `lab_record(experiment,
+arch)` (with `blocks` or `variant` where the question is another's): the newest sample of the run's record its question
+keys (`lab_semantics`: the experiment, the architecture, the kind -- `run`, `counters`, `ledger` -- the grid it was held to
+and a named condition), its traced rows or a ledger's dumps the sample's parts. `bazel run //measure/lab:NAME.run`
+stores a new sample into the store's checkout (at its own label), never this tree, and it becomes citable when a commit of
+the data repository holding it is pushed and the pin moves to it. The records the lab kept as plain files before it
+stored through the store are BACKFILLED samples, each file's bytes its output unchanged, marked `backfilled` with the
+file's old path.
 
-A tool opens a store at its OWN LOCATION and hands it the SEMANTICS of what it measured -- the inputs its numbers
-depend on, reduced to identities (a commit and its tracked diff, a binary's manifest or file digest, the cells, the
-counts, the device's software, the clock lock). The KEY is sha256 over the semantics, so the same measurement taken
-again is another SAMPLE of the same record and a changed input is a new record. A sample is the raw output or the
+A tool opens a store at the LABEL of the target that produced what it stores (`@<workspace>//<package>:<target>`,
+a folder of the data's `records/`: the store is a durable index of what Bazel's targets produced) and hands it the
+SEMANTICS of what it measured -- the inputs its numbers depend on, reduced to identities (a commit and its tracked diff,
+a binary's manifest or file digest, the cells, the counts, the device's software, the clock lock). A SAMPLE is one file,
+named by its run and written once; the KEY is sha256 over its semantics, so the same measurement taken again is another
+sample of the same key and a changed input is another key. A sample is the raw output or the
 failure, when, how long, and its PROVENANCE (the checkouts by directory name, branch and commit, the stage, the host).
 Every sample is kept, failures included. Nothing relational is stored: a ratio against a baseline is the reader's,
 and a timing only compares within the session that interleaved it.
 
-| location | writer | the semantics | a sample's output |
+| label | writer | the semantics | a sample's output |
 |---|---|---|---|
-| `fsla/static-manifest` | `bazel run //measure:store_static_manifest` | the source, the manifest's name (its architecture) and the content digests of the library and warpline's checker | the manifest |
-| `timing/session` | the session program (`bazel run //measure:session_entmax`), or a store target over fsla-bench's `measure_timing` | the session's semantics: every entry's executor, parameters, cells and bundle digest (fsla-bench's: every registration's executor, cells, code and binary), the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
-| `timing/memory` | a store target over fsla-bench's `measure_memory` | its registrations' executors and cells | each entry's peak memory |
-| `timing/null` | a store target over `measure_null_gate` (fsla-bench's root) | the gate's semantics: the registration, its cells, the timing parameters | the session of the two copies and, per cell, whether they agree |
-| `environment` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
-| `fsla/oracle-tier` | `bazel run //measure:store_oracle_tier` | the instrument, its arguments and the content digests of its tool, the library, the tree and the devices' identity | the counts, the failed cases, the margins; or the refusal, as a failed sample |
-| `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
+| `@fsla//measure:store_static_manifest` | `bazel run //measure:store_static_manifest` | the source, the manifest's name (its architecture) and the content digests of the library and warpline's checker | the manifest |
+| `@fsla//measure:session_entmax` (a session's own) | the session program (`bazel run //measure:session_entmax`) | the session's semantics: every entry's executor, parameters, cells and bundle digest (fsla-bench's: every registration's executor, cells, code and binary), the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
+| `@fsla//:container_check` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
+| `@fsla//measure:store_oracle_tier` | `bazel run //measure:store_oracle_tier` | the instrument, its arguments and the content digests of its tool, the library, the tree and the devices' identity | the counts, the failed cases, the margins; or the refusal, as a failed sample |
+| `@fsla//measure/lab:<experiment>.run` | `bazel run //measure/lab:<experiment>.run` (`run`, and `-- ncu`) | the experiment, the architecture, the kind, the grid (`blocks`), a variant (`lab_semantics`); the commit, the binary's digest, the toolkit and the device are each sample's provenance | the run's record (the results with their samples and checks, the kernels, the counters) and its traced rows as parts |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in
 long form (run, cell, dotted metric, value), `diff_cells` every stored diff's verdict per cell and quantity, and

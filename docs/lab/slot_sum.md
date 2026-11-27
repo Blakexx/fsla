@@ -58,4 +58,4 @@ WHAT IT SHOWS.
   a ring and a sum from it, some 180 and 55. These are this page's rates times a count, not a composed
   measurement.
 
-Record: `data:lab/slot_sum/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/slot_sum.run/20261112T095959Z-730bab71/output.json`.

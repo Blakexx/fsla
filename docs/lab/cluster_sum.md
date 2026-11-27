@@ -69,4 +69,4 @@ round beyond 64 tokens UNMEASURED), whose slots are 3.9 MB of a cluster's shared
 eight CTAs have. On this card the output's sum is priced by its partials, a (token, CTA), and summing them in a
 cluster first buys nothing. The warps' 64-bit integer add sums exactly under these barriers.
 
-Record: `data:lab/cluster_sum/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/cluster_sum.run/20261111T180733Z-6b78643e/output.json`.

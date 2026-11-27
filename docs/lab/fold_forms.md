@@ -46,4 +46,4 @@ WHAT IT SHOWS.
 - THE TILE FORM, ITS DENSE LINES FETCHED FROM THE LEVEL: 3,019 cycles a window a CTA, 1.03 of the tile form's 2,921, 98 cycles above it.
 - THE CHEAPEST FORM is the tile form: 2,921 cycles a window a CTA, 1.00 of the tile form's.
 
-Record: `data:lab/fold_forms/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/fold_forms.run/20261120T054945Z-2078dbf0/output.json`.

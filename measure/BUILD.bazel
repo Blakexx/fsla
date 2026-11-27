@@ -3,10 +3,10 @@ executor of `executors.py` on central cells, in this tree's bundle; each session
 entries interleaved and stores the record; each store one `bazel run` that records a build output, or an instrument on
 the device it runs first.
 
-    bazel run //measure:session_entmax                       # measure and store (timing/session)
+    bazel run //measure:session_entmax                       # measure and store (at @fsla//measure:session_entmax)
     bazel run //measure:session_entmax -- --no-store         # measure, keep session.json, store nothing
-    bazel run //measure:store_static_manifest                # the static manifests (fsla/static-manifest)
-    bazel run //measure:store_oracle_tier                    # the oracle tier on the device, recorded (fsla/oracle-tier)
+    bazel run //measure:store_static_manifest                # the static manifests, recorded at their store's label
+    bazel run //measure:store_oracle_tier                    # the oracle tier on the device, recorded at its store's label
 """
 
 load("//bazel:defs.bzl", "instrument", "interleaved_timing", "results_store", "timing_entry", "tree_part")
@@ -59,7 +59,6 @@ results_store(
         "//:library",
         "@warpline//:checker",
     ],
-    location = "fsla/static-manifest",
 )
 
 #: THE ORACLE TIER ON THE DEVICE (`oracle_tier.py`): the battery's counts, its failed cases and every comparison's
@@ -77,7 +76,6 @@ instrument(
 results_store(
     name = "store_oracle_tier",
     src = ":oracle_tier",
-    location = "fsla/oracle-tier",
 )
 
 #: this package's part of the tree the checks read

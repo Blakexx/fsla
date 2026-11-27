@@ -83,7 +83,7 @@ for a measurement on a real slice and until then the run time refuses them.
 
 A device enters the contract by a MEASURED part, in four steps (the reviewer also names its `arch` and `family`):
 
-1. RUN THE PROBE on the device: `bazel run //tools:lab -- pack device_probe --arch sm_90a --into DIR`, then `bazel run //tools:lab -- run device_probe --record`, then
+1. RUN THE PROBE on the device: `bazel run //measure/lab:device_probe.run`, which stores its record, then
    `bazel run //tools:lab -- page device_probe --instance LABEL` ([`device_probe`](../../lab/device_probe.md)). The probe reads every DEVICE fact of the device table
    (the table's DEVICE facts, and `sm_count` and `l2_bytes` for the table's coming entries) through the properties and the attributes, checks the two routes
    and the device's own registers agree, and the page step writes `hardware/parts/device/<id>.candidate.json` from the record. The `<id>` is the compute capability and the

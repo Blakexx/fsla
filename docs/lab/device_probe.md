@@ -18,4 +18,4 @@ refuses a candidate until a reviewer renames it to a part ([`registry.md#probe`]
 
 NOT YET MEASURED: it runs on the next H100 session.
 
-Record: none yet; `lab run device_probe --record` writes it.
+Record: none yet; `bazel run //measure/lab:device_probe.run` stores it.

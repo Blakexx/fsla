@@ -57,7 +57,7 @@ WHAT IT DECIDES.
   stamp site costs 22.1, 22.2 and 25.0 cycles at one a step where the stamp itself costs 1.0, 8.9 and 17.0; taken one step
   in eight, 25.3, 29.1 and 26.2. AS COMPILED the skipping path is two instructions, a test and a branch, and the toolkit
   stalls both: a block ends with what its pending instructions are owed (KERNEL_STANDARDS section 27's fence, on this
-  card; the stall counts are read with `lab sass stamp_cost`). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
+  card; the stall counts are read with `bazel run //measure/lab:stamp_cost.run -- sass`). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
 - THE CALLER'S STAMP -- a clock read and a store to an address the kernel builds from an index it already holds, no
   state of the stamp's own -- is the lean stamp in shared memory (1.0, 8.0 and 8.0 at one a step against the lean
   stamp's 1.0, 8.0 and 8.0; 16.5, 19.1 and 17.5 at two): the toolkit compiles both to the same four
@@ -68,4 +68,4 @@ WHAT IT DECIDES.
   alone: on the independent step (29.3 cycles plain, eight operations) the lean stamp adds 8.0 cycles and the
   store alone 17.0.
 
-Record: `data:lab/stamp_cost/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/stamp_cost.run/20261118T065705Z-227a9187/output.json`.

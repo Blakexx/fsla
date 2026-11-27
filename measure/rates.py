@@ -3,8 +3,8 @@
 """THE MEASURED AND DOCUMENTED RATES, READ FROM THEIR ONE FILE: `measure/rates.json` holds every architecture's rates and every product's overrides,
 each rate with its source, and the rate-name schema. This module resolves a product's rates (its overrides over its architecture's defaults, for run
 time) and checks that every source holds -- a measured rate matches the lab record it names, on the product it names -- and that every architecture
-named there is one the registry builds (`hardware/`: the device facts and the architectures live there once). Stdlib only (no `fsla`, no GPU), so the
-lint runs it. docs/internals/common/hardware.md.
+named there is one the registry builds (`hardware/`: the device facts and the architectures live there once). No `fsla` and no GPU (the lab's
+records through `measure/data.py`, the results store's reader), so the lint runs it. docs/internals/common/hardware.md.
 
     python -m measure.rates [--product h10080gbhbm3 | --arch sm_90a]   # the resolved rates
     python -m measure.rates --check                                   # the gate
@@ -100,10 +100,11 @@ def _source_findings(where: str, arch: str, rate: Rate) -> list[str]:
         return [] if rate.where else [f"{where}: a {rate.kind} rate names no source"]
     if not rate.on:
         return [f"{where}: a measured rate names no product it was measured on (`on`)"]
-    record, cited = pinned.lab(rate.where) / f"{arch}.json", f"data:lab/{rate.where}/{arch}.json"
-    if not record.is_file():
-        return [f"{where}: its lab record {cited} does not exist"]
-    data = json.loads(record.read_text())
+    try:
+        record = pinned.lab_record(rate.where, arch)
+    except SystemExit as missing:
+        return [f"{where}: {missing}"]
+    data, cited = record.body(), record.cited
     medians = {r["name"]: r["median"] for r in data["results"]}
     findings = []
     if slugify_gpu(data.get("device", "")) != rate.on:

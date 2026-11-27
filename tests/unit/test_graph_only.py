@@ -22,8 +22,8 @@ def run(command):
     ("/opt/cuda/bin/cuobjdump -sass f", "//:static_manifest"),
     ("ptxas -arch=sm_90a x.ptx", "//csrc/fsla:<unit>_sass"),
     ("nvdisasm f.cubin", "//:static_manifest"),
-    ("ncu --metric m ./x", "//tools:lab -- ncu"),
-    ("nsys profile ./x", "//tools:lab -- run"),
+    ("ncu --metric m ./x", "//measure/lab:<name>.run -- ncu"),
+    ("nsys profile ./x", "//measure/lab:<name>.run"),
     ("compute-sanitizer ./x", "//tests:sanitizer"),
     ("cmake -B build", "//:library"),
     ("cd build && make -j8", "//:library"),
@@ -31,7 +31,7 @@ def run(command):
     ("pip install x", "//:dev_env"),
     ("uv pip install x", "//:dev_env"),
     ("python3 -m pip install -U x", "//:dev_env"),
-    ("CUDA_VISIBLE_DEVICES=0 sudo ncu ./x", "//tools:lab -- ncu"),
+    ("CUDA_VISIBLE_DEVICES=0 sudo ncu ./x", "//measure/lab:<name>.run -- ncu"),
     ("echo ok; /usr/local/cuda/bin/nvcc x.cu", "//:library"),
     ("x=$(nvcc --version)", "//:library"),
     ("git worktree add ../w origin/master", "bazel --worktree add"),
@@ -45,8 +45,8 @@ def test_a_toolchain_or_install_command_is_refused_with_its_target(command, targ
 
 
 @pytest.mark.parametrize("command", [
-    "bazel run //tools:lab -- pack x",
-    "bazel run //tools:lab -- ncu x --metric m",
+    "bazel run //measure/lab:x.run -- pack",
+    "bazel run //measure/lab:x.run -- ncu --metric m",
     "bazelisk test //tests:sanitizer -- nvcc",
     'echo "nvcc is a compiler"',
     "git log | grep nvcc",

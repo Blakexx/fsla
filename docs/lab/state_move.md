@@ -53,4 +53,4 @@ WHAT IT SHOWS.
   a 64 KB copy, and 104 when one thread issues them. Values reach a CTA cheaply only packed together. Both rates
   are read on a working set the cache holds (an 8 MB table, a 64 KB span a CTA); a set it cannot hold is UNMEASURED.
 
-Record: `data:lab/state_move/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/state_move.run/20261111T200624Z-c185b6a1/output.json`.

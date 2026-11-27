@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/gather_group.md`, generated from `data:lab/gather_group/sm_90a.json`.
+"""The measured section of `docs/lab/gather_group.md`, generated from the newest sample of `gather_group`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/gather_group.md` under `root` from its
 `MEASURED` line to its end (where the page has none, it appends the section after the page's text), every figure the record's own and every comparative word chosen by the figures it compares. It REFUSES, naming what is
@@ -11,11 +11,10 @@ line. It returns the files it wrote (`lab page gather_group --instance LABEL`, d
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 
-from _record import Record, against, card
+from _record import Record, against, card, read
 
 UNIT = "cycles a block's window a CTA"
 CELL = "a block's window gathered: every list a run, values only, 4 live digits a token"
@@ -42,13 +41,8 @@ FORMS = (
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    path = data / "lab/gather_group/sm_90a.json"
-    if not path.exists():
-        raise SystemExit(
-            "lab page: no record at data:lab/gather_group/sm_90a.json -- the page's measured section is "
-            "generated from a run of the experiment recorded with `lab run gather_group --record` on an sm_90a card"
-        )
-    d = json.loads(path.read_text())
+    rec = read(data, "gather_group")
+    d = rec.body()
     rows = {r["name"]: r for r in d["results"]}
     R = Record({n: r["median"] for n, r in rows.items()})
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
@@ -108,7 +102,7 @@ WHAT IT SHOWS.
 THREAD 0'S TRIP BY PHASE (the clocked form; thread 0 alone stores the packet):
 {phases}
 
-Record: `data:lab/gather_group/sm_90a.json`.
+Record: `{rec.cited}`.
 """
     p = root / "docs/lab/gather_group.md"
     s = p.read_text()

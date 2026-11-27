@@ -31,4 +31,4 @@ WHAT IT SHOWS. FIVE WARPGROUPS TRADE REGISTERS ON THE DEVICE when their counts s
 with: the two raised to 160 return from their raise and every role's held words are exact. A CTA of 640 threads
 has 61,440 registers for its roles, 4,096 under the SM's file.
 
-Record: `data:lab/reg_five/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/reg_five.run/20261113T002849Z-abe7c49c/output.json`.

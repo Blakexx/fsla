@@ -274,13 +274,13 @@ Unchecked: an isolation.
 THE TRACED ROWS -- the digit form with the panel by stmatrix, the same with the drain warps expanding (the serve row),
 the operands landed made with their coefficient tiles, and that form with every box its own stream from HBM -- each
 its unclocked row with every warp's timeline stamped (`lab trace`; the traces at
-`data:lab/carry_window/sm_90a.trace/` (warpline's native records, a row each), and at 8 CTAs `sm_90a.blocks8.trace/` beside it, that record
-fsla 99807df0's; the full grid's are fsla 44e2597c's; at ONE CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
+`data:records/fsla/measure/lab/carry_window.run/20261118T063153Z-2662d97a/trace/` (warpline's native records, a row each), and at 8 CTAs `data:records/fsla/measure/lab/carry_window.run/20261116T023809Z-971355fa/trace/`, that record
+fsla 99807df0's; the full grid's are fsla 44e2597c's; at ONE CTA, `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/output.json` and `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/trace/`, whose own section THE LAUNCH'S EDGES is below. `kFine` ALONE is an EDGES row, `, the launch's two edges stamped`: the plain kernel with its two edges and nothing else stamped). The figures here are rounded: a session moves each by a few
 cycles, the record holds them. Measured on an H100 SXM (Nebius): A FINE TRACE (every wait, arrival and issue beside
 the phases' starts) costs the first three some 15%, 25% and 22% of their windows and the own-stream row 2%, so its
 cycles are read for structure; A DETAIL ROW (the kernel `window_detail`: the coarse row's body with ONE group of waits and arrivals kept) spends a
 stamp budget on one question, and four of them are every wait between the own-stream row's roles. At one CTA
-(`sm_90a.blocks1.json`, the experiment at 4094bdcf; `bazel run //tools:lab -- trace carry_window` reads the rows'
+(`data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/output.json`, the experiment at 4094bdcf; `bazel run //tools:lab -- trace carry_window --blocks 1` reads the rows'
 records) they cost 4.9% to 7.6% of the plain window where the coarse row costs 3.6%, and they give: a fold warp
 waits 555 to 592 cycles a window on its tile groups read (a tenth of the window); a readout warp 1,153 on the tile
 groups published (a fifth) and 500 on the panels drained; a drain warp 1,380 on the panels filled (a quarter). THE
@@ -330,7 +330,7 @@ with the operands loaded two steps ahead, whose binary holds several loads in fl
 some 6,510 against 6,500 (the ahead rows above). The clocked ahead row below shows why: in the composed form its
 steps' issue does not fall at all.
 
-THE ISSUE COUNT (the timed ledger, `data:lab/carry_window/ledger_timed_sm_90a/`, the digit form with the
+THE ISSUE COUNT (the timed ledger, `data:records/fsla/tools/lab/20261115T234424Z-c03353b2/`, the digit form with the
 panel by stmatrix: its executed warp instructions by role, the role's code the span between its register raise or
 release and the next): a scheduler holds one warp of each warpgroup -- two fold warps, a readout warp, a drain warp --
 and issues some 3,000 instructions a window: the fold's two some 1,320 (some 660 a warp), the readout some 940, the
@@ -357,7 +357,7 @@ own steps: with them out the fold's issue fell only 2,263 to 1,991 in the operan
 the uniform datapath each step's operands cross (the readout issues some 400 uniform instructions a scheduler a
 window), and the shared-memory pipe the steps' operands are read through.
 
-THE STEPS' STALLS (`data:lab/carry_window/ledger_steps_sm_90a/`: the timed launches of the digit form with
+THE STEPS' STALLS (`data:records/fsla/tools/lab/20261116T063015Z-02b8d046/`: the timed launches of the digit form with
 the panel by stmatrix and of its ahead row, one binary, profiled on an H100 SXM): over the fold's step loops both are
 alike -- 57% of their stall samples the short scoreboard, 15-16% issuing, 9-10% a fixed wait, 7% unselected, 4-6% the
 tensor pipe -- and 87-88% of the samples are at the moves of a step's operands into the uniform registers, waiting on
@@ -427,7 +427,7 @@ cycles against some 6,500; its clocked twin spills, so the window alone is read.
 rounded): IT LOSES TOO -- some 6,580 cycles a window against some 6,500, exact. No form that takes the shared load out
 of the fold's steps has shortened the composed window; where its time goes is read from its profile, below.
 
-THE PACKED ROW'S PROFILE (`data:lab/carry_window/ledger_packed_sm_90a/`: the timed launches of the plain
+THE PACKED ROW'S PROFILE (`data:records/fsla/tools/lab/20261117T233232Z-344f437c/`: the timed launches of the plain
 digit form and of the packed-table row, one binary, profiled on an H100 SXM; a role's stall samples are its warps'
 time). The fold's warps: 5,299 instructions a CTA window plain, 8,662 packed -- a held word is made by every thread,
 so each of the 8 fold warps makes the slot's whole table; the short scoreboard 26% of the fold's samples plain and 11%
@@ -437,7 +437,7 @@ wait on its operands' load hid the same wait -- the two fold warpgroups issue a 
 the readout's; and the table's making is some 3,400 instructions a window the plain form does not issue. What a held
 table saved, its making and the steps' own completion took.
 
-THE LIGHT-LOAD RECORD (`data:lab/carry_window/sm_90a.blocks8.json`, the whole experiment at 8 CTAs, `lab
+THE LIGHT-LOAD RECORD (`data:records/fsla/measure/lab/carry_window.run/20261116T023809Z-971355fa/output.json`, the whole experiment at 8 CTAs, `lab
 run --blocks 8`) asked whether a copy's flight is a fixed latency or the card's bandwidth shared. PREDICTED, if
 shared: at 8 CTAs the flight falls to some 1,000-1,500 and the window toward 3,000-3,500. Measured: neither on the
 shared streams -- their windows do not move, because the fold's own chain, not the copy, holds them; on the own stream
@@ -907,7 +907,7 @@ WHAT IT SHOWS.
   bound by the instructions it issues, and what holds each is not isolated.
 - THE COUNTERS: this record's run read none; the phase ledger below holds the windows' counts.
 
-THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, the experiment at
+THE LAUNCH'S EDGES (one CTA, `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/output.json` and its traced rows, the experiment at
 4094bdcf, 7 repetitions; the row whose name with `, the launch's two edges stamped` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
 - THE WINDOW, cycles a window a CTA: the plain row's 5,288; the edges row's 5,300, the same as the plain row's
@@ -918,8 +918,8 @@ and coarse twins by its name with that suffix removed and replaced): each warp m
   206,336 ns, 1,724.0 cycles a microsecond. The warps enter within 40 (the coarse row's: 47) cycles
   and exit within 1,040 (1,409).
 
-Record: `data:lab/carry_window/sm_90a.json` (and, at one CTA with the edges row, `sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace/`); the phase ledger's dumps:
-`data:lab/carry_window/ledger_sm_90a/ledger.json` and the dumps beside it.
+Record: `data:records/fsla/measure/lab/carry_window.run/20261118T063153Z-2662d97a/output.json` (and, at one CTA with the edges row, `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/output.json` and its traced rows `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/trace/`); the phase ledger's dumps:
+`data:records/fsla/tools/lab/20261115T235633Z-bcc1c663/output.json` and its dumps, the sample's parts.
 
 THE PHASE LEDGER (H100 SXM on Nebius, the pack at a8a55a64, `lab ledger-dumps` there and `lab ledger --packed --dump
 --per 528` here: each kernel's checked launch, 4 windows on 132 CTAs, profiled by ncu's SourceCounters; a CTA-window).
@@ -935,8 +935,8 @@ launch's start, 161 (once a launch). The block form adds its expansion (some 290
 the fold's state out too, so its stall samples are the dump's, not the window's.
 
 THE TIMED LAUNCH'S LEDGER (the pack at c9e374fd, `ledger-dumps --skip 1`: each kernel's first timed launch, 64 windows
-on 132 CTAs, `--per 8448`; its dumps `data:lab/carry_window/ledger_timed_sm_90a/ledger.json` and beside
-it). Of all warps' stall samples, THE FOLD'S STEPS' LOOP HOLDS THE MOST: 20% in the block form with the panel by
+on 132 CTAs, `--per 8448`; its manifest `data:records/fsla/tools/lab/20261115T234424Z-c03353b2/output.json`, its dumps
+the sample's parts). Of all warps' stall samples, THE FOLD'S STEPS' LOOP HOLDS THE MOST: 20% in the block form with the panel by
 stmatrix (its reasons the warpgroup's barrier 53%, a short scoreboard 24%) and 27% in both sides' made with it (short
 scoreboard 32%, barrier 25%) -- some half of the fold warps' samples, its 8 of the CTA's 16 warps; then the drain
 warps' (long scoreboard, waiting), the readout's coefficient loads (long scoreboard 73-81%). A short scoreboard at a

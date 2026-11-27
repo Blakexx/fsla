@@ -57,4 +57,4 @@ next. THE WRONG PRICE: the spread between boxes, taken as nothing. NOT SHOWN: wh
 (the record holds no row without it), and that the multiprocessor's memory traffic is what bounds the rows from 2
 digits up (no counter was read).
 
-Record: `data:lab/mask_prepare_time/sm_90a.json`; the lab kernel's: `data:lab/mask_prep/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/mask_prepare_time.run/20261125T095202Z-c0ab6576/output.json`; the lab kernel's: `data:records/fsla/measure/lab/mask_prep.run/20261124T075010Z-a791f9e1/output.json`.

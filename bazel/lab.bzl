@@ -1,12 +1,13 @@
 """THE LAB'S EXPERIMENTS AS THE GRAPH'S TARGETS (docs/internals/tools/lab.md#graph): each `measure/lab/experiments/<name>.cu` is compiled by
 the graph's own CUDA rule (`bazel/cuda.bzl`'s `cuda_unit`, the rule that builds the library) for sm_90a and linked into its
 binary; the graph's disassemblers read the binary once (`tools/lab_facts.py`); and the checks -- the SASS checker, the notices'
-ledger, the declarations' (`tools/lab_check.py`) -- are a validation action over those files, so a refusal fails the build. The lab
-(`tools/lab.py`) builds the target and reads what it holds: it runs no compiler and no disassembler."""
+ledger, the declarations' (`tools/lab_check.py`) -- are a validation action over those files, so a refusal fails the build. Each
+experiment's RUN TARGET, `<name>.run`, is the lab (`tools/lab.py`) with that build in its runfiles: it runs and stores the
+experiment, or reads its build, and runs no compiler, no disassembler and no nested build."""
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cuda.bzl", "cuda_unit")
-load("//bazel:defs.bzl", "warpline_root")
+load("//bazel:defs.bzl", "lab_run", "warpline_root")
 
 #: the lab's architecture: the one of this tree (`tools/lab.py`'s `ARCH`), and `lab.cuh`'s `kLabBuild` compute capability (`hardware/registry.py`'s
 #: `cc_of`: x 10, as `__CUDA_ARCH__` reads it)
@@ -116,7 +117,8 @@ _lab_experiment = rule(
 )
 
 def lab_experiment(name, src, includes = [], deps = []):
-    """The lab experiment `name` (`src`, its source): its unit, its binary and the outputs the lab reads. `includes`: the sources of
+    """The lab experiment `name` (`src`, its source): its unit, its binary, the outputs the lab reads and its run target
+    `<name>.run` (the package's `:stamp`, `workspace_stamp`, the commit its records name). `includes`: the sources of
     other experiments it includes by name (`call_pair` is built of two others'). `deps`: the kernels' headers it includes beyond the
     harness's own (`//csrc/fsla:harness_headers`), so that an edit to a kernel's header rebuilds only the experiments that name it."""
     cuda_unit(
@@ -147,6 +149,16 @@ def lab_experiment(name, src, includes = [], deps = []):
         binary = ":%s.%s" % (name, _ARCH),
         unit = ":%s_unit" % name,
         source = src,
+    )
+
+    #: THE EXPERIMENT'S RUN TARGET: `bazel run //measure/lab:<name>.run` measures and stores it (`lab run`), and
+    #: `-- <command> ...` is any other lab command that reads its build (`sass`, `ncu`, `ledger`, `waits`, `steps`, `pack`)
+    lab_run(
+        name = name + ".run",
+        experiment = ":" + name,
+        library = "@warpline//:warpline",
+        stamp = ":stamp",
+        workspace = native.module_name(),
     )
 
 _CHECKED_TEST = """\

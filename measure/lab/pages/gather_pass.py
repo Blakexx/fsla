@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/gather_pass.md`, generated from `data:lab/gather_pass/sm_90a.json`.
+"""The measured section of `docs/lab/gather_pass.md`, generated from the newest sample of `gather_pass`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/gather_pass.md` under `root` from its first
 `MEASURED (H100` to the end of the page (the page's last line is the `Record:` line), every figure the record's own.
@@ -10,15 +10,15 @@ the files it wrote (`lab page gather_pass --instance LABEL`, docs/internals/tool
 
 from __future__ import annotations
 
-import json
 import pathlib
 
-from _record import Record
+from _record import Record, read
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
-    d = json.loads((data / "lab/gather_pass/sm_90a.json").read_text())
+    sample = read(data, "gather_pass")
+    d = sample.body()
     R = Record({r["name"]: r["median"] for r in d["results"]})
 
     def g(n, f="{:,.0f}"):
@@ -168,7 +168,7 @@ WHAT IT SHOWS.
   unmeasured; the pass beside a running carry is unmeasured (the carry filling from a stream the host laid is
   [`carry_window`](carry_window.md)'s); the same kernels on another rented card are not compared.
 
-Record: `data:lab/gather_pass/sm_90a.json`.
+Record: `{sample.cited}`.
 """)
     p = root / "docs/lab/gather_pass.md"
     s = p.read_text()

@@ -20,7 +20,7 @@ naive per-list reference and the live count; floors at a flat read's rate (855 G
 | 4 | 379 us | 130 us (101 at one chunk) | 497 us, 1.47x required | 456 us, 1.35x | 394-418 us, 1.17-1.24x |
 | 16 | 423 us | 251 us (210 at one chunk) | 645 us, 1.67x | 604 us, 1.56x | 484-528 us, 1.25-1.37x |
 
-Findings (each measured on the way; the record is `data:lab/facts_two/sm_86.json`, the narrative the findings
+Findings (each measured on the way; the record is `data:records/fsla/measure/lab/facts_two.run/20261011T001150Z-0ccec77d/output.json`, the narrative the findings
 document):
 - THE BUILD'S INSTRUCTIONS: a lane a digit's words walked 156-ish instructions an entry and 33% of the lanes; a lane an
   entry from the flat list is 17 instructions an entry at k 4 and 7 at k 16, issue-bound at 77% eligible once a launch

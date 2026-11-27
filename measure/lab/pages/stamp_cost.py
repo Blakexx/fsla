@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/stamp_cost.md`, generated from `data:lab/stamp_cost/sm_90a.json`.
+"""The measured section of `docs/lab/stamp_cost.md`, generated from the newest sample of `stamp_cost`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/stamp_cost.md` under `root` from its
 `MEASURED (` line (the first run: from its `NOT YET MEASURED` line) through its `Record:` line, every figure the record's
@@ -10,15 +10,15 @@ card's line. It returns the files it wrote (`lab page stamp_cost --instance LABE
 
 from __future__ import annotations
 
-import json
 import pathlib
 
-from _record import Record
+from _record import Record, read
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
-    d = json.loads((data / "lab/stamp_cost/sm_90a.json").read_text())
+    sample = read(data, "stamp_cost")
+    d = sample.body()
     R = Record({r["name"]: r["median"] for r in d["results"]})
 
     STEPS = ("a wgmma step", "a chained step", "an independent step")
@@ -114,7 +114,7 @@ WHAT IT DECIDES.
   stamp site costs {added(W, OFF, 1):.1f}, {added(C, OFF, 1):.1f} and {added(I, OFF, 1):.1f} cycles at one a step where the stamp itself costs {added(W, HELD, 1):.1f}, {added(C, HELD, 1):.1f} and {added(I, HELD, 1):.1f}; taken one step
   in eight, {added(W, EIGHTH, 1):.1f}, {added(C, EIGHTH, 1):.1f} and {added(I, EIGHTH, 1):.1f}. AS COMPILED the skipping path is two instructions, a test and a branch, and the toolkit
   stalls both: a block ends with what its pending instructions are owed (KERNEL_STANDARDS section 27's fence, on this
-  card; the stall counts are read with `lab sass stamp_cost`). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
+  card; the stall counts are read with `bazel run //measure/lab:stamp_cost.run -- sass`). A STAMP IS SWITCHED AT COMPILE TIME, never by a branch at run time.
 - THE CALLER'S STAMP -- a clock read and a store to an address the kernel builds from an index it already holds, no
   state of the stamp's own -- is the lean stamp in shared memory ({added(W, SLOT, 1):.1f}, {added(C, SLOT, 1):.1f} and {added(I, SLOT, 1):.1f} at one a step against the lean
   stamp's {added(W, LEAN, 1):.1f}, {lean_c1:.1f} and {lean_i1:.1f}; {added(W, SLOT, 2):.1f}, {added(C, SLOT, 2):.1f} and {added(I, SLOT, 2):.1f} at two): the toolkit compiles both to the same four
@@ -124,12 +124,11 @@ WHAT IT DECIDES.
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the
   store alone {added(I, STORE, 1):.1f}.
 
-Record: `data:lab/stamp_cost/sm_90a.json`.
+Record: `{sample.cited}`.
 """
     p = root / "docs/lab/stamp_cost.md"
     s = p.read_text()
     i = s.index("MEASURED (") if "MEASURED (" in s else s.index("NOT YET MEASURED")
-    rec = "Record: `data:lab/stamp_cost/sm_90a.json`.\n"
-    j = s.index(rec, i) + len(rec) if rec in s[i:] else len(s)
+    j = s.index("\n", s.index("Record: `data:", i)) + 1 if "Record: `data:" in s[i:] else len(s)
     p.write_text(s[:i] + text + s[j:])
     return [p]

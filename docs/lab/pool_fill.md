@@ -42,4 +42,4 @@ WHAT IT SHOWS.
   the rate [`load_rate`](load_rate.md) gives a warp with these rows in flight; past two the entry's 160 bytes of
   shared stores, or its loads' path, binds, and no row here separates them.
 
-Record: `data:lab/pool_fill/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/pool_fill.run/20261112T055006Z-1b3afa6e/output.json`.

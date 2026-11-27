@@ -48,4 +48,4 @@ WHAT IT SHOWS.
 - THE 2 GB TABLE, FRESH MEMORY AGAINST THE RING: 21.06 cycles a 128-byte row a CTA, 1.96 cycles above the 19.10 of OUT, a ring.
 - THE 2 GB TABLE, 256 ROWS IN FLIGHT AGAINST 512 (THE RING): 20.86 cycles a 128-byte row a CTA, 1.76 cycles above the 19.10 of OUT, a ring.
 
-Record: `data:lab/gather_rate/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/gather_rate.run/20261120T235122Z-a6009362/output.json`.

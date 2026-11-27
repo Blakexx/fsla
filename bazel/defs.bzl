@@ -12,6 +12,7 @@ load(
     _interleaved_timing = "interleaved_timing",
     _results_store = "results_store",
     _timing_entry = "timing_entry",
+    _workspace_stamp = "workspace_stamp",
 )
 load(
     "@fsla_devtools//bazel:rules.bzl",
@@ -693,8 +694,9 @@ def timing_entry(name, **kwargs):
     _timing_entry(name = name, data = _BUNDLE, layout = _ARM_TABLES, binds = _BINDS, venv = VENV,
                   python = Label("@fsla_env//:python"), **kwargs)
 
-#: an interleaved session over timing entries, stored by `bazel run` (docs/measurement.md#sessions)
-interleaved_timing = _interleaved_timing
+def interleaved_timing(name, **kwargs):
+    """An interleaved session over timing entries, stored by `bazel run` at its own label (docs/measurement.md#sessions)."""
+    _interleaved_timing(name = name, workspace = native.module_name(), **kwargs)
 
 def instrument(name, device = False, **kwargs):
     """AN INSTRUMENT (docs/measurement.md#instruments): a tool's JSON over the files it reads, on the environment's
@@ -702,36 +704,57 @@ def instrument(name, device = False, **kwargs):
     _instrument(name = name, venv = VENV, devices = Label("@host_gpu//:identity.txt") if device else None, **kwargs)
 
 def results_store(name, **kwargs):
-    """A BUILD OUTPUT'S RECORD (docs/measurement.md#instruments): `bazel run` stores each of its files unless the store
-    already holds it."""
-    _results_store(name = name, venv = VENV, python = Label("@fsla_env//:python"), **kwargs)
+    """A BUILD OUTPUT'S RECORD (docs/measurement.md#instruments): `bazel run` stores each of its files at this target's
+    label unless the store already holds it."""
+    _results_store(name = name, workspace = native.module_name(), venv = VENV, python = Label("@fsla_env//:python"), **kwargs)
+
+def workspace_stamp(name):
+    """The workspace's stamp as `<name>.stamp.json`: the commit a program run by `bazel run` stores what it measured
+    against (the lab's runs, `lab_run`)."""
+    _workspace_stamp(name = name, python = Label("@fsla_env//:python"))
 
 _LAB_RUN = """\
 #!/bin/bash
 # a tool that reads compiled code through warpline or the lab's records, as a run target (bazel/defs.bzl's lab_run): {tool} in the checkout, on the
-# checkout's own venv, handed the pinned data's root (`FSLA_DATA`, measure/data.py) and the directory that holds the `warpline` package (the checker, and
-# the library that reads the traced rows), each by its resolved path (the runfiles' links do not outlive the run)
+# checkout's own venv, handed the pinned data's root (`FSLA_DATA`, measure/data.py), the directory that holds the `warpline` package (the checker, and
+# the library that reads the traced rows) and, for an experiment's run, the directory its build lies in and the workspace's stamp, each by its
+# resolved path (the runfiles' links do not outlive the run)
 set -euo pipefail
 checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
 data="$(dirname "$(readlink -f {data})")"
-{package}venv="$(git -C "$checkout" config --get fsla.venv || true)"
+{package}{built}venv="$(git -C "$checkout" config --get fsla.venv || true)"
 if [ ! -x "$venv/bin/python" ]; then
   echo "$checkout has no venv of its own (git config fsla.venv)" >&2
   exit 1
 fi
 cd "$checkout"
 export FSLA_DATA="$data"
-{warpline}exec "$venv/bin/python" {tool} "$@"
+{warpline}exec "$venv/bin/python" {tool} {experiment}"$@"
 """
 
 def _lab_run_impl(ctx):
     package, files = warpline_root(ctx, ctx.attr.library) if ctx.attr.library else (None, [])
+    experiment, built = "", ""
+    if ctx.attr.experiment:
+        name = ctx.attr.experiment.label.name
+        binary = [f for f in ctx.files.experiment if f.basename.startswith(name + ".") and "." not in f.basename[len(name) + 1:]]
+        if len(binary) != 1 or not ctx.file.stamp or not ctx.attr.workspace:
+            fail("%s: an experiment's run takes its target (`lab_experiment`, which builds `<name>.<arch>`), the stamp and its workspace" % ctx.label)
+        built = 'built="$(dirname "$(readlink -f %s)")"\nstamp="$(readlink -f %s)"\n' % (
+            shell.quote(binary[0].short_path),
+            shell.quote(ctx.file.stamp.short_path),
+        )
+        label = "@%s//%s:%s" % (ctx.attr.workspace, ctx.label.package, ctx.label.name)
+        experiment = '--built "$built" --stamp "$stamp" --label %s %s ' % (shell.quote(label), shell.quote(name))
+        files = files + ctx.files.experiment + [ctx.file.stamp]
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
     ctx.actions.write(script, _LAB_RUN.format(
         tool = shell.quote(ctx.attr.tool),
         data = shell.quote(ctx.file.data.short_path),
         package = 'package="$(readlink -f %s)"\n' % shell.quote(package.short_path) if package else "",
         warpline = 'export FSLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"\n' if package else "",
+        built = built,
+        experiment = experiment,
     ), is_executable = True)
     return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files + [ctx.file.data]))]
 
@@ -742,9 +765,13 @@ lab_run = rule(
         "library": attr.label(doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`); none for a tool that reads records only"),
         "data": attr.label(default = "@fsla_data//:root", allow_single_file = True, doc = "the pinned data, by its root's BUILD file (MODULE.bazel's `environment.data`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker, or the lab's records"),
+        "experiment": attr.label(doc = "an experiment's target (`lab_experiment`): its build, in the runfiles, is what the lab runs and reads"),
+        "stamp": attr.label(allow_single_file = True, doc = "the workspace's stamp (`workspace_stamp`), the commit an experiment's run is stored against"),
+        "workspace": attr.string(doc = "the repository's module name (`native.module_name()`): an experiment's run stores its samples at `@<workspace>//<package>:<name>`, its own label"),
     },
     doc = "The lab (`tools/lab.py`, or `tool`: the floor model) run by `bazel run` in the checkout, handed the " +
-          "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
+          "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`; " +
+          "with `experiment`, the experiment's build and the stamp: its arguments follow `--`.",
 )
 
 def tree_part(parts = {}):

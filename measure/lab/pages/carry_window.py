@@ -1,17 +1,17 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/carry_window.md`, generated from `data:lab/carry_window/sm_90a.json`.
+"""The measured section of `docs/lab/carry_window.md`, generated from the newest sample of `carry_window`'s record.
 
 `write(root, data, instance)` reads that record in the pinned data `data` and rewrites, in the docs under `root`:
 - `docs/lab/carry_window.md`: everything from its first `MEASURED (H100 80GB` up to the line starting
-  ``Record: `data:lab``, every figure the record's own;
+  ``Record: `data:``, every figure the record's own;
 - `docs/ARCHITECTURE.md`: the five figures it restates of this record, each substituted where its pattern matches once;
 - `docs/lab/intra_window.md`: the carry's figure it quotes.
 `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the card's
 line. It returns the files it wrote (`lab page carry_window --instance LABEL`, docs/internals/tools/lab.md).
 
-THE LAUNCH'S EDGES, a section at the end of that span, is generated from the one-CTA record
-`sm_90a.blocks1.json` and its trace `sm_90a.blocks1.trace/` (warpline's records, a row each): for each row of the record whose name carries
+THE LAUNCH'S EDGES, a section at the end of that span, is generated from the one-CTA record (`blocks` 1) and its
+traced rows, its sample's parts `trace/row<i>.json` (warpline's records, a row each): for each row of the record whose name carries
 `, the launch's two edges stamped`, the plain row's window, the edges row's and the coarse row's (the name with the
 suffix removed, and with it replaced by `, every warp's phases stamped`: rows are matched by name, never by position),
 and the edges row's and the coarse row's launch from the trace (`tools/lab_trace.py`'s `Cta.launch`, warpline's).
@@ -19,12 +19,11 @@ and the edges row's and the coarse row's launch from the trace (`tools/lab_trace
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 import sys
 
-from _record import Record
+from _record import Record, read
 
 #: two windows within this share of each other (of the lesser) are said to agree
 SAME = 0.005
@@ -36,10 +35,10 @@ def edges_section(root: pathlib.Path, data: pathlib.Path) -> str:
     sys.path.insert(0, str(root / "tools"))
     import lab_trace
 
-    folder = data / "lab/carry_window"
-    rec = json.loads((folder / "sm_90a.blocks1.json").read_text())
+    sample = read(data, "carry_window", blocks=1)
+    rec = sample.body()
     windows = {r["name"]: r["median"] for r in rec["results"] if r.get("unit") == "cycles a window a CTA"}
-    traces = dict(lab_trace.load(folder / "sm_90a.blocks1.trace"))
+    traces = dict(lab_trace.load(sample.part("trace")))
 
     def launch(name):
         scope = traces[name].scopes()[0]
@@ -64,7 +63,7 @@ def edges_section(root: pathlib.Path, data: pathlib.Path) -> str:
             return "the same as the plain row's" if word == "the same as" else f"{abs(share) * 100:.1f}% {word} the plain row's"
 
         parts.append(
-            f"""THE LAUNCH'S EDGES (one CTA, `sm_90a.blocks1.json` and `sm_90a.blocks1.trace/`, the experiment at
+            f"""THE LAUNCH'S EDGES (one CTA, `{sample.cited}` and its traced rows, the experiment at
 {rec["git"]["sha"][:8]}{" (a dirty tree)" if rec["git"].get("dirty") else ""}, {rec["reps"]} repetitions; the row whose name with `{lab_trace.EDGES_SUFFIX}` exists, its plain
 and coarse twins by its name with that suffix removed and replaced): each warp marks its entry at the kernel's top and its exit at its role's end, on both clocks.
 - THE WINDOW, cycles a window a CTA: the plain row's {windows[plain]:,.0f}; the edges row's {windows[edged]:,.0f}, {cost(se, we)}
@@ -80,7 +79,7 @@ and coarse twins by its name with that suffix removed and replaced): each warp m
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    j = json.loads((data / "lab/carry_window/sm_90a.json").read_text())
+    j = read(data, "carry_window").body()
     R = Record({r["name"]: r["median"] for r in j["results"]})
     # a role's steps as the page reads them: their issue and their wait together (the record holds the two apart),
     # a warpgroup's first warp's the same; the wait alone is kept under the site's name with " (wait)"
@@ -692,7 +691,7 @@ WHAT IT SHOWS.
     p = root / "docs/lab/carry_window.md"
     s = p.read_text()
     a = s.index("MEASURED (H100 80GB")
-    b = s.index("Record: `data:lab")
+    b = s.index("Record: `data:")
     p.write_text(s[:a] + text + s[b:])
 
     # the architecture's figures of this record, kept the record's

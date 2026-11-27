@@ -26,7 +26,7 @@ every family's launching entry, carry included) admits the device's card by the 
 numbers must lie in a registered context ([`arch_runtime.md`](internals/common/arch_runtime.md#check-arch-table)), so a number
 the contract does not hold is refused by a user's first launch -- unless you probe it first.
 
-Then PROBE THE DEVICE, which admits it to the contract: run `//measure/lab:device_probe` on the card (`bazel run //tools:lab -- run device_probe --record`, then
+Then PROBE THE DEVICE, which admits it to the contract: run `//measure/lab:device_probe` on the card (`bazel run //measure/lab:device_probe.run`, which stores its record, then
 `bazel run //tools:lab -- page device_probe --instance LABEL`), read the candidate part it writes (`hardware/parts/device/<id>.candidate.json`), complete what
 it names in `unestablished`, and commit it renamed to `<id>.json` with a descriptor composing it. The registry refuses a candidate file, so only a reviewed part
 counts; the build's contract check then covers it ([`internals/hardware/registry.md#probe`](internals/hardware/registry.md#probe)).

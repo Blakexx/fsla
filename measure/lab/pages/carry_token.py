@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/carry_token.md`, generated from `data:lab/carry_token/`.
+"""The measured section of `docs/lab/carry_token.md`, generated from the newest samples of `carry_token`'s two records.
 
-`write(root, data, instance)` reads, in the pinned data `data`, `sm_90a.blocks1.json` and `sm_90a.blocks132.json` (the clock locked, one CTA and the
-full grid) and the warpline records beside them, `sm_90a.blocks1.trace/` and `sm_90a.blocks132.trace/` (a row each),
+`write(root, data, instance)` reads, in the pinned data `data`, the records of one CTA and of the full grid (`blocks` 1 and 132, the clock locked)
+and the warpline records each sample holds as its parts, `trace/row<i>.json` (a row each),
 and rewrites `docs/lab/carry_token.md` under `root` from its `MEASURED (` line to its end, every figure the records' own
 and every comparative word chosen by the figures it compares. Rows are matched by NAME -- a traced row's name with its
 trace suffix removed (`lab_trace.untraced_name`) is its plain twin's -- never by position. A row the experiment has and
@@ -18,12 +18,11 @@ which boxes the labels name and not which record ran on which. It returns the fi
 
 from __future__ import annotations
 
-import json
 import pathlib
 import sys
 from collections import defaultdict
 
-from _record import Record
+from _record import Record, read
 
 #: two windows (or two figures) within this share of each other (of the lesser) are said to agree
 SAME = 0.02
@@ -176,8 +175,8 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     sys.path.insert(0, str(root / "tools"))
     import lab_trace
 
-    folder = data / "lab/carry_token"
-    recs = {n: json.loads((folder / f"sm_90a.blocks{n}.json").read_text()) for n in (1, 132)}
+    samples = {n: read(data, "carry_token", blocks=n) for n in (1, 132)}
+    recs = {n: sample.body() for n, sample in samples.items()}
     one, full = recs[1], recs[132]
     for n, r in recs.items():
         assert r["blocks"] == n, f"lab page: the record named for {n} CTAs is of {r['blocks']}"
@@ -194,7 +193,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     }
     names = list(rows[132])
     assert list(rows[1]) == names, "lab page: the two records hold different rows"
-    traces = {n: dict(lab_trace.load(folder / f"sm_90a.blocks{n}.trace")) for n in (1, 132)}
+    traces = {n: dict(lab_trace.load(sample.part("trace"))) for n, sample in samples.items()}
 
     def plain_of(name):
         return lab_trace.untraced_name(name)
@@ -597,7 +596,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     assert all(x > 0 for x in drain_waits)
     timelines_text = (
         "THE TWO READOUTS' TIMELINES (the four every-stamp rows of the four-digit grouped fold at "
-        f"{sms} CTAs, CTA {scope132}; `bazel run //tools:lab -- trace carry_token --record data:lab/carry_token/sm_90a.blocks{sms}.json --row \"<row>\"` "
+        f"{sms} CTAs, CTA {scope132}; `bazel run //tools:lab -- trace carry_token --blocks {sms} --row \"<row>\"` "
         "with the rows' endings `groups of four, every warp's timeline stamped$`, `packet's, every warp's timeline stamped$`, `ready to add, every warp's timeline stamped$` and `a pass ahead, every warp's timeline stamped$`): "
         + "; ".join(timeline_parts) + ". What they show: in all four the drain waits on a panel the readout fills "
         f"({', '.join(g(x) for x in drain_waits)} cycles a window a warp, the fixed, the listed, the ready and the listed with its lines a pass ahead) and the readout waits on the panels the drain has drained "
@@ -744,7 +743,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
         f"({more(ow[132], fm['fixed'][132])}) and against the best packet-driven row, the ready offsets a pass ahead, {g(best[132])} ({more(ow[132], best[132])}); at one CTA {g(ow[1])} against "
         f"{g(fm['fixed'][1])} ({more(ow[1], fm['fixed'][1])}) and against {g(best[1])} ({more(ow[1], best[1])}). ITS GROWTH FROM ONE CTA TO {sms}: the consumed form {more(ow[132], ow[1])}, "
         f"the fixed readout {more(fm['fixed'][132], fm['fixed'][1])} ({pct(gap['fixed'])}, called the same within {pct(SAME)}), the ready offsets a pass ahead {more(best[132], best[1])}. "
-        f"FROM THE COARSE ROW AT {sms} CTAs (CTA {scope132}; `bazel run //tools:lab -- trace carry_token --record data:lab/carry_token/sm_90a.blocks{sms}.json --row \"its readers' places the CTA's own lists from the read mask, every warp's phases stamped$\"`): "
+        f"FROM THE COARSE ROW AT {sms} CTAs (CTA {scope132}; `bazel run //tools:lab -- trace carry_token --blocks {sms} --row \"its readers' places the CTA's own lists from the read mask, every warp's phases stamped$\"`): "
         f"the row's window {g(w(132, own_c))} cycles (the fixed readout's coarse row {g(w(132, COARSE))}; its unstamped row {g(ow[132])}); the fold, the mean of its {ofolds} warpgroups, a window of {g(operiod)} cycles in their own windows "
         f"(the fixed coarse row's {g(period)}): {fold_line(oph)} (`window` is the image) (the fixed coarse row's: {fold_line(ph)}); the readout, its window {g(oread_period)} cycles (the fixed coarse row's {g(read_period)}), by phase: {phase_line(oread)} "
         f"(the fixed coarse row's: {phase_line(read_ph)}); the drain, its window {g(odrain_period)} cycles (the fixed coarse row's {g(drain_period)}), by phase: {phase_line(odrain)} "
@@ -779,7 +778,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     diffs = ", ".join(f"{k} {st_l['readout'][k] - st_f['readout'][k]:+,.0f}" for k in phase_keys)
     split_text = (
         f"THE READOUT'S PASS BY PHASES (the two rows with the readout's pass stamped by phases and the waits on the tile groups published and the panels drained, at {sms} CTAs, CTA {sc_f}; "
-        f"`bazel run //tools:lab -- trace carry_token --record data:lab/carry_token/sm_90a.blocks{sms}.json --row \"the readout's pass by phases stamped$\"`): "
+        f"`bazel run //tools:lab -- trace carry_token --blocks {sms} --row \"the readout's pass by phases stamped$\"`): "
         f"the fixed readout, the row's window {g(w(132, split_fixed))} cycles ({g(st_f_win)} in CTA {sc_f}'s steady span; its unstamped row {g(twin(split_fixed, 132))}, "
         f"{more(w(132, split_fixed), twin(split_fixed, 132))}), the readout in cycles a window a warp: {states_line(st_f)}; "
         f"the listed readout with the drain's lines a pass ahead, the row's window {g(w(132, split_far))} cycles ({g(st_l_win)} in the steady span; its unstamped row {g(twin(split_far, 132))}, "
@@ -869,7 +868,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     dates = f"{one['date'][:10]} {one['date'][11:16]} and {full['date'][11:16]} UTC" if one["date"][:10] == full["date"][:10] else f"{one['date'][:10]} and {full['date'][:10]} UTC"
     text = f"""MEASURED ({card(instance, full["device"], sms)}, driver {full["driver"]}, toolkit {toolkit}, the clock locked; {dates} (the one-CTA and the full-grid records), the
 experiment at {sha}, {full["reps"]} repetitions; the labels name the boxes of the two records, which hold no box's id; the {checked} checked rows pass at one CTA
-and at {sms}{f", the {len(isolation)} isolation rows are unchecked (their kernels are not the carry's)" if isolation else ""}{f"{' and' if isolation else ','} the {len(one_block)} one-block rows are unchecked for their own reason (every CTA reads block 0's reader packets, so its outputs are that block's readers' and the state is not the grid's: they are not isolation rows)" if one_block else ""}; `sm_90a.blocks1.json` and `sm_90a.blocks{sms}.json`, each with its traced rows' records beside it). {UNIT[0].upper() + UNIT[1:]}:
+and at {sms}{f", the {len(isolation)} isolation rows are unchecked (their kernels are not the carry's)" if isolation else ""}{f"{' and' if isolation else ','} the {len(one_block)} one-block rows are unchecked for their own reason (every CTA reads block 0's reader packets, so its outputs are that block's readers' and the state is not the grid's: they are not isolation rows)" if one_block else ""}; `{samples[1].cited}` and `{samples[sms].cited}`, each with its traced rows' records as its parts). {UNIT[0].upper() + UNIT[1:]}:
 
 {table}
 
@@ -894,8 +893,8 @@ THE PHASES, in each role's own window of the coarse row's record at {sms} CTAs (
     if extra:
         text += "\n" + "\n".join(f"- {e}" for e in extra) + "\n"
     text += (
-        "\nRecord: `data:lab/carry_token/sm_90a.blocks1.json` and `sm_90a.blocks132.json`, each with its traced rows' records in"
-        " `sm_90a.blocks1.trace/` and `sm_90a.blocks132.trace/`.\n"
+        f"\nRecord: `{samples[1].cited}` (one CTA) and `{samples[132].cited}` (the full grid), each with its traced rows' "
+        "records as its sample's parts, `trace/row<i>.json`.\n"
     )
     p = root / "docs/lab/carry_token.md"
     s = p.read_text()

@@ -34,8 +34,10 @@ cells it takes, and the clock reader.
 
 **`measure/lab/` — THE LAB.** Small CUDA experiments on the machine itself (what a pipe costs beside the tensor pipe,
 what ptxas does to a pattern), each a `experiments/<name>.cu` on the kit `lab.cuh`, compiled, SASS-gated, timed and
-recorded by `tools/lab.py` into the data repository's checkout (`lab/<name>/<sm_XX>.json`); a KERNEL_STANDARDS rule
-about the machine cites one by its path in that repository (docs/internals/tools/lab.md). `measure/data.py` finds the pinned data
+stored by `tools/lab.py` (each experiment's run target, `//measure/lab:<name>.run`) through the results store into the
+data repository's checkout (at the run target's label, a sample of the record its question keys); a KERNEL_STANDARDS rule about the
+machine cites a sample's output by its path in that repository (docs/internals/tools/lab.md). `measure/data.py`'s
+`lab_record` is the one reader of a lab record: the newest sample. `measure/data.py` finds the pinned data
 repository every reader takes the records from, its root handed in by the graph (`FSLA_DATA`).
 
 **`measure/` — the library.** `subjects.py` is the roster: one lean callable per

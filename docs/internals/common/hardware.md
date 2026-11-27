@@ -75,7 +75,7 @@ facts by the prefill launch function's matcher ([`window.md`](window.md)).
 
 A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` with exactly one source:
 
-- `measured` -- a lab (`data:lab/<lab>/sm_XX.json`), its result `row`, and the product it was measured
+- `measured` -- a lab (its record's newest sample, `measure/data.py`'s `lab_record`), its result `row`, and the product it was measured
   `on` (a product's own overrides are measured on it). The check refuses a value off its record's median by more
   than its rounding, or a record taken on another device.
 - `documented` -- the public document and the figure in it.

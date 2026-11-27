@@ -85,4 +85,4 @@ checked:
   for integer adds (30% of a 1.44x launch against 36%), the rest is the conversion in the request loop's latency
   (issue 740 against 484 a unit); the pipe model prices it at the s16 pairs' (the global path binds at 1,124 either way).
 
-Records: `data:lab/drain/sm_86.json`, `sm_86.counters.json`.
+Records: `data:records/fsla/measure/lab/drain.run/20261020T055217Z-bc7fe105/output.json`, `data:records/fsla/measure/lab/drain.run/20261019T014528Z-fab47a98/output.json` (its counters).

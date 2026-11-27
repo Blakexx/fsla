@@ -1,11 +1,11 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/clock_time.md`, generated from the five records in `data:lab/clock_time/`.
+"""The measured section of `docs/lab/clock_time.md`, generated from the newest samples of `clock_time`'s five records.
 
-`write(root, data, instance)` reads, in the pinned data `data`, `sm_90a.json` and `sm_90a.blocks1.json` (the clock locked: the lab's sessions lock it)
-and `sm_90a.unlocked.json` and `sm_90a.unlocked.blocks1.json` (the clock as the card left it) -- the four of five bodies,
-one commit -- and, read apart, `sm_90a.reads.blocks1.json` (the clock locked, one CTA, all seven bodies: the integer body
-and the two with a read of a clock a step, a later commit) under `root` and rewrites
+`write(root, data, instance)` reads, in the pinned data `data`, the full grid's and one CTA's records (the clock locked: the lab's sessions lock it)
+and the variant `unlocked`'s two (the clock as the card left it) -- the four of five bodies, one commit -- and, read apart,
+the variant `reads` at one CTA (the clock locked, all seven bodies: the integer body and the two with a read of a clock a
+step, a later commit) and rewrites
 `docs/lab/clock_time.md` under `root` from its `MEASURED (` line (the first run: from its `NOT YET MEASURED` line)
 through its `Record:` line, every figure the records' own and every comparative word chosen by the figures it
 compares. `instance` is the rented box's label of the locked run (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai),
@@ -15,27 +15,29 @@ docs/internals/tools/lab.md).
 
 from __future__ import annotations
 
-import json
 import pathlib
 
-from _record import Record
+from _record import Record, read
 
 #: two figures within this share of each other (of the lesser) are said to agree
 SAME = 0.005
-FILES = ("sm_90a.json", "sm_90a.blocks1.json", "sm_90a.unlocked.json", "sm_90a.unlocked.blocks1.json")
+#: the four records of five bodies, each the selection of its record: the full grid and one CTA, locked and unlocked
+RECORDS = {"locked": {}, "locked, one CTA": {"blocks": 1}, "unlocked": {"variant": "unlocked"},
+           "unlocked, one CTA": {"blocks": 1, "variant": "unlocked"}}
 #: the record of all seven bodies, the clock locked, one CTA: the third table's, read apart from the four
-READS = "sm_90a.reads.blocks1.json"
+READS = {"blocks": 1, "variant": "reads"}
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
-    folder = data / "lab/clock_time"
-    recs = {f: json.loads((folder / f).read_text()) for f in FILES}
+    samples = {f: read(data, "clock_time", **selected) for f, selected in RECORDS.items()}
+    recs = {f: sample.body() for f, sample in samples.items()}
     rows = {f: Record({r["name"]: r["median"] for r in d["results"]}) for f, d in recs.items()}
-    reads = json.loads((folder / READS).read_text())
+    reads_sample = read(data, "clock_time", **READS)
+    reads = reads_sample.body()
     read_rows = Record({r["name"]: r["median"] for r in reads["results"]})
     assert all(c["ok"] for c in reads["checks"]), "lab page: the reads record holds a check that failed"
-    d = recs["sm_90a.json"]
+    d = recs["locked"]
     assert all(c["ok"] for r in recs.values() for c in r["checks"]), "lab page: a record holds a check that failed"
     assert len({r["git"]["sha"] for r in recs.values()}) == 1, "lab page: the four records are of different commits"
     assert len({r["reps"] for r in recs.values()}) == 1, "lab page: the four records differ in repetitions"
@@ -51,10 +53,10 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     INT, SHARED, GLOBAL, STORE, WGMMA = BODIES
     #: the four columns: the record, its head
     COLS = (
-        ("sm_90a.unlocked.blocks1.json", "unlocked, one CTA"),
-        ("sm_90a.unlocked.json", "unlocked, full grid"),
-        ("sm_90a.blocks1.json", "locked, one CTA"),
-        ("sm_90a.json", "locked, full grid"),
+        ("unlocked, one CTA", "unlocked, one CTA"),
+        ("unlocked", "unlocked, full grid"),
+        ("locked, one CTA", "locked, one CTA"),
+        ("locked", "locked, full grid"),
     )
 
     def rate(f, body):
@@ -89,7 +91,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
         if inst.startswith("hs")
         else f"{d['device']}, vast.ai instance {inst}"
     )
-    U, UF, L, LF = "sm_90a.unlocked.blocks1.json", "sm_90a.unlocked.json", "sm_90a.blocks1.json", "sm_90a.json"
+    U, UF, L, LF = "unlocked, one CTA", "unlocked", "locked, one CTA", "locked"
     others = (INT, SHARED, GLOBAL, STORE)
 
     # the counter through waits on memory: the global-load chain's rate against the integer body's, unlocked
@@ -202,7 +204,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
         r_rate(b) for b, _ in READ_BODIES
     )
     reads_sha = reads["git"]["sha"][:8] + (" (a dirty tree)" if reads["git"].get("dirty") else "")
-    reads_text = f"""A READ'S COST, one CTA, the clock locked (`{READS}`: the experiment at {reads_sha}, {reads["reps"]} repetitions, driver {reads["driver"]},
+    reads_text = f"""A READ'S COST, one CTA, the clock locked (`{reads_sample.cited}`: the experiment at {reads_sha}, {reads["reps"]} repetitions, driver {reads["driver"]},
 {reads["date"][:10]}; every check passed): the integer body beside the same body with one 32-bit read a step of the cycle counter
 and of the nanosecond timer's low word, the read's value xor-ed into a value the step keeps:
 
@@ -233,8 +235,9 @@ WHAT IT DECIDES.
 - A STEP IN REAL TIME, locked against unlocked: {step_line(WGMMA, "a wgmma step")}; {step_line(INT, "an integer step")}.
 
 {reads_text}
-Record: `data:lab/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
-and `sm_90a.unlocked.blocks1.json` (unlocked), these four of five bodies; `sm_90a.reads.blocks1.json` (locked, one CTA, all seven bodies).
+Record: `{samples[LF].cited}` and `{samples[L].cited}` (the clock locked; the full grid, one CTA) and
+`{samples[UF].cited}` and `{samples[U].cited}` (unlocked), these four of five bodies; `{reads_sample.cited}` (locked, one CTA,
+all seven bodies).
 """
     p = root / "docs/lab/clock_time.md"
     s = p.read_text()

@@ -57,4 +57,4 @@ WHAT IT SHOWS.
 - THE TABLE'S SIZE DOES NOT MOVE THE FOUR-PRODUCER FORM and moves the one-producer form by a tenth; what
   separates the two is not isolated.
 
-Record: `data:lab/fold_stream/sm_90a.json`.
+Record: `data:records/fsla/measure/lab/fold_stream.run/20261112T011606Z-912ce277/output.json`.

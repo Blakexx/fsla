@@ -24,4 +24,4 @@ From 128 digits on the stream is at the peak at any block shape: neither the sec
 needed to stream. SPANS APART (the span outermost in the item order, so a row's other spans are read a whole sweep
 later, as a facts pass whose blocks drift apart reads them): 128 digits 527.8 (0.98), the same as innermost; 64 digits
 319.8 (0.59) against 0.81 innermost -- a 64-byte run is a whole burst only when its row's neighbour is read about the
-same time, a 128-byte run always. Record: `data:lab/row_span/sm_86.json`.
+same time, a 128-byte run always. Record: `data:records/fsla/measure/lab/row_span.run/20261008T192457Z-fdc479c5/output.json`.
