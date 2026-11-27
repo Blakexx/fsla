@@ -12,7 +12,7 @@ build, and the fixture its arms read.
 from __future__ import annotations
 
 from fsla_devtools.cells import build, central
-from fsla_devtools.cells.carry import DEPOSIT_TOKEN, RealizedCell, realize
+from fsla_devtools.cells.carry import realize
 from fsla_devtools.cells.form import Cell
 
 
@@ -28,4 +28,4 @@ def carry_cells(*, tier: str | None = None) -> tuple[Cell, ...]:  #: reserved: t
     return cells if tier is None else tuple(c for c in cells if c.tier in (tier, "both"))
 
 
-__all__ = ["DEPOSIT_TOKEN", "Cell", "RealizedCell", "by_name", "carry_cells", "realize"]
+__all__ = ["Cell", "by_name", "carry_cells", "realize"]

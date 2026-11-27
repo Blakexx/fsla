@@ -178,12 +178,6 @@ __device__ __forceinline__ void ldsm_t(uint32_t (&r)[4], uint32_t a) {
                : "memory");
 }
 
-__device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
-  uint32_t d;
-  asm("mul.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
-  return d;
-}
-
 __device__ __forceinline__ uint32_t pack_half2(float lo, float hi) {
   uint32_t d;
   asm("cvt.rn.f16x2.f32 %0, %1, %2;" : "=r"(d) : "f"(hi), "f"(lo));
@@ -213,10 +207,6 @@ __device__ __forceinline__ uint64_t held(uint64_t v) {
 //: group committed and waited, or an mbarrier arrival when all of the thread's prior copies land.
 __device__ __forceinline__ void cp_async16(uint32_t dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src));
-}
-
-__device__ __forceinline__ void cp_async4(uint32_t dst, const void* src) {
-  asm volatile("cp.async.ca.shared.global [%0], [%1], 4;" ::"r"(dst), "l"(src));
 }
 
 __device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;"); }
@@ -332,7 +322,6 @@ __device__ __forceinline__ void wg_bf16_n64_ss(float (&d)[32], uint64_t a, uint6
                : "l"(a), "l"(b), "r"(1));
 }
 
-#define LAB_WG_D8(d) "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
 //: m64n64k16, both operands M|N-major, its accumulator FOUR 16-column sets end to end (set `s` is columns `16 s`
 //: on: the registers a 16-column step of that set writes): `d` += A [64 x 16] B [16 x 64], or written whole
 __device__ __forceinline__ void wg_bf16_n64_ss_mn4(float (&d0)[8], float (&d1)[8], float (&d2)[8], float (&d3)[8],
@@ -364,15 +353,6 @@ __device__ __forceinline__ void wg_bf16_n64_rs(float (&d)[32], const uint32_t (&
                "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 " LAB_WG_D32_LIST
                ", {%32, %33, %34, %35}, %36, p, 1, 1, 0; }"
                : LAB_WG_D32(d)
-               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
-}
-
-//: m64n16k16 with A from the warpgroup's registers (a thread's 8 bf16 as 4 words, the layout `ldmatrix.x4` gives a
-//: 16 x 16 fragment) and B M|N-major in shared memory: `d` += A [64 x 16] B [16 x 16], or written whole
-__device__ __forceinline__ void wg_bf16_n16_rs(float (&d)[8], const uint32_t (&a)[4], uint64_t b, bool add = true) {
-  asm volatile("{ .reg .pred p; setp.ne.b32 p, %13, 0;\n"
-               "wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7}, {%8, %9, %10, %11}, %12, p, 1, 1, 1; }"
-               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
                : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(b), "r"(static_cast<int>(add)));
 }
 

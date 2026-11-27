@@ -299,7 +299,7 @@ full grid's record; any other's count is the warps that arrive at it), and the v
 * `lab::touch` — a line asked into the L2 cache ahead of the load that uses it (`prefetch.global.L2`). MEASURED on
   sm_90a under CUDA 13.0 (`carry_window`'s ahead rows): a plain `ld.global` whose result nothing reads compiled to no
   instruction at all; a row that asks states the asks its binary must hold.
-* The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
+* The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_wait_suspended` (sm_90: `try_wait`, the thread may be suspended), `mbar_test` (once).
 * WHAT THE LAB TAKES FROM PRODUCTION: `lab.cuh` includes `common/atoms/warp.cuh` and `common/structure_switch.cuh` (no copy;
   `csrc/fsla/src` is on the lab's include path) and offers `opaque`, `uniform_warp<Warps>()` and `uniform_switch<N>(v, body)`

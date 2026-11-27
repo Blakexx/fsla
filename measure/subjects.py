@@ -30,12 +30,11 @@ import torch
 
 @dataclass(frozen=True)
 class Launch:
-    """One thing to time: a name and the zero-argument callable that issues it. `reset`, for a launch that changes what
+    """One thing to time: the zero-argument callable that issues it. `reset`, for a launch that changes what
     its next call reads (a carried state, a decode step), restores exactly what the first call saw, and is run untimed
     before every call, so every call does the same work on the same data. `outside_allocator`, for a launch that holds
     device memory torch's caching allocator does not see, returns those bytes now."""
 
-    name: str
     call: Callable[[], object]
     reset: Callable[[], None] | None = None
     outside_allocator: Callable[[], int] | None = None
@@ -49,24 +48,17 @@ LEVELS = ("kernel", "op", "layer")
 
 @dataclass(frozen=True)
 class Subject:
-    """One registered bench: what it prices, at which LEVEL, which cell kind it takes, how it builds."""
+    """One registered bench: at which LEVEL it prices, which cell kind it takes, how it builds; what it prices is the
+    comment above its roster entry."""
 
     name: str
     kind: str
     build: Callable[[dict], Launch]
-    what: str
     #: THE LEVEL IT PRICES (Blake, 2026-09-15), recorded with every sample so a reading never crosses two of them:
     #: `kernel` is one family's launches and nothing around them; `op` is everything the op does over bare operands and
     #: a state -- the facts, the paging, the packing and the kernels -- as `prefill` calls it; `layer` adds the
     #: projections that produce the routing, and is the ONLY level at which this library is compared with another.
     level: str
-    #: THE BODY'S OWN NAME, for `ncu -k regex:`. A PREFIX would capture whichever kernel
-    #: of the family launches first, and that is not the same kernel on two binaries -- a
-    #: tip whose family launches a preliminary pass ahead of the body matches that pass
-    #: while its parent matches the body, and every ratio taken from the pair is
-    #: meaningless. Naming the body makes the two tips capture the same kernel or capture
-    #: nothing.
-    symbol: str
     #: The device-side stamp entry that proves THIS binary carries the family (a path or
     #: a hash cannot: only a fact the device produces can catch a stale binary).
     stamp: str
@@ -96,7 +88,7 @@ def prefill_op(fx) -> Launch:
         return prefill(routes, values, masks, density)
 
     run()
-    return Launch(name=f"prefill|{spec.name}", call=run)
+    return Launch(call=run)
 
 
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
@@ -137,7 +129,7 @@ def entmax_solve(fx) -> Launch:
     def run():
         return production_routing_levels(logits, layout)
 
-    return Launch(name=f"entmax_solve|{spec.name}", call=run)
+    return Launch(call=run)
 
 
 def layer_prefill(fx) -> Launch:
@@ -150,7 +142,7 @@ def layer_prefill(fx) -> Launch:
         with torch.no_grad():
             return layer._prefill(x, None, None)[0]
 
-    return Launch(name=f"layer_prefill|{spec.name}", call=run)
+    return Launch(call=run)
 
 
 def layer_op(fx) -> Launch:
@@ -167,7 +159,7 @@ def layer_op(fx) -> Launch:
         return prefill(routes, values, masks, density)[0]
 
     run()
-    return Launch(name=f"layer_op|{spec.name}", call=run)
+    return Launch(call=run)
 
 
 def decode_step(fx) -> Launch:
@@ -216,30 +208,23 @@ def decode_step(fx) -> Launch:
             y, _state = fsla.decode_step_gated(step_routes, values, step_masks, seeded["state"])
         return y
 
-    return Launch(name=f"decode_step|{spec.name}", call=run, reset=reset)
+    return Launch(call=run, reset=reset)
 
 
-#: THE ROSTER: one entry per kernel this line carries. The op-level subjects' `symbol` is the carry's, the first launch of the op
-#: once it is built: no kernel of the op is built on this line, so a capture of it finds nothing and a launch refuses by name.
+#: THE ROSTER: one entry per kernel this line carries; no kernel of the op is built on this line, so an op-level launch
+#: refuses by name.
 SUBJECTS = {
-    "prefill": Subject("prefill", "carry", prefill_op,
-                       "the stateless prefill as `prefill` runs it: carry, intra, glue and readout",
-                       level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
-    "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
-                            "the producer's batched multi-level solve",
-                            level="kernel", symbol="(factor|softmax)_forward_kernel",
-                            stamp="csrc_build_stamp"),
-    "layer_prefill": Subject("layer_prefill", "layer", layer_prefill,
-                             "the layer's stateless prefill, one segment: the producer and the op, the output "
-                             "projection outside it as it is outside attention's",
-                             level="layer", symbol="carry_kernel", stamp="csrc_build_stamp"),
-    "layer_op": Subject("layer_op", "layer", layer_op,
-                        "the op alone on the layer's own bundle: den, carry, intra, glue and readout",
-                        level="op", symbol="carry_kernel", stamp="csrc_build_stamp"),
-    "decode_step": Subject("decode_step", "layer", decode_step,
-                           "one carried single-token step through the engine over the dense plane, "
-                           "as the op runs it",
-                           level="op", symbol="decode_step_kernel", stamp="fsla_decode_build_stamp"),
+    #: the stateless prefill as `prefill` runs it: carry, intra, glue and readout
+    "prefill": Subject("prefill", "carry", prefill_op, level="op", stamp="csrc_build_stamp"),
+    #: the producer's batched multi-level solve
+    "entmax_solve": Subject("entmax_solve", "layer", entmax_solve, level="kernel", stamp="csrc_build_stamp"),
+    #: the layer's stateless prefill, one segment: the producer and the op, the output projection outside it as it is
+    #: outside attention's
+    "layer_prefill": Subject("layer_prefill", "layer", layer_prefill, level="layer", stamp="csrc_build_stamp"),
+    #: the op alone on the layer's own bundle: den, carry, intra, glue and readout
+    "layer_op": Subject("layer_op", "layer", layer_op, level="op", stamp="csrc_build_stamp"),
+    #: one carried single-token step through the engine over the dense plane, as the op runs it
+    "decode_step": Subject("decode_step", "layer", decode_step, level="op", stamp="fsla_decode_build_stamp"),
 }
 
 

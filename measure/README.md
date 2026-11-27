@@ -1,4 +1,4 @@
-# `measure/` — fsla's reading of the central cells, the benches over them, and the timing entries and diff sides over them
+# `measure/` — fsla's reading of the central cells, and the timing entries and diff sides over them
 
 The methodology, the instruments and the record are `docs/measurement.md`; the lock rule
 is `docs/testing.md`. This file is the map.
@@ -47,7 +47,7 @@ roster is a roster with kernels nobody measures — and it includes the carry, w
 does not exist on this line and whose arm therefore refuses by name rather than reporting
 a number for something that did not run. `provider.py` is fsla's runner: given a central cell
 it offers the subjects this binary runs on it, each at its call counts (`prefill@calls=4`), or refuses the cell by a
-fact of the cell or the binary, never by its name; arms build in their own checkout's venv.
+fact of the cell or the binary, never by its name; each entry runs in its bundle's environment.
 
 **A timing session** interleaves timing entries of fsla checkouts, and of other libraries, call by call under one
 stopwatch and the GPU and clock locks (`fsla_devtools.timing.session`, `docs/measurement.md`), and stores the raw
