@@ -84,7 +84,8 @@ def test_a_backward_surface_admits_only_the_cells_under_the_retained_state_budge
 
     d = load(ROOT / "declare.py")
     admitted = d["surface_cells"]("oracle")
-    assert admitted and "one-box-short" in admitted and "flagship-dense" not in admitted
+    #: both of the oracle tier, so the budget alone parts them: 16 MiB of state admitted, 520 MiB refused
+    assert admitted and "one-box-short" in admitted and "flat-small-carried" not in admitted
     for name, record in central().cells.items():
         if d["kind"](name) == "carry" and record["params"].get("tier") == "oracle":
             assert (name in admitted) == (d["retained_state_bytes"](record) < d["RETAINED_STATE_BUDGET"])
