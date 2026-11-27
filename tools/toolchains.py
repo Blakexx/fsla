@@ -1,7 +1,7 @@
 """THE TOOLCHAINS: each a named record of the exact assembler a fatbin is built under.
 
 `tools/toolchains/<name>.json` records one toolchain. The build takes no toolchain parameter: the pinned toolkit's
-`ptxas --version` (tools/cuda_toolkit_pin.json) selects the record that names it, and a toolkit no record names
+`ptxas --version` (fsla-devtools' pins/cuda_toolkit_pin.json) selects the record that names it, and a toolkit no record names
 refuses. Docs: docs/internals/tools/toolchains.md.
 """
 from __future__ import annotations

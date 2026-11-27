@@ -12,6 +12,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_fla
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
 load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "lab_run", "tool_run", "tool_test", "tree_part", "tree_test")
+load("@fsla_devtools//bazel:rules.bzl", "bazel_version_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 load("@tar.bzl", "tar")
@@ -527,9 +528,17 @@ checkout_test(
     cmd = ["python3", "tools/dev.py", "container", "gate"],
 )
 
+#: the Bazel release this workspace names (`.bazelversion`) is the one fsla-devtools' shared pins are tested with
+bazel_version_test(
+    name = "bazelversion",
+    size = "small",
+    version = ".bazelversion",
+)
+
 test_suite(
     name = "lints",
     tests = [
+        ":bazelversion",
         ":ruff",
         ":ruff_e3",
         ":lint_standards",

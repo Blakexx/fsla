@@ -151,7 +151,11 @@ pytest_tier(
     ],
     marks = "not cuda",
     #: the pinned data (MODULE.bazel's `environment.data`): the H100 lab records the floor model and the rates read
-    repos = {"@fsla_data//:lab": "FSLA_DATA"},
+    repos = {
+        "@fsla_data//:lab": "FSLA_DATA",
+        #: fsla-devtools' shared pins (the toolkit pin tests/unit/test_cuda_toolkit_pin.py reads)
+        "@fsla_devtools//pins:cuda_toolkit_pin.json": "FSLA_DEVTOOLS",
+    },
     shard_count = 4,
     tests = ["tests/" + f for f in glob(
         ["unit/test_*.py"],

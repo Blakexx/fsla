@@ -91,7 +91,7 @@ assembler. The wheel matrix axis and the toolchain axis are the same axis — th
 is the whole closed-world point. Budget it as a measurement run, not as a config
 change.
 
-1. **Pin the toolkit**: `tools/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
+1. **Pin the toolkit**: fsla-devtools' `pins/cuda_toolkit_pin.json` names NVIDIA's redistributable manifest by its digest, the
    components and the folder; the graph fetches it (`@cuda_tools`) and compiles with it, the one toolkit
    (`tests/unit/test_cuda_toolkit_pin.py` holds the manifest to the pin's version and its compiler to a declared toolchain), and
    `bazel run //:check` holds its nvcc to the pin. The archives place

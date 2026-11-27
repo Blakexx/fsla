@@ -46,10 +46,15 @@ ROOT = Path(__file__).resolve().parents[1]
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
 DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 #: THE CUDA TOOLKIT is the graph's (`@cuda_tools`, read by `dev_config.cuda_home`); init fetches none. Its pin is the graph's
-#: (`tools/cuda_toolkit_pin.json`), which `check` holds the graph's nvcc to -- see docs/setup.md#the-devbox
+#: (fsla-devtools' `pins/cuda_toolkit_pin.json`), which `check` holds the graph's nvcc to -- see docs/setup.md#the-devbox
 TOOLKIT = "cuda_toolkit"
-PINS = {"bazelisk": ROOT / "tools" / "bazelisk_pin.json",
-        **{name: ROOT / "tools" / f"{name}_pin.json" for name in (TOOLKIT, *DEV_TOOLS)}}
+
+
+def read_pin(name: str) -> dict:
+    """A tool's pin (`dev_config.pin_path`: bazelisk, the toolkit and Nsight Compute are fsla-devtools' shared pins)."""
+    return json.loads(dev_config.pin_path(name).read_text())
+
+
 #: THE DEVBOX IMAGE (`//:image`, docs/setup.md#the-devbox-image): the name Docker knows it by, and the digest the tree
 #: names, which a commit changing it carries a passing container check for (KERNEL_STANDARDS §23 (3))
 DEVBOX_REPO = "fsla-devbox"
@@ -62,7 +67,7 @@ RESULTS_ENVIRONMENT = "environment"
 
 def _bazelisk_version(path: str) -> str:
     """The pin's version string when the binary is the pinned release, by its digest (it prints no version alone)."""
-    pin = json.loads(PINS["bazelisk"].read_text())
+    pin = read_pin("bazelisk")
     got = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     return pin["version_string"] if got == pin["asset_sha256"] else f"bazelisk sha256 {got}"
 
@@ -73,7 +78,7 @@ VERSION_OF = {"bazelisk": _bazelisk_version}
 
 def ensure_pinned(name: str) -> None:
     """A pin installed where it is missing or does not report its pin's version."""
-    if _pinned_version(name, str(dev_config.pinned(name))) != json.loads(PINS[name].read_text())["version_string"]:
+    if _pinned_version(name, str(dev_config.pinned(name))) != read_pin(name)["version_string"]:
         install_pinned(name)
 
 
@@ -149,7 +154,7 @@ def install_pinned(name: str) -> str:
     """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
     release under `dest` -- its layout is part of the tool. A release is a tarball or a bare binary (`asset_kind`) installed under
     its release's name."""
-    pin = json.loads(PINS[name].read_text())
+    pin = read_pin(name)
     root, rel = pin["archive_root"], pin["binary_path"]
     dest, binary = Path(dev_config.get("host.tools_dir")), dev_config.pinned(name)
     dest.mkdir(parents=True, exist_ok=True)
@@ -351,7 +356,7 @@ def _pinned_version(name: str, path: str) -> str:
             return VERSION_OF[name](path)
     except (OSError, RuntimeError):
         return ""
-    want = json.loads(PINS[name].read_text())["version_string"]
+    want = read_pin(name)["version_string"]
     return want if want in _version(path).splitlines() else ""
 
 
@@ -382,16 +387,16 @@ def cmd_check(a) -> int:
     except SystemExit as ex:
         row(False, f"config: {ex}", "fix the named file")
         return _report(rows)
-    want = json.loads(PINS[TOOLKIT].read_text())["version_string"]
+    want = read_pin(TOOLKIT)["version_string"]
     nvcc = _graph_nvcc()
     row(_pinned_version(TOOLKIT, nvcc) == want, f"toolchain cuda: the graph's toolkit (@cuda_tools), {nvcc}, is {want}",
         "bazel build @cuda_tools//:toolkit")
     for name in DEV_TOOLS:
-        want = json.loads(PINS[name].read_text())["version_string"]
+        want = read_pin(name)["version_string"]
         row(_pinned_version(name, str(dev_config.pinned(name))) == want, f"devbox {name}: {dev_config.pinned(name)} is {want}",
             "bazel run //:init")
     bazelisk = dev_config.pinned("bazelisk")
-    pin = json.loads(PINS["bazelisk"].read_text())["version_string"]
+    pin = read_pin("bazelisk")["version_string"]
     row(_pinned_version("bazelisk", str(bazelisk)) == pin, f"bazelisk: {bazelisk} is {pin}", "python3 tools/bootstrap.py")
     #: bazelisk puts the front door's directory first on PATH for what it runs (`bazel run //:check`): the user's `bazel`
     #: is the first one past it
@@ -581,7 +586,7 @@ def cmd_dev_env(a) -> int:
     for name in DEV_TOOLS:
         if not dev_config.pinned(name).is_file():
             raise SystemExit(f"{venv}: the devbox's {name} is not installed at {dev_config.pinned(name)}: bazel run //:init")
-        (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_config.pinned(name))
+        (venv / "bin" / read_pin(name)["command"]).symlink_to(dev_config.pinned(name))
 
     wire_hooks(checkout)
     found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, fsla, fsla_devtools, torch; "

@@ -20,7 +20,7 @@ Each target is this file's command of the same name (`bazel/defs.bzl`'s `dev_run
 graph's environment interpreter, its arguments after `--`.
 
 **`init`** writes this machine's config:
-- No CUDA toolkit: it is the graph's (`@cuda_tools`, `tools/cuda_toolkit_pin.json`), which every compile, disassembly and
+- No CUDA toolkit: it is the graph's (`@cuda_tools`, fsla-devtools' `pins/cuda_toolkit_pin.json`), which every compile, disassembly and
   assembler check outside the graph's own rules reads through `dev_config.cuda_home()`; init fetches none and `check` holds
   the graph's nvcc to the pin.
 - The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
@@ -30,7 +30,7 @@ graph's environment interpreter, its arguments after `--`.
 - The action-hook dispatcher, on a machine that has `~/.claude` ([below](#action-hooks)).
 
 A key already in a file is kept unless `--force`. A pinned tool that is missing, or does not report its pin's
-version, is downloaded from the pin's release URL (the devbox tools' pins by init, `tools/bazelisk_pin.json` by
+version, is downloaded from the pin's release URL (the devbox tools' pins by init, fsla-devtools' `pins/bazelisk_pin.json` by
 `install_bazelisk`, the bootstrap's), asked again after a server error or a dropped connection, and
 then from its `mirror_urls` (the same asset through GitHub's API: github.com's release downloads returned gateway
 timeouts from its own edge for hours on 2026-11-08 while the API served the same assets). Its release sha256 is

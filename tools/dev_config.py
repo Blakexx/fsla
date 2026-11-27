@@ -107,6 +107,7 @@ HANDOFFS = {
     "USER": "the login name printed into the sudoers rule `bazel run //:clock` suggests",
     "FSLA_SCRATCH": "the agent harness's campaign directory (.claude/settings.json), outside the repository",
     "FSLA_CUDA_HOME": "the graph's copy of the pinned CUDA toolkit, which a test tier hands its tests (fsla-devtools' pytest_tier)",
+    "FSLA_DEVTOOLS": "the root of fsla-devtools' module in a test tier's runfiles, whose `pins/` a test reads (the tier's `repos`)",
     "FSLA_WARPLINE_PYTHON": "the directory that holds the `warpline` package (the reader of the lab's traced rows), "
                             "which the graph's actions that read compiled code hand it (bazel/defs.bzl's `lab_run` and gate action, "
                             "bazel/lab.bzl's validation action)",
@@ -137,7 +138,7 @@ def get(dotted: str) -> Any:
 
 @cache
 def _graph_toolkit() -> str:
-    """The graph's own copy of the pinned toolkit (`@cuda_tools`, tools/cuda_toolkit_pin.json): the graph fetches its
+    """The graph's own copy of the pinned toolkit (`@cuda_tools`, fsla-devtools' pins/cuda_toolkit_pin.json): the graph fetches its
     repository and says where its nvcc is (`bazel query --output=location`)."""
     import shutil
     import subprocess
@@ -155,7 +156,7 @@ def _graph_toolkit() -> str:
 
 def cuda_home() -> str:
     """The toolkit every compile, disassembly and assembler check outside the graph's own rules uses: the graph's
-    (`@cuda_tools`, pinned by tools/cuda_toolkit_pin.json) -- handed in as `FSLA_CUDA_HOME` by a test tier, else read
+    (`@cuda_tools`, pinned by fsla-devtools' pins/cuda_toolkit_pin.json) -- handed in as `FSLA_CUDA_HOME` by a test tier, else read
     from the graph's repository."""
     if os.environ.get("FSLA_CUDA_HOME"):
         return os.environ["FSLA_CUDA_HOME"]
@@ -185,10 +186,22 @@ def scratch(name: str) -> Path:
     return path
 
 
+#: THE PINS EVERY FSLA WORKSPACE SHARES, which fsla-devtools holds (its `pins/`, `@fsla_devtools//pins:<name>_pin.json`): the
+#: rest are this tree's own, `tools/<name>_pin.json`
+SHARED_PINS = ("bazelisk", "cuda_toolkit", "nsight_compute")
+
+
+def pin_path(name: str) -> Path:
+    """A pin's file: a shared one in the fsla-devtools checkout (`workspace.devtools`), else this tree's `tools/`."""
+    if name in SHARED_PINS:
+        return Path(get("workspace.devtools")) / "pins" / f"{name}_pin.json"
+    return Path(__file__).resolve().parent / f"{name}_pin.json"
+
+
 def pinned(name: str) -> Path:
-    """Where a pin's binary is installed (`tools/<name>_pin.json`): its folder under `host.tools_dir` (`archive_root`,
+    """Where a pin's binary is installed (`pin_path(name)`): its folder under `host.tools_dir` (`archive_root`,
     which carries the version), the binary in it (`binary_path`)."""
-    pin = json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
+    pin = json.loads(pin_path(name).read_text())
     return Path(get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
 
 

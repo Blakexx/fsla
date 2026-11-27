@@ -16,7 +16,7 @@ source, and `bazel run //:init` links the `workspace.devtools` checkout into eve
 
 | file | keys |
 |---|---|
-| `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the graph's, `@cuda_tools` pinned by `tools/cuda_toolkit_pin.json`, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled` and `mold` (older checkouts' compiler cache and linker; this tree reads none of them, its graph links with its own mold), `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
+| `toolchain.json` | `cuda_home` (a CUDA toolkit older checkouts' files name; this tree uses the graph's, `@cuda_tools` pinned by fsla-devtools' `pins/cuda_toolkit_pin.json`, `cuda_home()`), `ncu` (a Nsight Compute CLI older checkouts' files name; this tree finds the pinned one by its pin, `ncu()`, which refuses until init installed it), `sccache`, `sccache_enabled` and `mold` (older checkouts' compiler cache and linker; this tree reads none of them, its graph links with its own mold), `clang_tidy` (the host's clang-tidy, which checkouts before the build graph's unit lints install and read; this tree reads none of it), `bazel` (where the bootstrap links the pinned bazelisk on PATH) |
 | `host.json` | `nvcc_threads`, `build_jobs`, `budget_slots`, `lock_dir`, `gpu_lock`, `gpu_shared_slots`, `nice`, `locks_trace`, `scratch`, `build_cache` (the build systems' caches: the graph's under `bazel/`), `store_max_gb` and `store_max_age_days` (the environment store's bound), `tools_dir`, `windows_system32`, `wsl_lib` |
 | `clock.json` | `ghz`, `lock`, `unlock` (null `ghz`: the host measures unlocked) |
 | `store.json` | `root` (the measurements store: a checkout of the data repository, fsla-results; fsla-devtools' section, with no default, which `init` writes as the sibling `fsla-results`) |
@@ -28,7 +28,7 @@ under the machine's `python3`, before any venv exists. `tools/bootstrap.py` read
 `workspace.devtools`, from `workspace.json` in the directory the reader's own rule names -- and the front door imports
 the reader and the host budget from that checkout. Run (`python3 tools/bootstrap.py`), it is the machine's one step
 outside the graph: it imports the reader the same way and runs `tools/dev.py`'s `install_bazelisk`, the pinned bazelisk
-and the `bazel` link, since nothing can `bazel run` before `bazel` exists. The sibling checkouts' location (`SIBLINGS`, the default of
+and the `bazel` link, since nothing can `bazel run` before `bazel` exists. That bazelisk's pin, like the toolkit's and Nsight Compute's, is fsla-devtools' (`pins/`): `dev_config.pin_path` reads a shared pin (`SHARED_PINS`) from the `workspace.devtools` checkout and any other from `tools/`. The sibling checkouts' location (`SIBLINGS`, the default of
 `store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both. Two read-outs serve a
 machine that has nothing yet, CI's runner (`.github/actions/graph`): `--devtools-pin`, the fsla-devtools repository
 and commit `MODULE.bazel` pins, which it clones beside the checkout first, and `--bin-dir`, the directory of
@@ -40,7 +40,7 @@ resolved value and the file it came from ([dev.md](dev.md)).
 **The API.**
 - `get("section.key")` returns a value.
 - `cuda_home()` and `cuda_bin(tool)` resolve the toolkit: the graph's (`@cuda_tools`, pinned by
-  `tools/cuda_toolkit_pin.json`) -- in a test tier the copy the tier hands in (`FSLA_CUDA_HOME`), else the graph's repository
+  fsla-devtools' `pins/cuda_toolkit_pin.json`) -- in a test tier the copy the tier hands in (`FSLA_CUDA_HOME`), else the graph's repository
   (`bazel query --output=location @cuda_tools//:bin/nvcc`); there is no second install. Every compile, disassembly and assembler check outside the graph's own rules uses them, so
   the ptxas a gate reads is the one the build ran.
 - `scratch(name)` returns a tool's scratch directory, this checkout's own: `<host.scratch>/<digest>/<name>`, where
@@ -64,6 +64,7 @@ f-string prefixes resolved) and shell expansions.
 - `HANDOFFS`: values one of the tree's own processes passes to a child it starts.
   - `FSLA_DEV_CONFIG` itself.
   - The graph's copy of the pinned toolkit a test tier hands its tests (`FSLA_CUDA_HOME`).
+  - The root of fsla-devtools' module a test tier hands its tests, whose `pins/` they read (`FSLA_DEVTOOLS`).
   - The directory that holds warpline's Python package, which the `lab` run target hands the lab and the lab's graph
     actions carry (`FSLA_WARPLINE_PYTHON`).
   - pytest-xdist's worker id.

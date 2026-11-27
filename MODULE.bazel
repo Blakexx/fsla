@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "8941d7d91b2ab7905b114e5b6292b6284306efce",
+    commit = "6bc741919b34be96ef4cfdf8f972fbe28bfb0e42",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -79,7 +79,7 @@ environment.cuda_toolkit(
     beside = {"libcurand": "curand"},
     build_file = "//bazel:cuda_tools.BUILD",
     delete = ["curand/lib"],
-    pin = "//tools:cuda_toolkit_pin.json",
+    pin = "@fsla_devtools//pins:cuda_toolkit_pin.json",
 )
 #: THE DATA, at ONE commit of the data repository (fsla-results): every record a doc cites (`data:lab/...`) and a tool
 #: reads (the lab's pages, the floor model, the rates) is the file at this pin, fixed content by the archive's digest
