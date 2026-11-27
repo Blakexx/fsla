@@ -90,7 +90,8 @@ worktree removes that one -- its Bazel output base expunged first (`bazel clean 
 (`git worktree remove`) -- and `bazel --worktree remove <path>` another; it refuses a dirty or unmerged worktree unless
 named with `--force`, and never removes a main checkout. It starts no Bazel build, so the free-space floor never refuses
 it ([`build-graph.md`](../../build-graph.md#front-door)); `bazel --worktree list` shows every worktree's state. The
-worktree's venv (`venv-<name>`) is left beside it.
+worktree's venv (`venv-<name>`) is left beside it, and `//:worktree` replaces a venv whose worktree is gone when it
+creates one of that name.
 
 **`container`** keeps the devbox image a supported environment (§23 (3), `docs/setup.md` §2-3). Each action takes the
 image's OCI layout (`//:image`), whose manifest digest is the image's identity, and `check` and `compose` the image as

@@ -611,9 +611,10 @@ def cmd_worktree(a) -> int:
     from fsla_devtools.disk import worktrees
 
     worktree = Path(dev_config.get("workspace.worktrees")) / a.name
-    for p in (worktree, dev_venv(worktree)):
-        if p.exists():
-            raise SystemExit(f"refusing: {p} already exists")
+    if worktree.exists():
+        raise SystemExit(f"refusing: {worktree} already exists")
+    #: a venv with no worktree is a removed worktree's (`bazel --worktree remove` knows no venv): `//:dev_env` remakes it
+    shutil.rmtree(dev_venv(worktree), ignore_errors=True)
     worktrees.add(ROOT, worktree, a.sha)
     if not os.access(worktree / "tools" / "git-hooks" / "pre-commit", os.X_OK):
         raise SystemExit(f"refusing: {worktree}/tools/git-hooks/pre-commit is missing or not executable")
