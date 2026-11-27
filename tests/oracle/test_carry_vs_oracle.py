@@ -114,7 +114,7 @@ def test_the_decomposition_is_exact():
     from fsla.ops.naive import naive_fsla
     from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 
-    spec = next(c for c in ORACLE_CELLS if c.name == "flat-small-dense")
+    spec = next(c for c in ORACLE_CELLS if c.name == "one-box-multiwindow")
     read, write, gain, v = realize(spec).doubles()
     tot = None
     for W in (1, 8, 64):

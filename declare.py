@@ -144,8 +144,8 @@ KERNEL_VS_ORACLE = ("carry-kernel", "tests.oracle.sides:carry_reference", {"num"
 
 #: THE BACKWARD'S BUDGET. The oracle side runs `naive_fsla` forward AND backward in fp64, and autograd retains the
 #: recurrence's state at every token: `B * H * T * N * (DV + 1) * 8` bytes of retained state, and MEASURED (2026-09-16)
-#: a peak above nine times that -- `flat-small-dense`, 1.0 GiB of retained state, could not run under a 9 GiB cap, and
-#: the run over every oracle-tier cell was killed by the host. A surface that runs the backward therefore admits only
+#: a peak above nine times that -- a (64, 64) dense cell of 256 tokens, 1.0 GiB of retained state, could not run under
+#: a 9 GiB cap, and the run over every oracle-tier cell was killed by the host. A surface that runs the backward therefore admits only
 #: the cells whose retained state is under this budget, stated here so the excluded cells are a consequence a reader can
 #: compute and not a run that died.
 RETAINED_STATE_BUDGET = 512 * 2**20

@@ -43,9 +43,9 @@ def test_with_a_timing_server_a_layer_arm_is_registered_per_construction_on_its_
     g = Graph()
     d["declare"](g.scoped("fsla"), d["checkout"](ROOT, python=sys.executable, label="fsla"), timing=start_timing_server(g))
     labels = set(g.targets)
-    assert {"fsla/entmax_solve@layer=chunk-sparse-gain8", "fsla/entmax_solve@layer=chunk-decode-w16",
+    assert {"fsla/entmax_solve@layer=chunk-p73-pinned", "fsla/entmax_solve@layer=chunk-decode-w16",
             "fsla/decode_step@layer=chunk-decode-w16", "fsla/clock"} <= labels
-    assert "fsla/decode_step@layer=chunk-sparse-gain8" not in labels
+    assert "fsla/decode_step@layer=chunk-p73-pinned" not in labels
     assert g.targets["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {"cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
 
 
@@ -108,7 +108,7 @@ def test_a_backward_surface_admits_only_the_cells_under_the_retained_state_budge
 
     d = load(ROOT / "declare.py")
     admitted = d["surface_cells"]("oracle")
-    assert admitted and "one-box-short" in admitted and "flat-small-dense" not in admitted
+    assert admitted and "one-box-short" in admitted and "flagship-dense" not in admitted
     for name, record in central().cells.items():
         if d["kind"](name) == "carry" and record["params"].get("tier") == "oracle":
             assert (name in admitted) == (d["retained_state_bytes"](record) < d["RETAINED_STATE_BUDGET"])

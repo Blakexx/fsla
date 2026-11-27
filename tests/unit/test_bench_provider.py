@@ -51,7 +51,7 @@ def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
     assert all(name.split("@")[0] in SUBJECTS for name in names)
     #: the carry is not built on this line: its op's prefill is offered on no cell
-    assert "prefill" not in names | set(provider.arms(by_name("flat-small-alt-k16")))
+    assert "prefill" not in names | set(provider.arms(by_name("flagship-alt-k16")))
 
 
 def test_a_layer_cells_arms_are_its_declared_constructions(binary):

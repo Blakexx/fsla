@@ -88,7 +88,7 @@ _FAMILIES = {
     #: refuses by name, and the row flips when a schedule lands.
     "carry_call": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4-L4096]",
+             "test_the_inter_numerator_is_the_fp64_reference[flagship-cohort-k4]",
         kernel="fsla::carry::carry_forward", present=False),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(

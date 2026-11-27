@@ -62,8 +62,6 @@ THE SPIKE (the first 16 tokens at 2^B over the rest; the 64-bit forms, the worst
 |---|---|---|---|
 | 40, corner-tied-k4 | 0.21% | 0.0002% | 0.000007% |
 | 48, corner-tied-k4 | 27% | 0.045% | 0.000007% |
-| 40, flagship-both-k4-L4096 | 1.9% | 0.0003% | 0.00003% |
-| 48, flagship-both-k4-L4096 | 127% | 0.13% | 0.00003% |
 | 40, flagship-alt-k4-L4096 | 0.000008% | | 0.00002% |
 
 The 64-bit normalized sum under value scales rising 2^32, 2^40 and 2^48 (flagship-alt-k4-L4096): 0.00002%, 0.0002%,

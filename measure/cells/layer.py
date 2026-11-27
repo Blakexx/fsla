@@ -34,13 +34,8 @@ def _c(name, widths, alpha, gain, cell, note):
 CONSTRUCTIONS = {c.name: c for c in (
     _c("chunk-p73-pinned", (64, 64), 1.5, 1.0, "layer-B2-T2048-H8-h512-dv64-bf16-s0",
        "the inventory constructor every published step number was taken on"),
-    _c("chunk-sparse-gain8", (64, 64), 1.5, 8.0, "layer-B2-T512-H8-h512-dv64-bf16-s1", "the pinned constructor at gain 8"),
-    _c("chunk-deadblocks-T64", (64, 64), 1.5, 16.0, "layer-B2-T64-H8-h512-dv64-bf16-s5", "dead blocks for the plan to skip"),
     _c("chunk-dense-D2", (64, 64), None, 1.0, "layer-B2-T512-H8-h512-dv64-bf16-s2", "softmax: the dense end"),
     _c("chunk-dense-NL4096", (64, 64), None, 1.0, "layer-B2-T4096-H8-h512-dv64-bf16-s6", "dense at T = N = 4096"),
-    _c("chunk-bwd-smalln", (16, 16), 1.5, 1.0, "layer-B2-T2048-H8-h512-dv64-bf16-s7", "N = 256 at T = 2048"),
-    _c("chunk-bwd-dense-N64", (8, 8), None, 1.0, "layer-B2-T2048-H8-h512-dv64-bf16-s8", "N = 64, dense: one block"),
-    _c("chunk-bwd-splitk", (256, 256), 1.5, 1.0, "layer-B1-T512-H2-h512-dv64-bf16-s9", "N = 65536 at BC = 128"),
     _c("chunk-deep-D4-w8", (8, 8, 8, 8), 1.5, 8.0, "layer-B2-T512-H8-h512-dv64-bf16-s3", "D = 4 at N = 4096"),
     _c("chunk-decode-w16", (16, 16), 1.5, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8", "prefill + 8 carried steps"),
     _c("chunk-decode-la-w256", (256,), None, 1.0, "layer-B2-T128-H2-h128-dv64-fp32-s10-dec8",
