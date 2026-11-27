@@ -89,7 +89,7 @@ class _Whitelist:
 _ = _Whitelist()
 _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,
                _.pytest_collection_modifyitems, _.pytest_pyfunc_call, _.pytest_terminal_summary,  # ruff B018: a bare attribute is "useless"
-               _.compile_kernel, _.probe_environment, _.timed, _.read_clock,
+               _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.Activation, _.state_size, _.sequence_length,
                _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary,

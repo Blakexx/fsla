@@ -223,7 +223,7 @@ states ~17% apart (the method, above), larger than the effects a change is judge
 
 ## The flagging rule: three gates, all must fire
 
-`fsla_devtools.verdict` judges a candidate against a reference timed in the same sessions; which stored sessions and
+`fsla_devtools.results.verdict` judges a candidate against a reference timed in the same sessions; which stored sessions and
 which reference it is given is the store's query (below). Timing compares only within the session that interleaved it,
 so every gate reads within-session quantities: `session(candidate, reference)` takes the two members' samples by round
 and gives, per round, each member's median, their RATIO and their DIFFERENCE.
