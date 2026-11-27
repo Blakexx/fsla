@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DISASSEMBLER SEAM: how this tree reads SASS, in one place.
 
-Four instruments read the assembled code -- the census's body hashes (`tools/ratify.py`), the ptxas signature gate
-(`tools/sass_gate.py`), the per-component region ledger (`tools/region_ledger.py`) and the register life ranges
-(`tools/life_ranges.py`) -- and each ran its own `cuobjdump` and `nvdisasm` with its own spelling of an instruction
-line. Four spellings of one format is the drift shape this repository has been bitten by before (`tools/build_flags.py`
-says it for the nvcc flags), so the INVOCATION and the LINE GRAMMAR are here
-and the analysis stays with the instrument that owns it.
+Three instruments of this tree read the assembled code -- the census's body hashes (`tools/ratify.py`), the per-component
+region ledger (`tools/region_ledger.py`) and the register life ranges (`tools/life_ranges.py`); one spelling of an
+instruction line a reader is the drift shape this repository has been bitten by before (`tools/build_flags.py` says it for
+the nvcc flags), so the INVOCATION and the LINE GRAMMAR are here and the analysis stays with the instrument that owns it.
+The SASS gate is warpline's check, which runs the graph's disassemblers itself (docs/internals/tools/sass_gate.md).
 
     cubins(path)                  every ELF cubin of a built extension, extracted once a build into the scratch cache
     cubin(path, member)           the one image a ledger reads, by the name it carries
@@ -37,22 +36,19 @@ from pathlib import Path
 
 #: THE DISASSEMBLERS AND SCRATCH THIS PROCESS READS: the pinned toolkit's and the dev config's scratch
 #: (`dev_config.cuda_home()`, `host.scratch`), or the graph's -- its hermetic toolkit and the action's own temporary directory (`use_graph`).
-#: -- see docs/internals/tools/sass_gate.md#graph
+#: -- see docs/internals/tools/ratify.md#graph
 _GRAPH: dict[str, Path] = {}
 
 
-def use_graph(*, cuobjdump: str, nvdisasm: str, cuxxfilt: str | None = None) -> None:
-    """Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits. `cuxxfilt`, the graph's
-    demangler, is for the readers that name functions."""
+def use_graph(*, cuobjdump: str, nvdisasm: str) -> None:
+    """Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits."""
     scratch_dir = tempfile.mkdtemp(prefix="fsla_sass_")
     atexit.register(shutil.rmtree, scratch_dir, True)
     _GRAPH.update(cuobjdump=Path(cuobjdump).absolute(), nvdisasm=Path(nvdisasm).absolute(), scratch=Path(scratch_dir))
-    if cuxxfilt:
-        _GRAPH["cu++filt"] = Path(cuxxfilt).absolute()
 
 
 def tool(name: str) -> str:
-    """The toolkit binary `name` (`cuobjdump`, `nvdisasm`, `cu++filt`)."""
+    """The toolkit binary `name` (`cuobjdump`, `nvdisasm`)."""
     if _GRAPH:
         return str(_GRAPH[name])
     import dev_config
@@ -199,8 +195,8 @@ def sass_lines(obj: str | Path) -> Iterator[Iterator[str]]:
 
 def disassemble(cubin_path: Path, *flags: str) -> str:
     """`nvdisasm [flags] cubin`, as text. `--print-line-info-inline -gi` is what the ledgers pass for the frame chain.
-    Read once a process for each version of the file (its path, size and mtime) and flag set: the gate asked for the
-    same disassembly once a function. -- see docs/internals/tools/sass_gate.md#cost"""
+    Read once a process for each version of the file (its path, size and mtime) and flag set: a reader asks for the
+    same disassembly once a function."""
     st = Path(cubin_path).stat()
     return _disassemble(str(cubin_path), st.st_size, st.st_mtime_ns, flags)
 

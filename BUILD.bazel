@@ -78,6 +78,15 @@ filegroup(
     visibility = ["//measure:__pkg__"],
 )
 
+#: THE STATIC MANIFEST of the library, one file a built architecture (`fsla_cu13/sass_gate.<arch>.manifest.json`): warpline's, the build output
+#: the SASS gate's comparison judged, what each rule found and the figures of every kernel (docs/internals/tools/sass_gate.md#manifest)
+filegroup(
+    name = "static_manifest",
+    srcs = [":library"],
+    output_group = "manifest",
+    visibility = ["//measure:__subpackages__"],
+)
+
 #: THE MACHINE'S SETUP AS RUN TARGETS: each a tools/dev.py command, its arguments after `--` (docs/build-graph.md#use)
 [dev_run(
     name = name,

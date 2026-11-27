@@ -42,18 +42,19 @@ exports_files([
     "arms.bzl",
     "arms.py",
     "flags.py",
+    "gate_declarations.py",
     "gates.py",
     "headers.py",
     "record.py",
 ])
 
-#: what the SASS gate reads: the tree's tools (the gate and the modules it imports) and every kernel the source defines
-#: (a kernel no cubin carries is red)
+#: what the SASS gate's declarations are written from (`gate_declarations.py`): the kernel list and every kernel the source defines (each
+#: a presence: a kernel no function of the binary carries is refused)
 filegroup(
     name = "gate_sources",
     srcs = [
         "//csrc/fsla:sources",
-        "//tools:python_sources",
+        "//tools:kernels.py",
     ],
 )
 

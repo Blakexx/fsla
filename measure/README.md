@@ -52,6 +52,6 @@ ordered samples; whether a stored difference is a regression is `bazel run //:re
 
 ```bash
 bazel run //measure:session_entmax
-bazel run //:measure -- run declare.py:all --only 'fsla/support' --only 'fsla/sass'
+bazel run //:measure -- run declare.py:all --only 'fsla/support'
 ```
 

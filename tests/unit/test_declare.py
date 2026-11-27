@@ -24,9 +24,10 @@ def declared() -> dict:
 def test_the_root_declares_the_checkout_its_instruments_and_their_stores_and_no_timing():
     out = declared()
     labels = set(out["targets"])
-    assert {"fsla/binary", "fsla/environment", "fsla/sass", "fsla/support", "store/sass"} <= labels
+    assert {"fsla/binary", "fsla/environment", "fsla/support"} <= labels
+    #: the SASS gate is the library's own (its static manifest a build output, `//:static_manifest`), no instrument
     assert not {"session", "memory", "store/session", "store/memory", "timing-server", "timing-server-stop",
-                "fsla/clock"} & labels
+                "fsla/clock", "fsla/sass", "store/sass"} & labels
     #: no kernel has a pipe-counter or stall-census row on this line, so neither instrument is declared
     assert not {"fsla/counters", "fsla/census", "fsla/facts_pass"} & labels
     #: the graph's front door takes the host budget for the build: a holder never starts a Bazel build

@@ -419,9 +419,9 @@ ever compared. From here the floor is a GATE, per component, before composition:
   after the core is at its floor.
 
 ## <a id="s20"></a>§20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
-`tools/sass_gate.py` runs after every build (the library's gate action, iteration builds included), on
-every function of every cubin, and fails on the first, second, fourth (its predicated-`HMMA` half) and fifth of these,
-and on a kernel the source defines that no cubin carries; the predicated-chain signature, the pair body's
+The library's SASS gate (warpline's check, `bazel/defs.bzl`'s `_sass_gate`) runs in every build (the library's own actions, iteration
+builds included), on every function of the binary, and fails on the first, second, fourth (its predicated-`HMMA` half) and fifth of these,
+and on a kernel the source defines that no function carries; the predicated-chain signature, the pair body's
 if-conversion count, copy-task coalescing and the instructions-per-MMA ceiling (a `step_density` declaration no arm
 states) are not read yet (OWED); each was re-learned by trial this week and costs a rebuild when missed.
 `[COMPILER]` Every signature below was read from sm_86 cubins, the MMA an `mma.sync`'s HMMA; each is re-read on this
@@ -765,7 +765,7 @@ shape of a step on this line, re-read on its `wgmma` steps (owed).
    ring period with a masked step, or peeled outside the steady-state block.
 6. AN INTERLEAVE IS A PROPERTY OF THE SASS: read it there, never from the source. ptxas places register-only
    instructions; a data dependency is the only lever that places an MMA, and a zero-valued one costs an instruction.
-ENFORCED: `tools/sass_gate.py` reds a convergence barrier or a forward conditional branch in the innermost loop that
+ENFORCED: the SASS gate (§20) refuses a convergence barrier or a forward conditional branch in the innermost loop that
 issues MMAs (§20), on every function of every build; no kernel built before the rule still branches in a step, so
 it names no debt, and an instrument's probe keeps one only where it declares it (§20). `tools/lab.py` refuses a lab number whose step branches unless
 the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
@@ -899,7 +899,7 @@ method is a procedure with a gate, not a memory.
    refusal, each wait's candidates to precede it (`tools/lab.py waits`).
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
-purpose). `tools/sass_gate.py` reds, on every function of every build, conversion-unit instructions and global
+purpose). The SASS gate (§20) refuses, on every function of every build, conversion-unit instructions and global
 accesses other than the family's staged copy inside an innermost MMA loop; a kernel built before the rule whose steps
 still read global memory is a named debt with what replaces it, and the list only shrinks; no kernel keeps the
 conversion unit in a step but a hopper one under item 6's amendment, so it names no such debt. A
@@ -987,7 +987,7 @@ gated, and an instrument's missing target is a red.
    (amended 2026-10-18): its instructions at its trips (§29.11), in the budget beside the register it saves -- the
    ledger miss of the branch `ampere`'s carry (3,884 instructions a warp-window against ~2,020) was mostly tokens,
    sources and swizzles re-derived at each use and priced nowhere.
-4. EVERY STEP LOOP COVERS ITS PIPE: `tools/sass_gate.py` is to simulate every innermost MMA loop of every function, on
+4. EVERY STEP LOOP COVERS ITS PIPE: the SASS gate (§20) is to simulate every innermost MMA loop of every function, on
    every build, once a family's model exists (OWED: it runs no cover today), from ptxas's control words and the family's machine model (its MMA's pipe time, its latencies and its
    shared-memory rates the hardware table's rows, each a lab's), and reds a loop whose COVER -- its pipe share with
    the warps a scheduler its registers admit running it together, sharing the scheduler's issue port and the SM's
@@ -1011,7 +1011,8 @@ gated, and an instrument's missing target is a red.
    ncu's cycles of one launch each; times from separate unlocked runs are never compared.
 8. WORK MOVED ACROSS A RENDEZVOUS IS PRICED ON THE CRITICAL PATH FIRST: reordering work around a barrier cannot
    shorten warps that all do the same work, since their critical path is unchanged.
-ENFORCED: item 5 by `tools/sass_gate.py` (no function matched is red, inside every build) and `tools/lint/coverage.py`
+ENFORCED: item 5 by the SASS gate's declarations (`bazel/gate_declarations.py`: a declaration, an arm or a source kernel that names
+no function of the build is refused, inside every build) and `tools/lint/coverage.py`
 (a pointer to nothing). Item 3's tool exists and runs by hand, and no budget file exists for it to read; item 4's step
 cover and item 2's phase ledger do not exist yet (OWED, `docs/rules.json`): an under-line step does not fail the
 build.

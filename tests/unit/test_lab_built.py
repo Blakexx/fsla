@@ -57,7 +57,7 @@ def test_the_lab_runs_no_compiler_and_no_disassembler():
     """The experiments are the graph's targets: no lab command runs nvcc, cuobjdump, nvdisasm or cu++filt itself (the graph's actions do)."""
     text = (TOOLS / "lab.py").read_text()
     for call in ("cuda_bin(", "sass.tool(", "sass.cubins(", "sass.disassemble(", "sass.sass_lines(", "checked.demangle(",
-                 "checked.kernels_of(", "build_flags", '"nvcc"', '"cuobjdump"', '"nvdisasm"'):
+                 "build_flags", '"nvcc"', '"cuobjdump"', '"nvdisasm"'):
         assert call not in text, call
 
 

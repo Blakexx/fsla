@@ -288,7 +288,7 @@ every build: Bazel's cache is its key, and the library's digest, its output, key
 its machine
 facts, each instrument over the cells sized for measurement (`tier` probe or both), its timing arms, its diff sides
 and its own kernel-vs-oracle diff, the oracle tier as one node -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
-nothing of cells, groups or instruments: `--only 'fsla/sass'` runs that instrument and what it needs, `--skip
+nothing of cells, groups or instruments: `--only 'fsla/support'` runs that instrument and what it needs, `--skip
 '*/timeline'` drops that instrument and everything that reads it. A node whose code, binary and inputs have not changed
 is a cache hit and does not run. The dev loop is a pruned run, seconds.
 
@@ -313,9 +313,11 @@ timing session:
 
 | target | tool | what it reads |
 |---|---|---|
-| `sass` | `tools/sass_gate.py` | the build's SASS signatures (KERNEL_STANDARDS §20) |
 | `support` | [`tools/realized_support.py`](internals/tools/realized_support.md) | what each layer construction's weights route on its cells |
 | `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
+
+The build's SASS signatures (KERNEL_STANDARDS §20) are no instrument: the library's SASS gate judges them on every build, and
+their static manifest is a build output, `//:static_manifest` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#manifest)).
 
 A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 

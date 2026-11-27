@@ -57,9 +57,10 @@ closed-world rule ([`ratification.md`](ratification.md#the-closed-world-rules)):
 4. **The arm table.** The selection header names exactly the arms this build selected, of the table the graph generated
    from the declaration, and the built `_C` carries exactly those
    ([`ratification.md#arm-switch`](ratification.md#arm-switch)).
-5. **The SASS gate.** `tools/sass_gate.py` on the linked library (KERNEL_STANDARDS §20): local memory, convergence
+5. **The SASS gate.** warpline's check on the linked library (KERNEL_STANDARDS §20, `bazel/defs.bzl`'s `_sass_gate`): local memory, convergence
    subroutines, predicated HMMA, the step lints, a PTX image (R2 on the binary itself), and a kernel the source
-   defines that no cubin carries. It runs on every build, iteration builds included.
+   defines that no function carries. It runs on every build, iteration builds included, and its manifest is a build output
+   (`//:static_manifest`, [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#manifest)).
 6. **`fsla_cu13/_build_config.py`**, the record: the archs, the assembler, the torch version and ABI flag, the
    vendored pin, whether it is an iteration build, and
    `ptx_jit_fallback: False`.
@@ -194,7 +195,7 @@ codegen-affecting flag change is one edit in one file ([`ratification.md`'s clos
 
 ```bash
 python -c "from fsla_cu13 import _build_config; print(_build_config.show())"
-bazel run //tools:sass_gate -- .bazel/bin/fsla_cu13/_C.abi3.so    # its signatures, and no PTX image (R2)
+bazel build //:static_manifest                         # its signatures: every rule's count at every kernel, the gate's manifest
 bazel run //:ratify -- --census                        # its registers and spills
 ```
 

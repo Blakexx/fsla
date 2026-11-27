@@ -19,9 +19,9 @@ def run(command):
 
 @pytest.mark.parametrize("command,target", [
     ("nvcc -arch=sm_90a x.cu", "//:library"),
-    ("/opt/cuda/bin/cuobjdump -sass f", "//tools:sass_gate"),
-    ("ptxas -arch=sm_90a x.ptx", "//tools:sass_gate"),
-    ("nvdisasm f.cubin", "//tools:sass_gate"),
+    ("/opt/cuda/bin/cuobjdump -sass f", "//:static_manifest"),
+    ("ptxas -arch=sm_90a x.ptx", "//csrc/fsla:<unit>_sass"),
+    ("nvdisasm f.cubin", "//:static_manifest"),
     ("ncu --metric m ./x", "//tools:lab -- ncu"),
     ("nsys profile ./x", "//:measure"),
     ("compute-sanitizer ./x", "//tests:sanitizer"),

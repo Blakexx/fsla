@@ -530,7 +530,7 @@ readout leaves a read side no gain of its own ([§22](#row-scales)).
 `decode_step_kernel` carries `__launch_bounds__(Dp::kThreads, Dp::kBlocksPerSm)` (`Dp` its plan at its build), and
 the second argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census is what proves it
 met it without spilling. `kBlocksPerSm` is 1, so every arm runs at 128 registers a thread --
-few warps and full registers, the ideal regime -- and none spills (`tools/sass_gate.py`). The
+few warps and full registers, the ideal regime -- and none spills (the SASS gate, `docs/internals/tools/sass_gate.md`). The
 residency has no template axes: at one CTA an SM there is no CTA of residency for DECAY or the
 deepest arm to trade for live state.
 

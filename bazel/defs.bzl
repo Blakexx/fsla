@@ -22,6 +22,7 @@ load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@warpline//:checker.bzl", "WARPLINE_CHECK_ATTRS", "warpline_check_actions")
 load(":arms.bzl", "ARM_FAMILIES")
 load(":cuda.bzl", "CudaUnitInfo")
 
@@ -154,39 +155,39 @@ def _link(ctx, so):
         additional_inputs = ctx.files._linker + linked,
     )
 
-def _gated(ctx):
-    """What the library's units state for the gate, from `deps`: the ptxas report of every unit it links (the build's notices), and the
-    declarations beside the kernels and the arms' patterns, by built architecture, in the one file the gate reads (`--declare`). A
-    declaration with no architecture attaches to every one the build carries."""
+def _gated(ctx, probes):
+    """What the library's units state for the gate, from `deps`: the ptxas report of every unit it links (the build's notices), and each
+    built architecture's declarations file (`bazel/gate_declarations.py`: the declarations beside the kernels, the arm families', each
+    arm's pattern and, but for a library of `probes`, each source kernel as a presence, fsla's notes, strict). A declaration with no
+    architecture attaches to every one the build carries."""
     infos = [dep[CudaUnitInfo] for dep in ctx.attr.deps if CudaUnitInfo in dep]
     reports = [unit.report for unit in depset(transitive = [i.units for i in infos]).to_list()]
     archs = ["sm_" + a for a in _value(ctx, "_archs")]
-    spec = {arch: {"declarations": [], "arms": []} for arch in archs}
+    stated = {arch: [] for arch in archs}
     for d in depset(transitive = [i.declarations for i in infos]).to_list():
         for arch in ([d.arch] if d.arch else archs):
-            if arch in spec:
-                spec[arch]["declarations"].append({"kernel": d.kernel, "rule": d.rule, "allow": d.allow, "reason": d.reason})
+            if arch in stated:
+                stated[arch].append({"kernel": d.kernel, "rule": d.rule, "allow": d.allow, "reason": d.reason})
+    stated_file = ctx.actions.declare_file(ctx.label.name + "_declarations_stated.json")
+    ctx.actions.write(stated_file, json.encode_indent({"architectures": stated}) + "\n")
+    #: an arm family whose arms the build computes (`arm_declarations`) wrote its declarations and arms as files
     files = depset(transitive = [i.declaration_files for i in infos]).to_list()
-    declared = ctx.actions.declare_file(ctx.label.name + "_declarations.json")
-    if not files:
-        ctx.actions.write(declared, json.encode_indent({"architectures": spec}) + "\n")
-        return declared, reports
-    #: an arm family whose arms the build computes (`arm_declarations`) wrote its declarations as files, added to the ones stated above
-    base = ctx.actions.declare_file(ctx.label.name + "_declarations_base.json")
-    ctx.actions.write(base, json.encode_indent({"architectures": spec}) + "\n")
+    declared = {arch: ctx.actions.declare_file("%s_%s.declarations.json" % (ctx.label.name, arch)) for arch in archs}
     args = ctx.actions.args()
-    args.add(ctx.file._arm_emit)
-    args.add("merge")
-    args.add("--base", base)
+    args.add(ctx.file._gate_declarations)
+    args.add("--stated", stated_file)
     args.add_all(files, before_each = "--file")
-    args.add("--out", declared)
+    args.add("--rules", ctx.file._rules)
+    if probes:
+        args.add("--probes")
+    args.add_all(["%s=%s" % (arch, f.path) for arch, f in declared.items()], before_each = "--out")
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = [base, ctx.file._arm_emit] + files,
-        outputs = [declared],
+        inputs = [stated_file, ctx.file._gate_declarations, ctx.file._rules] + files + ctx.files._gate_sources,
+        outputs = declared.values(),
         mnemonic = "FslaDeclarations",
-        progress_message = "Merging the arm families' declarations for %{label}",
+        progress_message = "Writing the SASS gate's declarations for %{label}",
     )
     return declared, reports
 
@@ -199,46 +200,59 @@ def warpline_root(ctx, target):
         fail("%s: %s names %d `warpline/__init__.py`, not one" % (ctx.label, target.label, len(package)))
     return package[0], files
 
-def _sass_gate(ctx, so, verdict_path, flags = []):
-    """The SASS gate (KERNEL_STANDARDS section 20) on the linked library `so`, on the graph's disassemblers and the
-    checker it reads the code with (warpline's, `FSLA_WARPLINE_PYTHON`): its facts of every function and of the build's notices (the units'
-    ptxas reports, read against the project's ledger), compared with the declarations stated beside the kernels (`_gated`), `flags` its own;
-    its verdict, `verdict_path`, the action's output."""
-    package, warpline = warpline_root(ctx, ctx.attr._warpline)
-    declared, reports = _gated(ctx)
-    verdict = ctx.actions.declare_file(verdict_path)
-    args = ctx.actions.args()
-    args.add(ctx.file._sass_gate)
-    args.add(so)
-    args.add_all(flags)
-    args.add("--declare", declared)
-    args.add_all(reports, before_each = "--notices")
-    args.add("--cuobjdump", ctx.file._cuobjdump)
-    args.add("--nvdisasm", ctx.file._nvdisasm)
-    args.add("--cuxxfilt", ctx.file._cuxxfilt)
-    args.add("--json", verdict)
-    ctx.actions.run(
-        executable = ctx.file._python,
-        arguments = [args],
-        inputs = ctx.files._gate_sources + warpline + reports + [declared, so, ctx.file._sass_gate, ctx.file._ledger, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt],
-        env = {"FSLA_WARPLINE_PYTHON": package.dirname.removesuffix("/warpline")},
-        outputs = [verdict],
-        mnemonic = "FslaSassGate",
-        progress_message = "The SASS gate on %{label}'s library",
-    )
-    return verdict
+#: CLOSED-WORLD RULE 2 on the linked binary: no PTX image a driver could just-in-time compile for an architecture nobody measured
+#: (`cuobjdump --list-ptx` lists none); the verdict is the action's output
+_PTX_GATE = """\
+set -euo pipefail
+listed="$("$1" --list-ptx "$2")"
+if printf '%s\\n' "$listed" | grep '^PTX file'; then
+  echo "RED  rule 2: the binary carries the PTX image(s) above -- a binary carries cubins alone (docs/build.md#what-the-build-checks)" >&2
+  exit 1
+fi
+echo "rule 2: no PTX image, the binary carries cubins alone" > "$3"
+"""
 
-#: the SASS gate's inputs, every library rule's
-_SASS_GATE_ATTRS = {
-    "_sass_gate": attr.label(default = "//tools:sass_gate.py", allow_single_file = True),
+def _sass_gate(ctx, so, stem, probes = False):
+    """THE SASS GATE (KERNEL_STANDARDS section 20) on the linked library `so`: warpline's check (`warpline_check_actions`, its manifest
+    and its comparison) once a built architecture, on the graph's disassemblers, with the units' ptxas reports as the build's notices,
+    the project's ledger and the architecture's declarations file (`_gated`: fsla's declarations, its arms and source kernels as
+    presences, its notes, strict); and closed-world rule 2 (`_PTX_GATE`). A refusal fails its action, so the library's build. Returns
+    the verdicts (each check's comparison text and rule 2's, `<stem>.<arch>.check.txt` and `<stem>.ptx.txt`) and the static manifests
+    (`<stem>.<arch>.manifest.json`)."""
+    declared, reports = _gated(ctx, probes)
+    toolkit = [ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt]
+    checks = [warpline_check_actions(
+        ctx,
+        name = "%s.%s" % (stem, arch),
+        binary = so,
+        declarations = declared[arch],
+        arch = arch,
+        toolkit = toolkit,
+        notices = reports,
+        ledger = ctx.file._ledger,
+    ) for arch in sorted(declared)]
+    ptx = ctx.actions.declare_file(stem + ".ptx.txt")
+    ctx.actions.run_shell(
+        inputs = [so, ctx.file._cuobjdump],
+        outputs = [ptx],
+        arguments = [ctx.file._cuobjdump.path, so.path, ptx.path],
+        command = _PTX_GATE,
+        mnemonic = "FslaPtxGate",
+        progress_message = "Closed-world rule 2 on %{label}'s library: no PTX image",
+    )
+    return [c.report for c in checks] + [ptx], [c.manifest for c in checks]
+
+#: the SASS gate's inputs, every library rule's: warpline's check (`WARPLINE_CHECK_ATTRS`), the graph's disassemblers, the project's
+#: ledger, and what the declarations are written from
+_SASS_GATE_ATTRS = WARPLINE_CHECK_ATTRS | {
+    "_gate_declarations": attr.label(default = "//bazel:gate_declarations.py", allow_single_file = True),
     "_gate_sources": attr.label(default = "//bazel:gate_sources"),
+    "_rules": attr.label(default = "//:docs/rules.json", allow_single_file = True),
     "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
-    "_warpline": attr.label(default = "@warpline//:checker"),
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),
     "_python": attr.label(default = "@fsla_env//:python", allow_single_file = True, cfg = "exec"),
-    "_arm_emit": attr.label(default = "//bazel:arm_emit.py", allow_single_file = True),
 }
 
 def _extension_impl(ctx):
@@ -271,9 +285,9 @@ def _extension_impl(ctx):
         progress_message = "Gating the build (rules 1, 3, 5) and writing its record",
     )
 
-    #: THE BINARY GATES, on the linked library: the SASS gate, and the arm table with its coverage sweep (the binary
+    #: THE BINARY GATES, on the linked library: the SASS gate (with rule 2), and the arm table with its coverage sweep (the binary
     #: asked what it carries)
-    sass_verdict = _sass_gate(ctx, so, "fsla_cu13/sass_gate.json")
+    sass_verdicts, manifests = _sass_gate(ctx, so, "fsla_cu13/sass_gate")
     arm_verdict = ctx.actions.declare_file("fsla_cu13/arm_gate.txt")
     headers = {family: [f for f in ctx.files._headers if f.basename == "%s_selection.inc" % family][0] for family in ARM_FAMILIES}
     stub = [f for f in ctx.files._runtime_libs if f.path.endswith("stubs/libcuda.so")][0]
@@ -299,7 +313,7 @@ def _extension_impl(ctx):
         execution_requirements = {"no-sandbox": "1"},
     )
 
-    verdicts = [sass_verdict, arm_verdict]
+    verdicts = sass_verdicts + [arm_verdict]
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     installed = [f for f in ctx.files._headers if f.extension in ("inc", "py")]
     ctx.actions.write(install, _INSTALL.format(headers = " ".join([f.short_path for f in installed])), is_executable = True)
@@ -307,6 +321,8 @@ def _extension_impl(ctx):
     return [
         DefaultInfo(files = depset([so, record] + verdicts), executable = install,
                     runfiles = ctx.runfiles(files = [so, record] + verdicts + installed)),
+        #: THE STATIC MANIFEST of each built architecture (warpline's, docs/internals/tools/sass_gate.md#manifest): `//:static_manifest`
+        OutputGroupInfo(manifest = depset(manifests)),
         #: the units it links, for the census (`ratify_census`)
         CudaUnitInfo(
             units = depset(transitive = [dep[CudaUnitInfo].units for dep in ctx.attr.deps if CudaUnitInfo in dep]),
@@ -352,12 +368,15 @@ echo "the library is .bazel/bin/fsla_cu13/$(basename {so})"
 def _instrument_impl(ctx):
     so = ctx.actions.declare_file("fsla_cu13/%s.abi3.so" % ctx.attr.module)
     _link(ctx, so)
-    #: the SASS gate, as on the extension, its probes keeping only the signatures their units' declarations name; its
-    #: verdict a runfile, so `bazel run` installs nothing it has not passed
-    verdict = _sass_gate(ctx, so, "fsla_cu13/%s.sass_gate.json" % ctx.attr.module, ["--probes"])
+    #: the SASS gate, as on the extension, its probes keeping only the signatures their units' declarations name and owing none of
+    #: the source's kernels; its verdicts runfiles, so `bazel run` installs nothing it has not passed
+    verdicts, manifests = _sass_gate(ctx, so, "fsla_cu13/%s.sass_gate" % ctx.attr.module, probes = True)
     install = ctx.actions.declare_file(ctx.label.name + "_install.sh")
     ctx.actions.write(install, _INSTALL_INSTRUMENT.format(so = shell.quote(so.short_path)), is_executable = True)
-    return [DefaultInfo(files = depset([so, verdict]), executable = install, runfiles = ctx.runfiles(files = [so, verdict]))]
+    return [
+        DefaultInfo(files = depset([so] + verdicts), executable = install, runfiles = ctx.runfiles(files = [so] + verdicts)),
+        OutputGroupInfo(manifest = depset(manifests)),
+    ]
 
 fsla_instrument = rule(
     implementation = _instrument_impl,
@@ -709,7 +728,7 @@ lab_run = rule(
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker, or the lab's records"),
         "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, whose instruments read compiled code)"),
     },
-    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate, the floor model; or `module`: the measurements) run by `bazel run` in the checkout, handed the " +
+    doc = "The lab (`tools/lab.py`, or `tool`: the floor model; or `module`: the measurements) run by `bazel run` in the checkout, handed the " +
           "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 

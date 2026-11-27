@@ -94,13 +94,6 @@ lab_run(
     tool = "tools/carry_floor.py",
 )
 
-#: THE SASS GATE by hand, handed the checker as the lab is (the graph's gate action reads the same way)
-lab_run(
-    name = "sass_gate",
-    library = "@warpline//:checker",
-    tool = "tools/sass_gate.py",
-)
-
 #: what the lab's graph actions read (bazel/lab.bzl): the lab's checks and the modules they import, never the rest of the tools
 filegroup(
     name = "lab_sources",

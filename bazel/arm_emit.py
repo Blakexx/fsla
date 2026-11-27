@@ -2,7 +2,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE ARM FAMILIES' GENERATED FILES, written from a family's rows file (`{"key": [...], "arms": [[...], ...]}`): its selection header, its Python
-table and its declarations, and the merge of declaration files into the one file the SASS gate reads. Run by `bazel/arms.bzl`'s rules; the
+table and its declarations, which the SASS gate's declarations take in (`bazel/gate_declarations.py`). Run by `bazel/arms.bzl`'s rules; the
 rows are a literal's (`arm_rows`) or `arms_gen`'s (docs/internals/common/plan/arms_gen.md). Docs: docs/build-graph.md#arms.
 """
 from __future__ import annotations
@@ -91,23 +91,9 @@ def declarations(family: str, key: list[str], rows: list[list[int]], picked: lis
     return {"declarations": found, "arms": arms}
 
 
-def merge(base: dict, files: list[Path]) -> dict:
-    """The gate's declarations file: `base` (`{"architectures": {arch: {"declarations", "arms"}}}`) with each file's findings added to their architectures."""
-    spec = base["architectures"]
-    for path in files:
-        data = json.loads(path.read_text())
-        for d in data["declarations"]:
-            if d["arch"] in spec:
-                spec[d["arch"]]["declarations"].append({k: d[k] for k in ("kernel", "rule", "allow", "reason")})
-        for arm in data["arms"]:
-            if arm["arch"] in spec:
-                spec[arm["arch"]]["arms"].append({"family": arm["family"], "arm": arm["arm"], "kernel": arm["kernel"]})
-    return base
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=("selection", "table", "declarations", "merge"))
+    ap.add_argument("what", choices=("selection", "table", "declarations"))
     ap.add_argument("--rows", type=Path)
     ap.add_argument("--family", default="")
     ap.add_argument("--includer", default="")
@@ -116,13 +102,8 @@ def main() -> int:
     ap.add_argument("--declared", action="append", default=[], help="a declaration, JSON")
     ap.add_argument("--archs", default="")
     ap.add_argument("--spellings", default="{}", help="JSON: for each key field whose template argument is a type, the type's spelling for each value of the field")
-    ap.add_argument("--base", type=Path)
-    ap.add_argument("--file", action="append", default=[], type=Path)
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    if a.what == "merge":
-        a.out.write_text(json.dumps(merge(json.loads(a.base.read_text()), a.file), indent=2) + "\n")
-        return 0
     key, rows = rows_of(a.rows)
     knob = "--//:contract"
     picked = list(range(len(rows))) if a.selected == "all" else sorted(int(i) for i in a.selected.split(",") if i)

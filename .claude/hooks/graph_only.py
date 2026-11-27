@@ -17,9 +17,11 @@ OVERRIDE = re.compile(r"\bGRAPH_OVERRIDE=\S")
 TOOLS = {
     "nvcc": "`bazel run //:library` (the shipped build; `--//:archs=<arch>` for one architecture) or, for an experiment, "
             "`bazel run //tools:lab -- run|pack <name>`",
-    "ptxas": "`bazel run //tools:lab -- sass <name>` or `bazel run //tools:sass_gate -- <.so|.cubin>`",
-    "cuobjdump": "`bazel run //tools:lab -- sass <name> [REGEX] [--full]` or `bazel run //tools:sass_gate -- <.so|.cubin>`",
-    "nvdisasm": "`bazel run //tools:lab -- sass <name> [REGEX] [--full]` or `bazel run //tools:sass_gate -- <.so|.cubin>`",
+    "ptxas": "`bazel run //tools:lab -- sass <name>` or `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text)",
+    "cuobjdump": "`bazel run //tools:lab -- sass <name> [REGEX] [--full]`, `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text) "
+                 "or `bazel build //:static_manifest` (the library's, every rule's count at every kernel)",
+    "nvdisasm": "`bazel run //tools:lab -- sass <name> [REGEX] [--full]`, `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text) "
+                 "or `bazel build //:static_manifest` (the library's, every rule's count at every kernel)",
     "ncu": "`bazel run //tools:lab -- ncu <name> --metric M` (a lab row) or `bazel run //:measure -- run declare.py:all` "
            "(a declared measurement)",
     "nsys": "`bazel run //:measure -- run declare.py:all` (a declared measurement) or `bazel run //tools:lab -- run <name>`",

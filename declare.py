@@ -12,8 +12,9 @@ itself: this checkout's instruments and diffs, every result stored. fsla times i
 here: `bazel run //measure:session_entmax` (`measure/BUILD.bazel`, docs/measurement.md).
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
-machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; no
-kernel has a pipe-counter or stall-census row on this line, so neither is declared), and with a timing server
+machine facts, every run), the instruments of `INSTRUMENTS` (the realized support once, cached; the SASS gate's static
+manifest is a build output of the library, `//:static_manifest`; no kernel has a pipe-counter or stall-census row on this
+line, so neither is declared), and with a timing server
 the timing registrations: `entmax_solve@layer=C`,
 `layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each FSLA
 construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
@@ -40,7 +41,6 @@ EXECUTORS = "measure.executors:"
 IMPORT_ROOTS = ["tools", "."]
 #: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
 INSTRUMENTS = {
-    "sass": ("tools/sass_gate.py", ["{binary}"], False, {"host_cpu": 1}, [], 600),
     #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
     "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "fsla"], 1800),
 }

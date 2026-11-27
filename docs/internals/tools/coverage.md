@@ -2,7 +2,7 @@
 
 THE QUESTION A GATE CANNOT ASK OF ITSELF: which kernels does it cover? Each gate is written against the kernels its
 author had in mind, and the inventory that preceded this lint found most of the kernel gates had narrowed to one family
-without anyone deciding so (`sass_gate.py` read one cubin; a hand-written unit list had lost three kernels). This lint
+without anyone deciding so (the SASS gate read one cubin; a hand-written unit list had lost three kernels). This lint
 asks the question across all of them, and the ratchet makes the answer hold.
 
 ## <a id="declaration"></a>The declaration

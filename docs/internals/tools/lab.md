@@ -14,7 +14,7 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
 2. `bazel run //tools:lab -- run <name>` builds the experiment's target ([below](#graph): the graph compiles it for sm_90a and its
    disassemblers read it), reads the SASS and
    REFUSES to measure unless every declared expectation holds, every notice the toolkit printed is allowed by [the ledger](#ledger) (a kernel that spills or keeps a stack frame is the toolkit's own warning) and no kernel holds a
-   convergence call nobody declared (the SASS gate's classification, `tools/sass_gate.py`: ptxas's loop-exit
+   convergence call nobody declared (the checker's `convergence_call`, as the SASS gate reads it: ptxas's loop-exit
    `CALL.REL.NOINC` and guarded fallbacks are not ones); checks the GPU is quiet; runs the repetitions; prints median, min and max and flags a result
    whose samples spread past 5%.
 3. `--record` writes `lab/<name>/<sm_XX>.json` into the store's checkout (the dev config's `store.root`, the data
@@ -150,7 +150,7 @@ straight after the group's steps). The advisories `lab waits` (what could preced
 `step_port` and `step_work` over each region of a kernel) never refuse.
 
 <a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`), the project's default for every build, the lab's and the production gate's
-(`tools/sass_gate.py` reads the units' ptxas reports against it too). nvcc and ptxas say, beside the code, what they did to
+(the SASS gate's check reads the units' ptxas reports against it too, `--ledger`). nvcc and ptxas say, beside the code, what they did to
 it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The checker reads EVERY
 notice and warning of a build (`notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
 `file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- its BASE ledger with the project's, `tools/notice_ledger.json`: a project row overrides the base row of the same tool, code and text or adds one, and the file's seven rows are the ones whose reason and fix name the lab's pages and constructs. One row
