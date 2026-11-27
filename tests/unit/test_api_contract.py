@@ -25,14 +25,22 @@ import pytest
 import torch
 
 import fsla
+from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
-from fsla.values import Values
+from fsla.routing.quant import ScaledBlock
 
 
-def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
-    """A layer over a declared routing: the producer is the layer's."""
-    levels = [fsla.dense_routing(w) if routing is None else routing.at(w) for w in widths]
-    return fsla.FSLA(fsla.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=32)
+def _routes(*, widths=(4, 4), hidden=32, heads=2, group=1, read=None, **kwargs):
+    """A layer over a declared routing, softmax on the write side and by default on the read: the producer is the
+    layer's."""
+    D = len(widths)
+    read = ((fsla.softmax(),) * D,) if read is None else read
+    routing = fsla.Routing(topology=tuple(widths), write=(fsla.softmax(),) * D, read=read, **kwargs)
+    return fsla.FSLA(routing, hidden_size=hidden, num_heads=heads, group=group, d_v=32)
+
+
+def _values(v):
+    return ScaledBlock.quantize(v, quant.VALUES)
 
 
 def _x(layer, *, B=2, T=6, dtype=torch.float64):
@@ -49,7 +57,7 @@ def _validate(routes, v) -> None:
     the bundle contract is gated, before any fact is found."""
     from fsla.engine.prefill_call import validate_context
 
-    values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
+    values = _values(v) if isinstance(v, torch.Tensor) else v
     validate_context(_context(routes, values))
 
 
@@ -58,7 +66,7 @@ def _context(routes, values):
     refusal's, which speaks before the masks are read)."""
     from fsla.engine.prefill_call import PrefillContext
 
-    if not isinstance(routes, RouteFactors) or not isinstance(values, Values):
+    if not isinstance(routes, RouteFactors) or not isinstance(values, ScaledBlock):
         return PrefillContext(routes=routes, values=values, masks=None, density=None)
     masks, density = fsla.masks_and_density(routes)
     return PrefillContext(routes=routes, values=values, masks=masks, density=density)
@@ -104,10 +112,11 @@ def test_a_well_formed_hand_built_bundle_is_legal():
 
 @pytest.mark.parametrize("break_it,message", [
     ("width", "wide but the topology"),
-    ("levels", "one tensor per routing level"),
+    ("levels", "one block per routing level"),
     ("prefix", "a side's routing levels share one prefix"),
-    ("dtype", "is stored as"),
-    ("scale_shape", r"scale_write\[0\] is the rows' maxima"),
+    ("form", "in the u8 rows form"),
+    ("dtype", "form's torch.uint8"),
+    ("scale_shape", "is the rows' maxima"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
     """Unsealing removed the ORIGIN check, not the invariants. Each row plants one
@@ -118,23 +127,32 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     (docs/CONSTITUTION.md#r23), and conformance fixtures plant amplitudes of any
     magnitude on purpose.
     """
+    import dataclasses
+
     producer = _routes()
     f = _factors(producer)
-    fields = dict(topology=f.topology, amp_read=list(f.amp_read), amp_write=list(f.amp_write),
-                  scale_read=f.scale_read, scale_write=list(f.scale_write))
-    if break_it == "width":
-        fields["amp_read"][0] = fields["amp_read"][0][..., :2]
-    elif break_it == "levels":
-        fields["amp_read"] = fields["amp_read"][:1]
-    elif break_it == "prefix":
-        fields["amp_write"][1] = fields["amp_write"][1][:1]
-    elif break_it == "dtype":
-        #: every level's rows have one stored type, u8: plant another
-        fields["amp_write"][0] = fields["amp_write"][0].to(torch.float16)
-    elif break_it == "scale_shape":
-        fields["scale_write"][0] = fields["scale_write"][0][..., :1]
+    read, write = list(f.read), list(f.write)
+
+    def rebuilt(block, **changes):
+        return ScaledBlock(**{**{name: getattr(block, name) for name in ("data", "scale", "form")}, **changes})
+
     with pytest.raises((ValueError, TypeError), match=message):
-        RouteFactors(**fields)
+        if break_it == "width":
+            read[0] = rebuilt(read[0], data=read[0].data[..., :2])
+        elif break_it == "levels":
+            read = read[:1]
+        elif break_it == "prefix":
+            write[1] = rebuilt(write[1], data=write[1].data[:1], scale=write[1].scale[:1])
+        elif break_it == "form":
+            #: every level's rows are the ROWS form: plant the values' form over the same rows
+            write[0] = dataclasses.replace(write[0], form=quant.VALUES, data=write[0].data.to(torch.bfloat16),
+                                           source=None)
+        elif break_it == "dtype":
+            #: every level's rows have one stored type, u8: plant another
+            write[0] = rebuilt(write[0], data=write[0].data.to(torch.float16))
+        elif break_it == "scale_shape":
+            write[0] = rebuilt(write[0], scale=write[0].scale[..., :1])
+        RouteFactors(topology=f.topology, read=read, write=write)
 
 
 def _grouped(heads, write_heads, *, B=2, T=6):
@@ -152,7 +170,34 @@ def test_a_grouped_bundle_names_its_query_heads_write_heads_and_group():
     each write head read by H / H_w consecutive query heads."""
     routes = _grouped(4, 2)
     assert (routes.heads, routes.write_heads, routes.group) == (4, 2, 2)
-    assert routes.scale_write[0].shape == (2, 6, 2) and routes.scale_read[0].shape == (2, 6, 4)
+    assert routes.write[0].scale.shape == (2, 6, 2) and routes.read[0].scale.shape == (2, 6, 4)
+
+
+def test_a_grouped_layer_produces_its_read_heads_each_by_its_own_tuple():
+    """THE ROUTING'S G READ HEADS (docs/api.md section 2.3): the layer's ``group`` query heads read each write head,
+    head ``g`` by the routing's ``g``-th read tuple -- a tied entry its write head's rows on that level -- and the
+    producer's bundle is the grouped one the prefill admits."""
+    layer = _routes(group=2, read=((fsla.softmax(), fsla.softmax()), (fsla.tied(), fsla.softmax()))).double()
+    assert layer.query_heads == 4 and layer.o_proj.in_features == 4 * 32
+    routes, values, masks, density = layer._produce(_x(layer))
+    assert (routes.heads, routes.write_heads, routes.group) == (4, 2, 2)
+    read, write = routes.dequantized()
+    #: query head w * 2 + 1 is write head w's tied read head: its level 0 is the write side's, but for the gain
+    #: folded into write level 0's scale
+    torch.testing.assert_close(read[0][:, :, 1::2] / read[0][:, :, 1::2].amax(-1, keepdim=True),
+                               write[0] / write[0].amax(-1, keepdim=True), rtol=0, atol=1 / 255)
+    assert not torch.equal(read[1][:, :, 1::2], write[1]), "the untied head's level is its own solve"
+    _admitted(routes, values.dequantized().double())
+    assert tuple(density.shape) == (2, 2)
+
+
+def test_a_read_count_that_is_not_the_layers_group_is_refused_naming_both():
+    two = ((fsla.softmax(), fsla.softmax()), (fsla.tied(), fsla.tied()))
+    with pytest.raises(ValueError, match="2 read heads' tuples .* G=3"):
+        _routes(group=3, read=two)
+    with pytest.raises(ValueError, match="2 read heads' tuples .* G=1"):
+        _routes(group=1, read=two)
+    assert _routes(group=3).query_heads == 6, "one tuple reads every head of any group"
 
 
 def test_the_write_heads_must_divide_the_query_heads():
@@ -193,10 +238,10 @@ def test_the_factory_refuses_an_entry_its_form_does_not_hold():
         with pytest.raises(ValueError, match="form holds nonnegative, finite entries"):
             RouteFactors.from_levels(topology, good, bad)
     v = torch.randn(1, 2, 2, 8, dtype=torch.float64)
-    assert torch.equal(Values.from_projection(v).v.float() < 0, v < 0), "the signed form holds negative values"
+    assert torch.equal(_values(v).data.float() < 0, v < 0), "the signed form holds negative values"
     v[0, 0, 0, 0] = float("nan")
     with pytest.raises(ValueError, match="form holds finite entries"):
-        Values.from_projection(v)
+        _values(v)
     with pytest.raises(ValueError, match="bf16 values"):
         quant.VALUES.quantize(v)
 
@@ -214,20 +259,17 @@ def test_a_zero_digit_is_a_zero_at_every_level():
 def test_rows_are_u8_at_every_depth():
     """The producer writes u8 rows at every depth, each against its own max (the bundle carries no flag); a row of any other type is refused,
     and a deep bundle dequantizes to its levels within half a digit a row."""
-    from fsla.routing.types import OpaqueRouting, Topology
+    from fsla.routing.types import Topology
 
-    deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
+    deep = Topology.opaque((4, 4, 4))
     level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
     bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3)
-    assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write)
+    assert all(row.dtype is torch.uint8 for row in bundle.read_rows + bundle.write_rows)
     for got in bundle.dequantized()[0]:
         top = level.amax(-1, keepdim=True)
         assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
-    wrong = list(bundle.amp_read)
-    wrong[1] = wrong[1].to(torch.float16)
-    with pytest.raises(TypeError, match="stored as torch.uint8"):
-        RouteFactors(topology=deep, amp_read=wrong, amp_write=bundle.amp_write, scale_read=bundle.scale_read,
-                     scale_write=bundle.scale_write)
+    with pytest.raises(ValueError, match="torch.uint8"):
+        ScaledBlock(data=bundle.read[1].data.to(torch.float16), scale=bundle.read[1].scale, form=quant.ROWS)
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -236,40 +278,42 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
     factors = _factors(producer)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="RouteFactors"):
-        _validate(factors.amp_read, v)
+        _validate(factors.read_rows, v)
     #: The well-formed call is the control: the refusal above must be about the TYPE,
     #: not about this fixture being unrunnable.
     _admitted(factors, v)
 
 
 def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
-    """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
-    `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
+    """PLANTED VIOLATION: hand the op the value tensor itself, then a routing level's block in its place. The value
+    stream is a scaled block in the VALUES form -- the format the kernels read -- and the refusal says so by name."""
     from fsla.engine.prefill_call import validate_context
 
     producer = _routes()
     factors = _factors(producer)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
-    with pytest.raises(TypeError, match="Values"):
+    with pytest.raises(TypeError, match="VALUES form"):
         validate_context(_context(factors, v))
+    with pytest.raises(TypeError, match="VALUES form"):
+        validate_context(_context(factors, factors.write[0]))
     _admitted(factors, v)
 
 
-def test_the_value_bundle_is_the_format_and_its_view_is_the_rounded_projection():
-    """`Values.from_projection` writes the value format against the token's largest channel: bf16 with that channel
-    at 1; the scale is its magnitude in fp32, and `dequantized` is the rounded projection carrying its gradient
+def test_the_value_block_is_the_format_and_its_view_is_the_rounded_projection():
+    """`ScaledBlock.quantize(v, VALUES)` writes the value format against the token's largest channel: bf16 with that
+    channel at 1; the scale is its magnitude in fp32, and `dequantized` is the rounded projection carrying its gradient
     (docs/api.md section 4.1)."""
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64, requires_grad=True)
-    values = Values.from_projection(v)
-    assert values.v.dtype is torch.bfloat16 and tuple(values.v.shape) == (2, 6, 2, 8)
-    assert values.scale.dtype is torch.float32
+    values = _values(v)
+    assert values.data.dtype is torch.bfloat16 and tuple(values.data.shape) == (2, 6, 2, 8)
+    assert values.form is quant.VALUES and values.scale.dtype is torch.float32
     torch.testing.assert_close(values.scale, v.detach().abs().amax(-1).float())
-    assert values.v.abs().amax(-1).eq(1).all()
+    assert values.data.abs().amax(-1).eq(1).all()
     torch.testing.assert_close(values.dequantized().double(), v.detach(), rtol=2.0 ** -8, atol=0)
     values.dequantized().sum().backward()
     assert torch.equal(v.grad, torch.ones_like(v))
     with pytest.raises(ValueError, match="bf16"):
-        Values(v=values.v.float(), scale=values.scale)
+        ScaledBlock(data=values.data.float(), scale=values.scale, form=quant.VALUES)
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():
@@ -300,11 +344,11 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     structure. Such levels reach the op through the format's utilities; the LAYER takes a declared routing, and a
     callable in its place is refused (ruled 2026-09-29: the producer is a declared configuration).
     """
-    from fsla.routing.types import OpaqueRouting, Topology
+    from fsla.routing.types import Topology
 
     class Uniform(torch.nn.Module):
         hidden_size, num_heads = 32, 2
-        topology = Topology(levels=(OpaqueRouting(width=4),))
+        topology = Topology.opaque((4,))
 
         def forward(self, stream):
             B, T = stream.shape[0], stream.shape[1]
@@ -313,16 +357,16 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
 
     producer = Uniform()
     factors = producer(_x(producer))
-    assert factors.amp_read[0].dtype is torch.uint8 and factors.amp_write[0].dtype is torch.uint8
-    assert torch.equal(factors.amp_read[0], torch.full_like(factors.amp_read[0], 255)), "a flat dense row is all 255"
+    assert factors.read_rows[0].dtype is torch.uint8 and factors.write_rows[0].dtype is torch.uint8
+    assert torch.equal(factors.read_rows[0], torch.full_like(factors.read_rows[0], 255)), "a flat dense row is all 255"
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(factors, v)
     assert torch.isfinite(_oracle(factors, v)).all()
     with pytest.raises(TypeError, match="declared routing"):
         fsla.FSLA(producer, hidden_size=32, num_heads=2, d_v=8)
     with pytest.raises(TypeError):
-        RouteFactors(topology=producer.topology, amp_read=factors.amp_read,
-                     amp_write=factors.amp_write)  # the format's fields are not optional
+        RouteFactors(topology=producer.topology, read=factors.read_rows,
+                     write=factors.write_rows)  # a level-side is a scaled block, never bare rows
 
 
 def test_a_layer_without_a_declared_routing_is_refused_at_construction():
@@ -341,7 +385,7 @@ def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
     producer = _routes(widths=(4, 6))
     assert producer.topology.widths == (4, 6)
     factors = _factors(producer)
-    assert [tuple(level.shape[-1:]) for level in factors.amp_read] == [(4,), (6,)]
+    assert [block.width for block in factors.read] == [4, 6]
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +412,7 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     #: RULED 2026-09-26: the rows (u8) and their scales ARE the stored layout; the dequantized
     #: levels are computed at a consumer's seam, for consumers that still compute on floating levels.
     read, _ = factors.dequantized()
-    for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, read)):
+    for level, (rows, scale, public) in enumerate(zip(factors.read_rows, factors.scales("read"), read)):
         assert rows.dtype is torch.uint8 and tuple(rows.shape) == tuple(public.shape)
         assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), 255)), (
             f"level {level}'s rows are not unit-max")
@@ -428,9 +472,9 @@ def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out(
 
     signature = inspect.signature(fsla.FSLA.__init__)
     assert list(signature.parameters) == [
-        "self", "routing", "hidden_size", "num_heads",
+        "self", "routing", "hidden_size", "num_heads", "group",
         "d_v", "decay", "layer_idx", "segments"]
-    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "segments"):
+    for name in ("hidden_size", "num_heads", "group", "d_v", "decay", "layer_idx", "segments"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 

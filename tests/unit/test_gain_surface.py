@@ -19,8 +19,9 @@ import pytest
 import torch
 
 from fsla.layer import FSLA
-from fsla.routing.producer import Routing, split_routing
+from fsla.routing.producer import Routing
 from fsla.routing.side_gain import GainConfig
+from fsla.routing.types import entmax, softmax
 
 _H, _DV = 2, 32
 _HIDDEN = _H * _DV
@@ -28,9 +29,15 @@ _HIDDEN = _H * _DV
 
 def _layer(*, gain: bool, **kwargs) -> FSLA:
     #: the alternating scheme: every side has a dense level (docs/api.md section 2.1)
-    levels = [split_routing(4, 1.5, sparse_duty="write"), split_routing(4, 1.5, sparse_duty="read")]
-    return FSLA(Routing(levels, gain=gain, **kwargs), hidden_size=_HIDDEN,
-                num_heads=_H, d_v=_DV).double()
+    routing = Routing(topology=(4, 4), write=(entmax(1.5), softmax()), read=((softmax(), entmax(1.5)),), gain=gain,
+                      **kwargs)
+    return FSLA(routing, hidden_size=_HIDDEN, num_heads=_H, d_v=_DV).double()
+
+
+def _side(factors, name):
+    """One of the bundle's per-level tensor tuples by name: the rows or the scales of a side."""
+    kind, side = name.split("_")
+    return tuple(block.data for block in factors.side(side)) if kind == "rows" else factors.scales(side)
 
 
 def _factors(layer: FSLA, x: torch.Tensor):
@@ -45,7 +52,7 @@ def _gain(layer: FSLA, x: torch.Tensor):
     with torch.no_grad():
         twin.route_W.copy_(layer.route_W[..., :twin.route_W.shape[-1]])
     with_gain, without = _factors(layer, x), _factors(twin, x)
-    return with_gain.scale_write[0] / without.scale_write[0], with_gain, without
+    return with_gain.write[0].scale / without.write[0].scale, with_gain, without
 
 # --- the public flag ---------------------------------------------------------
 
@@ -91,17 +98,17 @@ def test_the_gain_is_write_level_0s_scale_and_there_is_never_a_read_gain():
     gain, with_gain, without = _gain(layer, x)
     assert not hasattr(with_gain, "g_write") and not hasattr(with_gain, "g_read")
     assert gain.shape == (2, 6, _H) and bool((gain > 0).all()) and float((gain - 1).abs().max()) > 1e-2
-    for name in ("amp_read", "amp_write", "scale_read"):
-        for level, (a, b) in enumerate(zip(getattr(with_gain, name), getattr(without, name))):
+    for name in ("rows_read", "rows_write", "scales_read"):
+        for level, (a, b) in enumerate(zip(_side(with_gain, name), _side(without, name))):
             assert torch.equal(a, b), f"the gain reached {name}[{level}]"
-    for level in range(1, len(with_gain.scale_write)):
-        assert torch.equal(with_gain.scale_write[level], without.scale_write[level]), f"the gain reached level {level}"
+    for level in range(1, len(with_gain.write)):
+        assert torch.equal(with_gain.write[level].scale, without.write[level].scale), f"the gain reached level {level}"
 
 
 def test_the_disabled_gain_removes_the_column_rather_than_pinning_it():
     """`gain=False` REMOVES the projection column: a parameter whose value is fixed is
     a parameter whose gradient is wasted, and a missing column is a constant."""
-    routed = _layer(gain=False).routing.resolved.packed_router_width
+    routed = _layer(gain=False).routing.layout(1).packed_router_width
     assert _layer(gain=False).route_W.shape[-1] == routed
     assert _layer(gain=True).route_W.shape[-1] == routed + 1
     assert _layer(gain=False).gain_bias.shape[-1] == 0
@@ -122,11 +129,11 @@ def test_the_gain_rides_the_router_gemm_and_is_not_a_second_projection():
     with torch.no_grad():
         layer.route_W[:, :, -1] += 1.0
     after = _factors(layer, x)
-    assert not torch.allclose(before.scale_write[0], after.scale_write[0]), (
+    assert not torch.allclose(before.write[0].scale, after.write[0].scale), (
         "the trailing column does not reach the gain")
-    for name in ("amp_read", "amp_write", "scale_read", "scale_write"):
-        for level, (b, a) in enumerate(zip(getattr(before, name), getattr(after, name))):
-            if (name, level) != ("scale_write", 0):
+    for name in ("rows_read", "rows_write", "scales_read", "scales_write"):
+        for level, (b, a) in enumerate(zip(_side(before, name), _side(after, name))):
+            if (name, level) != ("scales_write", 0):
                 assert torch.equal(b, a), f"the gain column moved {name}[{level}]"
 
 

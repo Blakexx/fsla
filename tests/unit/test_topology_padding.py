@@ -19,7 +19,7 @@ import torch
 
 from fsla.ops.padding import PaddedShape, pad_routes, pad_v, padded_value_width, slice_y
 from fsla.routing.topology import PADDED_LEVEL_FLOOR, padded_level_width
-from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from fsla.routing.types import Topology, entmax, softmax, tied
 
 
 def test_the_floor_matches_the_states_own_floor():
@@ -45,15 +45,15 @@ def test_padded_level_width_refuses_a_non_positive_or_inexact_width():
         padded_level_width(-3)
 
 
-def _levels(widths):
-    return tuple(IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation())
-                for w in widths)
+def _topology(widths):
+    widths = tuple(widths)
+    return Topology(widths=widths, write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
 
 
 def test_topology_widths_stays_logical_forever():
     """`Topology.widths` is the API surface (`tests/unit/test_api_contract.py`'s
     pinned shape/view contract): padding never touches it."""
-    topology = Topology(levels=_levels((31, 45)))
+    topology = _topology((31, 45))
     assert topology.widths == (31, 45)
 
 
@@ -64,28 +64,25 @@ def test_topology_widths_stays_logical_forever():
     ((8, 8, 8, 8), (16, 16, 16, 16)),
 ])
 def test_topology_padded_widths_is_per_level_padded_level_width(widths, padded):
-    topology = Topology(levels=_levels(widths))
+    topology = _topology(widths)
     assert topology.padded_widths == padded
 
 
 def test_topology_is_padded_predicate():
-    assert Topology(levels=_levels((256, 256))).is_padded
-    assert not Topology(levels=_levels((31, 45))).is_padded
+    assert _topology((256, 256)).is_padded
+    assert not _topology((31, 45)).is_padded
 
 
 def test_topology_padded_returns_an_equivalent_topology_at_the_padded_widths():
-    topology = Topology(levels=_levels((31, 45)))
+    topology = Topology(widths=(31, 45), write=(entmax(1.5), softmax()), read=((tied(), entmax(2.0)), (softmax(), tied())))
     padded = topology.padded()
     assert padded.widths == (32, 64)
-    #: `.at(width)` keeps the operator/activation choice, so the padded Topology
-    #: describes the SAME model, never a different one.
-    assert type(padded.levels[0]) is type(topology.levels[0])
-    assert padded.levels[0].read == topology.levels[0].read
-    assert padded.levels[0].write == topology.levels[0].write
+    #: every activation and marker is kept, so the padded Topology describes the SAME model, never a different one.
+    assert padded.write == topology.write and padded.read == topology.read
 
 
 def test_topology_padded_is_idempotent_on_an_already_padded_topology():
-    topology = Topology(levels=_levels((256, 256)))
+    topology = _topology((256, 256))
     assert topology.padded().widths == topology.widths
 
 

@@ -21,7 +21,7 @@ excluded from that hard assertion, and neither is a tolerance in disguise:
 
 * **softmax sides.** A dense activation has no support; its "zeros" are fp underflow
   and differ between fp32 and fp64 by construction. Exact support is asserted for
-  exactly the zero-capable sides (`ResolvedRouting.read/write_level_can_zero`).
+  exactly the zero-capable sides (`Topology.can_zero`).
 * **the exact-tie fixture**, which is not gated against the oracle at all. Where a
   logit sits exactly on the threshold, an oracle comparison is a comparison of TWO
   INDEPENDENT closed forms -- production's fp32 sorted solve and the oracle's fp64
@@ -44,21 +44,15 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import fuse_gain_columns, produce_routing, raw_side_gain, resolved_routing_from_topology
+from conftest import fuse_gain_columns, layout_of, produce_routing, raw_side_gain
 
 import fsla.ops.produce as production_path
 from fsla.ops.produce import ProducerWeights, route_logits
 from fsla.routing.entmax.production import production_routing_levels
 from fsla.routing.producer import Routing
+from fsla.routing.projection import RouterLayout
 from fsla.routing.reference import routing_factor_levels as oracle_factor_levels
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    SoftmaxActivation,
-    TiedRouting,
-    Topology,
-)
+from fsla.routing.types import Topology, entmax, softmax, tied
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close
 from tests.oracle.stored_vjp import gradient_from_stored
 from tests.oracle.tolerances import (
@@ -82,35 +76,40 @@ from tests.oracle.tolerances import (
 _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="fused production solve needs CUDA")
 
 
-def _routings(alpha: float) -> dict[str, ResolvedRouting]:
-    """Every structural level shape the V3 producer can hand the solve."""
+def _layout(widths, write, read, group=1) -> RouterLayout:
+    return RouterLayout(Topology(widths=tuple(widths), write=tuple(write), read=tuple(read)), group)
+
+
+#: the shapes every solve gate sweeps
+SHAPES = ("tied", "mixed_per_level", "dense_only", "grouped")
+
+
+def _routings(alpha: float) -> dict[str, RouterLayout]:
+    """Every structural level shape the producer can hand the solve."""
     return {
-        # A second, untied level alongside the tied one, so `read_logits` is genuinely
-        # used somewhere in the graph. A standalone tied level never reads
-        # `read_logits` at all (by design: the read factor IS the write factor), which
-        # makes `production_read` an unused `autograd.grad` input on its own.
-        "tied": ResolvedRouting(
-            (
-                TiedRouting(width=4, op=EntmaxActivation(alpha)),
-                IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
-            ),
-        ),
-        "mixed_per_level": ResolvedRouting(
-            (
-                IndependentRouting(width=3, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
-                IndependentRouting(width=5, read=SoftmaxActivation(),
-                                   write=EntmaxActivation(alpha)),
-            ),
-        ),
-        "dense_only": ResolvedRouting(
-            (IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),)),
+        # A second, untied level alongside the tied one, so the read columns are genuinely solved somewhere.
+        "tied": _layout((4, 5), (entmax(alpha), softmax()), ((tied(), softmax()),)),
+        "mixed_per_level": _layout((3, 5), (softmax(), entmax(alpha)), ((entmax(alpha), softmax()),)),
+        "dense_only": _layout((4,), (softmax(),), ((softmax(),),)),
+        # THREE READ HEADS a write head, each by its own tuple: level 0 tied on heads 0 and 2 (the write solve's second
+        # output, and a copy) and softmax on head 1; level 1 entmax on head 0 (the read support words), softmax on
+        # head 1 and tied on head 2
+        "grouped": _layout((4, 5), (entmax(alpha), softmax()),
+                           ((tied(), entmax(alpha)), (softmax(), softmax()), (tied(), tied())), group=3),
     }
 
 
-def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) -> torch.Tensor:
-    """Stress fixtures for the threshold solve, in the packed ``[BH, T, packed_logit_width]`` layout."""
+def _spans(layout: RouterLayout) -> list[slice]:
+    """The column span of every solve: each write level's, then each read head's untied entries'."""
+    spans = [layout.write_columns(level) for level in range(layout.D)]
+    return spans + [span for g in range(layout.group) for level in range(layout.D)
+                    if (span := layout.read_columns(g, level)) is not None]
+
+
+def _stress_logits(layout: RouterLayout, kind: str, *, device, seed: int) -> torch.Tensor:
+    """Stress fixtures for the threshold solve, in the projection's ``[S, T, packed_router_width]`` layout."""
     generator = torch.Generator(device=device).manual_seed(seed)
-    shape = (3, 40, routing.packed_logit_width)
+    shape = (3, 40, layout.packed_router_width)
     base = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
     if kind == "random":
         return base
@@ -133,14 +132,13 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
         # smallest support entmax can produce (a genuinely empty support is
         # unreachable -- the argmax is always in it).
         collapsed = torch.full(shape, -20.0, device=device, dtype=torch.float32)
-        # ONE dominant digit per LEVEL per row. In the packed layout the dominant index
-        # must land inside the level's own span (`level_logit_slice`) -- a single index
+        # ONE dominant digit per SOLVE per row. In the packed layout the dominant index
+        # must land inside the solve's own span (`_spans`) -- a single index
         # drawn over the whole packed width would leave every other level a constant row,
         # whose entmax is uniform, i.e. the opposite of the collapsed support this
         # fixture exists to produce.
-        for level, width in enumerate(routing.branches):
-            span = routing.level_logit_slice(level)
-            index = torch.randint(0, width, shape[:-1], device=device, generator=generator)
+        for span in _spans(layout):
+            index = torch.randint(0, span.stop - span.start, shape[:-1], device=device, generator=generator)
             collapsed[..., span] = collapsed[..., span].scatter(-1, index.unsqueeze(-1), 20.0)
         return collapsed
     if kind == "large_magnitude":
@@ -165,35 +163,33 @@ def _assert_levels_match(actual, expected, *, gradient=False, stored=False, extr
     assert_slots_close(actual, expected, output=output, what=f"the levels ({output.name})", derived_atol=extra_atol)
 
 
-def _assert_gradients_from_stored(routing, got, stored, cotangents, *, unrounded, label, capsys=None,
+def _assert_gradients_from_stored(layout, got, stored, cotangents, *, unrounded, label, capsys=None,
                                   teeth=False):
     """THE GRADIENTS INTO THE LOGITS, from the kernel's backward against the reference evaluated at the SAME stored values.
 
-    ``got`` is the backward's ``(d read logits, d write logits)``; ``stored`` the forward's own ``(reads, writes)``
+    ``got`` is the backward's gradient into the logits plane; ``stored`` the forward's own ``(reads, writes)``
     (bf16, what the backward reads), and
-    ``cotangents`` the incoming gradients, ``(*reads, *writes)``. Every level (`tests/oracle/stored_vjp.py`: softmax
+    ``cotangents`` the incoming gradients, ``(*reads, *writes)``. Every solve (`tests/oracle/stored_vjp.py`: softmax
     and entmax) is held per slot to the gradient the operator's fp64 form gives at those
     stored values (`ENTMAX_GRADIENTS_FROM_STORED`); with ``teeth`` the planted errors must fail on the kernel's own
     gradient, over every slot together (`assert_planted_errors_fail`). The error against ``unrounded``, the gradient at
     the unrounded values, is REPORTED over every span, never gated (nothing when ``unrounded`` is None).
     """
-    D = routing.D
+    D = layout.D
     reads, writes = ([level.detach() for level in side] for side in stored)
-    reference = gradient_from_stored(routing, reads, writes, cotangents[:D], cotangents[D:])
-    covered = reference[2]
+    reference, covered = gradient_from_stored(layout, reads, writes, cotangents[:D], cotangents[D:])
     for span in covered:
-        for plane, name in ((0, "read"), (1, "write")):
-            assert_slots_close(got[plane][..., span], reference[plane][..., span], output=ENTMAX_GRADIENTS_FROM_STORED,
-                               what=f"{label}: the {name} logits' gradient over {span}")
+        assert_slots_close(got[..., span], reference[..., span], output=ENTMAX_GRADIENTS_FROM_STORED,
+                           what=f"{label}: the logits' gradient over {span}")
     if teeth:
         assert_planted_errors_fail(
-            torch.cat([got[plane][..., span].double().flatten() for span in covered for plane in (0, 1)]),
-            torch.cat([reference[plane][..., span].flatten() for span in covered for plane in (0, 1)]),
+            torch.cat([got[..., span].double().flatten() for span in covered]),
+            torch.cat([reference[..., span].flatten() for span in covered]),
             output=ENTMAX_GRADIENTS_FROM_STORED, what=f"{label}: the gradients the reference states")
     if unrounded is None:
         return
-    worst = max(float((got[plane].double() - unrounded[plane].double()).abs().max()) for plane in (0, 1))
-    scale = max(float(unrounded[plane].double().abs().max()) for plane in (0, 1))
+    worst = float((got.double() - unrounded.double()).abs().max())
+    scale = float(unrounded.double().abs().max())
     line = (f"\n  UNROUNDED GRADIENT ERROR {label}: worst {worst:.3e} against the gradient at the unrounded values "
             f"(its largest slot {scale:.3e})")
     if capsys is None:
@@ -235,35 +231,32 @@ def _count_exact_ties(logits: torch.Tensor, alpha: float) -> int:
     return int((z == tau).sum().item())
 
 
-def _check_against_oracle(
-    routing: ResolvedRouting, logits_read, logits_write, *, label: str, exact_support: bool = True, capsys=None,
-):
-    cuda = logits_read.is_cuda
+def _check_against_oracle(layout: RouterLayout, logits, *, label: str, exact_support: bool = True, capsys=None):
+    cuda = logits.is_cuda
     if cuda:
         #: the CUDA solve takes bf16 logits; the oracle is handed the SAME values, widened (exact)
-        logits_read, logits_write = logits_read.bfloat16(), logits_write.bfloat16()
-    production_read = logits_read.detach().clone().requires_grad_()
-    production_write = logits_write.detach().clone().requires_grad_()
-    oracle_read = logits_read.detach().clone().to(torch.float64).requires_grad_()
-    oracle_write = logits_write.detach().clone().to(torch.float64).requires_grad_()
+        logits = logits.bfloat16()
+    production = logits.detach().clone().requires_grad_()
+    oracle = logits.detach().clone().to(torch.float64).requires_grad_()
 
-    reads, writes, _support = production_routing_levels(production_read, production_write, routing)
-    oracle_reads, oracle_writes = oracle_factor_levels(oracle_read, oracle_write, routing)
+    reads, writes, _support = production_routing_levels(production, layout)
+    oracle_reads, oracle_writes = oracle_factor_levels(oracle, layout)
 
-    assert len(reads) == len(writes) == routing.D
-    for level in range(routing.D):
-        assert reads[level].shape == (
-            logits_read.shape[0], logits_read.shape[1], routing.branches[level])
-        if exact_support and routing.read_level_can_zero[level]:
+    assert len(reads) == len(writes) == layout.D
+    topology, S, T = layout.topology, logits.shape[0], logits.shape[1]
+    for level in range(layout.D):
+        assert reads[level].shape == (S * layout.group, T, layout.widths[level])
+        assert writes[level].shape == (S, T, layout.widths[level])
+        if exact_support and topology.can_zero("read", level):
             _assert_support_identical(
                 reads[level], oracle_reads[level], f"{label} read level {level}")
-        if exact_support and routing.write_level_can_zero[level]:
+        if exact_support and topology.can_zero("write", level):
             _assert_support_identical(
                 writes[level], oracle_writes[level], f"{label} write level {level}")
         _assert_levels_match(reads[level], oracle_reads[level])
         _assert_levels_match(writes[level], oracle_writes[level])
 
-    generator = torch.Generator(device=logits_read.device).manual_seed(9109)
+    generator = torch.Generator(device=logits.device).manual_seed(9109)
     cotangents = [
         torch.randn(level.shape, device=level.device, dtype=torch.float32, generator=generator)
         for level in (*reads, *writes)
@@ -277,88 +270,81 @@ def _check_against_oracle(
     oracle_loss = sum(
         (level * cotangent.to(torch.float64)).sum()
         for level, cotangent in zip((*oracle_reads, *oracle_writes), cotangents))
-    production_vjp = torch.autograd.grad(loss, (production_read, production_write))
-    oracle_vjp = torch.autograd.grad(oracle_loss, (oracle_read, oracle_write))
+    (production_vjp,) = torch.autograd.grad(loss, production)
+    (oracle_vjp,) = torch.autograd.grad(oracle_loss, oracle)
     if cuda:
-        _assert_gradients_from_stored(routing, production_vjp, (reads, writes),
+        _assert_gradients_from_stored(layout, production_vjp, (reads, writes),
                                       cotangents, unrounded=oracle_vjp,
                                       label=label, capsys=capsys)
         return
-    _assert_levels_match(production_vjp[0], oracle_vjp[0], gradient=True)
-    _assert_levels_match(production_vjp[1], oracle_vjp[1], gradient=True)
+    _assert_levels_match(production_vjp, oracle_vjp, gradient=True)
+
+
+def _tied(alpha):
+    """One tied entmax level: one solve, both sides."""
+    return _layout((6,), (entmax(alpha),), ((tied(),),))
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 def test_tied_routing_read_factor_is_the_write_factor_on_both_lowerings(alpha):
-    """`TiedRouting`'s read factor IS its write factor -- the same tensor, not merely
-    numerically equal -- on the fp64 oracle lowering, and bit-identical on the torch
-    production lowering (`_ProductionLevelsFn` always allocates read/write as distinct
-    autograd outputs, even for a tied level, so identity does not survive there)."""
-    tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
+    """A tied read entry's read factor IS its write factor -- the same tensor, not merely
+    numerically equal -- on the fp64 oracle lowering and on the torch production lowering at one read head
+    (`_ProductionLevelsFn` always allocates read/write as distinct autograd outputs, even for a tied level, so
+    identity does not survive there)."""
     generator = torch.Generator().manual_seed(4242)
-    read = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
-    write = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
+    logits = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
 
-    oracle_reads, oracle_writes = oracle_factor_levels(read, write, tied)
+    oracle_reads, oracle_writes = oracle_factor_levels(logits, _tied(alpha))
     assert oracle_reads[0] is oracle_writes[0]  # the read factor IS the write factor
 
-    prod_reads, prod_writes, _support = production_routing_levels(
-        read.to(torch.float32), write.to(torch.float32), tied)
-    torch.testing.assert_close(prod_reads[0], prod_writes[0], rtol=0, atol=0)
+    prod_reads, prod_writes, _support = production_routing_levels(logits.to(torch.float32), _tied(alpha))
+    assert prod_reads[0] is prod_writes[0]
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 def test_cuda_tied_routing_read_factor_is_the_write_factor(alpha):
     """The CUDA-kernel-dispatch path (`_ProductionLevelsFn`, GPU logits) takes a
-    standalone `TiedRouting` level through one kernel launch, one solve. Mirrors
+    standalone tied level through one kernel launch, one solve. Mirrors
     `test_tied_routing_read_factor_is_the_write_factor_on_both_lowerings` (CPU/fp64)
     but forces the CUDA lowering by handing it CUDA bf16 logits."""
-    tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
     generator = torch.Generator(device="cuda").manual_seed(4242)
-    read = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator).bfloat16()
-    write = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator).bfloat16()
+    logits = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator).bfloat16()
 
-    tied_reads, tied_writes, _support = production_routing_levels(read, write, tied)
+    tied_reads, tied_writes, _support = production_routing_levels(logits, _tied(alpha))
     torch.testing.assert_close(tied_reads[0], tied_writes[0], rtol=0, atol=0)
 
-    oracle_read = read.to(torch.float64)
-    oracle_write = write.to(torch.float64)
-    oracle_reads, oracle_writes = oracle_factor_levels(oracle_read, oracle_write, tied)
+    oracle_reads, oracle_writes = oracle_factor_levels(logits.to(torch.float64), _tied(alpha))
     assert oracle_reads[0] is oracle_writes[0]  # the read factor IS the write factor
     _assert_levels_match(tied_reads[0], oracle_reads[0])
     _assert_levels_match(tied_writes[0], oracle_writes[0])
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
     """CPU/fp64 lowering: exact same support, amplitudes and VJP as the closed-form oracle."""
-    routing = _routings(alpha)[shape]
-    read = _stress_logits(routing, kind, device="cpu", seed=17)
-    write = _stress_logits(routing, kind, device="cpu", seed=18)
-    _check_against_oracle(routing, read, write, label=f"cpu/{shape}/{kind}/{alpha}")
+    layout = _routings(alpha)[shape]
+    _check_against_oracle(layout, _stress_logits(layout, kind, device="cpu", seed=17), label=f"cpu/{shape}/{kind}/{alpha}")
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize(
-    "shape", ["tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind, capsys):
     """CUDA bf16 lowering: exact same support, amplitudes and VJP as the closed-form oracle."""
-    routing = _routings(alpha)[shape]
-    read = _stress_logits(routing, kind, device="cuda", seed=17)
-    write = _stress_logits(routing, kind, device="cuda", seed=18)
-    _check_against_oracle(routing, read, write, label=f"cuda/{shape}/{kind}/{alpha}", capsys=capsys)
+    layout = _routings(alpha)[shape]
+    _check_against_oracle(layout, _stress_logits(layout, kind, device="cuda", seed=17),
+                          label=f"cuda/{shape}/{kind}/{alpha}", capsys=capsys)
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["tied", "mixed_per_level"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "grouped"])
 def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
     """Exact ties, where the oracle cannot arbitrate: the closed forms must still agree.
 
@@ -366,31 +352,25 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
     hide behind) and the amplitudes at the production tolerances; the VJP is held to the
     operator's fp64 form at the kernel's own stored values, like every other fixture.
     """
-    routing = _routings(alpha)[shape]
-    read = _stress_logits(routing, "exact_tie", device="cuda", seed=23).bfloat16().requires_grad_()
-    write = _stress_logits(routing, "exact_tie", device="cuda", seed=24).bfloat16().requires_grad_()
+    layout = _routings(alpha)[shape]
+    logits = _stress_logits(layout, "exact_tie", device="cuda", seed=23).bfloat16().requires_grad_()
 
     # Soundness gate on the fixture itself: this test is the SOLE gate for tie
     # semantics (explicitly excluded from the oracle gate, see module docstring), so it
     # must not go vacuous under a seed/width change without saying so loudly.
-    ties = sum(
-        _count_exact_ties(read.detach()[..., routing.level_logit_slice(index)], alpha)
-        + _count_exact_ties(write.detach()[..., routing.level_logit_slice(index)], alpha)
-        for index, width in enumerate(routing.branches)
-    )
+    ties = sum(_count_exact_ties(logits.detach()[..., span], alpha) for span in _spans(layout))
     assert ties > 0, (
         f"exact_tie fixture for alpha={alpha} shape={shape!r} contains no exact ties -- "
         "the tie-semantics gate below would be exercising nothing"
     )
 
-    cpu_read = read.detach().float().cpu().requires_grad_()
-    cpu_write = write.detach().float().cpu().requires_grad_()
-    cuda_reads, cuda_writes, _support = production_routing_levels(read, write, routing)
-    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_read, cpu_write, routing)
-    for level in range(routing.D):
-        if routing.read_level_can_zero[level]:
+    cpu_logits = logits.detach().float().cpu().requires_grad_()
+    cuda_reads, cuda_writes, _support = production_routing_levels(logits, layout)
+    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_logits, layout)
+    for level in range(layout.D):
+        if layout.topology.can_zero("read", level):
             _assert_support_identical(cuda_reads[level].cpu(), cpu_reads[level], f"read {level}")
-        if routing.write_level_can_zero[level]:
+        if layout.topology.can_zero("write", level):
             _assert_support_identical(cuda_writes[level].cpu(), cpu_writes[level], f"write {level}")
         _assert_levels_match(cuda_reads[level].cpu(), cpu_reads[level])
         _assert_levels_match(cuda_writes[level].cpu(), cpu_writes[level])
@@ -400,36 +380,35 @@ def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
         torch.randn(level.shape, dtype=torch.float32, generator=generator).bfloat16().float()
         for level in (*cpu_reads, *cpu_writes)
     ]
-    cuda_vjp = torch.autograd.grad(
+    (cuda_vjp,) = torch.autograd.grad(
         sum((level * cotangent.cuda()).sum()
             for level, cotangent in zip((*cuda_reads, *cuda_writes), cotangents)),
-        (read, write))
-    cpu_vjp = torch.autograd.grad(
+        logits)
+    (cpu_vjp,) = torch.autograd.grad(
         sum((level * cotangent).sum()
             for level, cotangent in zip((*cpu_reads, *cpu_writes), cotangents)),
-        (cpu_read, cpu_write))
-    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes),
-                                  [c.cuda() for c in cotangents], unrounded=tuple(g.cuda() for g in cpu_vjp),
+        cpu_logits)
+    _assert_gradients_from_stored(layout, cuda_vjp, (cuda_reads, cuda_writes),
+                                  [c.cuda() for c in cotangents], unrounded=cpu_vjp.cuda(),
                                   label=f"ties {shape}/{alpha}", capsys=capsys)
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", SHAPES)
 def test_the_gradient_rule_sees_planted_errors_on_the_kernels_own_gradient(alpha, shape, capsys):
     """THE TEETH of `ENTMAX_GRADIENTS_FROM_STORED`: the kernel's own gradient passes the rule, and the median slot wiped, the
     smallest allowances exceeded and each clause moved past its allowance fail it (`assert_planted_errors_fail`), on the
-    random draw, over the levels the reference states."""
-    routing = _routings(alpha)[shape]
-    read = _stress_logits(routing, "random", device="cuda", seed=17).bfloat16().requires_grad_()
-    write = _stress_logits(routing, "random", device="cuda", seed=18).bfloat16().requires_grad_()
-    reads, writes, _support = production_routing_levels(read, write, routing)
+    random draw, over the solves the reference states."""
+    layout = _routings(alpha)[shape]
+    logits = _stress_logits(layout, "random", device="cuda", seed=17).bfloat16().requires_grad_()
+    reads, writes, _support = production_routing_levels(logits, layout)
     generator = torch.Generator().manual_seed(8801)
     cotangents = [torch.randn(level.shape, dtype=torch.float32, generator=generator).bfloat16().float().cuda()
                   for level in (*reads, *writes)]
-    vjp = torch.autograd.grad(sum((level * cotangent).sum() for level, cotangent in zip((*reads, *writes), cotangents)),
-                              (read, write))
-    _assert_gradients_from_stored(routing, vjp, (reads, writes), cotangents, unrounded=None,
+    (vjp,) = torch.autograd.grad(
+        sum((level * cotangent).sum() for level, cotangent in zip((*reads, *writes), cotangents)), logits)
+    _assert_gradients_from_stored(layout, vjp, (reads, writes), cotangents, unrounded=None,
                                   label=f"teeth {shape}/{alpha}", capsys=capsys, teeth=True)
 
 
@@ -452,12 +431,11 @@ def _forbid_every_reference_entry_point(monkeypatch) -> None:
 def test_the_solve_never_reaches_the_reference_cuda(monkeypatch):
     """No runtime path may fall back to the oracle -- the port's whole point (CUDA half)."""
     _forbid_every_reference_entry_point(monkeypatch)
-    routing = _routings(1.5)["mixed_per_level"]
-    read = _stress_logits(routing, "random", device="cuda", seed=31).bfloat16().requires_grad_()
-    write = _stress_logits(routing, "random", device="cuda", seed=32).bfloat16().requires_grad_()
-    reads, writes, _support = production_routing_levels(read, write, routing)
+    layout = _routings(1.5)["mixed_per_level"]
+    logits = _stress_logits(layout, "random", device="cuda", seed=31).bfloat16().requires_grad_()
+    reads, writes, _support = production_routing_levels(logits, layout)
     sum(level.sum() for level in (*reads, *writes)).backward()
-    assert read.grad is not None and write.grad is not None
+    assert logits.grad is not None
 
 
 def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
@@ -468,13 +446,12 @@ def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
     half under one `@_CUDA`-marked test.
     """
     _forbid_every_reference_entry_point(monkeypatch)
-    routing = _routings(1.5)["mixed_per_level"]
-    read = _stress_logits(routing, "random", device="cpu", seed=31).requires_grad_()
-    write = _stress_logits(routing, "random", device="cpu", seed=32).requires_grad_()
+    layout = _routings(1.5)["mixed_per_level"]
+    logits = _stress_logits(layout, "random", device="cpu", seed=31).requires_grad_()
 
-    cpu_reads, cpu_writes, _support = production_routing_levels(read, write, routing)
+    cpu_reads, cpu_writes, _support = production_routing_levels(logits, layout)
     sum(level.sum() for level in (*cpu_reads, *cpu_writes)).backward()
-    assert read.grad is not None and write.grad is not None
+    assert logits.grad is not None
 
 
 # ---------------------------------------------------------------------------
@@ -485,12 +462,7 @@ def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
 
 
 def _producer_topology(alpha: float) -> Topology:
-    return Topology(
-        levels=(
-            TiedRouting(width=4, op=EntmaxActivation(alpha)),
-            IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation()),
-        ),
-    )
+    return Topology(widths=(4, 3), write=(entmax(alpha), softmax()), read=((tied(), softmax()),))
 
 
 #: the fixtures' value width; the topology carries none, so these gates state theirs -- one the producer kernel's value
@@ -500,7 +472,7 @@ _D_V = 32
 
 def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2, dm=16,
                      seed=404):
-    resolved = resolved_routing_from_topology(topology)
+    layout = layout_of(topology)
     generator = torch.Generator(device=device).manual_seed(seed)
 
     def _randn(*shape):
@@ -508,7 +480,7 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
 
     return {
         "x": _randn(B, L, dm),
-        "route_W": _randn(H, dm, resolved.packed_router_width),
+        "route_W": _randn(H, dm, layout.packed_router_width),
         "gain_W": _randn(H, sides, dm),
         "gain_bias": torch.zeros(H, sides, device=device, dtype=dtype),
         "v": _randn(B, L, H, _D_V),
@@ -541,19 +513,17 @@ def test_the_projection_lands_inside_its_bf16_output_envelope():
     """
     topology = _producer_topology(1.5)
     params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
-    read_logits, write_logits = _production_logits(topology, params)
-    assert read_logits.dtype is torch.bfloat16
+    logits = _production_logits(topology, params)
+    assert logits.dtype is torch.bfloat16
 
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in params.items()}
-    read64, write64 = _production_logits(topology, oracle_params)
-    assert read64.dtype is torch.float64
+    logits64 = _production_logits(topology, oracle_params)
+    assert logits64.dtype is torch.float64
 
     magnitudes = {name: tensor.to(torch.float64).abs() for name, tensor in params.items()}
-    read_terms, write_terms = _production_logits(topology, magnitudes)
-    for side, got, want, terms in (("read", read_logits, read64, read_terms),
-                                   ("write", write_logits, write64, write_terms)):
-        assert_planted_errors_fail(_flat64(got), want, output=PROJECTION_LOGITS, envelope=2.0 * terms + want.abs(),
-                                   what=f"the {side} logits")
+    terms = _production_logits(topology, magnitudes)
+    assert_planted_errors_fail(_flat64(logits), logits64, output=PROJECTION_LOGITS, envelope=2.0 * terms + logits64.abs(),
+                               what="the routing logits")
 
 
 @_CUDA
@@ -570,48 +540,46 @@ def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
     numbers in" has to mean "the same set out".
     """
     topology = _producer_topology(alpha)
-    resolved = resolved_routing_from_topology(topology)
+    layout = layout_of(topology)
     params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
 
-    read_logits, write_logits = _production_logits(topology, params)
-    assert read_logits.dtype is torch.bfloat16, (
+    logits = _production_logits(topology, params)
+    assert logits.dtype is torch.bfloat16, (
         "the shipped projection emits bf16 logits; this gate is meaningless against any "
         "other dtype")
 
-    kernel_read, kernel_write, _support = production_routing_levels(
-        read_logits, write_logits, resolved)
-    reference_read, reference_write = oracle_factor_levels(
-        _flat64(read_logits), _flat64(write_logits), resolved)
+    kernel_read, kernel_write, _support = production_routing_levels(logits, layout)
+    reference_read, reference_write = oracle_factor_levels(_flat64(logits), layout)
 
     for level in range(topology.D):
-        if resolved.read_level_can_zero[level]:
+        if topology.can_zero("read", level):
             _assert_support_identical(
                 kernel_read[level], reference_read[level], f"read {level}")
-        if resolved.write_level_can_zero[level]:
+        if topology.can_zero("write", level):
             _assert_support_identical(
                 kernel_write[level], reference_write[level], f"write {level}")
         _assert_levels_match(kernel_read[level], reference_read[level], stored=True)
         _assert_levels_match(kernel_write[level], reference_write[level], stored=True)
 
 
-def _logit_floor(params, read64, write64) -> float:
+def _logit_floor(params, logits64) -> float:
     """The declared class's bound on the logit error: operand term + output term."""
     x = params["x"].double().abs()
     weight = fuse_gain_columns(params["route_W"], params["gain_W"]).double().abs()
     operands = float(torch.einsum("bld,hdc->blhc", x, weight).max())
-    scale = max(float(read64.abs().max()), float(write64.abs().max()))
+    scale = float(logits64.abs().max())
     return 2.0 * 2.0 ** -8 * operands + 2.0 ** -8 * scale
 
 
 def _production_logits(topology, params):
-    """The `(read, write)` logits the shipped producer computes for these parameters: its projection step
+    """The routing logits the shipped producer computes for these parameters: its projection step
     (`route_logits`), under the caller's parameter tensors -- reconstructing it is how a gate ends up measuring a
     second implementation."""
-    routing = Routing(topology.levels)
+    routing = Routing(topology=topology.widths, write=topology.write, read=topology.read)
     weights = ProducerWeights(route_W=fuse_gain_columns(params["route_W"], params["gain_W"]), route_bias=None,
                               gain_bias=params["gain_bias"], v_W=params["x"].new_zeros(0))
-    read_logits, write_logits, _ = route_logits(params["x"], routing, weights)
-    return read_logits, write_logits
+    logits, _ = route_logits(params["x"], routing, weights)
+    return logits
 
 
 def _flat64(logits: torch.Tensor) -> torch.Tensor:
@@ -643,13 +611,13 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     flip large enough to matter is a flip large enough to fail this.
     """
     topology = _producer_topology(alpha)
-    resolved = resolved_routing_from_topology(topology)
+    layout = layout_of(topology)
 
     production_params = _producer_params(
         topology, dtype=torch.float32, device="cuda", sides=1)
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
 
-    read_logits, write_logits = _production_logits(topology, production_params)
+    logits = _production_logits(topology, production_params)
     production = _run_producer(production_params, topology)
     #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `fsla.ops.produce`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
@@ -668,25 +636,24 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     #: A row whose support DID move is excluded from the envelope and counted instead:
     #: the bound on such a row is a bound on the FLIPPED MASS, which is what the
     #: accounting below reports.
-    envelope = 2.0 * _logit_floor(production_params, read_logits.double(),
-                                  write_logits.double())
+    envelope = 2.0 * _logit_floor(production_params, logits.double())
     #: WRITE LEVEL 0 CARRIES THE GAIN (docs/CONSTITUTION.md#r23), so both arms' level 0 is read in units of the
     #: oracle's own gain `g` (the library's pieces, `raw_side_gain`): the stored tolerance then holds on the
     #: amplitudes' scale, and the gain's own envelope joins theirs -- `softplus` is 1-Lipschitz and the gain logit
     #: a column of the SAME projection, so it is off by `dz`, `dz / g` in those units, on an amplitude <= 1.
     gain = raw_side_gain(oracle_params["x"], oracle_params["route_W"], oracle_params["gain_W"],
-                         oracle_params["gain_bias"], resolved)[..., None].float()
+                         oracle_params["gain_bias"], layout)[..., None].float()
 
     flips = elements = 0
     flipped_mass = 0.0
     for level in range(topology.D):
         level_0_write = (production.write_levels[level] / gain, oracle.write_levels[level] / gain,
-                         resolved.write_level_can_zero[level], envelope + envelope / (2.0 * gain))
+                         topology.can_zero("write", level), envelope + envelope / (2.0 * gain))
         for got, want, zeroable, extra in (
             (production.read_levels[level], oracle.read_levels[level],
-             resolved.read_level_can_zero[level], torch.full_like(gain, envelope)),
+             topology.can_zero("read", level), torch.full_like(gain, envelope)),
             level_0_write if level == 0 else (production.write_levels[level], oracle.write_levels[level],
-                                              resolved.write_level_can_zero[level], torch.full_like(gain, envelope)),
+                                              topology.can_zero("write", level), torch.full_like(gain, envelope)),
         ):
             want, extra = want.to(got.dtype), extra.expand_as(got)
             if not zeroable:
@@ -715,7 +682,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
@@ -733,22 +700,20 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
     support is a discrete object, not a thresholded one). The exact-TIE fixture is
     excluded because it has its own gate, ``test_the_two_lowerings_agree_on_exact_ties``.
     """
-    routing = _routings(alpha)[shape]
-    cuda_read = _stress_logits(routing, kind, device="cuda", seed=17).bfloat16().requires_grad_()
-    cuda_write = _stress_logits(routing, kind, device="cuda", seed=18).bfloat16().requires_grad_()
-    cpu_read = cuda_read.detach().float().cpu().requires_grad_()
-    cpu_write = cuda_write.detach().float().cpu().requires_grad_()
-    assert torch.equal(cuda_read.detach().float().cpu(), cpu_read.detach()), (
+    layout = _routings(alpha)[shape]
+    cuda_logits = _stress_logits(layout, kind, device="cuda", seed=17).bfloat16().requires_grad_()
+    cpu_logits = cuda_logits.detach().float().cpu().requires_grad_()
+    assert torch.equal(cuda_logits.detach().float().cpu(), cpu_logits.detach()), (
         "the two lowerings must be handed bit-identical inputs, or this measures the "
         "fixture rather than the port")
 
-    cuda_reads, cuda_writes, _support = production_routing_levels(cuda_read, cuda_write, routing)
-    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_read, cpu_write, routing)
-    for level in range(routing.D):
-        if routing.read_level_can_zero[level]:
+    cuda_reads, cuda_writes, _support = production_routing_levels(cuda_logits, layout)
+    cpu_reads, cpu_writes, _support = production_routing_levels(cpu_logits, layout)
+    for level in range(layout.D):
+        if layout.topology.can_zero("read", level):
             _assert_support_identical(
                 cuda_reads[level].cpu(), cpu_reads[level], f"{shape}/{kind} read {level}")
-        if routing.write_level_can_zero[level]:
+        if layout.topology.can_zero("write", level):
             _assert_support_identical(
                 cuda_writes[level].cpu(), cpu_writes[level], f"{shape}/{kind} write {level}")
         _assert_levels_match(cuda_reads[level].cpu(), cpu_reads[level])
@@ -759,16 +724,16 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind, capsys):
         torch.randn(level.shape, dtype=torch.float32, generator=generator).bfloat16().float()
         for level in (*cpu_reads, *cpu_writes)
     ]
-    cuda_vjp = torch.autograd.grad(
+    (cuda_vjp,) = torch.autograd.grad(
         sum((level * cotangent.cuda()).sum()
             for level, cotangent in zip((*cuda_reads, *cuda_writes), cotangents)),
-        (cuda_read, cuda_write))
-    cpu_vjp = torch.autograd.grad(
+        cuda_logits)
+    (cpu_vjp,) = torch.autograd.grad(
         sum((level * cotangent).sum()
             for level, cotangent in zip((*cpu_reads, *cpu_writes), cotangents)),
-        (cpu_read, cpu_write))
-    _assert_gradients_from_stored(routing, cuda_vjp, (cuda_reads, cuda_writes),
-                                  [c.cuda() for c in cotangents], unrounded=tuple(g.cuda() for g in cpu_vjp),
+        cpu_logits)
+    _assert_gradients_from_stored(layout, cuda_vjp, (cuda_reads, cuda_writes),
+                                  [c.cuda() for c in cotangents], unrounded=cpu_vjp.cuda(),
                                   label=f"{shape}/{kind}/{alpha}", capsys=capsys)
 
 
@@ -811,7 +776,7 @@ def test_the_package_imports_no_triton_and_declares_none():
 
     `docs/build.md` says the dependencies are "`torch` and `einops`. Not
     `transformers`, not `fla`, not `triton` -- the kernels are CUDA." That sentence
-    was FALSE for every level routed `IndependentRouting`, from the module that owned
+    was FALSE for every level whose two sides were two solves, from the module that owned
     the four Triton kernels this stage ported to `csrc/fsla/src/entmax/factor.cu`.
 
     Checked two ways, because they can fail independently: the IMPORT GRAPH (an AST
@@ -849,16 +814,17 @@ def test_the_package_imports_no_triton_and_declares_none():
 
 @_CUDA
 def test_an_empty_call_keeps_the_autograd_contract():
-    """Zero tokens: the levels keep their shapes and dtype, and the backward still reaches both logits."""
-    routings = (
-        ResolvedRouting((IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),) * 2),
+    """Zero tokens: the levels keep their shapes and dtype, and the backward still reaches the logits."""
+    layouts = (
+        _layout((4, 4), (softmax(), softmax()), ((entmax(1.5), entmax(1.5)),)),
+        _routings(1.5)["grouped"],
     )
-    for routing in routings:
-        read = torch.empty(1, 0, routing.packed_logit_width, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-        write = torch.empty_like(read, requires_grad=True)
-        reads, writes, _support = production_routing_levels(read, write, routing)
-        for level in range(routing.D):
-            assert reads[level].shape == writes[level].shape == (1, 0, routing.branches[level])
+    for layout in layouts:
+        logits = torch.empty(1, 0, layout.packed_router_width, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        reads, writes, _support = production_routing_levels(logits, layout)
+        for level in range(layout.D):
+            assert reads[level].shape == (layout.group, 0, layout.widths[level])
+            assert writes[level].shape == (1, 0, layout.widths[level])
             assert reads[level].dtype == writes[level].dtype == torch.bfloat16
         (sum(r.float().sum() for r in reads) + sum(w.float().sum() for w in writes)).backward()
-        assert read.grad is not None and write.grad is not None
+        assert logits.grad is not None

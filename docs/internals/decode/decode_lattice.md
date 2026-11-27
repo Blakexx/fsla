@@ -253,7 +253,7 @@ lane (`KERNEL_STANDARDS.md` §12).
 width is `ceil_log2(n_o[kind][l])`, its position the running sum of the levels
 below it, and a unit's owner rank decomposes into per-level fields by SHIFTS AND
 MASKS alone — never a division. A rank in the padded-but-unrealized part of a
-level's field is `i >= n_o[kind][l]`, marked `invalid` and skipped rather than
+level's field is `i >= n_o[kind][l]`, its unit's `valid` cleared and skipped rather than
 wrapped: the padding costs some dead ranks in exchange for never issuing a device
 integer division in the walk's innermost enumeration.
 

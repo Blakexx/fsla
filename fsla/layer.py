@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """The FSLA layer: the declared routing, its weights, the producer and the op.
 
-    FSLA(Routing([...]), hidden_size=..., num_heads=..., d_v=..., decay=..., layer_idx=...)
+    FSLA(Routing(topology=(...), write=(...), read=(...)), hidden_size=..., num_heads=..., group=..., d_v=..., decay=..., layer_idx=...)
 
 The routing is DECLARED (:class:`~fsla.routing.producer.Routing`): data the producer reads. The layer owns every weight the declaration implies -- the packed routing projection, its bias, the write
 gain's bias, ``v_proj`` and ``o_proj`` -- and one producer call (:func:`fsla.ops.produce.produce_prefill`) turns a stretch
-of tokens into the bundle the op takes. ``d_v`` is the per-head value width, which is the LAYER's: it sizes
+of tokens into the bundle the op takes. ``num_heads`` are the WRITE heads, the state's owners; ``group`` (``G``) query
+heads read each, ``num_heads * group`` in all, read head ``g`` of a write head reading by the routing's ``g``-th read
+tuple (or by its one tuple). ``d_v`` is the per-head value width, which is the LAYER's: it sizes
 ``v_proj`` and ``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
 SOURCE (:mod:`fsla.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
@@ -64,7 +66,7 @@ from fsla.ops.produce import (
 from fsla.routing.decay import validate_decay_source
 from fsla.routing.producer import Routing, _init_packed_router
 from fsla.routing.side_gain import init_side_gain_bias
-from fsla.routing.types import LeafMassDecay, activation_properties
+from fsla.routing.types import LeafMassDecay, activation_walks
 from fsla.segmentation import (
     DEFAULT_SEGMENTS,
     HeadBlock,
@@ -122,9 +124,12 @@ class FSLA(nn.Module):
 
     Args:
         routing: the declared routing (:class:`~fsla.routing.producer.Routing`): the
-            levels, the write gain and the projection bias. Data the layer compiles
+            topology, its activations, the write gain and the projection bias. Data the layer compiles
             into its producer; the weights it implies are the layer's.
-        hidden_size / num_heads: the source stream's width and the head count.
+        hidden_size / num_heads: the source stream's width and the write heads (the state's, the values' and the
+            decay's heads).
+        group: ``G``, the query heads reading each write head (1: ungrouped). The routing declares ``G`` read tuples or
+            one for every head; any other count is refused here, naming both.
         d_v: per-head value width -- the width of the state each leaf holds. It sizes
             ``v_proj`` and ``o_proj``; the default is the width the chunk matrix is
             built at.
@@ -145,6 +150,7 @@ class FSLA(nn.Module):
         *,
         hidden_size: int,
         num_heads: int,
+        group: int = 1,
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
@@ -161,33 +167,35 @@ class FSLA(nn.Module):
         if segments is not None and type(segments) is not SegmentPolicy and not callable(segments):
             raise TypeError(f"segments is a fsla.SegmentPolicy, a segment handle (fsla.max_memory, a function of the call's context "
                             f"returning a policy or None), or None; got {type(segments).__name__}")
-        for name, value in (("hidden_size", hidden_size), ("num_heads", num_heads)):
+        for name, value in (("hidden_size", hidden_size), ("num_heads", num_heads), ("group", group)):
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive exact int, got {value!r}")
+        columns = routing.columns(group)
         if decay is not None:
             validate_decay_source(decay, routing.topology, num_heads)
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
+        self.group = group
         self.d_v = d_v
         self.routing = routing
         self.decay = decay
         self.layer_idx = layer_idx
         self.segments = segments
 
-        #: ONE ROUTING PARAMETER, and the write gain's columns are its trailing span: the gain is a function of the
-        #: same stream as the routing logits, so its column is one more column of the same GEMM.
-        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, routing.columns))
+        #: ONE ROUTING PARAMETER a write head, and the write gain's columns are its trailing span: the gain is a function
+        #: of the same stream as the routing logits, so its column is one more column of the same GEMM.
+        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, columns))
         _init_packed_router(self.route_W)
         if routing.bias:
-            self.route_bias = nn.Parameter(torch.zeros(num_heads, routing.columns))
+            self.route_bias = nn.Parameter(torch.zeros(num_heads, columns))
         else:
             self.register_parameter("route_bias", None)
         gain_bias = 0.0 if routing.gain_bias_init is None else init_side_gain_bias(routing.gain_bias_init)
         self.gain_bias = nn.Parameter(torch.full((num_heads, routing.gain_columns), gain_bias))
         self.value_dim = num_heads * d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
-        self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
+        self.o_proj = nn.Linear(self.query_heads * d_v, hidden_size, bias=False)
         #: the weights' copies for a step no gradient flows through (fsla/_inference_copy.py).
         self._route_copy = InferenceCopy(lay=hidden_contiguous)
         self._v_copy = InferenceCopy(lay=None)
@@ -210,6 +218,11 @@ class FSLA(nn.Module):
     @property
     def head_v_dim(self) -> int:
         return self.d_v
+
+    @property
+    def query_heads(self) -> int:
+        """The read side's heads, ``num_heads * group``: query head ``w * G + g`` is read head ``g`` of write head ``w``."""
+        return self.num_heads * self.group
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
@@ -263,7 +276,7 @@ class FSLA(nn.Module):
         state = _unpack_continuation(continuation)
         x = hidden_states
         B, L, _ = x.shape
-        H = self.num_heads
+        H = self.query_heads
         decay = None if self.decay is None else self.decay()
         #: a state that carries CONTENTS, which is what makes a step a continuation.
         #: A bound-but-empty state is a fresh sequence, and takes the prefill arm.
@@ -284,12 +297,12 @@ class FSLA(nn.Module):
         descriptor on every call (memoized process-wide: no device read after the first).
         """
         decay = None if self.decay is None else self.decay()
-        routes, values, masks = produce_decode(x, self.routing, self._weights(x))
+        routes, values, masks = produce_decode(x, self.routing, self._weights(x), group=self.group)
         #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
         #: matrix's questions.
         self.validate_decode_envelope(*operands_of(routes, values, decay))
         out, _state = decode_step_gated(routes, values, masks, state, decay=decay)
-        return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
+        return self._project(out.reshape(x.shape[0], 1, self.query_heads * self.head_v_dim), x.dtype)
 
     def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
         """The output projection, bf16 operands, in the caller's dtype."""
@@ -299,7 +312,7 @@ class FSLA(nn.Module):
         """One stretch of tokens into the format: ``(routes, values, masks, density)``, from one producer call over the heads
         ``weights`` hold (every head's, the layer's own, where left out), the masks in the prefill's layout and their density.
         The forward's one producer path: each step calls it with its head block's weights."""
-        return produce_prefill(x, self.routing, self._weights(x) if weights is None else weights)
+        return produce_prefill(x, self.routing, self._weights(x) if weights is None else weights, group=self.group)
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
         """The layer's weights as the producer reads them: the reused copies when no gradient flows."""
@@ -330,9 +343,11 @@ class FSLA(nn.Module):
         if state is not None and len(blocks) > 1:
             state._bind_plane(batch=plan.batch, heads=plan.heads, widths=tuple(self.routing.topology.widths), d_v=self.head_v_dim,
                               device=x.device)
-        out = torch.empty(plan.batch, plan.length, plan.heads, self.head_v_dim, dtype=torch.float32, device=x.device)
+        G = self.group
+        out = torch.empty(plan.batch, plan.length, plan.heads * G, self.head_v_dim, dtype=torch.float32, device=x.device)
         for block in blocks:
-            sequences, heads = slice(*block.batch), slice(*block.heads)
+            #: a block's write heads, and the query heads reading them: G consecutive a write head
+            sequences, heads = slice(*block.batch), slice(block.heads[0] * G, block.heads[1] * G)
             carried = state if len(blocks) == 1 or state is None else state._view(block.batch, block.heads)
             if carried is None and plan.steps > 1:
                 carried = dense_state()
@@ -350,7 +365,7 @@ class FSLA(nn.Module):
 
     def _block_weights(self, weights: ProducerWeights, block: HeadBlock) -> ProducerWeights:
         """The weights of a head block's write heads: each per-head weight's rows of those heads, ``v_W``'s ``d_v`` rows a
-        head (the layer is ungrouped, so a write head's query heads are itself)."""
+        head. A write head's ``route_W`` slice holds its read heads' columns too, so its query heads come with it."""
         first, last = block.heads
         if (first, last) == (0, self.num_heads):
             return weights
@@ -368,13 +383,12 @@ class FSLA(nn.Module):
         return LeafMassDecay(dials=tuple(dial[first:last] for dial in decay.dials))
 
     def _segment_context(self, x: torch.Tensor) -> SegmentContext:
-        """What a handle is told of this call: the levels' digits, each side's maskable levels, the batch, the write and query
-        heads a sequence (one count: the layer is ungrouped), the value width and the device."""
-        levels = self.routing.topology.levels
-        masked = tuple(sum(1 << l for l, level in enumerate(levels) if activation_properties(level.activation(duty)).exact_zeros)
-                       for duty in ("read", "write"))
+        """What a handle is told of this call: the levels' digits, each side's maskable levels (a read level any read head of
+        which can make zeros), the batch, the write and query heads a sequence, the value width and the device."""
+        walks = activation_walks(self.routing.topology)
+        masked = tuple(sum(1 << level for level, walked in enumerate(side) if walked) for side in walks)
         return SegmentContext(widths=tuple(self.routing.topology.widths), masked=masked, batch=x.shape[0],
-                              write_heads=self.num_heads, query_heads=self.num_heads, value_width=self.head_v_dim,
+                              write_heads=self.num_heads, query_heads=self.query_heads, value_width=self.head_v_dim,
                               device=x.device)
 
     def _segment_plan(self, x: torch.Tensor) -> SegmentPlan:

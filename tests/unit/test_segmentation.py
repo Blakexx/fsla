@@ -142,9 +142,20 @@ def test_the_policy_is_frozen_and_the_token_maker_is_a_policy():
         fsla.segment_plan(8, 8, batch=1, heads=1)  # type: ignore[arg-type]
 
 
-def _routing(sparse: tuple[str | None, str | None] = ("write", "read"), widths: tuple[int, int] = (256, 256)) -> fsla.Routing:
-    return fsla.Routing([fsla.dense_routing(w) if duty is None else fsla.split_routing(w, sparse_duty=duty)
-                         for duty, w in zip(sparse, widths, strict=True)])
+def _routing(sparse: tuple[str | None, str | None] = ("write", "read"), widths: tuple[int, int] = (256, 256),
+             **kwargs) -> fsla.Routing:
+    """A level a width, entmax on its ``sparse`` side (``None``: softmax on both) and softmax on the other."""
+    def side(duty, name):
+        return fsla.entmax(1.5) if duty == name else fsla.softmax()
+
+    return fsla.Routing(topology=tuple(widths), write=tuple(side(duty, "write") for duty in sparse),
+                        read=(tuple(side(duty, "read") for duty in sparse),), **kwargs)
+
+
+def _block_tensors(routes, values):
+    """The rows, scales and values a step holds, ``[B, T, H, ...]`` each."""
+    return [*routes.read_rows, *routes.write_rows, *routes.scales("read"), *routes.scales("write"), values.data,
+            values.scale]
 
 
 def test_the_layer_takes_a_policy_a_handle_or_none_and_its_default_is_64_windows_of_every_head():
@@ -216,7 +227,7 @@ def test_a_steps_operand_bytes_are_the_bytes_of_the_tensors_a_producer_makes(spa
         routes, values, masks = reference_produce(layer, x)
     assert context.masked == tuple(sum(1 << level for level, mask in enumerate(side) if mask is not None)
                                    for side in (masks.read, masks.write))
-    tensors = [*routes.amp_read, *routes.amp_write, *routes.scale_read, *routes.scale_write, values.v, values.scale, *masks.read, *masks.write]
+    tensors = [*_block_tensors(routes, values), *masks.read, *masks.write]
     assert _step(context, 2)["operands"] == sum(t.numel() * t.element_size() for t in tensors if t is not None) == _operands(context, 2, W)
 
 
@@ -259,30 +270,39 @@ def test_a_blocks_weights_produce_exactly_the_whole_produces_rows_of_its_heads_i
     from fsla.ops.produce import _composition
     from fsla.routing.masks import PREFILL
 
-    layer = fsla.FSLA(fsla.Routing([fsla.split_routing(16, sparse_duty="write"), fsla.split_routing(32, sparse_duty="read")],
-                                   bias=True), hidden_size=32, num_heads=4, d_v=64).double().eval()
-    with torch.no_grad():
-        layer.route_bias.normal_()
-        layer.gain_bias.normal_()
-    x = torch.randn(3, 70, 32, dtype=torch.float64)
-    with torch.no_grad():
-        weights = layer._weights(x)
-        whole = _composition(x, layer.routing, weights, PREFILL)
-        for block in (HeadBlock(batch=(1, 2), heads=(1, 3)), HeadBlock(batch=(0, 1), heads=(3, 4)), HeadBlock(batch=(1, 3), heads=(0, 4))):
-            b, h = slice(*block.batch), slice(*block.heads)
-            part = _composition(x[b], layer.routing, layer._block_weights(weights, block), PREFILL)
-            for (mine, axis), (theirs, _) in zip(_leaves(part), _leaves(whole), strict=True):
-                assert (mine is None) == (theirs is None)
-                if mine is not None:
-                    torch.testing.assert_close(mine, theirs[b].narrow(axis, h.start, h.stop - h.start), rtol=0, atol=0)
+    for group in (1, 2):
+        routing = _routing(("write", "read"), (16, 32), bias=True) if group == 1 else fsla.Routing(
+            topology=(16, 32), write=(fsla.entmax(1.5), fsla.softmax()),
+            read=((fsla.softmax(), fsla.entmax(1.5)), (fsla.tied(), fsla.softmax())), bias=True)
+        layer = fsla.FSLA(routing, hidden_size=32, num_heads=4, group=group, d_v=64).double().eval()
+        with torch.no_grad():
+            layer.route_bias.normal_()
+            layer.gain_bias.normal_()
+        x = torch.randn(3, 70, 32, dtype=torch.float64)
+        with torch.no_grad():
+            weights, layout = layer._weights(x), layer.routing.layout(layer.group)
+            whole = _composition(x, layer.routing, layout, weights, PREFILL)
+            for block in (HeadBlock(batch=(1, 2), heads=(1, 3)), HeadBlock(batch=(0, 1), heads=(3, 4)),
+                          HeadBlock(batch=(1, 3), heads=(0, 4))):
+                b, h = slice(*block.batch), slice(*block.heads)
+                part = _composition(x[b], layer.routing, layout, layer._block_weights(weights, block), PREFILL)
+                for (mine, axis, per), (theirs, _, _) in zip(_leaves(part, group), _leaves(whole, group), strict=True):
+                    assert (mine is None) == (theirs is None)
+                    if mine is not None:
+                        torch.testing.assert_close(
+                            mine, theirs[b].narrow(axis, h.start * per, (h.stop - h.start) * per), rtol=0, atol=0)
 
 
-def _leaves(bundle) -> list[tuple[torch.Tensor | None, int]]:
-    """Every tensor of a ``(routes, values, masks)`` bundle with its head axis: the rows, scales and values are
-    ``[B, T, H, ...]``, the masks ``[B, H, words, width]``."""
+def _leaves(bundle, group: int) -> list[tuple[torch.Tensor | None, int, int]]:
+    """Every tensor of a ``(routes, values, masks)`` bundle with its head axis and its heads a write head (``group`` on
+    the read side, the query heads'): the rows, scales and values are ``[B, T, H, ...]``, the masks ``[B, H, words,
+    width]``."""
     routes, values, masks = bundle
-    tokens = [*routes.amp_read, *routes.amp_write, *routes.scale_read, *routes.scale_write, values.v, values.scale]
-    return [(t, 2) for t in tokens] + [(m, 1) for m in (*masks.read, *masks.write)]
+    D = routes.topology.D
+    tokens = _block_tensors(routes, values)
+    per = [group] * D + [1] * D + [group] * D + [1] * D + [1, 1]
+    return ([(t, 2, p) for t, p in zip(tokens, per, strict=True)]
+            + [(m, 1, group) for m in masks.read] + [(m, 1, 1) for m in masks.write])
 
 
 def _stand_in(calls: list):
@@ -295,9 +315,9 @@ def _stand_in(calls: list):
         y = values.dequantized().float()
         if state is None:
             return y, None
-        plane = state._kernel_entry(routes, d_v=values.d_v)
+        plane = state._kernel_entry(routes, d_v=values.width)
         if plane is None:
-            plane = state_plane(routes, d_v=values.d_v, zeros=True)
+            plane = state_plane(routes, d_v=values.width, zeros=True)
         plane += 1
         state._kernel_commit(plane)
         return y, state

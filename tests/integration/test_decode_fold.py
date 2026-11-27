@@ -35,8 +35,8 @@ from fsla.ops.lattice import permutation
 from fsla.ops.paging import decode_pages
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
-from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, Topology
-from fsla.values import Values
+from fsla.routing.quant import ScaledBlock
+from fsla.routing.types import Topology, entmax, softmax
 from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import masks_of, state_pages
 
@@ -72,10 +72,10 @@ def _routes(rows, scale):
     """A one-level bundle over ``rows`` (read) and an empty write side, both sides dense (depth one: the read rows are
     strictly positive and the dead write rows are all-zero rows). The level is
     entmax-read, softmax-write; the fold reads the rows as stored."""
-    topology = Topology(levels=(
-        IndependentRouting(width=rows.shape[-1], read=EntmaxActivation(1.5), write=SoftmaxActivation()),))
-    return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device),),
-                                  (scale,), (torch.zeros_like(scale),))
+    topology = Topology(widths=(rows.shape[-1],), write=(softmax(),), read=((entmax(1.5),),))
+    read = ScaledBlock(data=rows, scale=scale, form=quant.ROWS)
+    write = ScaledBlock(data=quant.aligned_rows(*rows.shape, rows.device), scale=torch.zeros_like(scale), form=quant.ROWS)
+    return RouteFactors(topology=topology, read=(read,), write=(write,))
 
 
 def _y_of(rows, scale, *, seed, s0=0):
@@ -85,7 +85,7 @@ def _y_of(rows, scale, *, seed, s0=0):
     routes = _routes(rows, scale)
     #: NO DEPOSIT: an all-zero write side leaves `supp(W)` empty, so every touched row is
     #: read-only and the state the readout sees is the state that was placed.
-    values = Values.from_projection(torch.zeros(B, rows.shape[1], H, _DV, device=device))
+    values = ScaledBlock.quantize(torch.zeros(B, rows.shape[1], H, _DV, device=device), quant.VALUES)
     descriptor = decode_descriptor(routes.topology, d_v=_DV, decay=False, batch_heads=BH, device=device)
     state, e, m = _single_leaf_state(BH, tuple(routes.topology.widths), s0, device, seed + 1)
     y, _state, _ws = _decode_step(routes, values, masks_of(routes), descriptor, state)

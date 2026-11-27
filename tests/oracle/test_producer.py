@@ -20,16 +20,11 @@ from __future__ import annotations
 
 import pytest
 import torch
-from conftest import produce_routing, raw_side_gain, resolved_routing_from_topology
+from conftest import layout_of, produce_routing, raw_side_gain
 
 from fsla.ops.naive import naive_fsla
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    SoftmaxActivation,
-    TiedRouting,
-    Topology,
-)
+from fsla.routing.types import Topology, entmax, softmax
+from fsla.routing.types import tied as tied_entry
 
 #: THE FORMAT'S ROUNDING BUDGET on a row's sum: each digit is within half a u8 step of its row max, so a
 #: width-w row's sum is within w / 510 of its own sum times its max (`fsla.routing.quant`).
@@ -40,22 +35,20 @@ _D_V = 5
 
 
 def _topology(mixed: bool = False, tied: bool = False) -> Topology:
-    levels = [
-        IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
-    ]
+    """A softmax level of width 4; ``mixed`` a second softmax level of width 3; ``tied`` a tied entmax level of width 3."""
+    levels = [(4, softmax(), softmax())]
     if mixed:
-        levels.append(IndependentRouting(
-            width=3, read=SoftmaxActivation(), write=SoftmaxActivation()))
+        levels.append((3, softmax(), softmax()))
     if tied:
-        levels.append(TiedRouting(width=3, op=EntmaxActivation(1.5)))
-    return Topology(levels=tuple(levels))
+        levels.append((3, entmax(1.5), tied_entry()))
+    return Topology(widths=tuple(w for w, _, _ in levels), write=tuple(wr for _, wr, _ in levels),
+                    read=(tuple(r for _, _, r in levels),))
 
 
 def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
     torch.manual_seed(seed)
-    resolved = resolved_routing_from_topology(topology)
     x = torch.randn(B, L, dm, dtype=dtype, requires_grad=True)
-    route_W = torch.randn(H, dm, resolved.packed_router_width, dtype=dtype, requires_grad=True)
+    route_W = torch.randn(H, dm, layout_of(topology).packed_router_width, dtype=dtype, requires_grad=True)
     gain_W = torch.randn(H, gain_sides, dm, dtype=dtype, requires_grad=True)
     gain_bias = torch.zeros(H, gain_sides, dtype=dtype, requires_grad=True)
     v = torch.randn(B, L, H, _D_V, dtype=dtype)
@@ -90,9 +83,9 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
 def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dtype):
-    """Item 4's gate, repeated with a `TiedRouting` level in the mix: the producer's
+    """Item 4's gate, repeated with a tied read entry in the mix: the producer's
     packed projection, solve and storage all admit it end to end, with no code path
-    that only knows `IndependentRouting`."""
+    that only knows two solves a level."""
     topology = _topology(mixed=True, tied=True)
     B, L, H, dm = 2, 9, 2, 7
     x, route_W, gain_W, gain_bias, v = _params(
@@ -119,14 +112,12 @@ def test_the_write_gain_is_write_level_0s_magnitude():
     """THE GAIN IS FOLDED INTO WRITE LEVEL 0 and nowhere else (docs/CONSTITUTION.md#r23): on an all-softmax topology
     every level is unit-sum by its solve, so write level 0's row sum IS the producer's write gain -- to the format's
     rounding of that row -- and every other level, and every read level, sums to one."""
-    levels = (IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
-              IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation()))
-    topology = Topology(levels=levels)
+    topology = _topology(mixed=True)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = (t.detach() for t in _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1))
     out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
-    gain = raw_side_gain(x, route_W, gain_W, gain_bias, resolved_routing_from_topology(topology))
+    gain = raw_side_gain(x, route_W, gain_W, gain_bias, layout_of(topology))
     assert float((gain - 1).abs().max()) > 1e-2, "a gain of one would make this gate vacuous"
     ones = torch.ones(B, L, H, dtype=torch.float64)
     for level in range(topology.D):
@@ -146,26 +137,20 @@ def test_the_levels_are_stored_as_their_solve_produced_them_at_fp64():
     pieces (`raw_side_gain`). Checked against the machinery the producer wraps -- NOT against a second
     implementation of routing (the "matching-the-naive" standing rule).
     """
-    from fsla.routing.projection import _packed_router_logits
+    from fsla.routing.projection import router_logits
     from fsla.routing.reference import routing_factor_levels
 
-    topology = Topology(
-        levels=(
-            IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
-            IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
-        ),
-    )
+    topology = Topology(widths=(4, 5), write=(softmax(), softmax()), read=((entmax(1.5), softmax()),))
     B, L, H, dm = 2, 6, 3, 7
     x, route_W, gain_W, gain_bias, v = (t.detach() for t in _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1))
-    resolved = resolved_routing_from_topology(topology)
+    layout = layout_of(topology)
 
     out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
 
-    read_logits, write_logits, _ = _packed_router_logits(
-        x, route_W, resolved, route_bias=None, projection_dtype=torch.float64)
-    reads_raw, writes_raw = routing_factor_levels(read_logits, write_logits, resolved)
-    gain_raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved)
+    logits, _ = router_logits(x, route_W, layout, route_bias=None, projection_dtype=torch.float64)
+    reads_raw, writes_raw = routing_factor_levels(logits, layout)
+    gain_raw = raw_side_gain(x, route_W, gain_W, gain_bias, layout)
 
     def unfold(tensor):
         T, width = tensor.shape[1], tensor.shape[2]

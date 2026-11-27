@@ -5,14 +5,8 @@ from __future__ import annotations
 import torch
 
 from fsla.routing.entmax.reference import entmax, entmax_forward
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    RoutingActivation,
-    SoftmaxActivation,
-    TiedRouting,
-)
+from fsla.routing.projection import RouterLayout
+from fsla.routing.types import EntmaxActivation, RoutingActivation, SoftmaxActivation
 
 
 def _pack_token_support(support: torch.Tensor) -> torch.Tensor:
@@ -47,39 +41,30 @@ def _activation_factors(
 
 
 def routing_factor_levels(
-    read_logits: torch.Tensor,
-    write_logits: torch.Tensor,
-    routing: ResolvedRouting,
+    logits: torch.Tensor,
+    layout: RouterLayout,
 ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-    """Solve reference semantic read/write factors without materializing a descriptor."""
-    if not isinstance(routing, ResolvedRouting):
-        raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
-    if read_logits.shape != write_logits.shape:
+    """Solve reference semantic read/write factors from the projection's flat logits ``[S, T, packed_router_width]``:
+    ``[S, T, width_l]`` a write level and ``[S * G, T, width_l]`` a read level, read head ``g`` at rows ``s * G + g``,
+    a tied entry its write level's."""
+    if type(layout) is not RouterLayout:
+        raise TypeError(f"layout must be a RouterLayout, got {type(layout).__name__}")
+    if logits.ndim != 3 or logits.shape[-1] != layout.packed_router_width:
         raise ValueError(
-            "read/write logits must have identical shapes, got "
-            f"{read_logits.shape} and {write_logits.shape}")
-    if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
-        raise ValueError(
-            "routing logits must be [BH, T, packed_logit_width] with packed_logit_width="
-            f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
+            "routing logits must be [S, T, packed_router_width] with packed_router_width="
+            f"{layout.packed_router_width}, got {tuple(logits.shape)}")
 
     reads, writes = [], []
 
-    for index, level in enumerate(routing.levels):
-        span = routing.level_logit_slice(index)
-        read_level = read_logits[..., span]
-        write_level = write_logits[..., span]
-        assert isinstance(level, (IndependentRouting, TiedRouting))
-        if isinstance(level, TiedRouting):
-            write_factor, _ = _activation_factors(
-                write_level, level.activation("write"), mask=None)
-            read_factor = write_factor
-        else:
-            read_factor, _ = _activation_factors(
-                read_level, level.read, mask=None)
-            write_factor, _ = _activation_factors(
-                write_level, level.write, mask=None)
-        reads.append(read_factor)
+    for index in range(layout.D):
+        write_factor, _ = _activation_factors(
+            logits[..., layout.write_columns(index)], layout.topology.write[index], mask=None)
+        heads = []
+        for g, entries in enumerate(layout.heads):
+            columns = layout.read_columns(g, index)
+            heads.append(write_factor if columns is None
+                         else _activation_factors(logits[..., columns], entries[index], mask=None)[0])
+        reads.append(heads[0] if len(heads) == 1 else torch.stack(heads, dim=1).flatten(0, 1))
         writes.append(write_factor)
 
     return tuple(reads), tuple(writes)

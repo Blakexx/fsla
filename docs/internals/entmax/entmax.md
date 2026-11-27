@@ -200,7 +200,7 @@ names.
 descriptors describe the public contract that enters into those arms, the matchers map that contract to arms" (the owner, 2026-11-23), and asked whether the
 four kernels share one registry or each has its own: "One per kernel". So `factor_forward`, `factor_backward`, `softmax_forward` and `softmax_backward`
 each have `hardware/kernels/<kernel>/` (`schema.json`, `parts/call.json`, `descriptors/hopper_<kernel>.json`), whose facts are the call's, in the caller's terms:
-`width` (2 to 256: every width a level has, from 2 (`ResolvedRouting` refuses a narrower level) up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
+`width` (2 to 256: every width a level has, from 2 (`Routing` refuses a narrower level) up to `MAX_BRANCH_WIDTH`), `levels` (1 to 16, the level table's size), `alpha_tenths` (15 and 20, each its own context: the schema
 has no scalar enum type, so alpha is an exact integer code; absent from the two softmax kernels), `logit_dtype` and `value_dtype` (code 1, bf16, each: the library sends the solves bf16 logits alone and stores bf16 values, and a plane of another dtype is refused naming the fact). The contract states
 exactly what the library sends the kernels, and the kernels keep their `LogitT` / `OutT` template parameters, which no other arm instantiates; a call outside it is refused naming the fact and the nearest context's range. The matcher
 ([`../common/plan/entmax_launch.md`](../common/plan/entmax_launch.md)) maps the contract to the arm, so the instantiations are generated from it: 8 width classes and 2 alphas are

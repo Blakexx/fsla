@@ -229,15 +229,13 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     """
     from fsla.ops.decode import _decode_step, decode_launch
     from fsla.ops.paging import page_layout
-    from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
     from tests.descriptors import decode_descriptor
     from tests.oracle.fixtures import step_bundles
+    from tests.oracle.oracle_fixtures import _topology
 
     device = "cuda"
     widths, d_v = (16, 32), 64
-    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
-                                 write=SoftmaxActivation())
-    topology = Topology(levels=tuple(routing.at(w) for w in widths))
+    topology = _topology(widths)
     descriptor = decode_descriptor(topology, d_v=d_v, decay=False, batch_heads=1)
     launch = decode_launch(descriptor)
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)

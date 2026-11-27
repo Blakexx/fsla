@@ -958,12 +958,6 @@
   {
    "path": "tests/integration/test_production_levels.py",
    "message": "names the work code 'V3'",
-   "line_sha256": "8399ada3f1210573",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_production_levels.py",
-   "message": "names the work code 'V3'",
    "line_sha256": "f9fe99ccb8bb958a",
    "count": 2
   },
@@ -1289,18 +1283,6 @@
    "path": "tests/unit/test_oracle_contract.py",
    "message": "names the work code 'F2'",
    "line_sha256": "c7d2fedb642f6b11",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_packed_projection.py",
-   "message": "names the work code 'P73'",
-   "line_sha256": "eb50405b54b5ec30",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_packed_projection.py",
-   "message": "names the work code 'S5'",
-   "line_sha256": "eb50405b54b5ec30",
    "count": 1
   },
   {

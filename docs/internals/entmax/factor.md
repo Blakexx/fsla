@@ -9,7 +9,7 @@ implementation and its dispatch.
 Design of record: this document. The warp-row vocabulary and the threshold these kernels speak are [`entmax.md`](entmax.md).
 
 Gates: `tests/integration/test_production_levels.py` (the fp64 oracle, forward AND
-VJP, across `tied` / `mixed_per_level` / `dense_only`),
+VJP, across `tied` / `mixed_per_level` / `dense_only` / `grouped`),
 `tests/unit/test_entmax_production.py` (the packed-projection read, the dense levels' complete
 write, the batched solve against the per-level loop, the plan's launch count).
 
@@ -76,8 +76,15 @@ with the support staging, and the stream split are the header's
 ([`entmax.md#smem-slot-alias`](entmax.md#smem-slot-alias),
 [`entmax.md#stream-split`](entmax.md#stream-split)).
 
-<a id="near-line-200"></a>A level that stores two sides from one solve (`values_second`, a `shares_solve` level) hands
+<a id="near-line-200"></a>A level that stores two sides from one solve (`values_second`: a read entry `tied()` to the write side) hands
 read and write the SAME amplitudes, never a second solve; `values_second` absent means the level stores one side.
+
+<a id="read-heads"></a>**The read side is `G` heads a write head** (`fsla/routing/entmax/production.py`). The logits are one plane, a stream a
+write head (`b * H_w + w`), and every solve reads its own column span of it (`fsla.routing.projection.RouterLayout`). The read plane is
+`[B * H_w * G, T, ·]`, query head `w * G + g` at row `(b * H_w + w) * G + g`, so the public `[B, T, H, ·]` levels are a permute of it; read head
+`g`'s solves write the strided view of its rows, whose streams are the logits'. A level's write solve writes the first tied head's rows as its
+`values_second`; a further tied head's rows are copied from the write side's after the launches. Each solve writes its own support words: the
+write side's plane at `[B * H_w, ·, ·]` and the read side's at `[B * H, ·, ·]`, a read head's columns its view of the read plane's.
 
 ### <a id="candidates"></a>2.1 The candidates are the row's width
 
@@ -116,7 +123,9 @@ Two facts make this a five-line kernel rather than a Jacobian:
   A reduction that branches inside the trip loop is a convergence barrier there.
 
 <a id="factorbackward"></a>Both backward entries STORE into `d_logits`; a TIED level's second cotangent (`d_values_second`)
-is summed into `dp` inside the one launch, so no launch adds into a gradient another wrote.
+is summed into `dp` inside the one launch, so no launch adds into a gradient another wrote. Where more than one read head ties a level, the
+further heads' cotangents are summed into the second one before the launch (in the stored dtype); at one tied head the launch is the tie's
+alone.
 
 <a id="backward-stages"></a>**The operands are STAGED a token ahead and read from memory once.** A trip issues the next token's loads before it reduces and stores its own, so a load's latency passes under the reduction and not in front of it; the reduction's terms stay in registers for the stores, and the entmax backward reads its support words once a block (a word holds the block's 32 tokens). MEASURED on an H100 at 65,536 tokens, 8 streams, two levels: the backward takes 0.39 to 0.47 of the time of a form that read each load in the trip that issued it and every value twice (widths 48, 64 and 256; alpha 1.5, alpha 2 and softmax; tied and untied). Three things the form rests on:
 
@@ -171,4 +180,4 @@ solve can produce and still call supported is bounded away from it by the thresh
 arithmetic. That identity is the self-masking theorem's storage precondition
 (`docs/architecture/self-masking-theorem.md`) and it is gated without tolerance by
 `tests/integration/test_production_levels.py`'s oracle rows, which compare the stored levels' support sets exactly against the fp64 oracle's over four stress
-fixtures x three routing shapes x two alphas. The stored form is bf16 alone: the contract holds it, and `production.py` names it once, where it allocates the planes.
+fixtures x four routing shapes x two alphas. The stored form is bf16 alone: the contract holds it, and `production.py` names it once, where it allocates the planes.

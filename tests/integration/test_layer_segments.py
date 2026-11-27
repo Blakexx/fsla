@@ -17,6 +17,7 @@ from conftest import reference_produce
 
 import fsla
 from fsla.ops.window import window_of
+from fsla.routing.quant import VALUES
 from tests.oracle.fixtures import assert_slots_close, oracle_run
 from tests.oracle.tolerances import PREFILL_READOUT
 
@@ -32,8 +33,8 @@ _OP_PREFILL = pytest.mark.requires_kernel("prefill")
 
 
 def _routing() -> fsla.Routing:
-    return fsla.Routing([fsla.split_routing(WIDTHS[0], sparse_duty="write"),
-                         fsla.split_routing(WIDTHS[1], sparse_duty="read")])
+    return fsla.Routing(topology=tuple(WIDTHS[:2]), write=(fsla.entmax(1.5), fsla.softmax()),
+                        read=((fsla.softmax(), fsla.entmax(1.5)),))
 
 
 def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> fsla.FSLA:
@@ -45,7 +46,7 @@ def _bundles(tokens: int, heads: int = 2):
     layer = _layer(heads=heads).cuda().eval()
     with torch.no_grad():
         routes, _values, masks = reference_produce(layer, torch.randn(1, tokens, 64, device="cuda"))
-        values = fsla.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
+        values = fsla.ScaledBlock.quantize(torch.randn(1, tokens, heads, 64, device="cuda"), VALUES)
     return routes, values, masks
 
 

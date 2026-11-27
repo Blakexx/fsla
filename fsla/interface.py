@@ -7,7 +7,7 @@
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 :class:`~fsla.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
-the internal format -- a :class:`~fsla.values.Values` bundle -- ``masks`` is the DATA beside the rows, like attention's
+the internal format -- a :class:`~fsla.routing.quant.ScaledBlock` in the ``VALUES`` form -- ``masks`` is the DATA beside the rows, like attention's
 mask (:class:`~fsla.routing.masks.Masks`: a bit a side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero;
 a level-side's mask may be ABSENT, ``None``, and ABSENT MEANS DENSE: every digit of every token live),
 ``density`` is how full each level is (a uint8 ``[2, D]``, 255 for every digit live), the
@@ -36,8 +36,8 @@ from fsla.engine.types import BackwardNotImplemented
 if TYPE_CHECKING:
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import Masks
+    from fsla.routing.quant import ScaledBlock
     from fsla.routing.types import DecayConfig
-    from fsla.values import Values
 
 __all__ = [
     "BackwardNotImplemented",
@@ -49,7 +49,7 @@ __all__ = [
 
 def prefill(
     routes: RouteFactors,
-    values: Values,
+    values: ScaledBlock,
     masks: Masks,
     density: torch.Tensor,
     *,
@@ -58,8 +58,8 @@ def prefill(
 ) -> tuple[torch.Tensor, FSLAState | None]:
     """Run FSLA over one segment: ``(y, state)``.
 
-    ``routes``: a :class:`~fsla.routing.factors.RouteFactors`; ``values``: a :class:`~fsla.values.Values` with
-    the same ``[B, T, H]``; ``masks``: the PREFILL-layout :class:`~fsla.routing.masks.Masks` the producer emitted beside
+    ``routes``: a :class:`~fsla.routing.factors.RouteFactors`; ``values``: a :class:`~fsla.routing.quant.ScaledBlock`
+    in the ``VALUES`` form with the write side's ``[B, T, H_w]``; ``masks``: the PREFILL-layout :class:`~fsla.routing.masks.Masks` the producer emitted beside
     them (validated for shape and dtype, never values; a bit of 0 is YOUR GUARANTEE that the entry's row is zero, a bit of 1 guarantees
     nothing). A level-side's entry is its mask tensor or ABSENT (``None``), and ABSENT MEANS DENSE: every digit of every token is live
     on that level-side. A level-side whose activation cannot make exact zeros (softmax today) gets NO mask from the library's producer

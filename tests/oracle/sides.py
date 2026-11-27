@@ -80,7 +80,7 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
     because what is being compared here is the REFERENCE's arithmetic and not a kernel's rounding.
     """
     from fsla.ops.naive import naive_fsla
-    from fsla.routing.types import IndependentRouting, LeafMassDecay, SoftmaxActivation, Topology
+    from fsla.routing.types import LeafMassDecay, Topology, softmax
 
     cell = build_cell(record)
     drawn = carry_cells.realize(cell, B=batch, H=heads, device="cpu")
@@ -95,8 +95,8 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
                                           for w in cell.widths))
     #: THE SAME ROUTING THE ORACLE TIER BUILDS OVER -- untied softmax on both sides -- so this comparison and the
     #: kernel-vs-oracle gates are asking about one object
-    routing = IndependentRouting(width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
-    topology = Topology(levels=tuple(routing.at(w) for w in cell.widths))
+    widths = tuple(cell.widths)
+    topology = Topology(widths=widths, write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
     operands = _flatten(v=v, g_write=g_write, read=read, write=write,
                         dials=None if decay is None else decay.dials)
     #: a CARRIED cell enters with its own state, which is the cell's claim and not this comparison's

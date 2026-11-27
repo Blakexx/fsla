@@ -50,12 +50,6 @@
    "count": 1
   },
   {
-   "path": "fsla/routing/projection.py",
-   "message": "packed_router_logits(..., route_bias=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "0c6c0b53e40d5eb1",
-   "count": 1
-  },
-  {
    "path": "fsla/routing/side_gain.py",
    "message": "gain_layout(..., write_gain=) is only ever True -- across every call in this tree, nothing moves it",
    "line_sha256": "f372f7616e3b0923",

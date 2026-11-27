@@ -28,13 +28,12 @@ from fsla.routing.activations import (
 )
 from fsla.routing.types import (
     EntmaxActivation,
-    IndependentRouting,
     LeafMassDecay,
     SoftmaxActivation,
-    TiedRouting,
     Topology,
     entmax,
     softmax,
+    tied,
 )
 
 # --- the table itself --------------------------------------------------------
@@ -69,10 +68,13 @@ def test_the_declared_properties_are_the_ones_the_maps_actually_have():
     assert (dense > 0).all(), "softmax declares exact_zeros=False"
     assert not ACTIVATION_REGISTRY[("softmax", None)].exact_zeros
 
+    assert (dense >= 0).all() and ACTIVATION_REGISTRY[("softmax", None)].nonnegative
+
     for alpha in ratified_entmax_alphas():
         p = entmax_reference(logits, alpha=alpha)
         assert (p == 0).any(), f"entmax({alpha}) declares exact_zeros=True"
         assert ACTIVATION_REGISTRY[("entmax", alpha)].exact_zeros
+        assert (p >= 0).all() and ACTIVATION_REGISTRY[("entmax", alpha)].nonnegative
 
 
 # --- closed world ------------------------------------------------------------
@@ -100,7 +102,7 @@ def test_a_registry_row_added_at_runtime_is_immediately_constructible():
     exists everywhere. If this needed a second edit somewhere, the registry would not
     be the single source of truth."""
     tag = ("entmax", 1.75)
-    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True)
+    ACTIVATION_REGISTRY[tag] = ActivationProperties(exact_zeros=True, nonnegative=True)
     try:
         activation = EntmaxActivation(1.75)
         assert activation.properties.exact_zeros
@@ -124,76 +126,59 @@ def test_the_public_constructors_take_no_property_metadata():
 
 # --- rules read columns, never names -----------------------------------------
 
-def _topology(read, write, *, width=4, tied=True):
-    if tied:
-        # Callers that ask for `tied=True` always pass the same activation for both
-        # duties (the only case a tied level can express).
-        return Topology(levels=(TiedRouting(width=width, op=read),))
-    return Topology(levels=(IndependentRouting(width=width, read=read, write=write),))
+def _topology(read, write, *, width=4):
+    """One level: ``write`` its write activation, ``read`` its one read head's entry (an activation or ``tied()``)."""
+    return Topology(widths=(width,), write=(write,), read=((read,),))
 
 
-def test_per_level_and_per_duty_configuration_is_addressable_as_a_grid():
-    """Per-level AND per-duty configuration is what makes level-split pure
+def test_per_level_and_per_side_configuration_is_addressable_as_a_grid():
+    """Per-level AND per-side configuration -- and per read head -- is what makes level-split pure
     CONFIGURATION (M-3) rather than a code path."""
-    topology = _topology(softmax(), entmax(1.5), tied=False)
-    assert topology.duty_cells() == ((0, "read"), (0, "write"))
-    assert topology.activation(0, "read").tag == ("softmax", None)
-    assert topology.activation(0, "write").tag == ("entmax", 1.5)
-    assert topology.activation_properties(0, "write").exact_zeros
-    with pytest.raises(ValueError, match="duty must be"):
-        topology.activation(0, "both")
+    topology = Topology(widths=(4, 4), write=(entmax(1.5), softmax()),
+                        read=((softmax(), entmax(2.0)), (tied(), softmax())))
+    assert topology.read_activation(0, 0).tag == ("softmax", None)
+    assert topology.read_activation(1, 0).tag == ("entmax", 1.5)
+    assert topology.write[0].tag == ("entmax", 1.5)
+    assert [topology.can_zero(side, level) for side in ("read", "write") for level in range(2)] == [
+        True, True, True, False]
+    with pytest.raises(ValueError, match="side must be"):
+        topology.can_zero("both", 0)
+
+
+class _Future:
+    tag = ("future_family", None)
 
 
 def test_an_activation_with_a_row_is_configurable_without_widening_an_isinstance_list():
-    """Admission is a registry lookup, so a variant with a row is usable at once.
-    A duck-typed activation stands in for a future family the shipped classes cannot
-    express -- if this needed a second edit in `types.py`, the registry would not be
-    the single source of truth it claims to be."""
-
-    class _Future:
-        tag = ("future_family", None)
-
-    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False)
+    """Admission to the topology is a registry lookup, so a variant with a row is usable at once, on either side and
+    under a tied read. A duck-typed activation stands in for a future family the shipped classes cannot express -- if
+    this needed a second edit in `types.py`, the registry would not be the single source of truth it claims to be."""
+    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False, nonnegative=True)
     try:
-        routing = IndependentRouting(width=4, read=_Future(), write=_Future())
-        assert routing.activation("read").tag == ("future_family", None)
+        topology = _topology(_Future(), _Future())
+        assert topology.read_activation(0, 0).tag == ("future_family", None)
+        assert _topology(tied(), _Future()).read_activation(0, 0).tag == ("future_family", None)
     finally:
         del ACTIVATION_REGISTRY[("future_family", None)]
 
     with pytest.raises(UnknownActivation):
-        IndependentRouting(width=4, read=_Future(), write=_Future())
+        _topology(_Future(), softmax())
 
 
 def test_mass_decay_accepts_every_ratified_activation():
     """The decay asks nothing of a level's activation: its clock is the write rows' own shares
     (docs/CONSTITUTION.md#r23)."""
     for activation in (softmax(), entmax(1.5), entmax(2.0)):
-        topology = _topology(activation, activation)
+        topology = _topology(tied(), activation)
         LeafMassDecay(dials=(torch.full((1, 4), 0.5),)).validate_against(topology)
 
 
 def test_two_exact_zero_sides_still_require_one_shared_solve():
-    with pytest.raises(ValueError, match="exact_zeros"):
-        IndependentRouting(width=4, read=entmax(1.5), write=entmax(1.5))
-
-
-def test_tied_routing_admits_any_registered_activation_without_widening_an_isinstance_list():
-    """Same non-vacuity as `IndependentRouting`'s duck-typed row above: a `TiedRouting`
-    admits a future family the moment it has a registry row, checked by lookup rather
-    than by an isinstance list against the two shipped classes."""
-
-    class _Future:
-        tag = ("future_family", None)
-
-    ACTIVATION_REGISTRY[("future_family", None)] = ActivationProperties(exact_zeros=False)
-    try:
-        tied = TiedRouting(width=4, op=_Future())
-        assert tied.activation("read").tag == tied.activation("write").tag == ("future_family", None)
-    finally:
-        del ACTIVATION_REGISTRY[("future_family", None)]
-
-    with pytest.raises(UnknownActivation):
-        TiedRouting(width=4, op=_Future())
+    """Stated against the `exact_zeros` column: an untied read that makes zeros over a write that does is refused, and
+    the tie is the one solve that serves both."""
+    with pytest.raises(ValueError, match="exact zeros"):
+        fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((entmax(1.5),),))
+    fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((tied(),),))
 
 
 # --- no case list may exist outside the registry -----------------------------

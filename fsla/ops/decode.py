@@ -298,7 +298,7 @@ def _decode_step(
     """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
 
     ``routes`` is a one-token :class:`~fsla.routing.factors.RouteFactors`, ``values`` a one-token
-    :class:`~fsla.values.Values` and ``masks`` their DECODE-layout :class:`~fsla.routing.masks.Masks`; the kernel
+    :class:`~fsla.routing.quant.ScaledBlock` in the ``VALUES`` form and ``masks`` their DECODE-layout :class:`~fsla.routing.masks.Masks`; the kernel
     reads their rows, scales, values and mask words as they are. ``state`` is the dense
     ``[BH, N / 16, page_bytes]`` plane.
 
@@ -315,10 +315,10 @@ def _decode_step(
     if routes.tokens != 1:
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
-    check_descriptor(descriptor, routes, values.v.device)
-    logical_d_v = values.d_v
+    check_descriptor(descriptor, routes, values.device)
+    logical_d_v = values.width
     launch = decode_launch(descriptor)
-    v = pad_v(values.v, launch.d_v)
+    v = pad_v(values.data, launch.d_v)
     plane = step_plane(v, descriptor, decay, state)
     BH = values.batch * values.heads
     if workspace is None:
@@ -326,7 +326,8 @@ def _decode_step(
     y = step(DecodeLaunch(
         descriptor=descriptor,
         operands=DecodeOperands(
-            read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read, write_scale=routes.scale_write,
+            read=routes.read_rows, write=routes.write_rows, read_scale=routes.scales("read"),
+            write_scale=routes.scales("write"),
             read_mask=masks.read, write_mask=masks.write, dials=leaf_rate_dials_for(decay, descriptor, v.device), v=v,
             v_scale=values.scale, state_plane=plane),
         workspace=DecodeWorkspace(scratch=workspace)), ctas=ctas)

@@ -73,7 +73,8 @@ def reference_produce(layer, x, consumer=None):
     from fsla.ops.produce import _composition
     from fsla.routing.masks import PREFILL
 
-    return _composition(x, layer.routing, layer._weights(x), PREFILL if consumer is None else consumer)
+    return _composition(x, layer.routing, layer.routing.layout(layer.group), layer._weights(x),
+                        PREFILL if consumer is None else consumer)
 
 
 def _kernels_of(item) -> list[str]:
@@ -326,24 +327,27 @@ def _take_gpu_lock(request):
 
 
 def alternating_routing(depth):
-    """THE ALTERNATING SPLIT, one routing a level for ``build_routing``/``build_layer``: entmax on the write duty at the
-    even levels (read-dense) and on the read duty at the odd (write-dense), so every side has a dense level and, from
-    depth two, a sparse one (docs/api.md section 2.1). At depth one the one level is softmax on both duties."""
-    from fsla import dense_routing, split_routing
+    """THE ALTERNATING SPLIT, one ``(write, read)`` pair a level for ``build_routing``/``build_layer``: entmax on the
+    write side at the even levels (read-dense) and on the read side at the odd (write-dense), so every side has a dense
+    level and, from depth two, a sparse one (docs/api.md section 2.1). At depth one the one level is softmax on both
+    sides."""
+    from fsla import entmax, softmax
 
     if depth == 1:
-        return [dense_routing(1)]
-    return [split_routing(1, sparse_duty="write" if level % 2 == 0 else "read") for level in range(depth)]
+        return [(softmax(), softmax())]
+    return [(entmax(1.5), softmax()) if level % 2 == 0 else (softmax(), entmax(1.5)) for level in range(depth)]
 
 
 def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bias_init=None, gain_config=None):
-    """One declared :class:`fsla.Routing` covering every level in ``widths``; ``routing`` is one level routing for every
-    level, or a list with one a level (`alternating_routing`)."""
-    from fsla import Routing, dense_routing
+    """One declared :class:`fsla.Routing` over ``widths``, one read head's tuple for every head; ``routing`` is one
+    ``(write, read)`` pair for every level (``None``: softmax on both), or a list with one a level
+    (`alternating_routing`); a read entry may be ``fsla.tied()``."""
+    from fsla import Routing, softmax
 
-    per_level = routing if isinstance(routing, (list, tuple)) else [routing] * len(widths)
-    levels = [dense_routing(w) if r is None else r.at(w) for r, w in zip(per_level, widths)]
-    return Routing(levels, gain=gain, bias=bias, gain_bias_init=gain_bias_init, gain_config=gain_config)
+    per_level = routing if isinstance(routing, list) else [routing] * len(widths)
+    pairs = [(softmax(), softmax()) if pair is None else pair for pair in per_level]
+    return Routing(topology=tuple(widths), write=tuple(w for w, _ in pairs), read=(tuple(r for _, r in pairs),),
+                   gain=gain, bias=bias, gain_bias_init=gain_bias_init, gain_config=gain_config)
 
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
@@ -379,12 +383,12 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # numerics are the REAL producer's, not a second derivation of them.
 
 
-def resolved_routing_from_topology(topology):
-    """A `ResolvedRouting` over a `Topology`'s own levels -- exactly what a declared
-    `Routing` resolves (`Routing.resolved`)."""
-    from fsla.routing.types import ResolvedRouting
+def layout_of(topology, group=1):
+    """The `RouterLayout` of a `Topology` at ``group`` -- exactly what a declared `Routing` lays out
+    (`Routing.layout`)."""
+    from fsla.routing.projection import RouterLayout
 
-    return ResolvedRouting(levels=topology.levels)
+    return RouterLayout(topology=topology, group=group)
 
 
 def fuse_gain_columns(route_W, gain_W):
@@ -397,20 +401,20 @@ def fuse_gain_columns(route_W, gain_W):
     return torch.cat([route_W, gain_W.transpose(-1, -2)], dim=-1)
 
 
-def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
+def raw_side_gain(x, route_W, gain_W, gain_bias, layout):
     """The producer's write gain ``[B, T, H]``, through the library's own two pieces.
 
-    Not a second implementation: the projection is `_packed_router_logits`' gain span
+    Not a second implementation: the projection is `router_logits`' gain span
     and the nonlinearity is `softplus_side_gain`, which is exactly what the producer
     composes -- what the producer does NOT expose is the gain apart from write level 0's
     scale (docs/CONSTITUTION.md#r23), which is what a gate on that fold has to see.
     """
-    from fsla.routing.projection import _packed_router_logits
+    from fsla.routing.projection import router_logits
     from fsla.routing.side_gain import WRITE_GAIN, softplus_side_gain
 
     columns = gain_W.shape[1]
-    _, _, gain_logits = _packed_router_logits(
-        x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None,
+    _, gain_logits = router_logits(
+        x, fuse_gain_columns(route_W, gain_W), layout, route_bias=None,
         projection_dtype=x.dtype, gain_columns=columns)
     if not columns:
         return torch.ones(x.shape[0], x.shape[1], gain_W.shape[0], dtype=x.dtype, device=x.device)
@@ -433,7 +437,8 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
 
     H, hidden_size, _ = route_W.shape
     d_v = v.shape[-1]
-    routing = Routing(topology.levels, bias=route_bias is not None, gain=bool(gain_W.shape[1]))
+    routing = Routing(topology=topology.widths, write=topology.write, read=topology.read,
+                      bias=route_bias is not None, gain=bool(gain_W.shape[1]))
     bias = None if route_bias is None else torch.cat([route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
     #: THE WEIGHTS IN THE PRODUCER'S CONTRACT FORM: the projection's dtype, and on the kernel's path (CUDA, no fp64)
     #: the hidden axis contiguous

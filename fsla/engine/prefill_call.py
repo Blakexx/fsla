@@ -87,7 +87,7 @@ def descriptor_of(ctx: PrefillContext):
     from fsla.ops.produce import _prefill_descriptor
 
     routes = ctx.routes
-    return _prefill_descriptor(routes.topology, ctx.values.d_v, ctx.decay is not None, routes.tokens, routes.batch * routes.heads,
+    return _prefill_descriptor(routes.topology, ctx.values.width, ctx.decay is not None, routes.tokens, routes.batch * routes.heads,
                                ctx.want_state or ctx.state is not None, device_index(routes.device))
 
 
@@ -105,8 +105,8 @@ def validate_context(ctx: PrefillContext) -> None:
     its mask. The call validates no value of the masks or the density and reads nothing back to the host.
     """
     from fsla._state import FSLAState
+    from fsla.routing import quant
     from fsla.routing.factors import RouteFactors
-    from fsla.values import Values
 
     routes, values, decay = ctx.routes, ctx.values, ctx.decay
     if type(routes) is not RouteFactors:
@@ -115,11 +115,11 @@ def validate_context(ctx: PrefillContext) -> None:
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
             "a layer builds one with its producer, and RouteFactors.from_levels builds one from any levels -- "
             "its invariants are checked either way.")
-    if type(values) is not Values:
+    if type(values) is not quant.ScaledBlock or values.form is not quant.VALUES:
         raise TypeError(
-            "prefill's second argument must be a Values bundle, got "
-            f"{type(values).__name__}. The value stream reaches the op in the internal format; "
-            "build one with Values.from_projection(v).")
+            "prefill's second argument must be the values' ScaledBlock in the VALUES form, got "
+            f"{getattr(values, 'form', type(values).__name__)!r}. The value stream reaches the op in the internal "
+            "format; build it with ScaledBlock.quantize(v, fsla.routing.quant.VALUES).")
     #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
     #: and the routing carries no value geometry, so there is nothing to agree with;
     #: what must match the bundle is the token addressing, `[B, T, H_w]`, a write head's.
@@ -127,7 +127,7 @@ def validate_context(ctx: PrefillContext) -> None:
     if (values.batch, values.tokens, values.heads) != expected:
         raise ValueError(
             f"values must be [B, T, H_w, d_v] with [B, T, H_w]={expected} (a write head's) to match the routing "
-            f"bundle, got {tuple(values.v.shape)}")
+            f"bundle, got {tuple(values.data.shape)}")
     if values.device != routes.device:
         raise ValueError(f"values are on {values.device} but the routing bundle is on {routes.device}")
     if decay is not None:
@@ -171,7 +171,7 @@ def run_prefill(ctx: PrefillContext, descriptor) -> tuple[torch.Tensor, torch.Te
     """
     from fsla.ops import prefill as prefill_ops
 
-    state_out = backing(ctx.state_in, ctx.want_state, ctx.routes, ctx.values.d_v)
+    state_out = backing(ctx.state_in, ctx.want_state, ctx.routes, ctx.values.width)
     workspace = prefill_ops._build_workspace(descriptor)
     num, den = launch(descriptor, workspace, ctx.routes, ctx.values, ctx.masks, ctx.density, ctx.decay, ctx.state_in,
                       state_out)

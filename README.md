@@ -11,7 +11,7 @@ capacity chosen by the topology; it is not a cache that grows with the sequence.
 
 The executable definition is an fp64 oracle (`fsla.naive_fsla`); the kernels are optimizations of it, never a second
 definition ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). This repository is the kernels, the layer around them,
-and the evidence for both. The API keeps the word "routing" in its names (`fsla.Routing`, `split_routing`); the
+and the evidence for both. The API keeps the word "routing" in its names (`fsla.Routing`); the
 construction is factored sparse linear attention, not a router.
 
 Paper: *(link on publication)* · Citation: [below](#citation)
@@ -53,15 +53,17 @@ objects chosen from the declaration, never a runtime configuration. The op is ag
 reaches it. The producer implements a set of them and a layer's configuration selects one. Anything outside the built
 envelope is refused by name rather than routed to a slower path: there is no fallback.
 
-The first-class configuration is the alternating scheme: at each level one duty (read or write) is entmax and the
-other is softmax, alternating by level (`fsla.split_routing`).
+The routing is declared once: the topology (the level widths), one flat nonnegative activation a write level, and the
+read side's activations, one tuple a read head of the group (or one tuple for every head), an entry `fsla.tied()` where a
+read head uses the write side's routing on that level. The first-class configuration is the alternating scheme: at
+each level one side is entmax and the other softmax, alternating by level.
 
 ```python
 import fsla
 
 # two levels of 256 digits: N = 65,536 features; level 0 sparse on the write side, level 1 on the read side
-routing = fsla.Routing([fsla.split_routing(256, alpha=1.5, sparse_duty="write"),
-                        fsla.split_routing(256, alpha=1.5, sparse_duty="read")])
+routing = fsla.Routing(topology=(256, 256), write=(fsla.entmax(1.5), fsla.softmax()),
+                       read=((fsla.softmax(), fsla.entmax(1.5)),))
 layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 
 cont = fsla.LayerContinuation(state=fsla.dense_state())
@@ -80,7 +82,7 @@ from fsla.ops.produce import ProducerWeights, produce_prefill, produce_decode, p
 H, hidden, d_v = 8, 1024, 64
 x = ...                                        # [B, T, hidden], CUDA
 weights = ProducerWeights(
-    route_W=torch.randn(H, hidden, routing.columns, device="cuda", dtype=projection_dtype(x)) * hidden ** -0.5,
+    route_W=torch.randn(H, hidden, routing.columns(1), device="cuda", dtype=projection_dtype(x)) * hidden ** -0.5,
     route_bias=None,                           # Routing(bias=False)
     gain_bias=torch.zeros(H, routing.gain_columns, device="cuda", dtype=projection_dtype(x)),
     v_W=torch.randn(H * d_v, hidden, device="cuda", dtype=torch.bfloat16))

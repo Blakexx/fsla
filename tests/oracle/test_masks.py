@@ -15,10 +15,9 @@ from conftest import build_layer
 from fsla.ops.naive import naive_fsla
 from fsla.ops.produce import produce_decode, produce_prefill
 from fsla.routing.masks import DECODE, PREFILL, Masks, pack_digits, pack_tokens, unpack_digits, unpack_tokens
-from fsla.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, TiedRouting, Topology, activation_walks
+from fsla.routing.types import Topology, activation_walks, entmax, softmax, tied
 
-_TOPOLOGY = Topology(levels=tuple(
-    IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in (4, 6)))
+_TOPOLOGY = Topology(widths=(4, 6), write=(softmax(), softmax()), read=((softmax(), softmax()),))
 
 
 # --------------------------------------------------------------- the layouts, bit by bit
@@ -98,7 +97,7 @@ def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name(
     layer, x = _layer_and_x(4)
     weights = layer._weights(x)
     routes, values, *_ = produce_prefill(x, layer.routing, weights)
-    assert (routes.heads, values.d_v) == (2, 32)
+    assert (routes.heads, values.width) == (2, 32)
     with pytest.raises(ValueError, match=r"x must be \[B, T, hidden\] with hidden = route_W's 32"):
         produce_prefill(x[..., :16], layer.routing, weights)
     with pytest.raises(ValueError, match=r"v_W must be \[H \* d_v, hidden\]"):
@@ -108,7 +107,7 @@ def test_the_producers_read_their_geometry_off_the_arguments_and_refuse_by_name(
 
 
 def test_masks_are_validated_for_shape_and_dtype_and_never_for_values():
-    layer, x = _layer_and_x(40, routing=TiedRouting(width=16, op=EntmaxActivation(1.5)))
+    layer, x = _layer_and_x(40, routing=(entmax(1.5), tied()))
     routes, _values, masks, _density = layer._produce(x)
     everything_dead = Masks(PREFILL, tuple(torch.zeros_like(m) for m in masks.read), masks.write)
     everything_dead.check(routes)
@@ -125,9 +124,12 @@ def test_the_walk_rule_reads_the_declaration_alone():
     ``write_listed_k`` facts (decode's); no operand is read, and the declaration is hashable (the rule's cache key)."""
     layer, _x = _layer_and_x(1)
     assert activation_walks(layer.topology) == ((False, False), (False, False))
-    topology = Topology(levels=(IndependentRouting(width=256, read=SoftmaxActivation(), write=SoftmaxActivation()),) * 2)
+    topology = Topology(widths=(256, 256), write=(softmax(), softmax()), read=((softmax(), softmax()),))
     assert activation_walks(topology) == ((False, False), (False, False))
     assert hash(topology) == hash(topology)
+    #: a read level walks by its lists where ANY read head's entry can make zeros, a tied one by the write side's
+    grouped = Topology(widths=(16, 16), write=(entmax(1.5), softmax()), read=((softmax(), softmax()), (tied(), entmax(2.0))))
+    assert activation_walks(grouped) == ((True, True), (True, False))
 
 
 # --------------------------------------------------------------- the oracle: r * m, planted

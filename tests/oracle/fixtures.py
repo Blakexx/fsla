@@ -18,9 +18,9 @@ import torch
 from fsla.ops import carry as carry_ops
 from fsla.ops.naive import naive_fsla
 from fsla.ops.paging import decode_pages, encode_pages
+from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import DECODE, Masks, pack_digits
-from fsla.values import Values
 from tests.oracle import tolerances
 
 
@@ -70,11 +70,11 @@ def with_gain(write, g_write):
 
 
 def step_bundles(v, read, write, topology):
-    """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
-    them (u8 rows, bf16 values). The bundle carries no flag; the bits a fixture's draw supports are
+    """Floating step operands in the internal format: ``(RouteFactors, values)`` as the framework's epilogue writes
+    them (u8 rows, the values' bf16 scaled block). The bundle carries no flag; the bits a fixture's draw supports are
     :func:`masks_of`'s."""
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write))
-    return routes, Values.from_projection(v.float())
+    return routes, quant.ScaledBlock.quantize(v.float(), quant.VALUES)
 
 
 def masks_of(routes):

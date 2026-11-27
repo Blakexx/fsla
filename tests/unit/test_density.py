@@ -14,26 +14,29 @@ from conftest import build_layer
 
 import fsla
 from fsla.ops.naive import naive_fsla
+from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import PREFILL, Masks, density_of_masks, masks_and_density, pack_tokens
-from fsla.routing.types import EntmaxActivation, IndependentRouting, OpaqueRouting, SoftmaxActivation, TiedRouting, Topology
-from fsla.values import Values
+from fsla.routing.types import OpaqueActivation, Topology, entmax, softmax, tied
+
+
+def _values(v):
+    return quant.ScaledBlock.quantize(v, quant.VALUES)
 
 
 def _topology(widths):
     """Opaque levels: every level-side may make zeros, so every level-side has its mask."""
-    return Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
+    return Topology.opaque(widths)
 
 
 def _mixed_topology():
     """Level 0 softmax read, entmax write; level 1 entmax read, softmax write; level 2 opaque: absent are read 0 and write 1."""
-    return Topology(levels=(IndependentRouting(width=4, read=SoftmaxActivation(), write=EntmaxActivation(1.5)),
-                            IndependentRouting(width=8, read=EntmaxActivation(2.0), write=SoftmaxActivation()),
-                            OpaqueRouting(width=4)))
+    return Topology(widths=(4, 8, 4), write=(entmax(1.5), softmax(), OpaqueActivation()),
+                    read=((softmax(), entmax(2.0), OpaqueActivation()),))
 
 
 def _softmax_topology(widths):
-    return Topology(levels=tuple(IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation()) for w in widths))
+    return Topology(widths=tuple(widths), write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
 
 
 def _levels(gen, B, T, H, widths, keep):
@@ -149,7 +152,7 @@ def test_the_density_of_masks_refuses_masks_that_do_not_fit_the_bundle():
 
 def _call_operands(T=40):
     routes, gen = _bundle((4, 8), 1, T, 2, 2, keep=0.5)
-    values = Values.from_projection(torch.randn(1, T, 2, 8, generator=gen))
+    values = _values(torch.randn(1, T, 2, 8, generator=gen))
     masks, density = masks_and_density(routes)
     return routes, values, masks, density
 
@@ -272,7 +275,7 @@ def test_a_decode_bundle_with_an_absent_entry_is_refused_by_its_words():
 def test_the_call_accepts_a_bundle_with_absent_entries_and_reads_no_density_value():
     """The call validates the absent entries' bundle and meets the built envelope's refusal, whatever bytes the density holds."""
     routes, gen = _bundle((4, 8, 4), 1, 40, 2, 2, keep=0.5, topology=_mixed_topology())
-    values = Values.from_projection(torch.randn(1, 40, 2, 8, generator=gen))
+    values = _values(torch.randn(1, 40, 2, 8, generator=gen))
     masks, density = masks_and_density(routes)
     assert any(entry is None for entry in (*masks.read, *masks.write))
     for given in (density, torch.zeros_like(density)):
@@ -281,12 +284,33 @@ def test_the_call_accepts_a_bundle_with_absent_entries_and_reads_no_density_valu
 
 
 def test_the_prefill_producer_makes_a_mask_for_a_side_that_can_make_zeros_and_none_for_one_that_cannot():
-    """A tied entmax level has its mask on both sides, even where its rows come out dense; an independent level whose read is
+    """A tied entmax level has its mask on both sides, even where its rows come out dense; an untied level whose read is
     softmax and write entmax has its write mask only; the density byte of an absent entry is 255."""
-    mixed = [IndependentRouting(width=16, read=SoftmaxActivation(), write=EntmaxActivation(1.5)), TiedRouting(width=16, op=EntmaxActivation(1.5))]
+    mixed = [(entmax(1.5), softmax()), (entmax(1.5), tied())]
     layer = build_layer(hidden_size=32, num_heads=2, d_v=32, widths=(16, 16), routing=mixed)
     routes, _values, masks, density = layer._produce(torch.randn(2, 40, 32, dtype=torch.float64))
     masks.check(routes)
     assert masks.read[0] is None and masks.write[0] is not None and masks.read[1] is not None and masks.write[1] is not None
     assert int(density[0, 0]) == 255
     assert torch.equal(density, density_of_masks(routes, masks))
+
+
+def test_a_grouped_read_level_has_its_mask_where_any_read_head_can_make_zeros():
+    """THE OP'S CONTRACT TODAY, one read mask a level over every query head: a level whose read heads differ -- one
+    entmax, one softmax -- has its mask, the dense head's bits its own rows' (so the guarantee holds), and the density's
+    read byte counts every query head; a level no head of which can make zeros has none."""
+    from fsla import FSLA, Routing
+
+    routing = Routing(topology=(16, 16), write=(softmax(), entmax(1.5)),
+                      read=((entmax(1.5), softmax()), (softmax(), tied())))
+    layer = FSLA(routing, hidden_size=32, num_heads=2, group=2, d_v=32).double()
+    routes, _values, masks, density = layer._produce(torch.randn(2, 40, 32, dtype=torch.float64))
+    masks.check(routes)
+    assert masks.read[0] is not None and masks.write[0] is None
+    assert masks.read[1] is not None and masks.write[1] is not None
+    for level in range(2):
+        live = masks.live(routes, "read", level)
+        assert not ((routes.rows(level, "read") != 0) & ~live).any(), "a zero bit over a nonzero row, at some head"
+        assert not live.all(), "the sparse head's zeros are in the mask"
+    assert torch.equal(density, density_of_masks(routes, masks)) and int(density[1, 0]) == 255
+    assert int(density[0, 0]) < 255 and int(density[0, 1]) < 255, "each read byte counts the sparse head's zeros"

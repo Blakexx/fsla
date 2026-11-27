@@ -716,7 +716,7 @@ instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 
 ## The write term by whole atoms
 
 When the innermost level's WRITE side is not listed (every digit of it is walked, the producer's choice for a declaration whose activation has no exact
-zeros; the launch function's `write_dense`, derived from the descriptor's innermost `write_listed_k`, which the producer's rule `fsla.ops.produce._decode_descriptor` states from `Topology.activation_properties`) and the innermost
+zeros; the launch function's `write_dense`, derived from the descriptor's innermost `write_listed_k`, which the producer's rule `fsla.ops.produce._decode_descriptor` states from `Topology.can_zero`) and the innermost
 run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
 takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
 (leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a

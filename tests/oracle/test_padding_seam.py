@@ -36,20 +36,10 @@ from fsla.ops.lattice import to_canonical, to_lattice
 from fsla.ops.naive import naive_fsla
 from fsla.ops.padding import pad_routes, pad_v
 from fsla.ops.paging import bytes_equal
-from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import assert_reordered_close, logical_state, masks_of, state_pages, step_bundles, with_gain
 from tests.oracle.oracle_fixtures import _simplex
-
-# ---------------------------------------------------------------------------
-# PREFILL: the fp64 naive is the ONE ground truth on this line (no kernel body)
-# ---------------------------------------------------------------------------
-
-
-def _dense_topology(widths):
-    return Topology(levels=tuple(
-        IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation())
-        for w in widths))
+from tests.oracle.oracle_fixtures import _topology as _dense_topology
 
 
 def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):

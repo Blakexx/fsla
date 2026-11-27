@@ -31,7 +31,7 @@ def descriptor_of(routes, values, decay, BH, device):
     """THE STEP'S DESCRIPTOR, from what the step is handed: the declaration, the value width, whether a decay is handed, ``BH`` and the device.
     Memoized by the call and the device (:func:`fsla.ops.produce._decode_descriptor`): after a call's first, a host dictionary lookup, no device read and
     no allocation, which keeps the step capturable."""
-    return _decode_descriptor(routes.topology, values.d_v, decay is not None, BH, device_index(device))
+    return _decode_descriptor(routes.topology, values.width, decay is not None, BH, device_index(device))
 
 
 def scratch(state, descriptor, BH, device):
@@ -57,7 +57,7 @@ def backing(state, routes):
 def state_plane(values, descriptor, decay, carried_plane):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
     with span("state_plane"):
-        return bodies.step_plane(values.v, descriptor, decay, carried_plane)
+        return bodies.step_plane(values.data, descriptor, decay, carried_plane)
 
 
 def build_launch(descriptor, routes, values, masks, decay, plane, held):
@@ -71,9 +71,9 @@ def build_launch(descriptor, routes, values, masks, decay, plane, held):
         return DecodeLaunch(
             descriptor=descriptor,
             operands=DecodeOperands(
-                read=routes.amp_read, write=routes.amp_write, read_scale=routes.scale_read,
-                write_scale=routes.scale_write, read_mask=masks.read, write_mask=masks.write,
-                dials=bodies.leaf_rate_dials_for(decay, descriptor, values.device), v=values.v, v_scale=values.scale,
+                read=routes.read_rows, write=routes.write_rows, read_scale=routes.scales("read"),
+                write_scale=routes.scales("write"), read_mask=masks.read, write_mask=masks.write,
+                dials=bodies.leaf_rate_dials_for(decay, descriptor, values.device), v=values.data, v_scale=values.scale,
                 state_plane=plane),
             workspace=DecodeWorkspace(scratch=held))
 

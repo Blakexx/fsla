@@ -302,7 +302,7 @@ factor_backward_kernel(const OutT* __restrict__ values, const int32_t* __restric
 }
 
 // ---------------------------------------------------------------------------
-// SOFTMAX -- the full-support level (`dense_routing`). No threshold, no support word.
+// SOFTMAX -- the full-support level (`softmax()`). No threshold, no support word.
 // ---------------------------------------------------------------------------
 template <class Bt, int LW, int IPT, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, EntmaxPlan<Bt::build>::kMinBlocks) void

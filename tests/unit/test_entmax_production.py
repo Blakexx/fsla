@@ -5,27 +5,26 @@ bf16 logits and writes bf16 route values."""
 import pytest
 import torch
 
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    SoftmaxActivation,
-    TiedRouting,
-)
+from fsla.routing.projection import RouterLayout
+from fsla.routing.types import Topology, entmax, softmax, tied
+
+
+def _layout(widths, write, read, group=1):
+    return RouterLayout(Topology(widths=tuple(widths), write=tuple(write), read=tuple(read)), group)
 
 
 def test_production_routing_width_limit_rejects_at_the_level():
     with pytest.raises(ValueError, match="width must be <= 256"):
-        IndependentRouting(width=257, read=SoftmaxActivation(), write=SoftmaxActivation())
+        Topology(widths=(257,), write=(softmax(),), read=((softmax(),),))
 
 
 @pytest.mark.cuda
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
+def test_the_solve_reads_a_packed_projections_routing_slice_where_it_lies(alpha):
     """Every solve entry takes an explicit stride triple, so the logits need not be
     contiguous (P73 S4, inventory §B3).
 
-    An untied packed projection returns each side as a half-slice of one GEMM output,
+    The projection returns the routing columns as a slice of one GEMM output whose trailing columns are the gain's,
     and the claim is that the entries address it AS IT LIES: the levels off the slice
     must be the levels off a materialized copy of it BIT FOR BIT, forward and backward
     alike. A row that only checked closeness would pass on a stride bug that read the
@@ -34,21 +33,19 @@ def test_the_solve_reads_a_packed_projections_half_slice_where_it_lies(alpha):
     from fsla.routing.entmax.production import production_routing_levels
 
     torch.manual_seed(5)
-    routing = ResolvedRouting(levels=(
-        IndependentRouting(width=8, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
-        IndependentRouting(width=8, read=SoftmaxActivation(), write=SoftmaxActivation())))
-    both = torch.randn(4, 64, 2 * routing.packed_logit_width, device="cuda", dtype=torch.bfloat16,
+    layout = _layout((8, 8), (softmax(), softmax()), ((entmax(alpha), softmax()),))
+    both = torch.randn(4, 64, layout.packed_router_width + 3, device="cuda", dtype=torch.bfloat16,
                        requires_grad=True)
-    sides = (both[:, :, routing.packed_logit_width:], both[:, :, :routing.packed_logit_width])
-    assert not sides[0].is_contiguous()
+    routed = both[:, :, :layout.packed_router_width]
+    assert not routed.is_contiguous()
 
-    def run(read, write):
-        levels = production_routing_levels(read, write, routing)[:2]
+    def run(logits):
+        levels = production_routing_levels(logits, layout)[:2]
         out = sum(level.square().sum() for side in levels for level in side)
         return levels, torch.autograd.grad(out, both, retain_graph=True)[0]
 
-    strided, d_strided = run(*sides)
-    packed, d_packed = run(*(side.contiguous() for side in sides))
+    strided, d_strided = run(routed)
+    packed, d_packed = run(routed.contiguous())
     for side_a, side_b in zip(strided, packed):
         for level_a, level_b in zip(side_a, side_b):
             assert torch.equal(level_a, level_b)
@@ -173,7 +170,7 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
     """
     from fsla.routing.entmax.production import _Plan, _ProductionLevelsFn
 
-    def launches(routing, widths):
+    def launches(layout):
         counted = []
         original = _Plan.issue
 
@@ -183,18 +180,17 @@ def test_a_uniform_plan_solves_all_its_levels_in_one_launch():
 
         _Plan.issue = counting
         try:
-            read = torch.randn(2, 64, routing.packed_logit_width, device="cuda", dtype=torch.bfloat16)
-            _ProductionLevelsFn.apply(read, torch.randn_like(read), routing)
+            logits = torch.randn(2, 64, layout.packed_router_width, device="cuda", dtype=torch.bfloat16)
+            _ProductionLevelsFn.apply(logits, layout)
         finally:
             _Plan.issue = original
         return counted[0]
 
-    level = TiedRouting(width=4, op=EntmaxActivation(1.5))
-    uniform = ResolvedRouting((level, level, level))
-    assert launches(uniform, (4, 4, 4)) == 1, (
+    uniform = _layout((4, 4, 4), (entmax(1.5),) * 3, ((tied(),) * 3,))
+    assert launches(uniform) == 1, (
         "three entmax levels of one width class must solve in ONE launch")
 
-    mixed = ResolvedRouting((level, TiedRouting(width=64, op=EntmaxActivation(1.5))))
-    assert launches(mixed, (4, 64)) == 2, (
+    mixed = _layout((4, 64), (entmax(1.5),) * 2, ((tied(),) * 2,))
+    assert launches(mixed) == 2, (
         "levels of different width classes must NOT share a launch: the sort and the "
         "prefix scan associate differently per class")

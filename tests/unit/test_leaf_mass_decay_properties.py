@@ -46,18 +46,16 @@ from fsla.ops.decay import leaf_rate_dials
 from fsla.ops.naive import _leaf_product, naive_fsla
 from fsla.ops.paging import bytes_equal
 from fsla.routing.types import (
-    IndependentRouting,
     LeafMassDecay,
-    SoftmaxActivation,
     Topology,
+    softmax,
 )
 from tests.oracle.fixtures import with_gain
 
 
 def _topology(widths) -> Topology:
-    routing = IndependentRouting(
-        width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
-    return Topology(levels=tuple(routing.at(w) for w in widths))
+    widths = tuple(widths)
+    return Topology(widths=widths, write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
 
 
 def _one_hot(width: int, digit: int, *, dtype=torch.float64) -> torch.Tensor:
@@ -83,11 +81,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
     # D=2, widths (3,2); one head, one batch, d_v=2, T=5.
     B, H, dv, T = 1, 1, 2, 5
     widths = (3, 2)
-    levels = [
-        IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation())
-        for w in widths
-    ]
-    topology = Topology(levels=tuple(levels))
+    topology = _topology(widths)
 
     # Leaf under test: level0 digit 0, level1 digit 0 -> leaf index 0.
     # Written (write factor 1 at every level, i.e. c=1) at tokens 0 and 4 only;
@@ -200,9 +194,7 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     B, H, dv, T = 1, 1, 1, 1
     width = 3
     delta0 = 0.37
-    topology = Topology(
-        levels=(IndependentRouting(width=width, read=SoftmaxActivation(), write=SoftmaxActivation()),),
-    )
+    topology = _topology((width,))
     dial = torch.tensor([[delta0, 0.6, 0.05]], dtype=torch.float64)
     decay = LeafMassDecay(dials=(dial,))
 
@@ -238,9 +230,7 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     # rate==0 requires delta==0 at the addressed digit (allowed: 0 <= delta).
     B, H, T = 1, 1, 2
     width = 2
-    topology = Topology(
-        levels=(IndependentRouting(width=width, read=SoftmaxActivation(), write=SoftmaxActivation()),),
-    )
+    topology = _topology((width,))
     dial = torch.tensor([[0.0, 0.8]], dtype=torch.float64)  # rate at digit0 == 0
     decay = LeafMassDecay(dials=(dial,))
 
@@ -309,11 +299,7 @@ def _random_case(seed: int, *, B, T, H, dv, widths):
         logits = torch.randn(B, T, H, width, generator=gen, dtype=torch.float64)
         return torch.softmax(logits, dim=-1)
 
-    levels = [
-        IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation())
-        for w in widths
-    ]
-    topology = Topology(levels=tuple(levels))
+    topology = _topology(widths)
     read_levels = tuple(simplex(w) for w in widths)
     write_levels = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, dv, generator=gen, dtype=torch.float64)

@@ -58,8 +58,8 @@ from fsla.ops.lattice import permutation, to_canonical, to_lattice
 from fsla.ops.paging import bytes_equal
 from fsla.routing import quant
 from fsla.routing.factors import RouteFactors
+from fsla.routing.quant import ScaledBlock
 from fsla.routing.types import LeafMassDecay
-from fsla.values import Values
 from tests.descriptors import decode_descriptor
 from tests.oracle.fixtures import (
     assert_planted_errors_fail,
@@ -167,8 +167,9 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
     empty = tuple(quant.aligned_rows(*r.shape, r.device) for r in rows)
-    routes = RouteFactors.from_rows(topology, empty, rows, (ones,) * len(widths), (ones,) * len(widths))
-    values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
+    routes = RouteFactors(topology=topology, read=tuple(ScaledBlock(data=r, scale=ones, form=quant.ROWS) for r in empty),
+                          write=tuple(ScaledBlock(data=r, scale=ones, form=quant.ROWS) for r in rows))
+    values = ScaledBlock.quantize(torch.ones(B, 1, H, d_v, **f32), quant.VALUES)
     state = state_pages(torch.zeros(B, H, N, decode_launch(descriptor).cols, **f32))
     _y, state, _ws = _decode_step(routes, values, masks_of(routes), descriptor, state)
     return (logical_state(state, d_v) != 0).any(-1)

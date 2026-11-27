@@ -10,17 +10,17 @@ and everything else is linear attention's own contract.
 
     y, state = fsla.prefill(routes, values, masks, density, state=state, decay=decay)
 
-``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
-is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
+``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle, a scaled block a level-side -- ``values``
+is the value stream in the internal format -- a ``ScaledBlock`` in the ``VALUES`` form, ``ScaledBlock.quantize(v, VALUES)``
 -- ``masks`` is the DATA beside the rows (a bit per side, level, digit and token; a bit of 0 is the caller's guarantee that the row is zero; a level-side's mask may be absent, ``None``, which means dense),
 ``density`` is how full each level is (a uint8 ``[2, D]``, 255 for every digit live, built by ``fsla.masks_and_density`` or ``fsla.density_of_masks``; it chooses how the work is laid out and changes no result),
 the ``state`` is its own argument, in and out, and ``decay`` is the recurrence dial. The call carries only its inputs: it builds its own descriptor
-and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``. The layer DECLARES its routing -- the levels, each carrying its own
-width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
-bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
+and workspace inside. The one-token decode step is ``fsla.decode_step_gated(routes, values, masks, state, decay=decay)``. The layer DECLARES its routing -- the
+topology once, a flat nonnegative activation a write level, and the read heads' tuples -- and computes the bundles itself, in one producer call; a
+caller of the op with its own levels builds the bundles with the same format utilities, ``RouteFactors.from_levels`` and ``ScaledBlock.quantize``:
 
-    routing = Routing(uniform(2, split_routing(64, alpha=1.5)))
-    layer = FSLA(routing, hidden_size=1024, num_heads=8, d_v=64,
+    routing = Routing(topology=(64, 64), write=(entmax(1.5), softmax()), read=((softmax(), entmax(1.5)),))
+    layer = FSLA(routing, hidden_size=1024, num_heads=8, group=1, d_v=64,
                  decay=LearnedDecay(widths=routing.widths, num_heads=8))
 
 **No public name says `v3`.** This repository IS that generation; encoding it in the
@@ -33,13 +33,13 @@ and the op decides how it runs, inside the call.
 | Group | Names | Stability |
 |---|---|---|
 | op | `prefill`, `decode_step_gated` | STABLE, semver-major to break |
-| feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `uniform` | STABLE |
-| value stream | `Values` | STABLE |
+| feature map | `RouteFactors`, `Masks`, `masks_and_density`, `density_of_masks`, `Routing` | STABLE |
+| scaled blocks | `ScaledBlock` (a routing level-side's rows, the values) | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `FSLA`, `LayerContinuation` | STABLE |
 | state | `dense_state()`, `FSLAState` | STABLE |
 | segmentation | `SegmentPolicy(max_tokens, max_heads)`, `max_tokens(n)`, `max_memory(bytes)`, `segment_plan(length, policy, *, batch, heads)` | STABLE |
-| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting` | STABLE |
+| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `tied()` | STABLE |
 | oracle | `naive_fsla` | STABLE signature, EXACT semantics — it is the definition |
 """
 
@@ -55,25 +55,18 @@ from fsla.ops.naive import naive_fsla
 from fsla.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from fsla.routing.factors import RouteFactors
 from fsla.routing.masks import Masks, density_of_masks, masks_and_density
-from fsla.routing.producer import (
-    Routing,
-    dense_routing,
-    split_routing,
-    tied_routing,
-    uniform,
-)
+from fsla.routing.producer import Routing
+from fsla.routing.quant import ScaledBlock
 from fsla.routing.types import (
     EntmaxActivation,
-    IndependentRouting,
     LeafMassDecay,
     SoftmaxActivation,
-    TiedRouting,
     Topology,
     entmax,
     softmax,
+    tied,
 )
 from fsla.segmentation import SegmentPolicy, max_memory, max_tokens, segment_plan
-from fsla.values import Values
 
 __all__ = [
     # the ops — the prefill, the single autograd boundary (fsla/interface.py), and the decode step
@@ -85,12 +78,9 @@ __all__ = [
     "Masks",
     "masks_and_density",
     "density_of_masks",
-    "Values",
     "Routing",
-    "dense_routing",
-    "split_routing",
-    "tied_routing",
-    "uniform",
+    # the scaled block: a routing level-side's rows and the values (fsla/routing/quant.py)
+    "ScaledBlock",
     # the decay-source slot — where the recurrence's rates come from
     "DecaySource",
     "ConstantDecay",
@@ -111,12 +101,11 @@ __all__ = [
     "naive_fsla",
     # configuration
     "Topology",
-    "IndependentRouting",
-    "TiedRouting",
     "SoftmaxActivation",
     "EntmaxActivation",
-    # tagged activation constructors — users write these, never property metadata
+    # tagged activation constructors and the tied marker — users write these, never property metadata
     "softmax",
     "entmax",
+    "tied",
     "__version__",
 ]

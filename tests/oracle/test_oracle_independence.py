@@ -26,24 +26,14 @@ import pytest
 import torch
 
 from fsla.ops.naive import _leaf_capacity, _radix_strides, naive_fsla
-from fsla.routing.types import (
-    IndependentRouting,
-    SoftmaxActivation,
-    Topology,
-)
+from fsla.routing.types import Topology
 from tests.oracle.fixtures import with_gain
-
-_ROUTING = IndependentRouting(
-    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
+from tests.oracle.oracle_fixtures import _topology
 
 #: Every shape the two derivations must agree on: depth 1-4 (the validated range) over
 #: widths spanning 1, the powers of two, and non-powers that make a stride product
 #: something other than a shift.
 _WIDTH_VALUES = (1, 2, 3, 4, 7, 8, 16, 17, 32, 64, 256)
-
-
-def _topology(widths):
-    return Topology(levels=tuple(_ROUTING.at(w) for w in widths))
 
 
 # ---------------------------------------------------------------------------

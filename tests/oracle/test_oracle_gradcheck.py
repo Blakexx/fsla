@@ -13,16 +13,14 @@ from __future__ import annotations
 import torch
 
 from fsla.ops.naive import naive_fsla
-from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.fixtures import with_gain
+from tests.oracle.oracle_fixtures import _topology as _softmax_topology
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def _topology(width, D):
-    level = IndependentRouting(width=width, read=SoftmaxActivation(),
-                              write=SoftmaxActivation())
-    return Topology(levels=(level,) * D)
+    return _softmax_topology((width,) * D)
 
 
 def _simplex(shape, gen):

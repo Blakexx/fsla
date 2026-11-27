@@ -27,5 +27,5 @@ def dense_plane(batch_heads: int, widths, *, d_v: int, device, zeros: bool = Fal
 
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     """The state plane of this routing's batch-heads, levels and device (:func:`dense_plane`)."""
-    return dense_plane(routes.batch * routes.heads, tuple(level.width for level in routes.topology.levels), d_v=d_v,
+    return dense_plane(routes.batch * routes.heads, routes.topology.widths, d_v=d_v,
                        device=routes.device, zeros=zeros)

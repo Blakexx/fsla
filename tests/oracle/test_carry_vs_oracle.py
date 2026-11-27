@@ -112,7 +112,7 @@ def test_the_decomposition_is_exact():
     no-double-count claim, and the reason an inter-only kernel can be gated at all. It runs no kernel."""
     from fsla.ops.constants import READOUT_EPS
     from fsla.ops.naive import naive_fsla
-    from fsla.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    from tests.oracle.oracle_fixtures import _topology
 
     spec = next(c for c in ORACLE_CELLS if c.name == "one-box-multiwindow")
     read, write, gain, v = realize(spec).doubles()
@@ -126,7 +126,6 @@ def test_the_decomposition_is_exact():
         else:
             assert relative(cur[0], tot[0]) < 1e-12
             assert relative(cur[1], tot[1]) < 1e-12
-    routing = IndependentRouting(width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
-    topology = Topology(levels=tuple(routing.at(w) for w in spec.widths))
+    topology = _topology(spec.widths)
     y, _ = naive_fsla(v, read, with_gain(write, gain), topology, None, output_final_state=False)
     assert relative(tot[0] / (tot[1][..., None] + READOUT_EPS), y) < 1e-10

@@ -28,7 +28,8 @@ with a ROW, and the row is the only place the properties live.
 
 | column | question it answers | who reads it |
 |---|---|---|
-| `exact_zeros` | does it produce exact structural zeros, not merely small values? | `fsla.routing.types.activation_walks` (which levels a side walks by lists, the producer's walk rule carried by the call's descriptor; and which prefill level-sides get a mask), the resolved routing's can-zero levels, decode's dense innermost write level, independent routing's refusal of two exact-zero sides |
+| `exact_zeros` | does it produce exact structural zeros, not merely small values? | `fsla.routing.types.activation_walks` (which levels a side walks by lists, the producer's walk rule carried by the call's descriptor; and which prefill level-sides get a mask), the solve's support words (`fsla.routing.projection.RouterLayout`), the topology's refusal of an untied read and its write both making zeros on one level |
+| `nonnegative` | is every output entry `>= 0`? | `fsla.routing.types.Topology`, which refuses a level-side whose activation is not: v1's routing is nonnegative and its readout normalized (docs/api.md section 2.3) |
 
 A column is kept only while something reads it. Whether a map's output sums to 1 is not
 a column: no level is required to (docs/CONSTITUTION.md#r23), so nothing asks.
@@ -61,9 +62,10 @@ class UnknownActivation(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ActivationProperties:
-    """One registry row. One boolean; no behaviour, so it stays serializable."""
+    """One registry row. Booleans; no behaviour, so it stays serializable."""
 
     exact_zeros: bool
+    nonnegative: bool
 
 
 #: `(family, parameter)`. The parameter is `None` for a family with no parameter,
@@ -71,7 +73,8 @@ class ActivationProperties:
 ActivationTag = tuple[str, float | None]
 
 
-#: THE TABLE. v0.1 has exactly two families and three tags, plus the opaque row.
+#: THE TABLE. v0.1 has exactly two families and three tags, plus the opaque row. Every row is
+#: nonnegative: a signed activation arrives with the unnormalized readout, together.
 #:
 #: * `softmax` -- dense: never exactly zero.
 #: * `entmax` at `alpha = 1.5` and `alpha = 2` (the latter is sparsemax). Both produce
@@ -79,17 +82,18 @@ ActivationTag = tuple[str, float | None]
 #:   an exact entmax and not an epsilon-floored approximation (sparsity comes from entmax,
 #:   not from a floor).
 ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
-    ("softmax", None): ActivationProperties(exact_zeros=False),
-    ("entmax", 1.5): ActivationProperties(exact_zeros=True),
-    ("entmax", 2.0): ActivationProperties(exact_zeros=True),
-    ("opaque", None): ActivationProperties(exact_zeros=True),
+    ("softmax", None): ActivationProperties(exact_zeros=False, nonnegative=True),
+    ("entmax", 1.5): ActivationProperties(exact_zeros=True, nonnegative=True),
+    ("entmax", 2.0): ActivationProperties(exact_zeros=True, nonnegative=True),
+    ("opaque", None): ActivationProperties(exact_zeros=True, nonnegative=True),
 }
 
 #: THE ROW FOR A CELL WE DID NOT SOLVE. A caller with its own levels builds the bundle
 #: with :meth:`~fsla.routing.factors.RouteFactors.from_levels`, so a level may be filled
 #: by a map this table has never heard of. Such a cell is `opaque`, and `exact_zeros` is TRUE,
 #: the CONSERVATIVE reading: it means "may produce zeros", so nothing may assume this cell's
-#: support is the full rectangle.
+#: support is the full rectangle. `nonnegative` is TRUE because the rows' form holds nothing else:
+#: the factory refuses a negative entry (`fsla.routing.quant.ROWS`).
 
 #: The column names, derived from the dataclass.
 ACTIVATION_COLUMNS: tuple[str, ...] = tuple(ActivationProperties.__annotations__)

@@ -109,59 +109,6 @@ def leaf_log_retention_from_strides(
     return leaf_log_retention
 
 
-def decay_retention_from_strides(
-    write_mass: torch.Tensor,
-    write_levels: tuple[torch.Tensor, ...] | list[torch.Tensor],
-    routing,
-    radix_strides: tuple[int, ...] | list[int],
-    compact_log_retention: torch.Tensor | None,
-    kernel: str,
-) -> torch.Tensor:
-    """Build the canonical naive clock without exposing a ``[D,nc]`` digit table."""
-    kernel = validate_decay_kernel(kernel)
-    if kernel == "rla":
-        if compact_log_retention is not None:
-            raise ValueError("rla does not accept compact log retention")
-        return torch.ones_like(write_mass)
-    if compact_log_retention is None:
-        raise ValueError(f"{kernel} requires compact log retention")
-    log_retention = leaf_log_retention_from_strides(
-        compact_log_retention, radix_strides, routing.branches).unsqueeze(1)
-    if kernel == "gla_static":
-        if len(write_levels) != len(routing.branches):
-            raise ValueError("write_levels must contain one factor tensor per routing level")
-        state_ids = torch.arange(
-            routing.state_count, device=write_mass.device, dtype=torch.long)
-        event = torch.ones_like(write_mass, dtype=torch.bool)
-        for level, (factors, stride, width, can_zero) in enumerate(zip(
-            write_levels,
-            radix_strides,
-            routing.branches,
-            routing.write_level_can_zero,
-        )):
-            if factors.shape[:-1] != write_mass.shape[:-1] or factors.shape[-1] != width:
-                raise ValueError(
-                    f"write_levels[{level}] must have shape "
-                    f"{(*write_mass.shape[:-1], width)}, got {tuple(factors.shape)}"
-                )
-            if can_zero:
-                digits = (state_ids // stride) % width
-                event &= factors.index_select(-1, digits) != 0
-        clock = event.to(log_retention.dtype)
-        return torch.where(
-            event,
-            torch.exp(log_retention * clock),
-            torch.ones_like(log_retention * clock),
-        )
-
-    clock = write_mass.detach()
-    return torch.where(
-        clock != 0,
-        torch.exp(log_retention * clock),
-        torch.ones_like(clock),
-    )
-
-
 def validate_compact_log_gamma(
     log_gamma: torch.Tensor,
     *,
@@ -247,7 +194,6 @@ __all__ = [
     "compact_log_retention_from_public",
     "decay_parameter_offsets",
     "decay_parameter_width",
-    "decay_retention_from_strides",
     "leaf_log_retention_from_strides",
     "leaf_rate_dials",
     "validate_compact_decay_theta",

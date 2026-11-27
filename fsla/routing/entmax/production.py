@@ -22,16 +22,9 @@ from functools import cache
 
 import torch
 
-from fsla.routing.types import (
-    ROUTE_TILE_SIZE as _ROUTE_TILE_SIZE_VALUE,
-)
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    SoftmaxActivation,
-    TiedRouting,
-)
+from fsla.routing.masks import WORD_BITS
+from fsla.routing.projection import RouterLayout
+from fsla.routing.types import EntmaxActivation, SoftmaxActivation
 
 
 def _cdiv(a: int, b: int) -> int:
@@ -210,23 +203,26 @@ class _ProductionLevelsFn(torch.autograd.Function):
     the solve writes it directly rather than through a narrowing pass.
 
     Read and write are always distinct allocations, even where one solve serves both
-    (a ``TiedRouting`` level): the kernels already write a second output and accumulate
+    (a tied read entry): the kernels already write a second output and accumulate
     a second incoming gradient, and returning one tensor twice from a single
     ``autograd.Function`` would alias two graph outputs.
+
+    THE READ SIDE IS ``G`` HEADS A WRITE HEAD. The read plane is ``[B * H_w * G, T, ·]``, query head ``w * G + g``'s
+    rows at stream ``(b * H_w + w) * G + g`` -- the public ``[B, T, H, ·]`` as a permute -- and each solve of head ``g``
+    writes the strided view of its rows (:func:`_head`), whose streams are the logits' ``b * H_w + w``. A level's write
+    solve writes the first tied head's rows as its second output; a further tied head's rows are copied from the write
+    side's, and the backward hands the write solve the sum of the tied heads' incoming gradients.
     """
 
     @staticmethod
-    def forward(ctx, read_logits, write_logits, routing):
-        n_streams, tokens = _arena_shape(read_logits)
-        device = read_logits.device
-        support_words = torch.empty(
-            (n_streams, _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
-             sum(width for width, offset in zip(routing.branches, routing.support_offsets) if offset >= 0)),
-            dtype=torch.int32,
-            device=device,
-        )
+    def forward(ctx, logits, layout):
+        n_streams, tokens = _arena_shape(logits)
+        device, G = logits.device, layout.group
+        words = _cdiv(tokens, WORD_BITS)
+        write_support = torch.empty((n_streams, words, layout.write_support_width), dtype=torch.int32, device=device)
+        read_support = torch.empty((n_streams * G, words, layout.read_support_width), dtype=torch.int32, device=device)
         empty_launch = n_streams == 0 or tokens == 0
-        heads = _heads(read_logits)
+        heads = _heads(logits)
         #: ONE PLANE PER SIDE, sliced into levels. Each level is still a distinct graph
         #: output, at its own columns of one allocation -- which is what lets the levels
         #: of a width class share a launch
@@ -236,117 +232,108 @@ class _ProductionLevelsFn(torch.autograd.Function):
         #: UNINITIALIZED: a dense level is exactly the tokens, and every solve writes
         #: every element of one (unlike the tile-major arena, whose tail lanes past
         #: `tokens` no kernel touches).
-        packed_width = routing.level_offsets[-1]
-        read_plane = torch.empty(
-            (n_streams, tokens, packed_width), dtype=torch.bfloat16, device=device)
-        write_plane = torch.empty_like(read_plane)
+        packed_width = layout.side_width
+        write_plane = torch.empty((n_streams, tokens, packed_width), dtype=torch.bfloat16, device=device)
+        read_plane = torch.empty((n_streams * G, tokens, packed_width), dtype=torch.bfloat16, device=device)
+        read_heads = tuple(_head(read_plane, G, g) for g in range(G))
+        support_heads = tuple(_head(read_support, G, g) for g in range(G))
 
         read_levels: list[torch.Tensor] = []
         write_levels: list[torch.Tensor] = []
+        copies: list[tuple[int, int, int]] = []
         plan = _Plan()
 
-        for index, level in enumerate(routing.levels):
-            width = routing.branches[index]
-            logit_offset = routing.level_logit_slice(index).start
-            offset = routing.level_offsets[index]
+        def solve(activation, output, second, support, width, *, logit_off, value_off, support_off):
+            if isinstance(activation, EntmaxActivation):
+                plan.add("entmax", activation.alpha, (logits, output, second, support), width,
+                         logit_off=logit_off, value_off=value_off, support_off=support_off, heads=heads)
+            else:
+                plan.add("softmax", 0.0, (logits, output, second), width,
+                         logit_off=logit_off, value_off=value_off, heads=heads)
+
+        for index, width in enumerate(layout.widths):
+            offset = layout.level_offsets[index]
             read_levels.append(read_plane[:, :, offset:offset + width])
             write_levels.append(write_plane[:, :, offset:offset + width])
-            support_offset = routing.support_offsets[index]
-
-            assert isinstance(level, (IndependentRouting, TiedRouting))
+            tied = layout.tied_heads(index)
+            copies.extend((g, offset, width) for g in tied[1:])
             if empty_launch:
                 continue
-            if isinstance(level, TiedRouting):
-                shared_activation = level.activation("write")
-                if isinstance(shared_activation, EntmaxActivation):
-                    plan.add("entmax", shared_activation.alpha,
-                             (write_logits, read_plane, write_plane, support_words), width,
-                             logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset, heads=heads)
-                else:
-                    plan.add("softmax", 0.0, (write_logits, read_plane, write_plane), width,
-                             logit_off=logit_offset, value_off=offset, heads=heads)
-                continue
-
-            for activation, source, output in (
-                (level.read, read_logits, read_plane),
-                (level.write, write_logits, write_plane),
-            ):
-                if isinstance(activation, EntmaxActivation):
-                    plan.add("entmax", activation.alpha, (source, output, None, support_words),
-                             width, logit_off=logit_offset, value_off=offset,
-                             support_off=support_offset, heads=heads)
-                else:
-                    plan.add("softmax", 0.0, (source, output, None), width,
-                             logit_off=logit_offset, value_off=offset, heads=heads)
+            solve(layout.topology.write[index], write_plane, read_heads[tied[0]] if tied else None, write_support,
+                  width, logit_off=layout.write_columns(index).start, value_off=offset,
+                  support_off=layout.write_support_offsets[index])
+            for g, entries in enumerate(layout.heads):
+                columns = layout.read_columns(g, index)
+                if columns is not None:
+                    solve(entries[index], read_heads[g], None, support_heads[g], width, logit_off=columns.start,
+                          value_off=offset, support_off=layout.read_support_offsets[index])
 
         plan.issue()
+        for g, offset, width in copies:
+            read_heads[g][:, :, offset:offset + width].copy_(write_plane[:, :, offset:offset + width])
 
-        ctx.save_for_backward(*read_levels, *write_levels, support_words)
-        ctx.routing = routing
-        ctx.logits_shape = read_logits.shape
-        ctx.logits_dtype = read_logits.dtype
-        ctx.mark_non_differentiable(support_words)
-        return (*read_levels, *write_levels, support_words)
+        ctx.save_for_backward(*read_levels, *write_levels, write_support, read_support)
+        ctx.layout = layout
+        ctx.logits_shape = logits.shape
+        ctx.logits_dtype = logits.dtype
+        ctx.mark_non_differentiable(write_support, read_support)
+        return (*read_levels, *write_levels, write_support, read_support)
 
     @staticmethod
     def backward(ctx, *grads):
-        routing = ctx.routing
-        D = routing.D
+        layout = ctx.layout
+        D, G = layout.D, layout.group
         saved = ctx.saved_tensors
-        read_levels = saved[:D]
-        write_levels = saved[D:2 * D]
-        support_words = saved[2 * D]
+        read_levels, write_levels = saved[:D], saved[D:2 * D]
+        write_support, read_support = saved[2 * D], saved[2 * D + 1]
 
-        d_read_logits = torch.zeros(
-            ctx.logits_shape, dtype=ctx.logits_dtype, device=support_words.device)
-        d_write_logits = torch.zeros_like(d_read_logits)
-        n_streams, tokens = ctx.logits_shape[:2]
+        d_logits = torch.zeros(ctx.logits_shape, dtype=ctx.logits_dtype, device=write_support.device)
+        n_streams, tokens = _arena_shape(d_logits)
         if n_streams == 0 or tokens == 0:
-            return d_read_logits, d_write_logits, None
+            return d_logits, None
 
-        for index, level in enumerate(routing.levels):
-            width = routing.branches[index]
-            read_output = read_levels[index]
-            write_output = write_levels[index]
-            d_read_output = grads[index]
-            d_write_output = grads[D + index]
-            if d_read_output is None:
-                d_read_output = torch.zeros_like(read_output)
-            if d_write_output is None:
-                d_write_output = torch.zeros_like(write_output)
-            d_read_output = d_read_output.contiguous()
-            d_write_output = d_write_output.contiguous()
-            span = routing.level_logit_slice(index)
-            d_read_level = d_read_logits[..., span]
-            d_write_level = d_write_logits[..., span]
-            support_offset = routing.support_offsets[index]
-            words = None if support_offset < 0 else support_words[
-                :, :, support_offset:support_offset + width]
+        def words_of(support, offset, width):
+            return None if offset < 0 else support[:, :, offset:offset + width]
 
-            assert isinstance(level, (IndependentRouting, TiedRouting))
-            if isinstance(level, TiedRouting):
-                shared_activation = level.activation("write")
-                if isinstance(shared_activation, EntmaxActivation):
-                    _launch_factor_backward_into_logits(
-                        read_output, d_read_output, d_write_output, words, d_write_level,
-                        shared_activation.alpha)
-                else:
-                    _launch_softmax_backward_into_logits(
-                        read_output, d_read_output, d_write_output, d_write_level)
-                continue
+        def backward_into(activation, output, d_output, d_second, words, target):
+            if isinstance(activation, EntmaxActivation):
+                _launch_factor_backward_into_logits(output, d_output, d_second, words, target, activation.alpha)
+            else:
+                _launch_softmax_backward_into_logits(output, d_output, d_second, target)
 
-            for activation, output, d_output, target in (
-                (level.read, read_output, d_read_output, d_read_level),
-                (level.write, write_output, d_write_output, d_write_level),
-            ):
-                if isinstance(activation, EntmaxActivation):
-                    _launch_factor_backward_into_logits(
-                        output, d_output, None, words, target, activation.alpha)
-                else:
-                    _launch_softmax_backward_into_logits(
-                        output, d_output, None, target)
-        return d_read_logits, d_write_logits, None
+        for index, width in enumerate(layout.widths):
+            read_output, write_output = read_levels[index], write_levels[index]
+            d_read = grads[index]
+            d_write = grads[D + index]
+            d_read = (torch.zeros_like(read_output) if d_read is None else d_read).contiguous()
+            d_write = (torch.zeros_like(write_output) if d_write is None else d_write).contiguous()
+            write_words = words_of(write_support, layout.write_support_offsets[index], width)
+            write_target = d_logits[..., layout.write_columns(index)]
+            tied = layout.tied_heads(index)
+            if tied:
+                #: the tied solve's form: the first tied head's rows and gradient first, the write side's second -- the
+                #: further tied heads' gradients summed into the second
+                first = tied[0]
+                d_second = d_write
+                for g in tied[1:]:
+                    d_second = d_second + _head(d_read, G, g)
+                backward_into(layout.topology.write[index], _head(read_output, G, first), _head(d_read, G, first),
+                              d_second, write_words, write_target)
+            else:
+                backward_into(layout.topology.write[index], write_output, d_write, None, write_words, write_target)
+            read_words = words_of(read_support, layout.read_support_offsets[index], width)
+            for g, entries in enumerate(layout.heads):
+                columns = layout.read_columns(g, index)
+                if columns is not None:
+                    backward_into(entries[index], _head(read_output, G, g), _head(d_read, G, g), None,
+                                  None if read_words is None else _head(read_words, G, g), d_logits[..., columns])
+        return d_logits, None
+
+
+def _head(plane: torch.Tensor, group: int, head: int) -> torch.Tensor:
+    """Read head ``head``'s rows of a ``[S * group, ...]`` read-side plane as ``[S, ...]``, a strided view: stream ``s``
+    of the logits is rows ``s * group + head``. At ``group`` 1 it is the plane itself, as a view."""
+    return plane.view(plane.shape[0] // group, group, *plane.shape[1:])[:, head]
 
 
 # ---------------------------------------------------------------------------
@@ -415,42 +402,41 @@ def _torch_activation(logits: torch.Tensor, activation) -> torch.Tensor:
 
 
 def _torch_routing_factor_levels(
-    read_logits: torch.Tensor, write_logits: torch.Tensor, routing: ResolvedRouting,
+    logits: torch.Tensor, layout: RouterLayout,
 ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
     reads, writes = [], []
-    for index, level in enumerate(routing.levels):
-        span = routing.level_logit_slice(index)
-        read_level = read_logits[..., span]
-        write_level = write_logits[..., span]
-        if isinstance(level, TiedRouting):
-            # TiedRouting names ONE activation for its one solve through the same
-            # `.activation('write')` accessor it answers `'read'` with; it carries no
-            # separate `.write` attribute.
-            write_factor = _torch_activation(write_level, level.activation("write"))
-            read_factor = write_factor
-        else:
-            read_factor = _torch_activation(read_level, level.read)
-            write_factor = _torch_activation(write_level, level.write)
-        reads.append(read_factor)
+    for index in range(layout.D):
+        write_factor = _torch_activation(logits[..., layout.write_columns(index)], layout.topology.write[index])
+        heads = []
+        for g, entries in enumerate(layout.heads):
+            columns = layout.read_columns(g, index)
+            heads.append(write_factor if columns is None else _torch_activation(logits[..., columns], entries[index]))
+        reads.append(_interleaved(heads))
         writes.append(write_factor)
     return tuple(reads), tuple(writes)
 
 
+def _interleaved(heads: list[torch.Tensor]) -> torch.Tensor:
+    """``G`` read heads' ``[S, T, w]`` as the read side's ``[S * G, T, w]``, head ``g`` at rows ``s * G + g``; one head
+    is itself."""
+    return heads[0] if len(heads) == 1 else torch.stack(heads, dim=1).flatten(0, 1)
+
+
 def production_routing_levels(
-    read_logits: torch.Tensor,
-    write_logits: torch.Tensor,
-    routing: ResolvedRouting,
-) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...], torch.Tensor | None]:
-    """Exact per-level ``(read, write)`` routing factors on the production solve, and the solve's ``support_words``.
+    logits: torch.Tensor,
+    layout: RouterLayout,
+) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...], tuple[torch.Tensor, torch.Tensor] | None]:
+    """Exact per-level ``(read, write)`` routing factors on the production solve, and the solve's support words.
 
-    THE SUPPORT WORDS ARE ROUTED OUT as the kernels write them: int32 ``[B * H, ceil(T / 32), sum of the supported
-    levels' widths]``, stream ``b * H + h`` (so ``[B, H, ...]`` is a free view), bit ``t % 32`` of word ``t // 32`` at a
-    digit's column = token ``t`` live at that digit, the levels' columns at ``routing.support_offsets``. ``None`` on
-    the torch lowering, which writes no words.
+    THE SUPPORT WORDS ARE ROUTED OUT as the kernels write them, ``(write, read)``: int32 ``[B * H_w, ceil(T / 32), ·]``
+    on the write side and ``[B * H, ceil(T / 32), ·]`` on the read side (``H = H_w * G`` the query heads), stream
+    ``b * H + h`` (so ``[B, H, ...]`` is a free view), bit ``t % 32`` of word ``t // 32`` at a digit's column = token
+    ``t`` live at that digit, a level's columns at ``layout.write_support_offsets`` and ``layout.read_support_offsets``.
+    ``None`` on the torch lowering, which writes no words.
 
-
-    Returns one ``[BH, T, width_l]`` tensor per level-side -- the shape the producer
-    hands ``naive_fsla`` and the consumer. Lowered to the hand-CUDA solve
+    Returns one tensor per level-side: ``[B * H_w, T, width_l]`` write and ``[B * H, T, width_l]`` read, query head
+    ``w * G + g`` read head ``g`` of write head ``w`` -- the shape the producer hands ``naive_fsla`` and the consumer.
+    A tied read entry's rows are its write level's. Lowered to the hand-CUDA solve
     on CUDA bf16 and to the identical sorted closed form in torch elsewhere;
     the two agree by construction rather than by tolerance, since the threshold is a
     closed form and not an iterate.
@@ -461,44 +447,38 @@ def production_routing_levels(
     refused by name. The kernels widen each logit IN REGISTER, so no pass over the plane
     exists in either direction (docs/internals/entmax/factor.md#logit-dtype).
 
-    LAYOUT: flat ``[BH, T, packed_logit_width]``, or the
-    TOKEN-MAJOR ``[B, T, H, packed_logit_width]`` the packed router GEMM writes without
-    a transpose. The OUTPUT layout is the same either way. Only the CUDA solve reads the
-    second one as it lies (it addresses ``b`` and ``h`` as two strides); the torch
-    lowering flattens it first, which is the transpose this seam exists to avoid paying
-    on the shipped path and does not mind paying on the oracle's.
+    LAYOUT: the projection's logits (:func:`fsla.routing.projection.router_logits`), flat
+    ``[B * H_w, T, packed_router_width]`` or the TOKEN-MAJOR ``[B, T, H_w, packed_router_width]`` the packed router
+    GEMM writes without a transpose; every solve reads its level's column span of the one plane. The OUTPUT layout is
+    the same either way. Only the CUDA solve reads the second one as it lies (it addresses ``b`` and ``h`` as two
+    strides); the torch lowering flattens it first, which is the transpose this seam exists to avoid paying on the
+    shipped path and does not mind paying on the oracle's.
 
     The CUDA solve's output is the STORED form: the consumer reads bf16 and nothing else
     reads these at all, so the kernel writes bf16 and no narrowing pass exists. The torch
     lowering returns its own dtype, the domains (CPU, fp64) where the stored form is not
     the question.
     """
-    if not isinstance(routing, ResolvedRouting):
-        raise TypeError(f"routing must be ResolvedRouting, got {type(routing).__name__}")
-    if read_logits.shape != write_logits.shape:
+    if type(layout) is not RouterLayout:
+        raise TypeError(f"layout must be a RouterLayout, got {type(layout).__name__}")
+    if not isinstance(logits, torch.Tensor) or logits.ndim not in (3, 4) \
+            or logits.shape[-1] != layout.packed_router_width:
         raise ValueError(
-            "read/write logits must have identical shapes, got "
-            f"{read_logits.shape} and {write_logits.shape}")
-    if read_logits.ndim not in (3, 4) or read_logits.shape[-1] != routing.packed_logit_width:
-        raise ValueError(
-            "routing logits must be [BH, T, packed_logit_width] or "
-            f"[B, T, H, packed_logit_width] with packed_logit_width="
-            f"{routing.packed_logit_width}, got {tuple(read_logits.shape)}")
-    if read_logits.device != write_logits.device or read_logits.dtype != write_logits.dtype:
-        raise ValueError("read/write logits must share one device and dtype")
-
-    if read_logits.is_cuda and read_logits.dtype not in (torch.bfloat16, torch.float64):
+            "routing logits must be [B * H_w, T, packed_router_width] or [B, T, H_w, packed_router_width] with "
+            f"packed_router_width={layout.packed_router_width}, got {tuple(getattr(logits, 'shape', ()))}")
+    if logits.is_cuda and logits.dtype not in (torch.bfloat16, torch.float64):
         raise TypeError(
             "the CUDA routing solve takes bfloat16 logits (the kernels) or float64 logits (the torch "
-            f"lowering the oracle-equivalence gate runs), got {read_logits.dtype}")
-    if read_logits.is_cuda and read_logits.dtype is torch.bfloat16:
+            f"lowering the oracle-equivalence gate runs), got {logits.dtype}")
+    if logits.is_cuda and logits.dtype is torch.bfloat16:
         #: NOT `.contiguous()`: every solve entry below reads the logits through an
-        #: explicit stride tuple, so a packed projection's half-slice -- and its head
+        #: explicit stride tuple, so the projection's routing slice -- and its head
         #: axis -- are addressable as they stand, and materializing either is a whole
-        #: extra pass over the side.
-        outputs = _ProductionLevelsFn.apply(read_logits, write_logits, routing)
-        return tuple(outputs[:routing.D]), tuple(outputs[routing.D:2 * routing.D]), outputs[2 * routing.D]
-    reads, writes = _torch_routing_factor_levels(_flat(read_logits), _flat(write_logits), routing)
+        #: extra pass over the plane.
+        outputs = _ProductionLevelsFn.apply(logits, layout)
+        D = layout.D
+        return tuple(outputs[:D]), tuple(outputs[D:2 * D]), (outputs[2 * D], outputs[2 * D + 1])
+    reads, writes = _torch_routing_factor_levels(_flat(logits), layout)
     return reads, writes, None
 
 

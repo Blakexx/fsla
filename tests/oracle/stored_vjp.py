@@ -17,13 +17,8 @@ from __future__ import annotations
 
 import torch
 
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    SoftmaxActivation,
-    TiedRouting,
-)
+from fsla.routing.projection import RouterLayout
+from fsla.routing.types import EntmaxActivation, SoftmaxActivation
 
 
 def activation_vjp(stored, cotangent, activation):
@@ -37,24 +32,29 @@ def activation_vjp(stored, cotangent, activation):
     return s * (dp - (s * dp).sum(dim=-1, keepdim=True) / torch.where(total > 0, total, torch.ones_like(total)))
 
 
-def gradient_from_stored(routing: ResolvedRouting, reads, writes, read_cotangents, write_cotangents):
-    """The gradient planes ``(d read logits, d write logits)``, fp64 ``[BH, T, packed_logit_width]``, a level at a time
-    from the stored per-level outputs, and ``covered``: the logit spans of the levels this reference states. A tied
-    level is one solve: its two cotangents add on the one stored value and land on the write plane; the read plane's
-    span is zero."""
-    shape = (*reads[0].shape[:2], routing.packed_logit_width)
-    d_read = torch.zeros(shape, dtype=torch.float64, device=reads[0].device)
-    d_write = torch.zeros_like(d_read)
+def gradient_from_stored(layout: RouterLayout, reads, writes, read_cotangents, write_cotangents):
+    """``(d logits, covered)``: the gradient into the projection's logits, fp64 ``[S, T, packed_router_width]``, a solve
+    at a time from the stored per-level outputs (``[S, T, width]`` a write level, ``[S * G, T, width]`` a read level,
+    read head ``g`` at rows ``s * G + g``), and ``covered``: the column spans of the solves this reference states. A
+    tied read entry is the write solve's: its cotangent adds to the write side's on the one stored value."""
+    S, T, G = writes[0].shape[0], writes[0].shape[1], layout.group
+
+    def head(t, g):
+        return t.reshape(S, G, *t.shape[1:])[:, g]
+
+    d_logits = torch.zeros((S, T, layout.packed_router_width), dtype=torch.float64, device=writes[0].device)
     covered = []
-    for index, level in enumerate(routing.levels):
-        span = routing.level_logit_slice(index)
-        if isinstance(level, TiedRouting):
-            d_write[..., span] = activation_vjp(writes[index], read_cotangents[index].double()
-                                                + write_cotangents[index].double(), level.activation("write"))
-        elif isinstance(level, IndependentRouting):
-            d_read[..., span] = activation_vjp(reads[index], read_cotangents[index], level.read)
-            d_write[..., span] = activation_vjp(writes[index], write_cotangents[index], level.write)
-        else:
-            continue
+    for index in range(layout.D):
+        span = layout.write_columns(index)
+        cotangent = write_cotangents[index].double()
+        for g in layout.tied_heads(index):
+            cotangent = cotangent + head(read_cotangents[index], g).double()
+        d_logits[..., span] = activation_vjp(writes[index], cotangent, layout.topology.write[index])
         covered.append(span)
-    return d_read, d_write, covered
+        for g, entries in enumerate(layout.heads):
+            span = layout.read_columns(g, index)
+            if span is not None:
+                d_logits[..., span] = activation_vjp(head(reads[index], g), head(read_cotangents[index], g),
+                                                     entries[index])
+                covered.append(span)
+    return d_logits, covered

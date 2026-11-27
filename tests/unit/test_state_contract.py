@@ -171,11 +171,11 @@ def test_format_of_sources_dv_from_the_value_stream_not_the_routing():
 # -- DECODE'S OWN OP ENTRY: THE WIDTHS ARE FACTS OF ITS DESCRIPTOR, AND THE CONTRACT IS THE LAW -----
 
 def _widths_topology(widths, *, write=None):
-    from fsla.routing.types import IndependentRouting, OpaqueRouting, Topology
+    from fsla.routing.types import Topology
 
     if write is None:
-        return Topology(levels=tuple(OpaqueRouting(width=w) for w in widths))
-    return Topology(levels=tuple(IndependentRouting(width=w, read=write, write=write) for w in widths))
+        return Topology.opaque(widths)
+    return Topology(widths=tuple(widths), write=(write,) * len(widths), read=((write,) * len(widths),))
 
 
 @pytest.fixture()

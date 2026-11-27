@@ -24,7 +24,7 @@ from conftest import build_layer
 import fsla
 from fsla.engine.rules import envelope
 from fsla.interface import BackwardNotImplemented, operands_of, requires_backward
-from fsla.values import Values
+from fsla.routing import quant
 
 # --- the predicate -----------------------------------------------------------
 
@@ -60,9 +60,8 @@ def test_the_layer_and_the_op_ask_the_same_question():
 
 
 def _dense_routing():
-    from fsla.routing.types import TiedRouting
-
-    return TiedRouting(width=1, op=fsla.SoftmaxActivation())
+    """One softmax solve serving both sides: a tied read over a softmax write."""
+    return (fsla.softmax(), fsla.tied())
 
 
 def _tiny_routing(requires_grad: bool, device: str = "cpu"):
@@ -88,7 +87,7 @@ def test_a_grad_bearing_prefill_is_refused_loudly():
     must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
     The same bundle without a gradient is refused by the envelope's device clause, the CPU operands' (the descriptor's device clause)."""
     v, routes, masks, density = _tiny_routing(requires_grad=True)
-    values = Values.from_projection(v)
+    values = quant.ScaledBlock.quantize(v, quant.VALUES)
     assert requires_backward(*values.tensors(), *routes.tensors()) is True
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
         fsla.prefill(routes, values, masks, density)

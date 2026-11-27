@@ -102,19 +102,19 @@ def prefill_op(fx) -> Launch:
 def bundle_of(spec, drawn, tokens: slice = slice(None)):
     """``(routes, values, masks, density)``: the cell's draw over ``tokens`` in the format the kernels read, the
     masks and the density the library's own from the bundle's rows (``fsla.masks_and_density``)."""
+    from fsla.routing import quant
     from fsla.routing.factors import RouteFactors
     from fsla.routing.masks import masks_and_density
-    from fsla.routing.types import OpaqueRouting, Topology
-    from fsla.values import Values
+    from fsla.routing.types import Topology
 
-    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
+    topology = Topology.opaque(spec.widths)
     #: the cell's drawn write gain folded into write level 0, as a producer folds its own (docs/CONSTITUTION.md#r23)
     read = [x[:, tokens] for x in drawn.read]
     write = [x[:, tokens] for x in drawn.write]
     write[0] = write[0] * drawn.gain[:, tokens, :, None].float()
     routes = RouteFactors.from_levels(topology, read, write)
     masks, density = masks_and_density(routes)
-    values = Values.from_projection(drawn.v[:, tokens])
+    values = quant.ScaledBlock.quantize(drawn.v[:, tokens], quant.VALUES)
     return routes, values, masks, density
 
 
@@ -128,15 +128,14 @@ def entmax_solve(fx) -> Launch:
     """
     from fsla.routing.entmax.production import production_routing_levels
 
-    spec = fx["cell"]
-    routing = fx["layer"].routing.resolved
+    spec, layer = fx["cell"], fx["layer"]
+    layout = layer.routing.layout(layer.group)
     gen = torch.Generator(device="cuda").manual_seed(spec.seed + 900)
-    shape = (spec.B * spec.H, spec.tokens, routing.packed_logit_width)
-    read_logits = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen)
-    write_logits = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen)
+    shape = (spec.B * spec.H, spec.tokens, layout.packed_router_width)
+    logits = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen)
 
     def run():
-        return production_routing_levels(read_logits, write_logits, routing)
+        return production_routing_levels(logits, layout)
 
     return Launch(name=f"entmax_solve|{spec.name}|{fx['construction'].name}", call=run)
 
@@ -181,6 +180,7 @@ def decode_step(fx) -> Launch:
     import fsla
     from fsla.engine.facts import planes
     from fsla.ops.produce import produce_decode
+    from fsla.routing.quant import VALUES
 
     spec = fx["cell"]
     if spec.decode_steps == 0:
@@ -204,8 +204,8 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token))
-            values = fsla.Values.from_projection(v_token)
+            routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token), group=layer.group)
+            values = fsla.ScaledBlock.quantize(v_token, VALUES)
             y, _state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
         return y
 

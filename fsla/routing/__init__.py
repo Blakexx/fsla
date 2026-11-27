@@ -6,20 +6,16 @@ The canonical routing types are re-exported here for routing internals.
 
 from fsla.routing.types import (
     EntmaxActivation,
-    IndependentRouting,
-    LevelRouting,
-    ResolvedRouting,
     RoutingActivation,
     SoftmaxActivation,
-    TiedRouting,
+    Tied,
+    Topology,
 )
 
 __all__ = [
     "EntmaxActivation",
-    "IndependentRouting",
-    "LevelRouting",
-    "ResolvedRouting",
     "RoutingActivation",
     "SoftmaxActivation",
-    "TiedRouting",
+    "Tied",
+    "Topology",
 ]

@@ -38,8 +38,9 @@ def _build_workspace(descriptor: Descriptor) -> torch.Tensor:
 def reader_factor(routes) -> torch.Tensor:
     """``[BH, L]``: each token's read scales multiplied -- the per-token factor the kernels leave out of ``num`` and
     ``den``."""
-    r = routes.scale_read[0]
-    for scale in routes.scale_read[1:]:
+    scales = routes.scales("read")
+    r = scales[0]
+    for scale in scales[1:]:
         r = r * scale
     return r.permute(0, 2, 1).reshape(routes.batch * routes.heads, routes.tokens)
 

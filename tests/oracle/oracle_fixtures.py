@@ -18,19 +18,13 @@ from __future__ import annotations
 
 import torch
 
-from fsla.routing.types import (
-    IndependentRouting,
-    SoftmaxActivation,
-    Topology,
-)
-
-#: The routing every fixture here is built over: untied softmax on both sides.
-_ROUTING = IndependentRouting(
-    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
+from fsla.routing.types import Topology, softmax
 
 
 def _topology(widths):
-    return Topology(levels=tuple(_ROUTING.at(w) for w in widths))
+    """The routing every fixture here is built over: untied softmax on both sides."""
+    widths = tuple(widths)
+    return Topology(widths=widths, write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
 
 
 def _simplex(shape, p_nonzero, generator, device):

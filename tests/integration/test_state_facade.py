@@ -51,11 +51,11 @@ def test_a_raw_tensor_is_not_a_state():
     descriptor, where the unbuilt kernels are refused by name.
     """
     from fsla.engine.prefill_call import PrefillContext, validate_context
-    from fsla.values import Values
+    from fsla.routing import quant
 
     producer, (x, v) = _producer(), _inputs()
     routes = producer(x)
-    values = Values.from_projection(v)
+    values = quant.ScaledBlock.quantize(v, quant.VALUES)
     masks, density = fsla.masks_and_density(routes)
     with torch.no_grad(), pytest.raises(TypeError, match="fsla.FSLAState"):
         validate_context(PrefillContext(routes=routes, values=values, masks=masks, density=density,

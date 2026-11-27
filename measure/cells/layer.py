@@ -51,17 +51,20 @@ CONSTRUCTIONS = {c.name: c for c in (
 )}
 
 
-def _levels(construction: Construction):
-    """The construction's levels. Every side has a dense level (docs/api.md section 2.1), so an entmax construction is
-    the ALTERNATING split: entmax on the write duty at the even levels (read-dense) and on the read duty at the odd
-    (write-dense). A softmax construction, and any depth-one one, is dense on both sides."""
-    from fsla import dense_routing, split_routing
+def _routing(construction: Construction):
+    """The construction's routing, one read head's tuple for every head. Every side has a dense level (docs/api.md
+    section 2.1), so an entmax construction is the ALTERNATING split: entmax on the write side at the even levels
+    (read-dense) and on the read side at the odd (write-dense). A softmax construction, and any depth-one one, is dense
+    on both sides."""
+    from fsla import Routing, entmax, softmax
 
     widths = construction.widths
     if construction.alpha is None or len(widths) == 1:
-        return [dense_routing(w) for w in widths]
-    return [split_routing(w, construction.alpha, sparse_duty="write" if level % 2 == 0 else "read")
-            for level, w in enumerate(widths)]
+        return Routing(topology=tuple(widths), write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
+    sparse = [level % 2 == 0 for level in range(len(widths))]
+    return Routing(topology=tuple(widths),
+                   write=tuple(entmax(construction.alpha) if s else softmax() for s in sparse),
+                   read=(tuple(softmax() if s else entmax(construction.alpha) for s in sparse),))
 
 
 class Fixture(dict):
@@ -84,11 +87,11 @@ def _layer(fx):
     before construction."""
     import torch
 
-    from fsla import FSLA, Routing
+    from fsla import FSLA
 
     cell, construction = fx["cell"], fx["construction"]
     torch.manual_seed(cell.seed)
-    layer = FSLA(Routing(_levels(construction)), hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
+    layer = FSLA(_routing(construction), hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
                  layer_idx=0).to("cuda", cell.torch_dtype).eval()
     if construction.logit_gain != 1.0:
         with torch.no_grad():

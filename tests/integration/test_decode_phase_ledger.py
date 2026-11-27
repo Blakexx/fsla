@@ -30,7 +30,8 @@ def _carrying_state(layer, x) -> fsla.FSLAState:
 @pytest.mark.requires_kernel("produce")
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     torch.manual_seed(0)
-    routing = fsla.Routing([fsla.split_routing(64, sparse_duty="write"), fsla.split_routing(64, sparse_duty="read")])
+    routing = fsla.Routing(topology=(64, 64), write=(fsla.entmax(1.5), fsla.softmax()),
+                           read=((fsla.softmax(), fsla.entmax(1.5)),))
     layer = fsla.FSLA(routing, hidden_size=64, num_heads=2, d_v=64).cuda().eval()
     x = torch.randn(1, 1, 64, device="cuda")
     plain_state = _carrying_state(layer, x)

@@ -1,160 +1,77 @@
 import pytest
 import torch
 
-from fsla.routing.projection import packed_router_logits
-from fsla.routing.types import (
-    EntmaxActivation,
-    IndependentRouting,
-    ResolvedRouting,
-    SoftmaxActivation,
-    TiedRouting,
-)
+from fsla.routing.projection import RouterLayout, router_logits
+from fsla.routing.types import Topology, entmax, softmax, tied
 
 
-def _routing_for_untied(levels, untied_levels, branch):
-    return ResolvedRouting(
-        tuple(
-            IndependentRouting(width=branch, read=SoftmaxActivation(), write=SoftmaxActivation())
-            if level in untied_levels
-            else TiedRouting(width=branch, op=SoftmaxActivation())
-            for level in range(levels)
-        ),
-    )
+def _layout(levels, untied_levels, branch, group=1):
+    """``levels`` softmax levels of width ``branch``; the read entry of a level not in ``untied_levels`` is tied."""
+    read = tuple(softmax() if level in untied_levels else tied() for level in range(levels))
+    return RouterLayout(Topology(widths=(branch,) * levels, write=(softmax(),) * levels, read=(read,)), group)
 
 
-def _slots(route_W, route_bias, routing, branch):
-    """Split the packed column axis back into per-slot blocks.
-
-    `route_W` is stored `[H, hidden, packed_router_width]` with slot `s` owning
-    `packed_slot_slice(s)`. These fixtures use UNIFORM branch widths, so every slot owns
-    `branch` columns and the split is an exact `view` -- which is itself the claim that
-    the packed layout is slot-major on `packed_slot_offsets`, asserted below.
-    """
-    heads, hidden, columns = route_W.shape
-    assert columns == routing.packed_slot_count * branch
-    assert routing.packed_slot_offsets == tuple(
-        slot * branch for slot in range(routing.packed_slot_count + 1))
-    weight = route_W.view(heads, hidden, routing.packed_slot_count, branch)
-    bias = None if route_bias is None else route_bias.view(heads, routing.packed_slot_count, branch)
-    return weight, bias
-
-
-def _full_read(weight, bias, routing):
-    indices = list(routing.packed_read_slot_lookup)
-    return weight[:, :, indices], None if bias is None else bias[:, indices]
-
-
-def _reference(hidden, weight, bias, heads):
-    equation = "bld,hdsc->bhlsc" if hidden.dim() == 3 else "blhd,hdsc->bhlsc"
-    logits = torch.einsum(equation, hidden.float(), weight.float())
+def _reference(hidden, route_W, bias):
+    """The projection written out: ``h @ route_W[head]`` per head, flat ``[B * H_w, T, columns]``."""
+    equation = "bld,hdc->bhlc" if hidden.dim() == 3 else "blhd,hdc->bhlc"
+    logits = torch.einsum(equation, hidden.float(), route_W.float())
     if bias is not None:
         logits = logits + bias.float()[None, :, None]
-    # The production layout is PACKED (`ResolvedRouting.packed_logit_width`): one side's
-    # levels laid end to end on `level_offsets`, with no per-level padding to
-    # `max(branches)`. These fixtures use uniform widths, so the slot axis flattens
-    # exactly onto those offsets and the reference stays a plain reshape.
-    return logits.reshape(
-        hidden.shape[0] * heads, hidden.shape[1], weight.shape[2] * weight.shape[3])
+    return logits.reshape(hidden.shape[0] * route_W.shape[0], hidden.shape[1], route_W.shape[2])
 
 
 @pytest.mark.parametrize("untied_levels", [(), (0, 1, 2), (0, 2)])
-def test_packed_router_matches_separate_projection_and_gradients(untied_levels):
+def test_the_packed_router_is_the_projection_and_its_gradients(untied_levels):
     torch.manual_seed(31)
     batch, length, heads, levels, hidden, branch = 2, 5, 2, 3, 7, 4
-    routing = _routing_for_untied(levels, untied_levels, branch)
+    layout = _layout(levels, untied_levels, branch)
+    assert layout.packed_router_width == (levels + len(untied_levels)) * branch
     h = torch.randn(batch, length, hidden, dtype=torch.float32, requires_grad=True)
-    route_W = torch.randn(heads, hidden, routing.packed_router_width, requires_grad=True)
-    route_bias = torch.randn(heads, routing.packed_router_width, requires_grad=True)
+    route_W = torch.randn(heads, hidden, layout.packed_router_width, requires_grad=True)
+    route_bias = torch.randn(heads, layout.packed_router_width, requires_grad=True)
 
-    read_logits, write_logits = packed_router_logits(
-        h, route_W, routing, route_bias=route_bias)
-    weight, bias = _slots(route_W, route_bias, routing, branch)
-    expected_write = _reference(h, weight[:, :, :levels], bias[:, :levels], heads)
-    read_W, read_bias = _full_read(weight, bias, routing)
-    expected_read = _reference(h, read_W, read_bias, heads)
-    torch.testing.assert_close(read_logits, expected_read, rtol=0, atol=0)
-    torch.testing.assert_close(write_logits, expected_write, rtol=0, atol=0)
+    logits, gain = router_logits(h, route_W, layout, route_bias=route_bias, projection_dtype=torch.float32)
+    assert gain is None
+    expected = _reference(h, route_W, route_bias)
+    torch.testing.assert_close(logits, expected, rtol=0, atol=0)
 
-    loss = read_logits.square().mean() + 0.7 * write_logits.square().mean()
+    loss = logits.square().mean()
     gradient_inputs = (h, route_W, route_bias)
-    gradients = torch.autograd.grad(loss, gradient_inputs, allow_unused=True)
-    expected_loss = expected_read.square().mean() + 0.7 * expected_write.square().mean()
-    expected_gradients = torch.autograd.grad(
-        expected_loss,
-        gradient_inputs,
-        allow_unused=True,
-    )
-    for actual, expected in zip(gradients, expected_gradients):
-        if actual is None or expected is None:
-            assert actual is expected
-        else:
-            torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
+    gradients = torch.autograd.grad(loss, gradient_inputs)
+    expected_gradients = torch.autograd.grad(expected.square().mean(), gradient_inputs)
+    for actual, want in zip(gradients, expected_gradients):
+        torch.testing.assert_close(actual, want, rtol=1e-6, atol=1e-7)
 
 
-def test_tied_routing_reads_off_the_write_projection():
-    """A `TiedRouting` level has ONE packed slot (`untied_levels` excludes it): its
-    read logits are a VIEW of its write logits, not a second projected column block."""
-    torch.manual_seed(7)
-    batch, length, hidden = 2, 5, 6
-    routing = ResolvedRouting(
-        (TiedRouting(width=4, op=EntmaxActivation(1.5)),
-         IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation())),
-    )
-    assert routing.untied_levels == (1,)
-    # slot widths: write-0 (tied, w=4), write-1 (w=3), read-1 (untied, w=3) -> 10 columns.
-    assert routing.packed_router_width == 10
-    h = torch.randn(batch, length, hidden, requires_grad=True)
-    route_W = torch.randn(2, hidden, routing.packed_router_width, requires_grad=True)
-    read_logits, write_logits = packed_router_logits(h, route_W, routing)
-    tied_span = routing.level_logit_slice(0)
-    torch.testing.assert_close(
-        read_logits[..., tied_span], write_logits[..., tied_span], rtol=0, atol=0)
+def test_a_tied_read_entry_has_no_columns_of_its_own():
+    """A tied entry reads the write side's routing on its level: the projection carries no column for it, and its
+    level's rows are the write solve's."""
+    layout = RouterLayout(Topology(widths=(4, 3), write=(entmax(1.5), softmax()), read=((tied(), softmax()),)), 1)
+    #: write-0 (w=4), write-1 (w=3), read-1 (untied, w=3) -> 10 columns
+    assert layout.packed_router_width == 10
+    assert layout.read_columns(0, 0) is None and layout.read_columns(0, 1) == slice(7, 10)
+    assert layout.tied_heads(0) == (0,) and layout.tied_heads(1) == ()
 
 
-def test_packed_router_rejects_plan_shape_mismatches():
-    routing = ResolvedRouting(
-        (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
-         IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation())),
-    )
+def test_the_packed_router_rejects_shape_mismatches():
+    layout = _layout(2, (0, 1), 2)
     h = torch.randn(1, 2, 3)
-    # Both levels untied -> slot widths (2, 3, 2, 3), so 10 stored columns.
-    assert routing.packed_router_width == 10
-    with pytest.raises(ValueError, match="packed_router_width"):
-        packed_router_logits(h, torch.randn(1, 4, 3, 3), routing)
-    with pytest.raises(ValueError, match="10"):
-        packed_router_logits(h, torch.randn(1, 3, 12), routing)
-
-
-def test_packed_router_rejects_hidden_width_mismatch():
-    routing = _routing_for_untied(2, (), 2)
-    route_W = torch.randn(2, 3, routing.packed_router_width)
-
-    with pytest.raises(ValueError, match="hidden width"):
-        packed_router_logits(torch.randn(1, 2, 4), route_W, routing)
-
-
-def test_packed_router_rejects_rank4_head_count_mismatch():
-    routing = _routing_for_untied(2, (), 2)
-    route_W = torch.randn(2, 3, routing.packed_router_width)
-
+    assert layout.packed_router_width == 8
+    with pytest.raises(ValueError, match="route_W must be"):
+        router_logits(h, torch.randn(1, 4, 3, 3), layout, projection_dtype=torch.float32)
+    with pytest.raises(ValueError, match="8 routing"):
+        router_logits(h, torch.randn(1, 3, 12), layout, projection_dtype=torch.float32)
+    with pytest.raises(ValueError, match="hidden = route_W's 3"):
+        router_logits(torch.randn(1, 2, 4), torch.randn(2, 3, 8), layout, projection_dtype=torch.float32)
     with pytest.raises(ValueError, match="head count"):
-        packed_router_logits(torch.randn(1, 2, 1, 3), route_W, routing)
-
-
-@pytest.mark.parametrize("untied_levels", [(), (0, 1, 2)])
-def test_uniform_tie_state_returns_read_write_views_of_one_projection(untied_levels):
-    routing = _routing_for_untied(3, untied_levels, 2)
-    h = torch.randn(1, 2, 3)
-    route_W = torch.randn(1, 3, routing.packed_router_width)
-    read_logits, write_logits = packed_router_logits(h, route_W, routing)
-    if not untied_levels:
-        assert read_logits.untyped_storage().data_ptr() == write_logits.untyped_storage().data_ptr()
+        router_logits(torch.randn(1, 2, 1, 3), torch.randn(2, 3, 8), layout, projection_dtype=torch.float32)
 
 
 @pytest.mark.parametrize("untied_levels", [(), (0,), (0, 1, 2)])
 @pytest.mark.parametrize("with_bias", [False, True])
-def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(untied_levels, with_bias):
-    """P73 S5: `token_major=True` returns `[B, T, H, W]` instead of `[B*H, T, W]`.
+@pytest.mark.parametrize("group", [1, 2])
+def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(untied_levels, with_bias, group):
+    """`token_major=True` returns `[B, T, H_w, W]` instead of `[B*H_w, T, W]`.
 
     TWO claims, and they are separate. **The numbers are the same bytes**: a column of
     the output is a dot product over the full hidden dim, so it cannot depend on where
@@ -162,61 +79,33 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(untied_lev
     would hide a real arithmetic change behind an "acceptable" one and this seam's whole
     licence is that it moves no number.
 
-    **And the token-major form is a VIEW of one GEMM**: it is contiguous, where the flat
-    form needs a transpose of the whole plane to make `(B, H)` one axis. That is the
+    **And the token-major form is a VIEW of one GEMM**: with no gain columns it is contiguous, where the flat
+    form needs a transpose of the whole plane to make `(B, H_w)` one axis. That is the
     0.085 ms this layout exists to delete, and asserting contiguity is what keeps a
     future edit from silently reintroducing the copy while still returning the right
-    numbers.
-
-    Swept over the three tie states (which decide whether the two sides are one GEMM,
-    two, or a concatenation) and the bias (a different broadcast per layout).
+    numbers. Swept over the tie states and the read heads, which decide the columns, and the bias (a different
+    broadcast per layout).
     """
-    from fsla.routing.projection import _packed_router_logits
-
     torch.manual_seed(23)
     heads, batch, tokens, hidden = 3, 2, 5, 4
-    routing = _routing_for_untied(3, untied_levels, 2)
+    layout = _layout(3, untied_levels, 2, group)
     h = torch.randn(batch, tokens, hidden)
-    route_W = torch.randn(heads, hidden, routing.packed_router_width)
-    route_bias = torch.randn(heads, routing.packed_router_width) if with_bias else None
+    route_W = torch.randn(heads, hidden, layout.packed_router_width)
+    route_bias = torch.randn(heads, layout.packed_router_width) if with_bias else None
 
     def project(token_major):
-        return _packed_router_logits(
-            h, route_W, routing, route_bias=route_bias,
-            projection_dtype=torch.float32, token_major=token_major)
+        return router_logits(h, route_W, layout, route_bias=route_bias, projection_dtype=torch.float32,
+                             token_major=token_major)[0]
 
-    #: the third return is the gain span, absent here (`gain_columns` defaults to 0).
-    flat = project(False)[:2]
-    major = project(True)[:2]
-    for side, (flat_side, major_side) in enumerate(zip(flat, major)):
-        assert major_side.shape == (batch, tokens, heads, routing.packed_logit_width), (
-            f"side {side}: token-major must be [B, T, H, W], got {tuple(major_side.shape)}")
-        folded = major_side.permute(0, 2, 1, 3).reshape(
-            batch * heads, tokens, routing.packed_logit_width)
-        assert torch.equal(folded, flat_side), (
-            f"side {side}: the two layouts disagree in "
-            f"{int((folded != flat_side).sum())} of {flat_side.numel()} entries. They are "
-            "the same dot products written to different addresses; any difference is a "
-            "real arithmetic change, and the entmax support boundary is a threshold on "
-            "these numbers.")
-
-    #: THE SECOND CLAIM, asserted where it is unambiguous. A fully tied plan is ONE GEMM
-    #: with no slicing afterwards, so "token-major is the GEMM's own output" means
-    #: exactly contiguity there. The untied plans hand back HALF-SLICES of one GEMM,
-    #: which are non-contiguous by construction and were already established as free to
-    #: read: the solve takes them through its stride tuple.
-    if not untied_levels:
-        for side, major_side in enumerate(major):
-            assert major_side.is_contiguous(), (
-                f"side {side}: a fully tied plan's token-major projection must BE the "
-                "GEMM's output; a non-contiguous one means the copy this layout exists "
-                "to delete is back")
-    #: And whatever the flat form shares between its two sides, the token-major form
-    #: shares too -- so the layout change materialized nothing the flat one did not.
-
-    def one_storage(sides):
-        return sides[0].untyped_storage().data_ptr() == sides[1].untyped_storage().data_ptr()
-
-    assert one_storage(major) == one_storage(flat), (
-        "the token-major layout changed which sides share a storage, so it materialized "
-        "something the flat layout did not")
+    flat, major = project(False), project(True)
+    width = layout.packed_router_width
+    assert major.shape == (batch, tokens, heads, width), f"token-major must be [B, T, H_w, W], got {tuple(major.shape)}"
+    folded = major.permute(0, 2, 1, 3).reshape(batch * heads, tokens, width)
+    assert torch.equal(folded, flat), (
+        f"the two layouts disagree in {int((folded != flat).sum())} of {flat.numel()} entries. They are "
+        "the same dot products written to different addresses; any difference is a "
+        "real arithmetic change, and the entmax support boundary is a threshold on "
+        "these numbers.")
+    assert major.is_contiguous(), (
+        "the token-major projection must BE the GEMM's output; a non-contiguous one means the copy this layout "
+        "exists to delete is back")

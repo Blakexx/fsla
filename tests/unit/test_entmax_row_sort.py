@@ -30,7 +30,8 @@ import pytest
 import torch
 
 from fsla.routing.entmax.production import production_routing_levels
-from fsla.routing.types import EntmaxActivation, ResolvedRouting, TiedRouting
+from fsla.routing.projection import RouterLayout
+from fsla.routing.types import Topology, entmax, tied
 from tests.oracle.fixtures import assert_slots_close
 from tests.oracle.tolerances import ENTMAX_STORED_VALUES
 
@@ -42,8 +43,9 @@ WIDTHS = (2, 3, 8, 16, 32, 60, 64, 128, 200, 256)
 BH, T = 2, 64
 
 
-def _routing(width: int, alpha: float) -> ResolvedRouting:
-    return ResolvedRouting((TiedRouting(width=width, op=EntmaxActivation(alpha)),))
+def _routing(width: int, alpha: float) -> RouterLayout:
+    """One tied entmax level: its one solve reads the write logits, the whole routing plane."""
+    return RouterLayout(Topology(widths=(width,), write=(entmax(alpha),), read=((tied(),),)), 1)
 
 
 def _rows(kind: str, width: int, seed: int) -> torch.Tensor:
@@ -88,12 +90,10 @@ def test_the_row_sort_is_bitwise_tie_order_independent(width, alpha, family):
     """The CUDA solve and the torch lowering sort with DIFFERENT networks and therefore
     different tie orders. Every output must still agree bit for bit."""
     routing = _routing(width, alpha)
-    read = _rows(family, width, seed=width * 7 + 1)
     write = _rows(family, width, seed=width * 7 + 2)
 
-    cuda_r, cuda_w, _support = production_routing_levels(read, write, routing)
-    cpu_r, cpu_w, _support = production_routing_levels(
-        read.float().cpu(), write.float().cpu(), routing)
+    cuda_r, cuda_w, _support = production_routing_levels(write, routing)
+    cpu_r, cpu_w, _support = production_routing_levels(write.float().cpu(), routing)
 
     tag = f"{family} w={width} alpha={alpha}"
     for level, (a, b) in enumerate(zip(cuda_r, cpu_r)):
@@ -117,12 +117,10 @@ def test_permuting_tied_columns_permutes_the_solve_exactly(width, alpha):
     prefix scan associates over.
     """
     routing = _routing(width, alpha)
-    read = _rows("levels-3", width, seed=99)
     write = _rows("levels-3", width, seed=100)
 
-    base_r, base_w, _support = production_routing_levels(read, write, routing)
-    roll_r, roll_w, _support = production_routing_levels(
-        read.roll(3, dims=2), write.roll(3, dims=2), routing)
+    base_r, base_w, _support = production_routing_levels(write, routing)
+    roll_r, roll_w, _support = production_routing_levels(write.roll(3, dims=2), routing)
 
     for level, (a, b) in enumerate(zip(base_r, roll_r)):
         assert torch.equal(a.roll(3, dims=2) != 0, b != 0), f"read level {level} w={width}"
@@ -144,14 +142,14 @@ def test_the_tie_fixtures_are_not_vacuous(family):
     39% support, `boundary` 97% tied with 34% support.
     """
     width = 64
-    read, write = _rows(family, width, seed=width * 7 + 1), _rows(family, width, seed=width * 7 + 2)
+    write = _rows(family, width, seed=width * 7 + 2)
     mid = write.float()
     z = mid - mid.amax(-1, keepdim=True)
     srt, _ = z.sort(-1, descending=True)
-    tied = (srt[..., 1:] == srt[..., :-1]).float().mean().item()
-    assert tied >= 0.35, f"{family}: only {tied:.3f} of adjacent ranks are exact ties"
+    ties = (srt[..., 1:] == srt[..., :-1]).float().mean().item()
+    assert ties >= 0.35, f"{family}: only {ties:.3f} of adjacent ranks are exact ties"
 
-    reads, _, _support = production_routing_levels(read, write, _routing(width, 1.5))
+    reads, _, _support = production_routing_levels(write, _routing(width, 1.5))
     support = (reads[0] != 0).float().mean().item()
     assert 0.0 < support <= 1.0, f"{family}: degenerate support {support}"
 
@@ -167,8 +165,8 @@ def test_teeth_a_moved_k_star_would_change_the_support(family):
     equality asserted above is a real constraint on tie order, not a tautology.
     """
     width = 64
-    read, write = _rows(family, width, seed=width * 7 + 1), _rows(family, width, seed=width * 7 + 2)
-    reads, _, _support = production_routing_levels(read, write, _routing(width, 1.5))
+    write = _rows(family, width, seed=width * 7 + 2)
+    reads, _, _support = production_routing_levels(write, _routing(width, 1.5))
     shipped = reads[0] != 0
 
     mid = write.float()

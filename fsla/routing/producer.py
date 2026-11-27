@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE ROUTING A LAYER COMPUTES, DECLARED: its levels, the write gain and the projection bias.
+"""THE ROUTING A LAYER COMPUTES, DECLARED: its topology, its activations, the write gain and the projection bias.
 
 FSLA is linear attention under a structured feature map, and the feature map is declared, not supplied: a
 :class:`Routing` is DATA, the layer owns the weights it implies, and the producer (:func:`fsla.ops.produce.produce_prefill`)
@@ -8,94 +8,48 @@ computes the bundle from them in one call. The format and its producer are ours,
 hold is added to the registry -- its activation, its solve, its reference and its oracle -- never plugged in beside
 it (docs/api.md section 2).
 
-**THE LEVEL LIST IS THE CONFIGURATION.** ``Routing([IndependentRouting(width=64, read=softmax(),
-write=entmax(1.5)), ...])``: each element is one level's WHOLE spec, width included, outermost level first. Depth,
-leaf count, packed router width, logit offsets and the topology are all DERIVED from that list -- none of them is a
-second input that could disagree with it. A uniform stack is spelled with :func:`uniform`.
+**THE TOPOLOGY IS DECLARED ONCE.** ``Routing(topology=(64, 64), write=(entmax(1.5), softmax()), read=(softmax(),
+entmax(1.5)))``: the widths, outermost level first, then one flat activation a write level and the read heads' tuples --
+one a read head of the group, or one for every head -- each entry an activation or :func:`~fsla.routing.types.tied`.
+Depth, leaf count, the packed router width and the logit offsets are all DERIVED -- none of them is a second input that
+could disagree with the declaration.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import cached_property
+from dataclasses import InitVar, dataclass
+from functools import cache
 
 import torch
 import torch.nn as nn
 
+from fsla.routing.projection import RouterLayout
 from fsla.routing.side_gain import GainConfig
 from fsla.routing.types import (
     EntmaxActivation,
-    IndependentRouting,
-    LevelRouting,
-    ResolvedRouting,
-    RoutingActivation,
     SoftmaxActivation,
-    TiedRouting,
+    Tied,
     Topology,
+    activation_properties,
 )
 
-__all__ = [
-    "Routing",
-    "dense_routing",
-    "split_routing",
-    "tied_routing",
-    "uniform",
-]
+__all__ = ["Routing"]
 
-
-def dense_routing(width: int) -> IndependentRouting:
-    """Softmax on both duties, untied -- the full-support level, at ``width``."""
-    return IndependentRouting(width=width, read=SoftmaxActivation(), write=SoftmaxActivation())
-
-
-def tied_routing(width: int, activation: RoutingActivation = EntmaxActivation(1.5)) -> TiedRouting:
-    """One activation, one solve -- the read factor IS the write factor, at ``width``.
-
-    Tied routing hands both duties the SAME tensor outright -- there is no split to
-    perform, because there is only one duty's worth of output.
-    """
-    return TiedRouting(width=width, op=activation)
-
-
-def split_routing(width: int, alpha: float = 1.5, *,
-                  sparse_duty: str = "write") -> IndependentRouting:
-    """The alternating scheme's level: entmax on one duty, softmax on the other.
-
-    Named because the split-level scheme is a configuration the campaign runs and the
-    support-symmetry argument is about -- not because the producer has a code path for
-    it. It is two registry keys in a level config, like every other level.
-    """
-    if sparse_duty not in ("read", "write"):
-        raise ValueError(f"sparse_duty must be 'read' or 'write', got {sparse_duty!r}")
-    sparse, dense = EntmaxActivation(alpha), SoftmaxActivation()
-    return IndependentRouting(
-        width=width,
-        read=sparse if sparse_duty == "read" else dense,
-        write=sparse if sparse_duty == "write" else dense)
-
-
-def uniform(depth: int, level: LevelRouting) -> list[LevelRouting]:
-    """``depth`` levels all spelled the same way -- the uniform stack, written once.
-
-    Replaces the broadcast a single routing tag used to get: a list is what the producer
-    takes, so the way to say "the same thing D times" is to build the list, not to teach
-    the constructor a second admissible shape for its first argument.
-    """
-    if type(depth) is not int or depth < 1:
-        raise ValueError(f"uniform depth must be a positive exact int, got {depth!r}")
-    return [level] * depth
+#: the activations the shipped producer solves (`fsla.routing.entmax.production`)
+_SOLVED = (SoftmaxActivation, EntmaxActivation)
 
 
 @dataclass(frozen=True)
 class Routing:
-    """THE DECLARATION: the levels, the write gain and the projection bias. Data only.
+    """THE DECLARATION: the topology, its activations, the write gain and the projection bias. Data only.
 
     Args:
-        levels: one :class:`~fsla.routing.types.IndependentRouting`
-            or :class:`~fsla.routing.types.TiedRouting` per routing level, outermost
-            first. Each carries its own ``width``; :func:`uniform` builds a uniform
-            stack. The tags name activations from the closed registry
-            (``fsla/routing/activations.py``) -- users never supply property metadata.
+        topology: one width a level, outermost first, a tuple of ints; it becomes the
+            :class:`~fsla.routing.types.Topology` the declaration states, read back as ``routing.topology``.
+        write: one flat activation a level (``softmax()``, ``entmax(alpha)``); none is chained.
+        read: one tuple a read head of the group (``G`` of them, ``G`` the layer's query heads a write head), or ONE
+            tuple every head reads by; each entry a level's activation or ``tied()``, which reads the write side's
+            routing on that level. The read side states no widths: they are the topology's.
         gain: whether the write-side gain is learned. ``False`` removes its projection
             column rather than pinning it to 1, so no dead parameter is optimized.
         gain_bias_init: initialize the gain bias so an all-zero-logit gain starts at
@@ -104,49 +58,59 @@ class Routing:
             from :mod:`fsla.routing.side_gain` and deliberately not part of the contract.
         bias: a learned bias on the routing projection.
 
-    Construction validates the whole declaration, so an unbuildable model fails here and never inside a forward.
+    Construction validates the whole declaration -- every activation a registry row, nonnegative and one the producer
+    solves, every read tuple the topology's depth, a width of at least 2, and no level whose untied read and whose
+    write both make exact zeros (tie it) -- so an unbuildable model fails here and never inside a forward. The read
+    count against the layer's group is :meth:`layout`'s.
     """
 
-    levels: tuple[LevelRouting, ...]
+    topology: Topology
+    write: InitVar[tuple]
+    read: InitVar[tuple]
     gain: bool = True
     gain_bias_init: float | None = None
     gain_config: GainConfig | None = None
     bias: bool = False
 
-    def __post_init__(self) -> None:
-        if isinstance(self.levels, (IndependentRouting, TiedRouting)):
-            raise TypeError(
-                "Routing takes a LIST of level configs, one per routing level, and got a single "
-                f"{type(self.levels).__name__}. A one-level model is `[level]`; a uniform stack is "
-                "`uniform(D, level)`.")
-        levels = tuple(self.levels)
-        if not levels:
-            raise ValueError("Routing needs at least one routing level")
-        for index, level in enumerate(levels):
-            if type(level) not in (IndependentRouting, TiedRouting):
-                raise TypeError(
-                    f"levels[{index}] must be an IndependentRouting or TiedRouting "
-                    f"carrying its own width, got {level!r}")
+    def __post_init__(self, write, read) -> None:
+        widths = self.topology
+        if not isinstance(widths, tuple) or not all(type(w) is int for w in widths):
+            raise TypeError(f"Routing.topology is the level widths, a tuple of ints, outermost first; got {widths!r}")
+        if not isinstance(write, tuple):
+            raise TypeError(f"Routing.write is one activation a level, a tuple; got {write!r}")
+        if not isinstance(read, tuple) or not read:
+            raise TypeError(f"Routing.read is one tuple a read head of the group, or one tuple for every head; got {read!r}")
+        if not isinstance(read[0], tuple):
+            raise TypeError(f"Routing.read holds TUPLES, one a read head: a single head's tuple is `read=({read!r},)`")
+        topology = Topology(widths=widths, write=write, read=read)
+        if any(width < 2 for width in widths):
+            raise ValueError(f"a routed level is at least 2 wide, got {widths!r}")
+        for level, activation in enumerate(topology.write):
+            _solved(activation, f"Routing.write[{level}]")
+        for head, entries in enumerate(topology.read):
+            for level, entry in enumerate(entries):
+                if type(entry) is Tied:
+                    continue
+                _solved(entry, f"Routing.read[{head}][{level}]")
+                if activation_properties(entry).exact_zeros and topology.can_zero("write", level):
+                    raise ValueError(
+                        f"Routing.read[{head}][{level}] and Routing.write[{level}] both make exact zeros from two "
+                        "solves: a level whose two sides are sparse is ONE solve -- tie the read entry (`tied()`)")
         if type(self.gain) is not bool:
             raise TypeError(f"gain must be a bool, got {self.gain!r}")
         if type(self.bias) is not bool:
             raise TypeError(f"bias must be a bool, got {self.bias!r}")
-        object.__setattr__(self, "levels", levels)
-
-    @cached_property
-    def topology(self) -> Topology:
-        """The routing contract the bundle and its consumers read."""
-        return Topology(levels=self.levels)
-
-    @cached_property
-    def resolved(self) -> ResolvedRouting:
-        """The packed-projection layout the solve reads: one function of the same level list as the topology."""
-        return ResolvedRouting(levels=self.levels)
+        object.__setattr__(self, "topology", topology)
 
     @property
     def widths(self) -> tuple[int, ...]:
         """One branch width per level, in level order."""
         return self.topology.widths
+
+    def layout(self, group: int) -> RouterLayout:
+        """The packed projection layout at ``group`` read heads a write head, the layer's ``G``. Refuses a read count
+        that is neither ``G`` nor one, naming both."""
+        return _layout(self.topology, group)
 
     @property
     def gain_layout(self) -> GainConfig:
@@ -154,13 +118,23 @@ class Routing:
 
     @property
     def gain_columns(self) -> int:
-        """The projection columns the write gain takes, per head: its trailing span of ``route_W``."""
+        """The projection columns the write gain takes, per write head: its trailing span of ``route_W``."""
         return len(self.gain_layout.layout)
 
-    @property
-    def columns(self) -> int:
-        """``route_W``'s columns per head: every level's slots, then the gain's."""
-        return self.resolved.packed_router_width + self.gain_columns
+    def columns(self, group: int) -> int:
+        """``route_W``'s columns a write head at ``group`` read heads: every level's slots, then the gain's."""
+        return self.layout(group).packed_router_width + self.gain_columns
+
+
+@cache
+def _layout(topology: Topology, group: int) -> RouterLayout:
+    return RouterLayout(topology=topology, group=group)
+
+
+def _solved(activation, owner: str) -> None:
+    if not isinstance(activation, _SOLVED):
+        raise TypeError(f"{owner} is an activation the producer solves (softmax(), entmax(alpha)) or, on the read side, "
+                        f"tied(); got {activation!r}")
 
 
 def _init_packed_router(W: nn.Parameter) -> None:

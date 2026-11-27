@@ -11,7 +11,8 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 ```python
 import fsla
 
-routing = fsla.Routing(fsla.uniform(2, fsla.split_routing(64, alpha=1.5)))
+routing = fsla.Routing(topology=(64, 64), write=(fsla.entmax(1.5), fsla.softmax()),
+                       read=((fsla.softmax(), fsla.entmax(1.5)),))
 layer = fsla.FSLA(routing, hidden_size=1024, num_heads=8, d_v=64, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
@@ -19,9 +20,11 @@ y, _ = layer(hidden_states)                     # stateless: (y, None)
 or, without the layer, from levels you computed yourself -- the format's own utilities build the bundles:
 
 ```python
-factors = fsla.RouteFactors.from_levels(topology, read_levels, write_levels)
+from fsla.routing.quant import VALUES
+
+factors = fsla.RouteFactors.from_levels(fsla.Topology.opaque(widths), read_levels, write_levels)
 masks, density = fsla.masks_and_density(factors)          # the masks the rows' nonzero digits make, and their density
-y, _ = fsla.prefill(factors, fsla.Values.from_projection(v), masks, density)
+y, _ = fsla.prefill(factors, fsla.ScaledBlock.quantize(v, VALUES), masks, density)
 ```
 
 ---
@@ -29,14 +32,14 @@ y, _ = fsla.prefill(factors, fsla.Values.from_projection(v), masks, density)
 ## 1. The op
 
 ```python
-prefill(routes: RouteFactors, values: Values, masks: Masks, density: Tensor, *,
+prefill(routes: RouteFactors, values: ScaledBlock, masks: Masks, density: Tensor, *,
         state=None, decay: LeafMassDecay | None = None) -> (y, state)
-decode_step_gated(routes: RouteFactors, values: Values, masks: Masks, state, *,
+decode_step_gated(routes: RouteFactors, values: ScaledBlock, masks: Masks, state, *,
                   decay: LeafMassDecay | None = None) -> (y, state)
 ```
 
 `routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
-internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
+internal format, a scaled block in the `VALUES` form, `ScaledBlock.quantize(v, VALUES)` over a `[B, T, H_w, d_v]` projection (§2.2, §4.1).
 `masks` is the data beside the rows, like attention's mask (§2.6): decode's op computes with `r * m`, and the prefill's masks are the caller's
 guarantee about the rows. `density` is the prefill's own input (§2.6): a `torch.uint8` `[2, D]` tensor, how full each level is (255 is every digit live), which chooses how the work
 is laid out; decode takes none ("decode doesn't need it, once again it has its own design", the owner, 2026-11-24).
@@ -193,16 +196,16 @@ No carry kernel is built (`fsla.ops.carry.carry` raises `KernelNotBuilt`), so a 
 ### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, source=None)
-RouteFactors.from_levels(topology, read, write)                        # the framework's epilogue
-RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, source=None)  # rows already in the format
+RouteFactors(topology, read, write)                      # one ScaledBlock a level-side, in the ROWS form
+RouteFactors.from_levels(topology, read, write)          # the framework's epilogue: floating levels in, the blocks out
 ```
 
-**The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
+**The stored form is the internal quantized format** (ruled 2026-09-26). Each level-side is ONE scaled block
+(`fsla.ScaledBlock`, §2.2) whose rows are
 UNIT-MAX -- u8 with the row's largest digit at 255, at every level, dense or sparse (CONSTITUTION R17, R23); a zero
 digit is an exact zero, with no floor under it; an all-zero row is a dead token at that level -- with the row's maximum
-carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
-tensor per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
+carried beside them as its fp32 scale (a block's `data` and `scale`; `read` and `write` one
+block per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
 row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the words the masks are prepared into). The bundle carries NO liveness: which
 digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
@@ -211,7 +214,9 @@ GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides
 `H`, and query head `h` reads write head `h // group` (`group = H / H_w`, consecutive: PyTorch SDPA's `enable_gqa`
 order); `H_w = H` is the ungrouped layer. The oracle reads grouped bundles (`tests/oracle/test_oracle_grouped.py`: a
-grouped run is the ungrouped run with each write head's side repeated for its query heads). A carry reads them a CTA a write head, its query heads' rows with it, as does the intra, so the prefill reads them. The decode step and the carried state read one head count
+grouped run is the ungrouped run with each write head's side repeated for its query heads). Query head `w * G + g` is READ HEAD `g` of
+write head `w`, produced by the routing's `g`-th read tuple (§2.3): the layer's producer makes grouped bundles, and its read
+heads' activations and listed levels may differ. A carry reads them a CTA a write head, its query heads' rows with it, as does the intra, so the prefill reads them. The decode step and the carried state read one head count
 today, and each refuses a grouped bundle by name (`RouteFactors.refuse_grouped`).
 `RouteFactors.rows(level, side)` is a level's rows, and its scale the row's max: the level as its producer handed it
 over, whatever its sum ([§2.2](#22-the-scaled-block-and-the-gain)). This is what
@@ -223,17 +228,17 @@ bundle itself as its input.
 **Nothing floating is stored.** `RouteFactors.dequantized()` computes the levels, `rows x scale`
 in fp32, at the call: a consumer that still computes on floating levels calls it at its seam, so
 it computes on the quantized VALUES and nothing in the tree sees a number the kernel would not;
-the call goes when that consumer reads the rows. `source` is the producer's floating levels, held
-ONLY when they require a gradient -- the anchor `dequantized()` steps the gradient straight
+the call goes when that consumer reads the rows. A block's `source` is the producer's floating level, held
+ONLY when it requires a gradient -- the anchor `dequantized()` steps the gradient straight
 through the rounding to (`quant.straight_through`); an inference bundle holds the rows and nothing
 else.
 
-**The bundle is a record of tensors, and it is constructible.** Its fields are the
+**The bundle is a record of blocks, and it is constructible.** Its fields are the
 stored levels, their scales and the topology they are shaped by — nothing else, and in
 particular no declaration a caller could pair with tensors that do not describe it.
 `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than the provenance: one
-level per topology level at that level's width, one shared
-prefix a side, one device, one dtype, each scale fp32 at its side's prefix. A test that plants
+block per topology level at that level's width, each in the `ROWS` form, one shared
+prefix a side, one device, each scale fp32 at its side's prefix (the block's own check). A test that plants
 a specific routing pattern builds one directly and is held to exactly those invariants.
 Unit-sum-ness is not among them: no level need sum to 1 ([§2.2](#22-the-scaled-block-and-the-gain)).
 The op still type-gates on the class, so handing it bare tensors is still a clean refusal.
@@ -264,8 +269,11 @@ A level is numbers in a representation, not a distribution (ruled 2026-11-07,
 [`CONSTITUTION.md` R23](CONSTITUTION.md#r23)). `q` (read), `k` (write) and `v` are each a
 SCALED BLOCK: unit-max rows in a FORM that states its storage type and its signedness -- u8
 nonnegative at 255 (a routing level, dense or sparse, a zero a zero), bf16 signed in `[-1, 1]` (the values) --
-with the row's max as its fp32 scale. The forms are `fsla.routing.quant`'s `Form` (`ROWS`, `VALUES`),
-quantizing into and dequantizing out of each written once on it, and the factory refuses an entry its form does not
+with the row's max as its fp32 scale. ONE type holds every such block, `fsla.ScaledBlock(data, scale, form, source=None)`
+(`fsla/routing/quant.py`): a routing level-side's rows (form `ROWS`) and a token's values (form `VALUES`) alike, `[B, T, H, width]` rows and
+`[B, T, H]` scales, checked for structure (dtype, shapes, device, the alignment law where the form states it) and never for values. The forms
+are `fsla.routing.quant`'s `Form` (`ROWS`, `VALUES`), quantizing into and dequantizing out of each written once on it
+(`ScaledBlock.quantize(x, form)`, `ScaledBlock.dequantized()`), and the factory refuses an entry its form does not
 hold -- a negative or non-finite routing level, a non-finite value -- with one host read a call. A side's shared scale is the product of its levels'
 scales, STORED FACTORED: each level's scale is written by the producer job that quantizes that
 level and multiplied by the reader as it loads them, so no job waits on another. The op every
@@ -303,13 +311,14 @@ rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 ### 2.3 The declared routing, and the producer
 
 ```python
-Routing(levels, *, gain=True, gain_bias_init=None, gain_config=None, bias=False)
-FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, ...)
+Routing(topology=(w0, w1, ...), write=(a0, a1, ...), read=((r0, r1, ...), ...), *,
+        gain=True, gain_bias_init=None, gain_config=None, bias=False)
+FSLA(routing, *, hidden_size, num_heads, group=1, d_v=64, decay=None, layer_idx=None, ...)
 ```
 
-RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data -- the levels, the write gain and
-the projection bias -- and the layer owns every weight it implies: the
-packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
+RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data -- the topology, its activations, the
+write gain and the projection bias -- and the layer owns every weight it implies: the
+packed per-write-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
 call (`fsla.ops.produce.produce_prefill`, or `produce_decode` for the decode step) turns a stretch of tokens into the bundle -- the projection, the exact
 entmax/softmax solves, the write gain, the unit-max rows and the bf16 values -- and on CUDA with no gradient
 that call is ONE LAUNCH of the fused producer kernel, the bundle's rows and scales views of the planes it writes --
@@ -318,33 +327,34 @@ a kernel not built on this line, so the call raises `fsla.ops._ext.KernelNotBuil
 and -- until the native backward -- the path a gradient takes. The CUDA entmax solve behind it takes bf16 logits (the projection's output) and writes the bf16 stored form; fp64 logits take the torch lowering, and CUDA logits of any other dtype are refused by name. Construction validates the whole declaration --
 widths in range, a buildable topology, a gain layout -- so an unbuildable model fails on the line that built it.
 
-**`levels` is the configuration, and it is a LIST.** One entry per routing level,
-outermost first, each carrying that level's WHOLE spec:
+<a id="the-routing"></a>**The routing is declared ONCE: one topology, flat activations, `G` read heads** (the owner, 2026-11-27: "its
+not worth it. just have a flat activation for each pattern"). `topology` is the level widths, outermost first. `write` is one flat
+activation a level -- `softmax()` or `entmax(alpha)`, a registry row; none is chained. `read` is one tuple a READ HEAD of the group --
+`G` of them, `G` the layer's query heads a write head (`FSLA(group=G)`) -- or ONE tuple that every head reads by; each tuple is one entry
+a level, an activation or `tied()`. The read side states no widths: they are the topology's.
 
 ```python
-IndependentRouting(width, read, write)   # two logit slices, two activations, two solves
-TiedRouting(width, op)                   # one logit slice, one activation, one solve
+Routing(topology=(64, 64), write=(entmax(1.5), softmax()), read=((softmax(), entmax(1.5)),))   # the alternating split
+Routing(topology=(64, 64), write=(entmax(1.5), softmax()),
+        read=((tied(), entmax(1.5)), (softmax(), softmax())))                                # G = 2: each head its own tuple
 ```
 
-`TiedRouting` is a first-class type: the read factor IS the write factor, the same
-tensor, because there is only one duty's worth of output. `op` is any registry activation — a tied *softmax* level is legal and reports
-dense on both sides. The vocabulary is exactly these two types — there is no
-compatibility flag on `IndependentRouting` for the tied case.
+`tied()` is a POSITIONAL MARKER, not an activation: the read head's level IS the write side's routing on that level -- the same rows,
+one solve, no read columns of its own -- and any rule asking about the cell reads the write activation (a tied softmax level is legal and
+dense on both sides). Each read head's activations and listed levels may differ; every read head has the write side's topology (a
+per-side or per-head structure is not declared).
 
-Depth, leaf count `N`, the packed router width, the per-level logit offsets and the
-topology are all DERIVED from that list. None of them is a second input, so none of them
-can disagree with it. The four spellings the shipped configurations use:
+**Every activation is nonnegative** (the registry's `nonnegative` column, `fsla/routing/activations.py`): the v1 routing is nonnegative and
+its readout normalized, and a row that is not is refused at the declaration. Construction refuses, naming the reason: an activation with no
+registry row, one whose row is not nonnegative, one the producer does not solve, a read tuple whose length is not the topology's depth, a
+width below 2, and a level whose UNTIED read entry and write side both make exact zeros (two sparse solves of one level: tie the read entry).
+The layer refuses a read count that is neither its `G` nor one, naming both (`Routing.layout`).
 
-```python
-dense_routing(width)                      # softmax on both duties
-split_routing(width, alpha, sparse_duty)  # entmax one duty, softmax the other
-tied_routing(width, activation=entmax(1.5))  # one activation, one solve, shared tensor
-uniform(depth, level)                     # `depth` levels spelled the same way
-```
-
-`uniform` is a list builder, not a broadcast: a routing takes a list and nothing else,
-because a broadcast is a rule the reader has to know before they can read the widths off
-the call.
+Depth, leaf count `N`, the packed router width and the per-level logit offsets are all DERIVED from the declaration
+(`fsla.routing.projection.RouterLayout` at the layer's `G`). None of them is a second input, so none of them
+can disagree with it. `route_W` is `[H_w, hidden, columns]`, a write head's slice holding its write levels' columns in level order, then each
+of its read heads' untied levels' columns (head 0's, then head 1's, ...), then the gain's span: every column is consumed and the projection is
+one GEMM over the whole parameter, a side's logits column spans of its output.
 
 **Every level, every head and the values are one launch by design** -- a model pays one launch for the whole
 topology, whatever its levels' operators, alphas and widths. That kernel is not built on this line: the no-grad
@@ -375,13 +385,13 @@ RULED 2026-09-26, and 2026-09-29: there is no duck-typed producer, and the layer
 new kind of production is added to the framework -- its activation to the closed registry, its solve to the
 producer, its reference and its oracle -- and what it returns is the internal format. A caller of the ops with its
 own levels builds the bundles through the format's own utilities (`RouteFactors.from_levels`,
-`Values.from_projection`), which are the same epilogue the producer applies; nothing else constructs a bundle the op
+`ScaledBlock.quantize(v, VALUES)`), which are the same epilogue the producer applies; nothing else constructs a bundle the op
 admits: the format's fields are required, checked structurally, and a bundle assembled from bare floating levels is
 refused by name. Correctness is still producer-blind -- liveness is the supplied masks, never derived from the rows, and nothing about a producer's identity reaches a kernel -- but the FORMAT is ours, because it is what every
 kernel reads and what the oracle gates against.
 
-A level filled by a production that names none of our activations is *opaque*: it declares
-`OpaqueRouting(width)` and reads the `("opaque", None)` registry row. What that costs it is the
+A level filled by a production that names none of our activations is *opaque*: its topology is
+`Topology.opaque(widths)`, every cell the `("opaque", None)` registry row. What that costs it is the
 activation questions the topology can answer about it -- ratification, in particular -- and
 nothing else.
 
@@ -425,7 +435,9 @@ Bits past `T` (prefill) or past `width_l` (decode) are zero. **THE DENSE FLAG IS
 read, so in the prefill layout its entry in the bundle may be ABSENT (`None`). An absent entry's byte is 255: that is its supplier's duty, as a mask's
 guarantee is, and the call does not check it (it validates no value of the masks or the density, and reads nothing back to the host). The library's
 producer and helpers leave a level-side's mask absent, and state its byte 255, exactly where its declared activation cannot make exact zeros (softmax
-today; `fsla.routing.types.activation_walks`), from the declaration and never from the data (the owner, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks"); a level-side that
+today; on the read side, no read head's, a tied entry reading the write side's; `fsla.routing.types.activation_walks`), from the declaration and never from the data (the owner, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks").
+A read level some of whose heads can make zeros has its ONE mask over every query head, a dense head's bits its own rows', and its density byte counts every
+query head: the masks and the density are one a side and level today, the read side's over all `H` query heads; a level-side that
 can make zeros (entmax, and an opaque level) always gets its mask, however dense its data turns out, and where its count rounds to 255 it is computed
 densely too, which is exact (the owner: "It's fine if we mark something as dense when it's possible it's like 99.99 due to rounding or whatever ... the non zero flag is also data, and in this case there is no mask to disagree with"). The kernels are not built. The oracle multiplies nothing for an absent entry. DECODE is unchanged: its masks are
 made for every level-side, an all-live one where the activation has no exact zeros, and a decode bundle with an absent entry is refused by name. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
@@ -496,7 +508,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, segments=SegmentPolicy(max_tokens=65_536))
+FSLA(routing, *, hidden_size, num_heads, group=1, d_v=64, decay=None, layer_idx=None, segments=SegmentPolicy(max_tokens=65_536))
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.dense_state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -507,6 +519,10 @@ y, _ = layer(hidden_states)                            # stateless -> (y, LayerC
 the container (§1.2).
 
 `routing` is the declared `Routing` (§2.3), and the layer owns every weight it implies.
+`num_heads` are the WRITE heads `H_w` -- the state's, the values' and the decay's heads, `route_W`'s and `v_proj`'s -- and `group` is
+`G`, the query heads reading each ([grouped queries](#grouped-queries)): `num_heads * group` query heads in all, query head `w * G + g`
+read head `g` of write head `w`, and `o_proj` takes their `num_heads * group * d_v` outputs. The routing declares `G` read tuples or one for
+every head; any other count is refused at construction. `group = 1` is the ungrouped layer.
 `d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
 default, 64, is the intra's value width.
 
@@ -533,10 +549,10 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 
 `v_proj` and `o_proj` run as bf16 GEMMs (their weights read through the inference copy when no
 gradient flows, §2.3), and the projection
-is written to the value format at the layer: `Values.from_projection(v)` (`fsla/values.py`)
+is written to the value format at the layer: `ScaledBlock.quantize(v, VALUES)` (`fsla/routing/quant.py`, §2.2)
 holds each token's values `v` in bf16 against its largest channel (at 1); that magnitude is
-the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
-what the kernels read; `Values.dequantized()` is
+the token's fp32 `scale`. The op takes the block, not the tensor. The plane and the scale are
+what the kernels read; `ScaledBlock.dequantized()` is
 the fp32 view a consumer still computing on floating values takes at its seam, with the
 projection's gradient stepped straight through when the projection requires one. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
@@ -578,7 +594,8 @@ fsla.segment_plan(length, policy, batch=B, heads=H) # the plan: its head blocks,
   write heads, and all read heads must live for any write head? we wont split inside a write head"): a step takes every query head reading its
   write heads. The state is batch-major with write heads inside a sequence, and the op updates a contiguous plane in place, so a head block is
   WHOLE SEQUENCES (`max_heads // H` of them where the maximum holds one sequence's `H` write heads) or a RANGE OF ONE SEQUENCE'S write heads (where it
-  does not). The layer is ungrouped (its query heads are its write heads); the plan is made over write heads so a grouped layer reads it unchanged.
+  does not). The plan is made over write heads, and a block of them carries their `G` query heads each: a write head's `route_W` slice holds
+  its read heads' columns, and the block's output is the query heads `[first * G, last * G)`.
 - **The layer's loop: for each head block, for each token range**, the step projects only that block's heads (each per-head weight's rows of
   them: `route_W`, `route_bias`, `gain_bias`, and `v_W`'s `d_v` rows a head) over that stretch of tokens, runs `prefill` on it and writes the
   output's block, so the projections are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. Blocks

@@ -13,12 +13,12 @@ import torch
 
 if TYPE_CHECKING:
     from fsla.routing.factors import RouteFactors
-    from fsla.values import Values
+    from fsla.routing.quant import ScaledBlock
 
 
-def operands_of(routes: RouteFactors, values: Values, decay: Any = None) -> tuple:
-    """Every tensor the OPERATION consumes, flat -- the predicate's argument list. A bundle's differentiable
-    tensors are its gradient anchors (``source``), present only when the producer's inputs require a gradient."""
+def operands_of(routes: RouteFactors, values: ScaledBlock, decay: Any = None) -> tuple:
+    """Every tensor the OPERATION consumes, flat -- the predicate's argument list. A block's differentiable
+    tensor is its gradient anchor (``source``), present only when the producer's inputs require a gradient."""
     return (*values.tensors(), *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
 
 

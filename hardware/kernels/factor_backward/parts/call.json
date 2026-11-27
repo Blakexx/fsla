@@ -7,7 +7,7 @@
         "lo": 2,
         "hi": 256
       },
-      "declared_by": "docs/internals/entmax/entmax.md#the-contract: every width from 2 (ResolvedRouting refuses a level narrower, fsla/routing/types.py) up to MAX_BRANCH_WIDTH 256 is served by the arm of its padded width class"
+      "declared_by": "docs/internals/entmax/entmax.md#the-contract: every width from 2 (Routing refuses a level narrower, fsla/routing/producer.py) up to MAX_BRANCH_WIDTH 256 is served by the arm of its padded width class"
     },
     "levels": {
       "value": {

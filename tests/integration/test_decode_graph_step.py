@@ -21,7 +21,7 @@ from fsla.ops.decode import lattice_of
 from fsla.ops.lattice import to_lattice
 from fsla.ops.paging import MMA_K_QUANTUM, bytes_equal, encode_pages
 from fsla.routing.masks import DECODE
-from fsla.values import Values
+from fsla.routing.quant import VALUES, ScaledBlock
 from tests.oracle.fixtures import assert_reordered_close
 
 pytestmark = [
@@ -66,37 +66,51 @@ def _sequence():
     return layer, x, v, state
 
 
+def _cloned(val):
+    """A field's value over CLONED tensors: a tensor, a scaled block's tensors (its form kept), and tuples of either."""
+    if isinstance(val, torch.Tensor):
+        return val.clone()
+    if isinstance(val, ScaledBlock):
+        return ScaledBlock(data=val.data.clone(), scale=val.scale.clone(), form=val.form)
+    if isinstance(val, tuple):
+        return tuple(_cloned(item) for item in val)
+    return val
+
+
 def _clone_tensors(obj):
-    """The same record over CLONED tensors: every tensor field, tuples of tensors included."""
-    kw = {}
-    for f in fields(obj):
-        val = getattr(obj, f.name)
-        if isinstance(val, torch.Tensor):
-            val = val.clone()
-        elif isinstance(val, tuple) and val and isinstance(val[0], torch.Tensor):
-            val = tuple(t.clone() for t in val)
-        kw[f.name] = val
-    return type(obj)(**kw)
+    """The same record over CLONED tensors: every tensor field, scaled blocks and tuples of either included."""
+    if isinstance(obj, ScaledBlock):
+        return _cloned(obj)
+    return type(obj)(**{f.name: _cloned(getattr(obj, f.name)) for f in fields(obj)})
+
+
+def _copied(dst, src):
+    if isinstance(dst, torch.Tensor):
+        dst.copy_(src)
+    elif isinstance(dst, ScaledBlock):
+        dst.data.copy_(src.data)
+        dst.scale.copy_(src.scale)
+    elif isinstance(dst, tuple):
+        for buffer, level in zip(dst, src):
+            _copied(buffer, level)
 
 
 def _copy_tensors(static, fresh):
+    if isinstance(static, ScaledBlock):
+        _copied(static, fresh)
+        return
     for f in fields(static):
-        dst, src = getattr(static, f.name), getattr(fresh, f.name)
-        if isinstance(dst, torch.Tensor):
-            dst.copy_(src)
-        elif isinstance(dst, tuple) and dst and isinstance(dst[0], torch.Tensor):
-            for buffer, level in zip(dst, src):
-                buffer.copy_(level)
+        _copied(getattr(static, f.name), getattr(fresh, f.name))
 
 
 def _static(routes, v, masks):
     """The bundles and the decode-layout masks over buffers that never move -- what capture requires of its inputs."""
-    return _clone_tensors(routes), _clone_tensors(Values.from_projection(v)), _clone_tensors(masks)
+    return _clone_tensors(routes), _clone_tensors(ScaledBlock.quantize(v, VALUES)), _clone_tensors(masks)
 
 
 def _fill(static, static_v, static_masks, routes, v, masks):
     _copy_tensors(static, routes)
-    _copy_tensors(static_v, Values.from_projection(v))
+    _copy_tensors(static_v, ScaledBlock.quantize(v, VALUES))
     _copy_tensors(static_masks, masks)
 
 

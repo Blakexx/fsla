@@ -107,7 +107,7 @@ to `6e-39`, a *small* number rather than a zero. The rule binds every kernel
 **(b) The other factor is finite by construction.** `0 * finite == 0` exactly;
 `0 * inf == NaN`. Every multiplicand a kernel reads is bounded by its format: a u8
 digit at every level, a bf16
-value at most 1 against its token's largest channel (`fsla/values.py`). Finiteness is
+value at most 1 against its token's largest channel (`fsla/routing/quant.py`'s `VALUES` form). Finiteness is
 a property of the bundle's format, not a read-side clamp. So rule 4's
 zero-route annihilation is satisfied *branchlessly and structurally* because the
 coefficient is a product of amplitudes, the factor it multiplies is finite by
