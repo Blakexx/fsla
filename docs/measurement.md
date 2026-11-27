@@ -217,9 +217,9 @@ bazel run //measure:null_<group>_<arms> --repo_env=FSLA_CANDIDATE=<this checkout
 Each session interleaves both commits' entries call by call, so the ratio between them is read from one session's
 samples (`bazel run //:results -- verdict --reference @reference`). Times from two separate runs are never compared:
 the verdict pairs members inside one session only. The verdict reads a session whatever its clock state: the state is
-in the session's semantics and its clock reads in `timing_members`, where a reader holds it. KERNEL_STANDARDS §32.7
-compares two builds only in a clock-locked session, and every session target claims `unlocked`, so no stored session
-meets it yet: [open work M-f](open-work.md). One launch's cycles each
+in the session's semantics and its clock reads in `timing_members`, where a reader holds it. Two builds are compared at the
+card's own clocks (KERNEL_STANDARDS §32.7): every session target claims `unlocked`, and a locked clock is for isolation
+work (the lab, a part harness), never a claim about real-world performance. One launch's cycles each
 under `ncu` (`sm__cycles_elapsed.max`) compare two builds without a session where the question is one kernel's cycles.
 
 ## The flagging rule: three gates, all must fire

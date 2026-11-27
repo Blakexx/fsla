@@ -777,13 +777,13 @@ def _container_check(digest: str, tag: str) -> int:
     result = {"image": tag, "steps": rows, "cold_start_seconds": cold}
     store = Store(RESULTS_ENVIRONMENT)
     if ok:
-        store.put({"image_digest": digest}, output=result, provenance=checkout(ROOT))
+        store.put({"image_digest": digest}, output=result, provenance={"checkouts": {"fsla": checkout(ROOT)}})
         #: a green run's volumes are its own and go with it; a red run's stay for a look until the next run
         for volume in volumes:
             subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True)
     else:
         store.put({"image_digest": digest}, error=f"RED: {[r['step'] for r in rows if not r['ok']]}",
-                  provenance=checkout(ROOT), **result)
+                  provenance={"checkouts": {"fsla": checkout(ROOT)}}, **result)
     print(f"container check: {'green' if ok else 'RED'} (cold start {cold} s); recorded under {store.dir}" +
           ("; name the image with `bazel run //:devbox_image_update`" if ok else ""))
     return 0 if ok else 1

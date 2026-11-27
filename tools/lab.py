@@ -955,7 +955,7 @@ def store_record(name: str, arch: str, body: dict, *, kind: str, provenance: dic
         parts[f"trace/row{i}.json"] = staged / f"row{i}.json"
         parts[f"trace/row{i}.json"].write_text(text)
     root = scratch_store() / "records" if no_store else store_root
-    lab = Store(HANDED["label"], root)
+    lab = Store(HANDED["label"], root, scratch=no_store)
     sample = lab.put(data.lab_semantics(name, arch, kind=kind, blocks=blocks, variant=variant), output_file=output,
                      parts=parts or None,
                      provenance={"run": run, **provenance}, run=run)

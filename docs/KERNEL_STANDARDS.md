@@ -1010,9 +1010,11 @@ gated, and an instrument's missing target is a red.
    has fails; it never reads as nothing.
 6. ONE PRIMITIVE A JOB: before writing a helper, the common headers (`common/atoms/*.cuh`, `common/*.cuh`) are read for
    it; a kernel-local copy of a common primitive is a defect, and an unused common primitive is dead code.
-7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved, clock-locked session -- the
-   declared suite (`docs/measurement.md`) with the baseline as a reference checkout, pruned to the sessions -- or by
-   ncu's cycles of one launch each; times from separate unlocked runs are never compared.
+7. A/B IS THE DECLARED SUITE: two builds are compared only in one interleaved session -- the declared suite
+   (`docs/measurement.md`), the baseline a bundle of its commit -- at the card's own clocks, each member's clock reads
+   recorded beside its samples (Blake, 2026-11-27: real-world performance is measured at real clocks), or by ncu's
+   cycles of one launch each; times from separate runs are never compared. A LOCKED CLOCK is for isolation work -- a
+   part harness's cycles, attributing a unit, targeting one mechanism -- never for a claim about real-world performance.
 8. WORK MOVED ACROSS A RENDEZVOUS IS PRICED ON THE CRITICAL PATH FIRST: reordering work around a barrier cannot
    shorten warps that all do the same work, since their critical path is unchanged.
 ENFORCED: item 5 by the SASS gate's declarations (`bazel/gate_declarations.py`: a declaration, an arm or a source kernel that names
