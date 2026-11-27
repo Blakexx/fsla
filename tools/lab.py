@@ -1553,6 +1553,9 @@ def main() -> int:
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
+    r.add_argument("--variant", help="a named condition the run is held to (`unlocked`: the clock not locked), a "
+                                     "record of its own; the lab does not read the condition, the person running it "
+                                     "names it")
     for stored in (r, n):
         stored.add_argument("--no-store", action="store_true",
                             help="keep the record in a store under the scratch space, not the data repository's")
@@ -1564,9 +1567,6 @@ def main() -> int:
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
         timed.add_argument("--blocks", type=int, default=0,
                            help="the grid held to N CTAs, a lighter load: a record of its own")
-        timed.add_argument("--variant", help="a named condition the run is held to (`unlocked`: the clock not locked), "
-                                              "a record of its own; the lab does not read the condition, the person "
-                                              "running it names it")
         timed.add_argument("--no-counters", metavar="HOST",
                            help="this host grants no profiler counters: name it, and the record carries the "
                                 "exception in their place (a box that holds the pinned profiler reads them)")

@@ -106,7 +106,7 @@ by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
 `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest, the launch and each kernel's file),
-mapped here to the phases through that same binary, its record a sample at `@fsla//tools:lab` (the kind `ledger`, which `lab_record` does not read: `ledger --packed` reads its dumps); `--per` divides every count by the launch's CTA-windows. Each
+mapped here to the phases through that same binary, the dumps read from where the box handed them back (the backfilled ones are samples at `@fsla//tools:lab`, which nothing writes now); `--per` divides every count by the launch's CTA-windows. Each
 phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
 conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;
 then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its
