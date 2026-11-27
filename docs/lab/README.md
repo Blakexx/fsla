@@ -60,6 +60,13 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`gather_rate`](gather_rate.md) | experiment |
 | [`gather_group`](gather_group.md) | experiment |
 | [`step_rolled`](step_rolled.md) | experiment |
+| [`stream_rate`](stream_rate.md) | experiment |
+| [`newton_row`](newton_row.md) | experiment |
+| [`projection_tile`](projection_tile.md) | experiment |
+| [`mask_pack`](mask_pack.md) | experiment |
+| [`tma_box`](tma_box.md) | experiment |
+| [`l2_policy`](l2_policy.md) | experiment |
+| [`dependent_launch`](dependent_launch.md) | experiment |
 
 ## The toolkit's move to 13.5: records that carry the 13.0 build
 

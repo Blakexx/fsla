@@ -441,6 +441,15 @@ __device__ __forceinline__ void tensor_load_2d(uint32_t dst, const void* map, in
                : "memory");
 }
 
+//: A 3-D TENSOR COPY IN (sm_90): the box at (`c0`, `c1`, `c2`) of the 3-d tensor `map` describes, into shared memory at
+//: `dst`, its bytes completing the barrier `bar`
+__device__ __forceinline__ void tensor_load_3d(uint32_t dst, const void* map, int c0, int c1, int c2, uint32_t bar) {
+  asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%2, %3, %4}], [%5];"
+               :
+               : "r"(dst), "l"(map), "r"(c0), "r"(c1), "r"(c2), "r"(bar)
+               : "memory");
+}
+
 //: the same MULTICAST: one copy landed at `dst` in every CTA of the cluster that `mask` names (a bit a rank), its
 //: bytes completing each one's own barrier at `bar`
 __device__ __forceinline__ void tensor_cast_2d(uint32_t dst, const void* map, int c0, int c1, uint32_t bar,

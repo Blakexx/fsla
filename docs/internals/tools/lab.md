@@ -329,7 +329,7 @@ full grid's record; any other's count is the warps that arrive at it), and the v
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread), `red_add_u32` and `red_add_u64` (an integer) and
   `red_add_f16x2` (a pair of f16, each half its own sum, from `pack_half2`); `red_add_f16x2_v4` (four such pairs a lane in one vector add, 16 bytes); the plain bulk copy out, `bulk_store`; the tensor copies in,
-  `tensor_load_2d` and its multicast `tensor_cast_2d` (one copy landed in every CTA of a cluster a mask names); the bulk copy
+  `tensor_load_2d` (and `tensor_load_3d`, a 3-d box) and its multicast `tensor_cast_2d` (one copy landed in every CTA of a cluster a mask names); the bulk copy
   in, `bulk_load`, under a barrier whose
   arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
   `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` and the integer `IGMMA` as they read `HMMA`
@@ -453,3 +453,10 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="gather-rate"></a>[`gather_rate`](../../lab/gather_rate.md)
 - <a id="gather-group"></a>[`gather_group`](../../lab/gather_group.md)
 - <a id="step-rolled"></a>[`step_rolled`](../../lab/step_rolled.md)
+- <a id="stream-rate"></a>[`stream_rate`](../../lab/stream_rate.md)
+- <a id="newton-row"></a>[`newton_row`](../../lab/newton_row.md)
+- <a id="projection-tile"></a>[`projection_tile`](../../lab/projection_tile.md)
+- <a id="mask-pack"></a>[`mask_pack`](../../lab/mask_pack.md)
+- <a id="tma-box"></a>[`tma_box`](../../lab/tma_box.md)
+- <a id="l2-policy"></a>[`l2_policy`](../../lab/l2_policy.md)
+- <a id="dependent-launch"></a>[`dependent_launch`](../../lab/dependent_launch.md)
