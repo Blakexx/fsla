@@ -186,18 +186,11 @@ def scratch(name: str) -> Path:
     return path
 
 
-#: THE PINS EVERY FSLA WORKSPACE SHARES, which fsla-devtools holds (its `pins/`, `@fsla_devtools//pins:<name>_pin.json`): the
-#: rest are this tree's own, `tools/<name>_pin.json`
-SHARED_PINS = ("bazelisk", "cuda_toolkit", "nsight_compute")
-
-
 def read_pin(name: str) -> dict:
-    """A tool's pin: a shared one (`SHARED_PINS`) from the fsla-devtools checkout (`workspace.devtools`), the very
-    checkout the front door hands the graph as `@fsla_devtools` (`docs/build-graph.md#front-door`), so the tools and
-    the graph read one file; the rest from this tree's `tools/<name>_pin.json`."""
-    if name in SHARED_PINS:
-        return json.loads((Path(get("workspace.devtools")) / "pins" / f"{name}_pin.json").read_text())
-    return json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
+    """A tool's pin, from fsla-devtools' `pins/<name>_pin.json` (`@fsla_devtools//pins:<name>_pin.json`) in the checkout
+    `workspace.devtools` names, the very checkout the front door hands the graph as `@fsla_devtools`
+    (`docs/build-graph.md#front-door`), so the tools and the graph read one file."""
+    return json.loads((Path(get("workspace.devtools")) / "pins" / f"{name}_pin.json").read_text())
 
 
 def pinned(name: str) -> Path:

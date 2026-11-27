@@ -138,7 +138,7 @@ record `clock_locked = false`.
 ## 3b. The linker is the graph's
 
 `mold` is THE extension's linker unconditionally (Blake, 2026-08-28), no fallback to `ld.bfd`/`ld.gold`. The graph
-fetches the pinned release itself (`@mold`, by `tools/mold_pin.json`'s digest) and links with it, so the container and
+fetches the pinned release itself (`@mold`, by fsla-devtools' `pins/mold_pin.json`'s digest) and links with it, so the container and
 the host link with the byte-identical binary and no machine installs one.
 
 ## 3c. The checkout's venv: many worktrees on one environment
@@ -213,9 +213,9 @@ on a host they are the host OS's own, which init does not install.
 | Tool | Source | Role |
 |---|---|---|
 | the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | fsla-devtools' `pins/cuda_toolkit_pin.json` (NVIDIA's redistributable components, by the manifest's digest), fetched by the graph as `@cuda_tools` and read through `dev_config.cuda_home()`; on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.5, V13.5.37) for every tool outside the graph's own rules; the same copy is the test tiers' and the binary gates' |
-| `mold` 2.42.0 | `tools/mold_pin.json`, the graph's `@mold` | the extension's only linker |
-| Nsight Compute 2026.4, Nsight Systems 2026.5 | fsla-devtools' `pins/nsight_compute_pin.json`, `tools/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
-| `hyperfine`, `difftastic` (`difft`) | `tools/hyperfine_pin.json`, `tools/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
+| `mold` 2.42.0 | fsla-devtools' `pins/mold_pin.json`, the graph's `@mold` | the extension's only linker |
+| Nsight Compute 2026.4, Nsight Systems 2026.5 | fsla-devtools' `pins/nsight_compute_pin.json` and `pins/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
+| `hyperfine`, `difftastic` (`difft`) | fsla-devtools' `pins/hyperfine_pin.json` and `pins/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
 | `graphviz`, `sqlite3` | the image's package layer; a host's own | dependency rendering, the store's record index inspection |
 | `universal-ctags` | the image's package layer; a host's own | cross-referencing the `csrc/` tree |

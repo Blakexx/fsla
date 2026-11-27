@@ -21,6 +21,4 @@ inline void admit_descriptor(int depth) {
   if (depth > 4) return;
 }
 
-__device__ void carve(const CarryGeomRT& g) { (void)g.bc; }
-
 }  // namespace fixture

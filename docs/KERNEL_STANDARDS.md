@@ -701,7 +701,7 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
 4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in the commit gate (`bazel test //:gate`); the binary gates
    (the SASS gate) after every build; the census is on demand.
 5. A TOOL THAT CANNOT PARSE A UNIT HAS NOT GATED IT. The analyzer is pinned to a release that parses every unit
-   (`tools/clang_tidy_pin.json`), and a parse error is a gate failure: the distro's clang 14 reported used
+   (fsla-devtools' `pins/clang_tidy_pin.json`), and a parse error is a gate failure: the distro's clang 14 reported used
    parameters as unused on a unit it could not parse.
 6. A REGION DECLARES ITS BARRIER FREEDOM (Blake, 2026-09-29, generalizing the decode prologue law of 2026-08-27).
    Any device file may mark a region `//: @barrier-free <reason>` ... `//: @barrier-free-end`; a CTA or grid barrier

@@ -28,7 +28,7 @@ under the machine's `python3`, before any venv exists. `tools/bootstrap.py` read
 `workspace.devtools`, from `workspace.json` in the directory the reader's own rule names -- and the front door imports
 the reader and the host budget from that checkout. Run (`python3 tools/bootstrap.py`), it is the machine's one step
 outside the graph: it imports the reader the same way and runs `tools/dev.py`'s `install_bazelisk`, the pinned bazelisk
-and the `bazel` link, since nothing can `bazel run` before `bazel` exists. That bazelisk's pin, like the toolkit's and Nsight Compute's, is fsla-devtools' (`pins/`): `dev_config.read_pin` reads a shared pin (`SHARED_PINS`) from the `workspace.devtools` checkout, the one the front door hands the graph as `@fsla_devtools` ([build-graph](../../build-graph.md#front-door)), so the tools and the graph read one file; any other from `tools/`. The sibling checkouts' location (`SIBLINGS`, the default of
+and the `bazel` link, since nothing can `bazel run` before `bazel` exists. Every tool pin, bazelisk's among them, is fsla-devtools' (`pins/`): `dev_config.read_pin` reads it from the `workspace.devtools` checkout, the one the front door hands the graph as `@fsla_devtools` ([build-graph](../../build-graph.md#front-door)), so the tools and the graph read one file; this tree holds none. The sibling checkouts' location (`SIBLINGS`, the default of
 `store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both. Two read-outs serve a
 machine that has nothing yet, CI's runner (`.github/actions/graph`): `--devtools-pin`, the fsla-devtools repository
 and commit `MODULE.bazel` pins, which it clones beside the checkout first, and `--bin-dir`, the directory of

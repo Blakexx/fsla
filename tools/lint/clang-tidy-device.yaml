@@ -1,6 +1,6 @@
 # The DEVICE clang-tidy profile: dead stores and the unused-parameter/declaration classes, on every device unit the
 # library links (the graph's `//csrc/fsla:clang_tidy_device`, `tools/lint/unit_lints.py`, with the pinned clang-tidy of
-# tools/clang_tidy_pin.json) through clang's `--cuda-host-only` CUDA frontend. Its header filter is the runner's: the
+# fsla-devtools' pins/clang_tidy_pin.json) through clang's `--cuda-host-only` CUDA frontend. Its header filter is the runner's: the
 # unit's own package's headers count (`unit_lints.py`'s PROFILES). The host units have the repo-root `.clang-tidy`.
 Checks: >
   -*,

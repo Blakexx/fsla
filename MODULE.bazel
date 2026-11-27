@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "15df016afc41db2319f8e638b2c845d09951d894",
+    commit = "70e314cc3db6e9f46b996eb404259d25c3c3e108",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -63,12 +63,12 @@ environment.python(
 environment.pinned(
     name = "mold",
     build_file = "//bazel:mold.BUILD",
-    pin = "//tools:mold_pin.json",
+    pin = "@fsla_devtools//pins:mold_pin.json",
 )
 environment.pinned(
     name = "clang_tidy",
     build_file = "//bazel:clang_tidy.BUILD",
-    pin = "//tools:clang_tidy_pin.json",
+    pin = "@fsla_devtools//pins:clang_tidy_pin.json",
 )
 environment.host_cc(name = "host_cc")
 environment.host_gpu(name = "host_gpu")
