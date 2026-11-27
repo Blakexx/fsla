@@ -1,4 +1,4 @@
-"""fsla's runner (measure/provider.py): it reads central cells, names an arm by its subject and its call count, offers
+"""fsla's runner (measure/provider.py): it reads central cells, offers
 the arms this binary carries at the cell's shape, and refuses a cell by a fact -- an iteration build of a declared arm
 family, a cell of another kind -- while the unbuilt carry leaves `prefill` unoffered; a layer arm's fixture builds only
 the parts the arm reads. No GPU: nothing here builds an arm, and the binary's
@@ -35,19 +35,12 @@ def binary(monkeypatch):
     monkeypatch.setattr(provider, "_declared", lambda family: declared_decode)
     #: a full-contract build's record, planted as the tables are
     monkeypatch.setattr(provider, "_build_config", lambda: {"iteration": False, "ptxas": "x"})
-    #: the window an sm_90a card runs, planted as the tables are: no device answers it here
-    monkeypatch.setattr(subjects, "_shared_window", lambda: 1024)
     return tables
-
-
-def test_an_arm_is_named_by_its_subject_and_its_call_count():
-    assert provider.arm_name("prefill") == "prefill"
-    assert provider.arm_name("prefill", calls=4) == "prefill@calls=4"
 
 
 def test_a_cells_arms_are_the_subjects_it_takes(binary):
     names = set(provider.arms(by_name("carry-alt-k4-256x256-T1024")))
-    assert all(name.split("@")[0] in SUBJECTS for name in names)
+    assert all(name in SUBJECTS for name in names)
     #: the carry is not built on this line: its op's prefill is offered on no cell
     assert "prefill" not in names | set(provider.arms(by_name("carry-alt-k16-256x256-T1024")))
 

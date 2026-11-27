@@ -20,7 +20,7 @@ CudaUnitInfo = provider(
 
 def declaration(kernel, rule, allow, reason, arch = None):
     """A declaration of a kernel's findings, stated beside the unit that compiles it (`cuda_unit(declarations = [...])`): the checker's form,
-    `kernel` a regex over the kernel's demangled name, `rule` a rule of the checker or a notice rule of the project's ledger, `allow` the count
+    `kernel` a regex over the kernel's demangled name, `rule` a rule of the checker or a notice rule of the checker's ledger, `allow` the count
     the kernel may keep (a rule's bound for a bound rule; 0 refuses what the ledger accepts by default), `reason` why.
 
     The architecture is the attachment's, not the declaration's: `arch` (`sm_90a`) says the build target the declaration attaches to, none

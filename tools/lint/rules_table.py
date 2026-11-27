@@ -16,7 +16,7 @@ section that states no rule). This lint fails on
 
 The table is `{"rules": [the rows], "checker": {the guidance}}`. Check 5, THE CHECKER'S GUIDANCE (Blake, 2026-11-20), reads the `checker`
 section, which is not a standard and carries no mechanism: it runs both ways against the rules of the pinned checker
-(`warpline.checker.manifest.rule_names` over the checker's base ledger with the project's `tools/notice_ledger.json`): every rule has an entry
+(`warpline.checker.manifest.rule_names` over the checker's base ledger): every rule has an entry
 keyed by its name, no entry names a rule the pin lacks, and every id an entry lists under `rules` (the standards rows it serves, none where
 no row states the rule) is a row. An entry carries `guidance` (fsla's one line: the atom or practice, the standards anchor, the lab page with
 the evidence; where fsla has nothing to add it says "nothing beyond the generic fix"), `triggers` (the regexes over new kernel source at which
@@ -68,7 +68,6 @@ SECTIONS = ("rules", "checker")
 GUIDANCE = ("guidance", "triggers", "rules")
 #: the rules of the pinned checker a fixture tree stands in for (the lint's own tests)
 FIXTURE_RULES = ("alpha_rule", "beta_rule")
-LEDGER = "tools/notice_ledger.json"
 ANCHOR = re.compile(r'<a id="([^"]+)"></a>')
 ANCHOR_LINE = re.compile(r'^\s*(?:<a id="[^"]+"></a>\s*)+$')
 NUMBERED = re.compile(r"^(\d+)\. ")
@@ -196,7 +195,7 @@ def guidance_of(table: dict, rules: list[str]) -> list[str]:
 
 
 def checker_rules(root: Path) -> list[str] | None:
-    """The rule names of the pinned checker over its base ledger with the project's rows (`rule_names`), where its package
+    """The rule names of the pinned checker over its base ledger (`rule_names`), where its package
     is on the path (`dev_config.warpline_python()`: the graph's hand-in, or the runfiles' `warpline+` of a test); None where it is not."""
     sys.path.insert(0, str(ROOT / "tools"))
     import dev_config
@@ -205,8 +204,7 @@ def checker_rules(root: Path) -> list[str] | None:
         return None
     sys.path.insert(0, found)
     from warpline.checker import manifest, notices
-    ledger = notices.merge(notices.base_ledger(), notices.load_ledger((root / LEDGER).read_text()))
-    return manifest.rule_names(ledger)
+    return manifest.rule_names(notices.base_ledger())
 
 
 def coverage_of(rows: list[dict], leaves: set[str], every: set[str]) -> list[str]:

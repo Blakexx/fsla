@@ -69,11 +69,8 @@ filegroup(
     name = name,
     tool = "tools/%s.py" % name,
 ) for name in [
-    "arith_model",
     "bank_model",
     "kernels",
-    "op_timeline",
-    "realized_support",
     "review_gate",
     "supported",
     "wheels",

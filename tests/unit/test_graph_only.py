@@ -45,7 +45,7 @@ def test_a_toolchain_or_install_command_is_refused_with_its_target(command, targ
 
 
 @pytest.mark.parametrize("command", [
-    "bazel run //measure/lab:x.run -- pack",
+    "bazel run //measure/lab:x.run -- sass",
     "bazel run //measure/lab:x.run -- ncu --metric m",
     "bazelisk test //tests:sanitizer -- nvcc",
     'echo "nvcc is a compiler"',

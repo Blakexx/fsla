@@ -13,17 +13,15 @@ refuses the cell by raising, always by a FACT of the cell or the binary and neve
 `timed`, the timing entries' executor, calls it on the cell an entry names, and builds the arm its `params` name.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
 binary carries at the cell's shape (the carry arm the prefill launch function selects for the cell's call for `prefill`, the decode arm for
-`decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
-(`Subject.calls`). Only the arm asked for is built.
+`decode_step`): its name is the subject's. Only the arm asked for is built.
 Building one proves, before anything is timed, from a fact the device produces, that this binary carries the subject's
 family (its stamp entry; a path or a hash cannot catch a stale binary), and refuses the arm by name when it does not.
 That `fsla` and the extension loaded from inside the entry's bundle is the session's check (the bundle's `binds`).
 
 A built arm is a `fsla_devtools.timing.Timed`: its call times one launch between two CUDA events (the canonical
 instrument, `cuda_events`) and returns milliseconds; its reset is the launch's (a carried state restored, a decode state
-re-seeded), run untimed before every call. What an arm reports is the cell's facts beside the arm's call count and the
-binary's: the family stamp, the device, torch, the assembler, and the SM clock read when the arm
-was built (docs/measurement.md).
+re-seeded), run untimed before every call. What an arm reports is the cell's facts beside the binary's: the family stamp, the device, torch, the assembler, and the SM clock read when the
+arm was built (docs/measurement.md).
 """
 from __future__ import annotations
 
@@ -34,11 +32,6 @@ from pathlib import Path
 #: this tree -- a timing entry's bundle -- as it was imported, its links unresolved (a bundle's runfiles are links into
 #: the tree that built them, and what it reads is the bundle's)
 CHECKOUT = Path(os.path.abspath(__file__)).parents[1]
-
-
-def arm_name(subject: str, *, calls: int = 1) -> str:
-    """An arm's name: the subject, then a call count other than one."""
-    return subject + (f"@calls={calls}" if calls != 1 else "")
 
 
 def timed(cell, params):
@@ -68,9 +61,8 @@ def arms(data) -> dict:
         raise TypeError(f"fsla's runner takes a central carry cell or layer cell, got a {data.kind} cell")
     out = {}
     for subject in SUBJECTS.values():
-        for calls in subject.calls:
-            if subject.name in applicable(data, calls) and _kernel_carried(subject.name, data):
-                out[arm_name(subject.name, calls=calls)] = partial(_build, subject.name, data, calls)
+        if subject.name in applicable(data) and _kernel_carried(subject.name, data):
+            out[subject.name] = partial(_build, subject.name, data)
     return out
 
 
@@ -152,7 +144,7 @@ def _kernel_carried(subject: str, spec) -> bool:
     return True
 
 
-def _build(name: str, spec, calls: int):
+def _build(name: str, spec):
     import torch
     from fsla_devtools.timing import Timed
 
@@ -166,7 +158,6 @@ def _build(name: str, spec, calls: int):
     if stamp is None:
         raise RuntimeError(f"this binary carries no {subject.stamp} entry, so it cannot state that it has {name}'s family")
     fx = {"cell": spec} if spec.kind == "carry" else _layer_fixture(spec)
-    fx.update(calls=calls)
     launch = subject.build(fx)
     BUILD_CONFIG = _build_config()
     props = torch.cuda.get_device_properties(0)
@@ -180,7 +171,7 @@ def _build(name: str, spec, calls: int):
         torch.cuda.synchronize()
         return start.elapsed_time(end)
 
-    cell = {"cell": spec.name, "kind": spec.kind, "subject": name, "level": subject.level, "calls": calls,
+    cell = {"cell": spec.name, "kind": spec.kind, "subject": name, "level": subject.level,
             "state": spec.state, "backing": spec.backing, "tokens": spec.tokens, "d_v": spec.dv,
             "widths": list(spec.routing.topology),
             "ptxas": BUILD_CONFIG.get("ptxas"),

@@ -24,7 +24,7 @@ graph's environment interpreter, its arguments after `--`.
 - No CUDA toolkit: it is the graph's (`@cuda_tools`, fsla-devtools' `pins/cuda_toolkit_pin.json`), which every compile, disassembly and
   assembler check outside the graph's own rules reads through `dev_config.cuda_home()`; init fetches none and `check` holds
   the graph's nvcc to the pin.
-- The pinned devbox tools (`DEV_TOOLS`: hyperfine, difftastic, Nsight Compute and Systems), each where it is missing or
+- The pinned devbox tools (`DEV_TOOLS`: Nsight Compute and Systems), each where it is missing or
   does not report its pin's version; the measurement tools find the pinned Nsight Compute by its pin
   (`dev_config.ncu()`).
 - The Windows System32 mount under WSL.
@@ -73,7 +73,7 @@ graph's output (`ab_fsla_<name>_built.pth`), the co-developed sibling checkout (
 (`zz_fsla_env.pth`, the venv's marker) and the bytecode prefix (`zz_fsla_pycache.pth`: `sys.pycache_prefix` under
 `host.build_cache`, so no `__pycache__` lands in the checkout). An activated venv is a developer's shell, so its bin
 carries every command the devbox has: the environment's (ruff, pytest, ast-grep, clangd, py-spy, ...), run by the
-venv's interpreter so they import what its site names, and the devbox's pinned tools (hyperfine, difft, ncu, nsys),
+venv's interpreter so they import what its site names, and the devbox's pinned tools (ncu, nsys),
 linked from their folders under `host.tools_dir`, one install a machine whichever checkout links it. It refuses
 until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `fsla`, `fsla_devtools` and `torch` each import from
 where those files say.

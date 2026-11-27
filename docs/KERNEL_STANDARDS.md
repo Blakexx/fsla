@@ -367,7 +367,7 @@ Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
 brief-enforced: the graph's front door takes machine-wide slots for every build (`fsla_devtools.graph.front_door` over
 `fsla_devtools.locks.host`, §23) and waits when they are full — a brief cannot forget it. An agent checks
-`pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
+`pgrep -c cicc` before launching and never wraps a full build in a repeated timing run (bounded to 3 runs, on the
 LINK step only). Coordinator error recorded: two briefs omitted the build lock.
 
 ## <a id="no-verify"></a>§18 addendum (law, 2026-08-29): `--no-verify` is never a precedent

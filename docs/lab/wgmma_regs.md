@@ -36,8 +36,7 @@ repetitions, every form's accumulators exact against the host's; cycles a step, 
 WHAT IT SHOWS.
 - The register map is CUTLASS's: every accumulator matched through it, so the state is the readout's operand with no
   relayout, on the device as in the SASS.
-- Truncating and rounding cost the same step. Which one the kernel takes is the accuracy model's question
-  ([`arith_model`](../internals/tools/arith_model.md)), not a cost's.
+- Truncating and rounding cost the same step. Which one the kernel takes is an accuracy question, not a cost's.
 - The narrowed step, 110, is under the fold alone plus the readout alone (186) and under the step with A shared (121):
   the two MMAs of one commit group overlap.
 - A second warpgroup in the CTA costs a step nothing to 7%, so at these steps one warpgroup does not hold the SM's

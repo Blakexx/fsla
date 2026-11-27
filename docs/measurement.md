@@ -346,7 +346,6 @@ names where a device instrument writes.
 | `//measure:store_oracle_tier` | the oracle tier on the device (`measure/oracle_tier.py`): the counts, WHICH cases failed (a red case is a stored fact), every per-slot comparison's margins (`--oracle-margins`) and the worst per output kind; a host without a CUDA device refuses | the tool, the library, the tree and the devices |
 
 The build's SASS signatures (KERNEL_STANDARDS §20) are no instrument: the library's SASS gate judges them on every build.
-The realized support (`tools/realized_support.py`) has no target: the producer it reads is not built on this line.
 
 A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 

@@ -31,9 +31,8 @@ Mirrors `csrc/fsla/src/common/atoms/warp.cuh`, a concern of the baseline operati
 
 - <a id="launch-known"></a>`launch_known(positive)`: a condition true of every lawful launch that only the launch knows -- a parameter that is
   never 0, compared with 0. THE DECODE STEP'S WHOLE-ATOM WALK USES IT, AND THE EVIDENCE IS THAT KERNEL'S ALONE: with its four leaves'
-  loads unconditional, under `opaque(1) != 0` or inside a `once(true)` loop, the compiled walk issued two leaves' loads after the first
-  leaf's shuffles and a step of 65,536 leaves a head took 1.60 ms on an H100; under `launch_known` all sixteen loads are issued together
-  and it takes 0.77 ([decode.md](../../decode/decode.md#atom-loads)). A small loop of the same shape (four wide loads, then each unit's
+  loads unconditional, under `opaque(1) != 0` or inside a `once(true)` loop, the compiled walk issued some leaves' loads after the first
+  leaf's shuffles; under `launch_known` all sixteen loads are issued together ([decode.md](../../decode/decode.md#atom-loads)). A small loop of the same shape (four wide loads, then each unit's
   work with its shuffles, registers at their limit) compiled with its loads together in all four forms, so this is not a general statement
   about where the assembler puts a load. It orders the ISSUE of loads; the data dependency is still what orders a value's use.
 

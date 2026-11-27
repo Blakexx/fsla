@@ -921,8 +921,8 @@ and coarse twins by its name with that suffix removed and replaced): each warp m
 Record: `data:records/fsla/measure/lab/carry_window.run/20261118T063153Z-2662d97a/output.json` (and, at one CTA with the edges row, `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/output.json` and its traced rows `data:records/fsla/measure/lab/carry_window.run/20261118T222237Z-5dbd39e4/trace/`); the phase ledger's dumps:
 `data:records/fsla/tools/lab/20261115T235633Z-bcc1c663/output.json` and its dumps, the sample's parts.
 
-THE PHASE LEDGER (H100 SXM on Nebius, the pack at a8a55a64, `lab ledger-dumps` there and `lab ledger --packed --dump
---per 528` here: each kernel's checked launch, 4 windows on 132 CTAs, profiled by ncu's SourceCounters; a CTA-window).
+THE PHASE LEDGER (H100 SXM on Nebius, the build at a8a55a64, its SourceCounters dumped there and read here with
+`--per 528`: each kernel's checked launch, 4 windows on 132 CTAs, profiled by ncu's SourceCounters; a CTA-window).
 SHARED-MEMORY WAVEFRONTS: the block form 4,238 and with the three cuts 3,216; both sides' operands made 3,758 and with
 the cuts 2,735 -- the bulk copies' writes not among them. WGMMA'S OPERAND READS ARE COUNTED AND ARE HALF OF IT: 1,920
 in each uncut form, 20 a step (its 2 KB of A and 512 B of B at 128 bytes a wavefront), 1,280 of them the fold's 64
@@ -934,7 +934,7 @@ launch's start, 161 (once a launch). The block form adds its expansion (some 290
 (128). Bank conflicts: none in the made forms, 56 in the block form's expansion and pads. The launch profiled stores
 the fold's state out too, so its stall samples are the dump's, not the window's.
 
-THE TIMED LAUNCH'S LEDGER (the pack at c9e374fd, `ledger-dumps --skip 1`: each kernel's first timed launch, 64 windows
+THE TIMED LAUNCH'S LEDGER (the build at c9e374fd, dumped after the first launch: each kernel's first timed launch, 64 windows
 on 132 CTAs, `--per 8448`; its manifest `data:records/fsla/tools/lab/20261115T234424Z-c03353b2/output.json`, its dumps
 the sample's parts). Of all warps' stall samples, THE FOLD'S STEPS' LOOP HOLDS THE MOST: 20% in the block form with the panel by
 stmatrix (its reasons the warpgroup's barrier 53%, a short scoreboard 24%) and 27% in both sides' made with it (short

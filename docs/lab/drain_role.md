@@ -11,7 +11,7 @@ the same path add to it?
 
 THE PLAN STATES THE SUM'S WIDTH ACROSS CTAS, f16 or fp32
 ([precision.md](../architecture/precision.md)); what the f16 sum gives up in accuracy is
-[`arith_model`](../internals/tools/arith_model.md#f16)'s, not this experiment's.
+that page's, not this experiment's.
 
 THE FORM. A CTA an SM.
 - `direct`: 4 warps add a token's 64 channels as 32 f16 pairs, one line, from registers.

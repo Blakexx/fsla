@@ -62,10 +62,6 @@ class Subject:
     #: The device-side stamp entry that proves THIS binary carries the family (a path or
     #: a hash cannot: only a fact the device produces can catch a stale binary).
     stamp: str
-    #: THE CALL COUNTS it is priced at: the cell's sequence as that many carried calls. One is
-    #: the whole sequence in one launch set; a count above one prices what each call's fixed
-    #: cost adds, and the difference between the two rows IS the per-call price.
-    calls: tuple[int, ...] = (1,)
 
     def __post_init__(self) -> None:
         if self.level not in LEVELS:
@@ -228,31 +224,18 @@ SUBJECTS = {
 }
 
 
-def _shared_window() -> int:
-    from fsla.ops.window import window_of
-
-    return window_of()
-
-
-def _splits(tokens: int, calls: int) -> bool:
-    """Whether a sequence runs as `calls` carried calls: one call takes any length, and a
-    chain hands its state off on window boundaries, so each of its calls is whole windows."""
-    return calls == 1 or tokens % (calls * _shared_window()) == 0
-
-
 def _intra_reads(widths) -> bool:
     from fsla.ops import intra as intra_ops
 
     return intra_ops.reads(widths)
 
 
-def applicable(spec, calls: int = 1) -> list[str]:
-    """Which subjects a cell can carry at a call count, by the cell's own FACTS: its kind, the counts a subject is
-    priced at, the chain's whole windows, its backing, and each subject's own condition (its decode steps, its
-    widths). A limit of a kernel is the kernel's to refuse, by name, when it is called: none is restated here."""
+def applicable(spec) -> list[str]:
+    """Which subjects a cell can carry, by the cell's own FACTS: its kind, its backing, and each subject's own
+    condition (its decode steps, its widths). A limit of a kernel is the kernel's to refuse, by name, when it is called: none is restated here."""
     out = []
     for name, subject in SUBJECTS.items():
-        if subject.kind != spec.kind or calls not in subject.calls or not _splits(spec.tokens, calls):
+        if subject.kind != spec.kind:
             continue
         if name == "decode_step" and spec.decode_steps == 0:
             continue

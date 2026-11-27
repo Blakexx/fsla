@@ -35,7 +35,7 @@ neighbouring along a level the read side is dense on, so a token that reads one 
 runs each read digit's step on both boxes' images into ONE accumulator, and drain warps add one line a token.
 - `f16`: the steps, the panel and the drain are MEASURED whole ([`readout_role`](../../lab/readout_role.md): 12.0 to
   21.7 cycles a token a pair by 4 to 1 drain warps) and stand in place of the readout's tensor term and a drain a
-  box. Its accuracy is [`arith_model`](arith_model.md#f16)'s to state.
+  box.
 - `fp32`: that measurement and one more line of the drain ([`drain_rate`](../../lab/drain_rate.md)), an ESTIMATED
   sum of two measurements.
 Both store an image of the state once a window ([`state_image`](../../lab/state_image.md)), which the readout
@@ -52,8 +52,7 @@ cluster before one fp32 drain to global memory. `slots` is the fp32 sum the form
 ([precision.md](../../architecture/precision.md)):
 each box stages its partial and sends it by a bulk copy into its own slot of a collector's shared memory, and the
 collector adds a token's slots in registers. `s64` sends 64-bit integers by a bulk reduction, at a scale agreed a
-window -- outside the fp32 sum the format states, counted for comparison ([`arith_model`](arith_model.md#sums)
-measures its accuracy). Both are MEASURED by [`cluster_sum`](../../lab/cluster_sum.md) at two round sizes, and the
+window -- outside the fp32 sum the format states, counted for comparison. Both are MEASURED by [`cluster_sum`](../../lab/cluster_sum.md) at two round sizes, and the
 model reads that record's line: a cost a round a CTA whatever the round holds (`--round` partials a CTA hand over
 between barriers; beyond the lab's 64 the line is UNMEASURED), and a cost a partial. The lab's partial includes its
 collectors' drain, an eighth of one, which the model's drains count again: a row with a cluster's sum is over by

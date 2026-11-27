@@ -4,7 +4,7 @@
 rules and the readers are loaded once and one way. warpline reads and checks the SASS and the profiler's exports; what is fsla's is
 which code is which phase (`tools/region_ledger.py`'s attribution) and the budgets. The production SASS gate is warpline's own check
 in the graph (bazel/defs.bzl's `_sass_gate`); the judgment here is the one it makes, the manifest of the kernels compared with the
-declarations (`warpline.declare.compare`), on the same project ledger and the same notes (the `checker` section of `docs/rules.json`).
+declarations (`warpline.declare.compare`), on the same notice ledger and the same notes (the `checker` section of `docs/rules.json`).
 
     checker()                       the checker's modules, imported from the directory `dev_config.warpline_python()` names; in the
                                     lab's graph actions, which have no dev config, the one they hand in (`FSLA_WARPLINE_PYTHON`)
@@ -16,7 +16,7 @@ declarations (`warpline.declare.compare`), on the same project ledger and the sa
     device_arch()                   the running device's architecture as a cubin names it
     kernels_in(listing, usage, ...) the checker's model of the disassembly texts alone, named by the mangled name or by the demangled names given
                                     (the lab's built experiments carry the texts and the names: no tool runs)
-    project_ledger()                the notice ledger every build is read against: the checker's base rows with the project's (`tools/notice_ledger.json`)
+    notice_ledger()                 the notice ledger every build is read against: the checker's base rows
     declarations(entries)           the checker's declarations of `{"kernel": regex, "rule", "allow", "reason"}` entries (the lab's, from `b.expect`:
                                     the production gate's form)
     check(kernels, rules, ...)      THE ONE JUDGMENT: the manifest of the kernels under the named rules and of the build's notices (counted under their
@@ -136,33 +136,29 @@ def kernels_in(listing: str, usage: str, graphs: str, names: dict[str, str] | No
 #: expectations (`STEP_XU`, `BSSY`, a `CALL` opcode) are declarations of this allowance
 PERMIT = 10**9
 
-#: the project's ledger of the toolkit's notices: its rows override or add to the checker's base ledger (the rows that only repeat the base are not
-#: here), the default every build's notices are read against -- the lab's and the production gate's (bazel/defs.bzl's `_SASS_GATE_ATTRS`)
-PROJECT_LEDGER = Path(__file__).absolute().with_name("notice_ledger.json")
-
 
 @functools.cache
-def project_ledger() -> list:
-    """The ledger the checker reads a build's notices against: its base ledger with the project's rows (`PROJECT_LEDGER`)."""
-    ledgers = checker().ledgers
-    return ledgers.merge(ledgers.base_ledger(), ledgers.load_ledger(PROJECT_LEDGER.read_text()))
+def notice_ledger() -> list:
+    """The ledger the checker reads a build's notices against: its own base ledger (`warpline.checker.base_ledger`); fsla's pointers
+    for a notice's rule are the notes (the `checker` section of `docs/rules.json`)."""
+    return checker().ledgers.base_ledger()
 
 
 def declarations(entries: list[dict]) -> list:
     """The checker's loaded declarations of `entries` (`kernel`: a regex over the demangled name, `rule`, `allow`, `reason`): the rules of
-    the model, the profiles and the project's ledger are the rules a declaration may name."""
+    the model, the profiles and the notice ledger are the rules a declaration may name."""
     c = checker()
-    return c.declare.load_declarations(json.dumps({"declarations": entries}), c.rules.registry(), c.manifest.rule_names(project_ledger()))
+    return c.declare.load_declarations(json.dumps({"declarations": entries}), c.rules.registry(), c.manifest.rule_names(notice_ledger()))
 
 
 def check(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None) -> list:
     """THE ONE JUDGMENT, the production gate's on a manifest: the manifest of `kernels` under the rules named (the model rules of the
-    checker's registry) and of the build's `notices` (read, counted under their rows' rules of `project_ledger()` at the function they
+    checker's registry) and of the build's `notices` (read, counted under their rows' rules of `notice_ledger()` at the function they
     name; none: a build with no messages), compared with the loaded `declarations` and fsla's `notes` (a line a rule, printed after the
     checker's fix): the refusals."""
     c = checker()
     registry = c.rules.registry()
-    manifest = c.manifest.collect(kernels, {n: registry[n] for n in sorted(rules)}, notices=notices, ledger=project_ledger())
+    manifest = c.manifest.collect(kernels, {n: registry[n] for n in sorted(rules)}, notices=notices, ledger=notice_ledger())
     return c.declare.compare(manifest, declarations, notes).refusals
 
 

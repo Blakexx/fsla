@@ -229,7 +229,7 @@ pass that merges them, no switch of precision by card. The width is a field the 
 (R9), each width a form gated by forcing it; the producer's planner chooses it from the declaration's structure --
 the levels' widths and walks -- and the op counts nothing. MODELLED on one cell (carry-alt-k4-256x256-T65536; a dense read side and
 wider levels are not): one f16 line a CTA of 512 leaves costs 0.083% a token at the median, 0.40% at most,
-against the family's own 0.115% (`docs/internals/tools/arith_model.md#f16`). The state reaches the readout through its
+against the family's own 0.115% (recorded figures of the fp64 recurrence on the formatted operands, rounded only where the family's kernels round, 2026-11-09 and 2026-11-11; the tool that produced them is deleted, `docs/internals/DELETIONS.md`). The state reaches the readout through its
 IMAGE in shared memory, stored once a window, WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL (Blake, 2026-11-11;
 amended 2026-11-13): laid across the fold's sparse digits
 where they differ and along one sparse digit's dense digits where they are equal, the readout the same. A readout

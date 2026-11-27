@@ -733,22 +733,8 @@ leaf's arithmetic, and each leaf's loads sit under `resident` (`ops::launch_know
 assembler issues some leaves' loads after the first leaf's shuffles, which wait on the first leaf's data, and the atom pays two round trips in
 a row.
 
-THE RECORD (2026-11-26; this kernel at sm_90a, toolkit 13.5, the library built four times with only the loads' condition changed; the loop
-read is the whole-atom walk of the arm at two levels, 64 channels, no decay; the count is of loads issued after their trip has waited for
-another load, over the sixteen arms; the time is a step of 65,536 leaves a head at 64 heads with decay, on an H100 against the commit before
-this form, interleaved on one box):
-
-| the loads' condition | loads behind the first shuffle, of 16 | loads behind another's wait, an arm | a step |
-|---|---|---|---|
-| none (`true`) | 5 | 2 to 14 | 1.60 ms |
-| `ops::opaque(1) != 0` | 8 | 2 to 14 | not timed |
-| a `ops::once(true)` loop | 5 | 3 to 14 | not timed |
-| `ops::launch_known(p.atoms_per_bh)` | 0 | 1 | 0.77 ms |
-
-The commit before this form, whose loads sat under the page table's test, measured 0.77 ms in the same sessions. The counts were read with one more late load
-in every arm, the work-stealing scan's second counter loaded behind a test of the first; the scan loads both first, and the library's gate holds every kernel
-of the library at 0 (the checker's rule `load_behind_load`, no declaration). What moves the loads in
-this kernel and not in a small loop of the same shape is not known.
+The library's SASS gate holds every kernel at 0 loads issued behind another load's wait (the checker's rule `load_behind_load`, no declaration).
+What moves the loads in this kernel and not in a small loop of the same shape is not known.
 
 ONLY THE WRITE SUPPORT IS THE TERM'S. A dense declaration does not make every stored digit
 nonzero -- a softmax digit can quantize to a zero u8 -- and a leaf outside the write support

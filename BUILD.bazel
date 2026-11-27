@@ -534,11 +534,16 @@ checkout_test(
 docrefs_test(
     name = "docrefs",
     size = "small",
+    complete = [
+        "docs/internals/",
+        "docs/internals/fsla_api",
+    ],
     data = "@fsla_data//:root",
     exclude = ["docs/internals/DELETIONS.md"],
     lock = "docs/references.lock.json",
     mirrors = {
         "docs/internals/": "csrc/fsla/src/",
+        "docs/internals/fsla_api": "csrc/fsla/fsla_api",
         "docs/internals/tools/": "tools/",
     },
     packages = {

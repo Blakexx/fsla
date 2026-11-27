@@ -68,7 +68,7 @@ Every record under `data:records/fsla/measure/lab/` but `carry_token`'s carries 
 is 13.5 ([`docs/KERNEL_STANDARDS.md#s26`](../KERNEL_STANDARDS.md#s26): a new toolkit re-runs the experiments its rules cite). A
 `[COMPILER]` or `[MACHINE]` rule's records, by what each needs:
 
-- RE-READ UNDER 13.5, no GPU (`bazel run //measure/lab:<name>.run -- pack --arch sm_90a --into DIR`: the build's declared SASS counts hold, no
+- RE-READ UNDER 13.5, no GPU (`bazel build //measure/lab:<name>`, its validation, and `bazel run //measure/lab:<name>.run -- sass` for the registers: the build's declared SASS counts hold, no
   `setmaxnreg` notice, and each kernel's registers are the record's): `collective_branch` (sm_90a: no `CALL` in any of the five
   forms, one `WARPSYNC.COLLECTIVE` before each of the 8 shuffles in the two role forms, none in the others -- the form its page
   declares), `reg_trade` (no `setmaxnreg` notice, registers 128 and 126, [§5](../KERNEL_STANDARDS.md#s5)'s `[COMPILER]` form),

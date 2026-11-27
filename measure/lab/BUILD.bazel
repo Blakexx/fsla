@@ -1,7 +1,7 @@
 """THE LAB'S EXPERIMENTS: one target each (bazel/lab.bzl, docs/internals/tools/lab.md#graph), built by the graph's CUDA rule for sm_90a,
 read by the graph's disassemblers, checked by the lab's checks as the target's validation, and run by its run target:
 `bazel build //measure/lab:<name>`; `bazel run //measure/lab:<name>.run`, which measures it and stores its record in the data
-repository (at its run target's label); `bazel run //measure/lab:<name>.run -- pack --arch sm_90a --into DIR`, which copies its checked outputs."""
+repository (at its run target's label)."""
 
 load("//bazel:defs.bzl", "include_root", "tree_part", "workspace_stamp")
 load("//bazel:lab.bzl", "lab_checked_test", "lab_experiment")

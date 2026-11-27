@@ -5,8 +5,8 @@ calls warpline's `warpline_check_actions` once a built architecture): the checke
 registry on every function, there is no subset, and the build's ptxas notices counted under the ledger's rules), then its COMPARISON
 with fsla's declarations. A refusal fails the comparison's action, so `bazel build //:library` fails, printing it; the comparison's
 text is a verdict of the library (`fsla_cu13/sass_gate.<arch>.check.txt`), and so is closed-world rule 2 (beside it, `sass_gate.ptx.txt`,
-[below](#graph)). What is fsla's is only what the declarations say ([below](#declarations)), the project's ledger
-(`tools/notice_ledger.json`, [`lab.md`](lab.md#ledger)) and the notes (the `checker` section of `docs/rules.json`); the rules, their
+[below](#graph)). What is fsla's is only what the declarations say ([below](#declarations)), the notice ledger
+(warpline's base ledger, [`lab.md`](lab.md#ledger)) and the notes (the `checker` section of `docs/rules.json`); the rules, their
 counts, the refusals' texts and the one judgment are warpline's. The step cover (KERNEL_STANDARDS §32.4) is a family's machine model's
 reading, and the gate runs none until a family's model exists.
 
@@ -37,7 +37,7 @@ kernel, the rule, the count found and declared, the declaration's reason or `und
 rule with no bound declared is a figure, shown and never refused. The lab judges through the same comparison (`tools/checked.py`'s
 `check`, [`lab.md`](lab.md#hazards)).
 
-The notices are the units' ptxas reports (`--notices`, one a unit), read as one build's against the project's ledger: a notice
+The notices are the units' ptxas reports (`--notices`, one a unit), read as one build's against the notice ledger: a notice
 naming a function of the binary is counted at it, any other at its own place (a front end's warning at its `file(line)`, a summary that
 names no function at `the build`). A warning of ptxas carries no architecture, so a build of several architectures counts each notice
 in each architecture's check.
@@ -87,7 +87,7 @@ warpline's form, which that architecture's check reads:
   so the declarations say only what is so;
 - the notes, fsla's guidance a rule (the `checker` section of `docs/rules.json`), printed after a refusal's fix.
 
-A declaration may tighten (`allow` 0 where a ledger row accepts the notice by default) as well as allow; a rule is a rule of the checker or of the project's ledger
+A declaration may tighten (`allow` 0 where a ledger row accepts the notice by default) as well as allow; a rule is a rule of the checker or of its notice ledger
 ([`lab.md`](lab.md#ledger)). `decode`'s and the producer's solves' declarations (`csrc/fsla/src/decode/arms.bzl`, `csrc/fsla/src/entmax/arms.bzl`: each family's, over its arms' keys) are each kernel's exact count of `load_in_trip` and `loop_convergence`, the two rules the full set found on code that predates them ("predates the rule; fixed at the family's Hopper rewrite"; the entmax factor backward's are its trip loop's, their cause open, `docs/internals/entmax/factor.md#backward-stages`), a cap and never more; the toolkit's notices of production (ptxas's per-function summaries, and `--warn-on-spills`, which finds none) are the base ledger's accepted rows.
 
 ## <a id="probes"></a>A library of probes
@@ -106,8 +106,7 @@ instrument, beside its source.
 ## <a id="graph"></a>The graph's gate
 
 `_sass_gate` runs, for each built architecture: fsla's declarations action (`FslaDeclarations`), warpline's manifest action
-(`WarplineManifest`: `warpline manifest <.so> --arch <arch> --toolkit <the graph's> --notices <each unit's ptxas report>... --ledger
-tools/notice_ledger.json`) and its comparison action (`WarplineCompare`: `warpline compare <manifest> --declare <the file> --ledger ...`),
+(`WarplineManifest`: `warpline manifest <.so> --arch <arch> --toolkit <the graph's> --notices <each unit's ptxas report>...`) and its comparison action (`WarplineCompare`: `warpline compare <manifest> --declare <the file>`),
 on the hermetic toolkit's `cuobjdump`, `nvdisasm` and `cu++filt` (`@cuda_tools`) and warpline's command (`@warpline//:checker_cli`,
 the pinned module's); and CLOSED-WORLD RULE 2 on the binary itself, `FslaPtxGate`: `cuobjdump --list-ptx` lists no PTX image
 ([`../../build.md`](../../build.md#what-the-build-checks)). Each action is cached by Bazel on its inputs

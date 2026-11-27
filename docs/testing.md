@@ -238,12 +238,13 @@ A document nothing checks is a document that drifts. These run in the commit gat
   of the mirrored source. `bazel run //:docrefs -- move OLD NEW` re-pins the citations of a moved target, its
   functions and sections included. `BUILD.bazel`'s `docrefs` target is this tree's configuration -- the package roots a dotted name
   resolves under, the mirror rules (a page under `docs/internals/` mirrors the source at its stem under
-  `csrc/fsla/src/`, one under `docs/internals/tools/` the tool under `tools/`), the deletion ledger left unread, and
-  the pinned data a `data:` citation resolves in ([`measurement.md`](measurement.md#the-data)).
-- **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/fsla/` has a mirror doc at the same
-  relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
-  anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).
-  A floor on the number of sources found keeps a broken glob from checking nothing.
+  `csrc/fsla/src/`, `docs/internals/fsla_api.md` the `csrc/fsla/fsla_api.cpp`, one under `docs/internals/tools/` the tool under
+  `tools/`), the deletion ledger left unread, and the pinned data a `data:` citation resolves in
+  ([`measurement.md`](measurement.md#the-data)). Under the mirror rules the checker also holds the mirror's shape: every C++
+  source file has its page (a `.cu` and its `.cuh` share one), and a page names only identifiers the tree carries (or declares
+  them `ABSENT`).
+- **`tools/lint/lint_standards.py`'s mirror rules**: every internals anchor a source cites resolves; a hazard stub's slug is its
+  anchor; no doc defines an anchor twice.
 - **`//:readme`** and **`//:support`**: the README's generated block (the support summary) and docs/support.md's (the
   contract, every fact) are what the graph writes (`tools/supported.py --readme`); each committed file must equal it
   ([`build-graph.md#committed-files`](build-graph.md#committed-files)).

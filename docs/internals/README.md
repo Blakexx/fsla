@@ -36,14 +36,14 @@ never used for general design notes; those are here, in full.
 Each file opens with what the source file is and the invariants it must keep,
 then a numbered section per anchored site. Anchor ids are stable: they are cited
 from the source and from `tools/lint/lint_standards.py`, which fails if a
-source file has no mirror or a stub cites an anchor no doc defines.
+stub cites an anchor no doc defines, and the doc references' checker (`//:docrefs`) fails if a source file has no mirror.
 
 `DELETIONS.md` is the ledger of code removed from this tree — what, when, and
 why it was safe.
 
 ## Naming something that is not there
 
-A page may only name identifiers its source still carries. `lint_standards.py` reads
+A page may only name identifiers its source still carries. The doc references' checker (`//:docrefs`) reads
 every name a page writes in code font and fails on one that exists nowhere in the tree:
 a mirror page can otherwise outlive the mechanism it documents, and every earlier check
 was about the page's SHAPE — that it exists, sits at the right path and resolves its

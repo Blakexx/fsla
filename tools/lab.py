@@ -22,7 +22,7 @@ store (`fsla_devtools.results`) at its run target's label: a sample of the recor
 A record is stored in the store's checkout (the dev config's `store.root`), cited once a pushed commit of it is the
 pin; `--no-store` keeps it in a store under the scratch space, which `trace` and `path` read with `--data`. Every
 command that reads the experiment's build runs from its run target; the build's validation is its checks (a refusal
-fails the build), and `run`, `ncu` and `pack` check again what they read. `ncu` reads hardware counters per kernel (the
+fails the build), and `run` and `ncu` check again what they read. `ncu` reads hardware counters per kernel (the
 median over its launches) where a question is about traffic rather than time. An experiment that reads data (a cell's
 routing, say) has a `<name>.inputs.py` beside it whose `write(directory)` writes the files; the driver runs it first,
 passes `--inputs <directory>`, and records each file's digest.
@@ -127,9 +127,8 @@ PARTS = ("cubin", "sass", "usage", "graph", "lines", "names", "ptxas", "toolkit"
 
 
 class Built:
-    """AN EXPERIMENT BUILT BY THE GRAPH (`//measure/lab:<name>`) or packed from it: its binary `<directory>/<name>.<arch>` and the
-    files beside it (`PARTS`), which every reader of the experiment's code reads -- no tool runs here. A pack holds the same names,
-    so a packed experiment is read as the target is."""
+    """AN EXPERIMENT BUILT BY THE GRAPH (`//measure/lab:<name>`): its binary `<directory>/<name>.<arch>` and the
+    files beside it (`PARTS`), which every reader of the experiment's code reads -- no tool runs here."""
 
     def __init__(self, directory: Path, name: str, arch: str):
         self.name, self.arch = name, arch
@@ -141,8 +140,7 @@ class Built:
     def text(self, suffix: str) -> str:
         found = self.part(suffix)
         if not found.exists():
-            raise SystemExit(f"lab: {found} does not exist: a built experiment carries {', '.join(PARTS)} beside its binary "
-                             "(a pack made before they were packed is made again: `lab pack`)")
+            raise SystemExit(f"lab: {found} does not exist: a built experiment carries {', '.join(PARTS)} beside its binary")
         return found.read_text()
 
     @functools.cached_property
@@ -215,7 +213,7 @@ BOUND_HAZARDS = ("STEP_PORT", "STEP_WORK")
 #: the reason of a declaration whose experiment states none in a `//:` comment above it
 UNSTATED = "stated in the experiment's source, where it declares the count"
 _DECLARED = re.compile(r'"([A-Z][A-Z_]*)"\s*,\s*"(?:<=|>=|==)"')
-#: the notice rules whose notices a pack's report leaves out: the toolkit's build summaries and its unused-variable warnings are accepted by default
+#: the notice rules whose notices the report leaves out: the toolkit's build summaries and its unused-variable warnings are accepted by default
 #: and say nothing a reader needs; every other notice a row accepts by default (an injected arrive, an unreachable loop) is reported with its count
 SILENT_RULES = ("build_info", "unused_variable")
 
@@ -345,14 +343,14 @@ def guidance() -> dict[str, str]:
     evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
     entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
     notes = {rule: entry["guidance"] for rule, entry in entries.items()}
-    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().manifest.rule_names(checked.project_ledger()))
+    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().manifest.rule_names(checked.notice_ledger()))
     return notes
 
 
 def is_notice_rule(rule: str) -> bool:
-    """A rule the project's ledger counts notices under and the lab renders as the notice's own words: not a hazard an experiment declares a
+    """A rule the notice ledger counts notices under and the lab renders as the notice's own words: not a hazard an experiment declares a
     count of (`HAZARD_STATES`; the `NOTICE_HAZARDS` are counts and are rendered so)."""
-    return rule in checked.checker().ledgers.row_rules(checked.project_ledger()) and (
+    return rule in checked.checker().ledgers.row_rules(checked.notice_ledger()) and (
         rule not in _RULE_HAZARDS or _RULE_HAZARDS[rule] in NOTICE_HAZARDS)
 
 
@@ -364,7 +362,7 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
     tail = f"\n    note: {note}" if note else ""
     ledger_rule = r.rule in _RULE_HAZARDS and _RULE_HAZARDS[r.rule] in HAZARD_STATES
     if r.rule == "notice_without_row":
-        return [f"{place}: {r.count} x {r.message}:\n      {r.findings[0].what}\n    add a row to tools/notice_ledger.json with "
+        return [f"{place}: {r.count} x {r.message}:\n      {r.findings[0].what}\n    add a row to warpline's base ledger (`warpline/checker/base_ledger.py`) with "
                 "a rule, the notice's default allowance (`allow`: 0 when absent, null for a notice accepted by default) and the reason for it "
                 "(docs/internals/tools/lab.md#ledger)" + tail]
     if is_notice_rule(r.rule):
@@ -384,15 +382,15 @@ def render_refusal(r, experiment: str = "the build") -> list[str]:
 
 def read_notices(built: Built) -> list:
     """EVERY notice of the experiment's build, in order (the checker's reader of the lines nvcc printed beside it); none where the build
-    left no notices (a pack made without them)."""
+    left no notices."""
     return checked.checker().ledgers.read_notices(notices(built).read_text()) if notices(built).exists() else []
 
 
 def notice_report(built: Built) -> list[str]:
-    """THE REPORT: the notices a row accepts by default (`SILENT_RULES` apart), one line a row with its count, printed with the pack and blocking
+    """THE REPORT: the notices a row accepts by default (`SILENT_RULES` apart), one line a row with its count, printed with the run and blocking
     nothing."""
     ledgers = checked.checker().ledgers
-    ledger = checked.project_ledger()
+    ledger = checked.notice_ledger()
     found: dict[int, tuple] = {}
     for n in read_notices(built):
         row = ledgers.row_of(ledger, n)
@@ -915,7 +913,7 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 def body_of(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
             digests: dict[str, str], counters: dict[str, dict], refused: dict | None, built: dict, blocks: int) -> dict:
     """THE RUN'S RECORD BODY: what ran (the experiment, its question, the device, driver, toolkit and commit -- `built`, the
-    graph's toolkit and the stamp, or a pack's), how (repetitions, the utilization before, the inputs' digests, the grid
+    graph's toolkit and the stamp), how (repetitions, the utilization before, the inputs' digests, the grid
     held to `blocks`), the results with their samples and checks, each kernel's registers and leading opcodes, and the
     counters -- or `refused`, the written exception of a host that grants none, in their place."""
     driver, = smi("driver_version")
@@ -969,67 +967,12 @@ def store_record(name: str, arch: str, body: dict, *, kind: str, provenance: dic
     return data.LabSample(lab, sample).cited
 
 
-def keep(name: str, arch: str, body: dict, traces: list[str], into: Path, blocks: int) -> Path:
-    """A CARRIED RUN'S RECORD (`carried`, a box with no toolkit): its body and its traces as files under `into/<name>/`,
-    `<arch>[.blocks<N>].json` and `<arch>[.blocks<N>].trace/row<i>.json`, which the box hands back."""
-    target = into / name / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(body, indent=1) + "\n")
-    rows = target.with_name(target.name.replace(".json", ".trace"))
-    shutil.rmtree(rows, ignore_errors=True)
-    if traces:
-        rows.mkdir()
-        for i, text in enumerate(traces):
-            (rows / f"row{i}.json").write_text(text)
-    return target
-
-
-def pack(name: str, arch: str, into: Path) -> int:
-    """AN EXPERIMENT BUILT FOR A CARD ELSEWHERE: the graph's target with its checks (`build`, and `check`: its SASS held to what `run`
-    holds it to) and its outputs copied -- the binary, and beside it what a record needs of the build: the kernels'
-    registers and opcodes, the toolkit, the commit and the binary's digest -- so a box with a driver and no toolkit runs it
-    (`carried`). The copy compiles nothing: an unchanged experiment is Bazel's cache."""
-    exp = build(name, arch, "pack")
-    table = kernels(exp)
-    failures = check(exp, table)
-    if failures:
-        print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
-        return 1
-    if budgets(exp.binary):
-        print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: it runs where the toolkit is")
-        return 1
-    report = notice_report(exp)
-    if report:
-        print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
-    report = waits_report(exp)
-    if report:
-        print("lab: tensor waits -- candidates to precede each (advisory; `lab waits` prints it alone):", *report, sep="\n")
-    report = steps_report(exp)
-    if report:
-        print("lab: tensor steps -- the port bytes and instructions of a step (advisory unless a bound is declared; "
-              "`lab steps` prints it alone):", *report, sep="\n")
-    into.mkdir(parents=True, exist_ok=True)
-    carried_binary = into / exp.binary.name
-    carried_binary.write_bytes(exp.binary.read_bytes())
-    carried_binary.chmod(0o755)
-    for part in PARTS:
-        shutil.copyfile(exp.part(part), into / exp.part(part).name)
-    body = {"experiment": name, "arch": arch, "toolkit": exp.toolkit(), "git": stamped_git(),
-            "sha256": hashlib.sha256(exp.binary.read_bytes()).hexdigest(),
-            "kernels": {k: {"regs": v.get("regs"), "ops": dict(v["ops"])} for k, v in table.items()}}
-    (into / f"{exp.binary.name}.pack.json").write_text(json.dumps(body, indent=1) + "\n")
-    print(f"lab: packed {name} for {arch} into {into}")
-    return 0
-
-
-def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dict | None = None,
-            into: Path | None = None, toolkit: str | None = None) -> int:
-    """THE DEVICE'S HALF OF A RUN, the one sequence `run` and `carried` share: the inputs, a quiet GPU, the timed
+def measure(name: str, arch: str, binary: Path, table: dict, opts, *, toolkit: str) -> int:
+    """THE DEVICE'S HALF OF A RUN: the inputs, a quiet GPU, the timed
     repetitions under the kill timeout, the checks, then the counters -- the profiler's, gated against the budgets, or,
     where the caller DECLARES a host that grants none (`--no-counters HOST`, KERNEL_STANDARDS section 16 addendum 4),
     the written exception naming that host. A profiler that fails undeclared fails the run. A run's record is stored
-    (`store_record`), its provenance the stamp, the binary's digest and the machine's facts; a carried run's (`built`, a pack's
-    toolkit and commit) is written under `into` (`keep`)."""
+    (`store_record`), its provenance the stamp, the binary's digest and the machine's facts."""
     extra, digests = inputs(name)
     #: `--blocks N`: the experiment's grid held to N CTAs (a lighter load on the card), its record its own
     if opts.blocks:
@@ -1064,7 +1007,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
 
     raw, refused = {}, None
     if opts.no_counters:
-        if built is None and budgets(binary):
+        if budgets(binary):
             print(f"lab: {name} has budgeted kernels, whose gate reads executed counts: not recorded on a host "
                   "that grants no counters (KERNEL_STANDARDS section 16 addendum 4)")
             return 1
@@ -1080,76 +1023,12 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
                   sep="\n  ")
             return 1
     body = body_of(name, arch, device, results, table, opts.reps, utilization, digests, raw, refused,
-                   built or {"toolkit": toolkit, "git": stamped_git()}, opts.blocks)
-    if into is not None:
-        print(f"lab: recorded {keep(name, arch, body, traces_of(device), into, opts.blocks)}")
-        return 0
+                   {"toolkit": toolkit, "git": stamped_git()}, opts.blocks)
     store_record(name, arch, body, kind="run", blocks=opts.blocks, traces=traces_of(device), no_store=opts.no_store,
                  store_root=opts.store_root, variant=opts.variant,
                  provenance={"checkouts": {"fsla": workspace_stamp()}, "device": body["device"], "driver": body["driver"],
                              "toolkit": body["toolkit"], "binary": hashlib.sha256(binary.read_bytes()).hexdigest(),
                              "inputs": digests})
-    return 0
-
-
-def carried(name: str, source: Path, into: Path, opts) -> int:
-    """A PACKED EXPERIMENT RUN ON THIS CARD, a box with no toolkit to build it: the pack's binary by its digest, on the
-    pack's architecture, through `measure` -- its counters read where the box holds the pinned profiler, the host
-    declared where it grants none; its build facts are the pack's."""
-    arch = checked.device_arch()
-    binary = source / f"{name}.{arch}"
-    if not binary.exists():
-        print(f"lab: no pack of {name} for this card's {arch} in {source}")
-        return 1
-    built = json.loads((source / f"{binary.name}.pack.json").read_text())
-    if hashlib.sha256(binary.read_bytes()).hexdigest() != built["sha256"]:
-        print(f"lab: {binary} is not the binary its pack describes")
-        return 1
-    return measure(name, arch, binary, built["kernels"], opts, built=built, into=into)
-
-
-def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip: int = 0) -> int:
-    """A CARRIED LEDGER'S DUMPS, made on a box with no toolkit: the pack's binary by its digest, then each kernel whose
-    demangled name a pattern matches profiled once (its first launch, ncu's SourceCounters) into
-    `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest and each kernel's file -- read back
-    where the toolkit is by `ledger --packed --dump`. `skip` launches of each kernel pass first (an experiment's checked
-    launch is its first: its timed ones follow)."""
-    arch = checked.device_arch()
-    binary = source / f"{name}.{arch}"
-    built = json.loads((source / f"{binary.name}.pack.json").read_text())
-    if hashlib.sha256(binary.read_bytes()).hexdigest() != built["sha256"]:
-        print(f"lab: {binary} is not the binary its pack describes")
-        return 1
-    chosen = [k for k in built["kernels"] if any(re.search(p, k) for p in patterns)]
-    if not chosen:
-        print(f"lab: no kernel of {name}'s pack matches {patterns}")
-        return 1
-
-    into.mkdir(parents=True, exist_ok=True)
-    extra, _ = inputs(name)
-    files = {}
-    for k in chosen:
-        #: a kernel's template numbers: the long ones a single-parameter experiment has, else every `(int)` argument
-        head = k.split("(")[0] if "<" not in k else k[:k.index(">") + 1]
-        ids = re.findall(r"\d{4,}", head) or re.findall(r"\(int\)(\d+)", head)
-        if not ids:
-            print(f"lab: {k[:80]} has no template number to name its dump by")
-            return 1
-        core = k[:k.index(">") + 1].split("::")[-1] if "<" in k else k.split("(")[0].split("::")[-1]
-        out = subprocess.run([_dev_config().ncu(), "--kernel-name-base", "demangled", "--kernel-name",
-                              f"regex:{re.escape(core)}", "--launch-skip", str(skip), "--launch-count", "1",
-                              "--section", "SourceCounters", "--page", "source", "--print-source", "sass", "--csv",
-                              str(binary), "--reps", "1", *extra], capture_output=True, text=True, timeout=900)
-        dump = into / f"ledger_{'_'.join(ids)}.csv"
-        dump.write_text(out.stdout)
-        if out.returncode != 0 or not region_ledger.counted(dump):
-            print(f"lab: {k[:80]}: no SourceCounters (exit {out.returncode}): {out.stderr[-400:]}")
-            return 1
-        files[k] = dump.name
-        print(f"lab: {dump.name}: {k[:90]}")
-    (into / "ledger.json").write_text(json.dumps({"experiment": name, "arch": arch, "sha256": built["sha256"],
-                                                   "git": built.get("git"), "launch_skip": skip, "dumps": files},
-                                                  indent=1) + "\n")
     return 0
 
 
@@ -1163,7 +1042,7 @@ def run(name: str, opts) -> int:
         return 1
     report = notice_report(exp)
     if report:
-        print("lab: toolkit notices the ledger reports (not blocking; tools/notice_ledger.json):", *report, sep="\n")
+        print("lab: toolkit notices the ledger reports (not blocking):", *report, sep="\n")
     return measure(name, arch, exp.binary, table, opts, toolkit=exp.toolkit())
 
 
@@ -1218,41 +1097,15 @@ def phases(source: Path) -> list[tuple[int, str]]:
     return out
 
 
-def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, packed: Path | None = None,
-           arch: str | None = None, per: float | None = None, top: int = 16) -> int:
+def ledger(name: str, pattern: str | None, arch: str | None = None, per: float | None = None, top: int = 16) -> int:
     """KERNEL_STANDARDS section 29.13: each kernel's executed instructions by phase (its source's `//:` headings), per
     declared unit or per launch -- ncu's SourceCounters of the kernel's first launch, each SASS offset mapped to its
-    innermost line in the experiment's source (the lab builds carry `-lineinfo`); a carried ledger's, the launch its
-    manifest's `launch_skip` names (0 the first, the checked launch) -- with each phase's shared-memory
-    wavefronts, those over the conflict-free count (bank conflicts) and its stall samples. CARRIED: `dumps` are the
-    SourceCounters CSVs a box without the toolkit made of `packed` (`lab pack`'s binary, built here), one a kernel;
-    `per` divides every count (a launch's CTA-windows)."""
+    innermost line in the experiment's source (the lab builds carry `-lineinfo`) -- with each phase's shared-memory
+    wavefronts, those over the conflict-free count (bank conflicts) and its stall samples. `per` divides every count (a
+    launch's CTA-windows)."""
     arch = arch or checked.device_arch()
     path = experiments()[name]
-    manifest = None
-    if dumps is not None:
-        #: a carried ledger maps the dumps through the very binary they profiled: its digest the dumps' manifest's
-        if packed is None:
-            print("lab: --dump needs --packed, the binary the dumps profiled")
-            return 1
-        found = {d.parent / "ledger.json" for d in dumps}
-        if len(found) != 1 or not next(iter(found)).exists():
-            print(f"lab: the dumps' manifest (ledger.json beside them, `lab ledger-dumps`) is not one file: {sorted(found)}")
-            return 1
-        manifest = json.loads(next(iter(found)).read_text())
-        if "launch_skip" not in manifest:
-            print("lab: the dumps' manifest names no launch (`launch_skip`): `lab ledger-dumps` writes it")
-            return 1
-        print(f"  the dumps' launch: each kernel's after its first {manifest['launch_skip']} "
-              f"({'the checked launch' if not manifest['launch_skip'] else 'a timed launch'})")
-        if hashlib.sha256(packed.read_bytes()).hexdigest() != manifest["sha256"]:
-            print(f"lab: {packed} is not the binary the dumps profiled ({manifest['sha256'][:12]})")
-            return 1
-    #: a packed binary is read as its pack holds it (`pack` copies the target's outputs beside it), the built target's otherwise
-    exp = Built(packed.parent, name, arch) if packed else build(name, arch, "ledger")
-    if packed and exp.binary != packed:
-        print(f"lab: {packed} is not `{name}.{arch}`, which a pack of this experiment and architecture holds")
-        return 1
+    exp = build(name, arch, "ledger")
     binary = exp.binary
     table = kernels(exp)
     extra, _ = inputs(name)
@@ -1267,20 +1120,12 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
         if pattern and not re.search(pattern, k):
             continue
         core = k.split("(")[0].split("::")[-1] if "<" not in k else k[:k.index(">") + 1].split("::")[-1]
-        if manifest is not None:
-            #: a carried kernel's dump is the one its manifest names; a kernel the pattern chose without one is refused
-            named = manifest["dumps"].get(k)
-            if named is None or not any(d.name == named for d in dumps):
-                print(f"lab: {k[:90]}: no dump of it among {[d.name for d in dumps]}")
-                return 1
-            csv_path = next(d for d in dumps if d.name == named)
-        else:
-            out = subprocess.run([_dev_config().ncu(), "--kernel-name-base", "demangled", "--kernel-name",
-                                  f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
-                                  "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
-                                  *extra], capture_output=True, text=True, check=True).stdout
-            csv_path = _dev_config().scratch("lab") / f"{name}.ledger.csv"
-            csv_path.write_text(out)
+        out = subprocess.run([_dev_config().ncu(), "--kernel-name-base", "demangled", "--kernel-name",
+                              f"regex:{re.escape(core)}", "--launch-count", "1", "--section", "SourceCounters",
+                              "--page", "source", "--print-source", "sass", "--csv", str(binary), "--reps", "1",
+                              *extra], capture_output=True, text=True, check=True).stdout
+        csv_path = _dev_config().scratch("lab") / f"{name}.ledger.csv"
+        csv_path.write_text(out)
         rows = region_ledger.counted(csv_path)
         detail = region_ledger.detailed(csv_path)
 
@@ -1509,8 +1354,8 @@ def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> i
 
 
 #: the commands that read an experiment's build, run from its run target (`//measure/lab:<name>.run -- <command>`, `run`
-#: when none is given); the others read records or a pack, from `//tools:lab`
-BUILT_COMMANDS = ("run", "sass", "ncu", "ledger", "waits", "steps", "pack")
+#: when none is given); the others read records, from `//tools:lab`
+BUILT_COMMANDS = ("run", "sass", "ncu", "ledger", "waits", "steps")
 
 
 def handed(argv: list[str]) -> list[str]:
@@ -1539,10 +1384,6 @@ def main() -> int:
     s.add_argument("--arch", help="the build's architecture (the graph builds the lab's for sm_90a alone)")
     r = sub.add_parser("run")
     r.add_argument("experiment")
-    k = sub.add_parser("pack", help="build and check an experiment here for a card elsewhere")
-    k.add_argument("experiment")
-    k.add_argument("--arch", required=True)
-    k.add_argument("--into", required=True, type=Path)
     w = sub.add_parser("waits", help="each tensor wait's candidates to precede it (KERNEL_STANDARDS 29.16), advisory")
     w.add_argument("experiment")
     w.add_argument("--arch", required=True)
@@ -1550,10 +1391,6 @@ def main() -> int:
                                       "the STEP_PORT and STEP_WORK bounds")
     ts.add_argument("experiment")
     ts.add_argument("--arch", required=True)
-    c = sub.add_parser("carried", help="run a packed experiment on this card, a box with no toolkit to build it")
-    c.add_argument("experiment")
-    c.add_argument("--from", dest="source", required=True, type=Path)
-    c.add_argument("--into", required=True, type=Path)
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
@@ -1565,7 +1402,7 @@ def main() -> int:
                             help="keep the record in a store under the scratch space, not the data repository's")
         stored.add_argument("--store-root", type=Path, help="the records directory to store into (default: records/ "
                                                             "of the dev config's store.root)")
-    for timed in (r, c):
+    for timed in (r,):
         timed.add_argument("--reps", type=int, default=7)
         timed.add_argument("--force", action="store_true", help="measure on a busy GPU")
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
@@ -1579,10 +1416,7 @@ def main() -> int:
     g.add_argument("--kernel", help="a regex over the demangled kernel names")
     g.add_argument("--static", action="store_true",
                    help="the instructions as compiled, by role, loop and phase: no counters, and with --arch no device")
-    g.add_argument("--arch", help="compile (--static) or read (--packed) for this architecture in place of the device's")
-    g.add_argument("--dump", type=Path, action="append",
-                   help="a SourceCounters CSV a box made of --packed, `ledger_<kernel core>.csv`; repeat for several")
-    g.add_argument("--packed", type=Path, help="the binary `lab pack` built that the dumps profiled")
+    g.add_argument("--arch", help="compile (--static) for this architecture in place of the device's")
     g.add_argument("--per", type=float, help="divide every count by this: the profiled launch's CTA-windows")
     g.add_argument("--top", type=int, default=16, help="the source lines shown, by their shared wavefronts")
     c2 = sub.add_parser("path", help="each clocked row's roles' waits and busy cycles: the role the window waits on")
@@ -1602,12 +1436,6 @@ def main() -> int:
     pg = sub.add_parser("page", help="regenerate an experiment's page's measured section from its record")
     pg.add_argument("experiment")
     pg.add_argument("--instance", required=True, help="the rented box's label, which words the page's card line")
-    m = sub.add_parser("ledger-dumps", help="on a box without the toolkit: profile a pack's kernels for a carried ledger")
-    m.add_argument("experiment")
-    m.add_argument("--from", dest="source", required=True, type=Path)
-    m.add_argument("--into", required=True, type=Path)
-    m.add_argument("--kernel", action="append", required=True, help="a regex over the demangled kernel names; repeat")
-    m.add_argument("--skip", type=int, default=0, help="each kernel's launches passed before the one profiled")
     args = ap.parse_args(handed(sys.argv[1:]))
 
     if args.cmd == "list":
@@ -1617,16 +1445,12 @@ def main() -> int:
     if args.experiment not in experiments():
         print(f"lab: no experiment {args.experiment!r}; `list` names them")
         return 1
-    if args.cmd == "pack":
-        return pack(args.experiment, args.arch, args.into)
     if args.cmd == "waits":
         print(*waits_report(build(args.experiment, args.arch, "waits")), sep="\n")
         return 0
     if args.cmd == "steps":
         print(*steps_report(build(args.experiment, args.arch, "steps")), sep="\n")
         return 0
-    if args.cmd == "carried":
-        return carried(args.experiment, args.source, args.into, args)
     if args.cmd == "sass":
         return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
@@ -1638,12 +1462,10 @@ def main() -> int:
         return timelines(args.experiment, args.row, selected, args.skip, args.html)
     if args.cmd == "page":
         return page(args.experiment, args.instance)
-    if args.cmd == "ledger-dumps":
-        return ledger_dumps(args.experiment, args.source, args.into, args.kernel, args.skip)
     if args.cmd == "ledger":
         if args.static:
             return static_ledger(args.experiment, args.kernel, args.arch)
-        return ledger(args.experiment, args.kernel, args.dump, args.packed, args.arch, args.per, args.top)
+        return ledger(args.experiment, args.kernel, args.arch, args.per, args.top)
     return run(args.experiment, args)
 
 

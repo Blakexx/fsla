@@ -5,7 +5,7 @@
 word, by name or by a path ending in one; and `git worktree add|remove`, which the machine's worktree tool does under its cap
 (Blake, 2026-11-27). A word inside a quoted string, a heredoc body or an argument (`git log | grep nvcc`,
 `echo "nvcc is a compiler"`) is text, not a command, and a `bazel` command passes whatever its arguments (`bazel run
-//measure/lab:x.run -- pack`). The refusal names the target that does it. Override: `GRAPH_OVERRIDE="<why>"` in the command.
+//measure/lab:x.run -- sass`). The refusal names the target that does it. Override: `GRAPH_OVERRIDE="<why>"` in the command.
 Fired by the repo's dispatcher (`.claude/hooks/repo_hooks.py`); docs: docs/internals/tools/lint.md#action-hooks."""
 import json
 import re
@@ -17,7 +17,7 @@ OVERRIDE = re.compile(r"\bGRAPH_OVERRIDE=\S")
 #: a toolchain command word and the graph target that runs it
 TOOLS = {
     "nvcc": "`bazel run //:library` (the shipped build; `--//:archs=<arch>` for one architecture) or, for an experiment, "
-            "`bazel run //measure/lab:<name>.run [-- pack]`",
+            "`bazel run //measure/lab:<name>.run`",
     "ptxas": "`bazel run //measure/lab:<name>.run -- sass` or `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text)",
     "cuobjdump": "`bazel run //measure/lab:<name>.run -- sass [REGEX] [--full]`, `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text) "
                  "or `bazel build //:static_manifest` (the library's, every rule's count at every kernel)",

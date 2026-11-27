@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """The lab reads the graph's built experiments (bazel/lab.bzl, docs/internals/tools/lab.md#graph): the texts its disassemblers wrote, never a
-tool of its own. A built experiment's kernels are read off those texts; a pack holds the same files beside its binary and reads the same way."""
+tool of its own. A built experiment's kernels are read off those texts."""
 import sys
 from pathlib import Path
 

@@ -5,8 +5,8 @@
 
 The rule is `lint_standards.check_no_campaign_work_codes` and it is defined there, once: this file is a front door, not
 a second implementation. A commit may not add a work code. The ones the tree still carries are the ratchet's baseline,
-most of them in the deletions ledger and the open-work list, whose rows need to say what each change DID rather than
-which stage did it -- prose work, not a substitution -- and the rest in test and tool docstrings.
+most of them in the open-work list, whose rows need to say what each change DID rather than
+which stage did it -- prose work, not a substitution -- and the rest in test and tool docstrings; the deletions ledger, a history, is exempt.
 
     bazel run //tools/lint:work_codes
 """

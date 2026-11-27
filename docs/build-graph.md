@@ -50,8 +50,8 @@ fsla-devtools checkout `tools/bootstrap.py` finds.
   (`@warpline//:warpline`) as `FSLA_WARPLINE_PYTHON`, which `tools/lab_trace.py` reads the records with and `tools/lab.py`'s `check` calls the checker
   (`warpline.checker`) through, for every hazard one of its rules computes (the CPU test
   tier and `unit_cuda` carry the same target as data). The stamp's headers (`@warpline//:stamp`, `@warpline//:host`, the writer of the record of
-  a traced row) are the lab experiments' compile dependencies, compile-time only: a `lab pack` binary carries
-  nothing of warpline, and the box needs none. THE LAB'S EXPERIMENTS ARE THE GRAPH'S TARGETS (`//measure/lab:<name>`,
+  a traced row) are the lab experiments' compile dependencies, compile-time only: a lab binary carries
+  nothing of warpline. THE LAB'S EXPERIMENTS ARE THE GRAPH'S TARGETS (`//measure/lab:<name>`,
   `bazel/lab.bzl`, [`internals/tools/lab.md`](internals/tools/lab.md#graph)): each is compiled by the same CUDA rule as the library's
   units (`cuda_unit`) for sm_90a and linked into its binary, read once by the graph's disassemblers (`tools/lab_facts.py`), and checked by
   a validation action (`tools/lab_check.py`) whose refusal fails the build; no tool runs nvcc, cuobjdump or nvdisasm for the lab outside the
@@ -157,7 +157,7 @@ the include path every unit reads (`//csrc/fsla:headers`), whatever the build's 
 - <a id="declarations"></a>DECLARATIONS BESIDE THE KERNELS: a kernel states what its SASS and the toolkit's notices may keep in Starlark, next to its unit (`cuda_unit(declarations = [declaration(...)])`,
   a non-arm unit's) or its arms (`<FAMILY>_KERNEL`, the arm's demangled name with `@field@` for its template arguments, and `<FAMILY>_DECLARATIONS`: `arm_family` generates each arm's exact pattern for each
   built arm and architecture). The library rule writes them, with each arm and each source kernel as a presence, fsla's notes and strict on, as one file a built architecture (`bazel/gate_declarations.py`, `<label>_<arch>.declarations.json`),
-  and the SASS gate's check of that architecture reads it with the units' ptxas reports and the project's notice ledger (`tools/notice_ledger.json`): [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#declarations).
+  and the SASS gate's check of that architecture reads it with the units' ptxas reports and the checker's notice ledger: [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#declarations).
 - A UNIT'S SASS AS TEXT: `bazel build //csrc/fsla:<unit>_sass` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#sass-text)).
 
 ## <a id="gates"></a>The library's gates

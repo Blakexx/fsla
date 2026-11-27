@@ -82,7 +82,7 @@ def _lab_experiment_impl(ctx):
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [check],
-        inputs = [binary, ctx.file.source, ctx.file._check, ctx.file._ledger, ctx.file._rules] + parts.values() + ctx.files._lab_sources + warpline,
+        inputs = [binary, ctx.file.source, ctx.file._check, ctx.file._rules] + parts.values() + ctx.files._lab_sources + warpline,
         outputs = [verdict],
         env = {"FSLA_WARPLINE_PYTHON": package.dirname.removesuffix("/warpline")},
         mnemonic = "LabCheck",
@@ -104,7 +104,6 @@ _lab_experiment = rule(
         "_checked": attr.label(default = "//tools:checked.py", allow_single_file = True),
         "_check": attr.label(default = "//tools:lab_check.py", allow_single_file = True),
         "_lab_sources": attr.label(default = "//tools:lab_sources"),
-        "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
         "_rules": attr.label(default = "//:docs/rules.json", allow_single_file = True),
         "_warpline": attr.label(default = "@warpline//:checker"),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
@@ -136,7 +135,7 @@ def lab_experiment(name, src, includes = [], deps = []):
         ] + deps,
     )
 
-    #: the binary is named as its pack names it (`<name>.<arch>`)
+    #: the binary is named `<name>.<arch>`
     cc_binary(
         name = "%s.%s" % (name, _ARCH),
         deps = [
@@ -152,7 +151,7 @@ def lab_experiment(name, src, includes = [], deps = []):
     )
 
     #: THE EXPERIMENT'S RUN TARGET: `bazel run //measure/lab:<name>.run` measures and stores it (`lab run`), and
-    #: `-- <command> ...` is any other lab command that reads its build (`sass`, `ncu`, `ledger`, `waits`, `steps`, `pack`)
+    #: `-- <command> ...` is any other lab command that reads its build (`sass`, `ncu`, `ledger`, `waits`, `steps`)
     lab_run(
         name = name + ".run",
         experiment = ":" + name,

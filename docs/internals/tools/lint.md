@@ -12,7 +12,7 @@ tree carried when it began gating are a baseline that only shrinks.
 | lint | rule |
 |---|---|
 | `ast_grep_gate.py` + `rules/*.yml` | the standards' shapes an AST can see (§12 fences and collectives, a torch header in a per-arm translation unit, an anonymous-namespace kernel, a width-shaped `if`) |
-| `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the vendored pin, the comment-density mandate, repository portability |
+| `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the barrier-free regions (no CTA barrier between a file's `//: @barrier-free` and `//: @barrier-free-end`), the `docs/internals/` mirror contract's citations (anchors resolve, a hazard stub cites its own slug, no anchor twice; that every source has a page and a page names only identifiers the tree carries is `//:docrefs`'s), the flock spelling, the supported matrix, the vendored pin, the comment-density mandate, repository portability |
 | `unit_lints.py` + `.clang-tidy`, `clang-tidy-device.yaml` | the pinned clang-tidy (fsla-devtools' `pins/clang_tidy_pin.json`) on every unit the library links, for each built architecture: `.clang-tidy` on the host units (every finding fails), `clang-tidy-device.yaml` on the device units through clang's CUDA front end (dead stores, unused parameters, redundant expressions); and the host units' `-Wall -Wextra -Wunused` front-end compile. A finding in the unit's own package fails, and so does any compiler error -- a unit the compiler cannot parse is a unit no lint read ([below](#unit-lints)) |
 | `unused_instantiations.py` | every `__global__` function template must demangle-match a kernel the library's static manifests name (the census's, `bazel test //csrc/fsla:unused_instantiations`). `__device__` templates are found, counted and explicitly NOT checked: the manifests hold entry functions only, and a wrapped-once helper has no standalone symbol |
 | `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
@@ -84,7 +84,7 @@ site states more than one rule.
    `//:ratchet_rules_owed` holds them against `tools/lint/baselines/rules_owed.json`. A row that stops being `owed` leaves
    the baseline in the same commit (`ratchet.py rules_owed --shrink`), so the list only shrinks;
 5. the `checker` section, against the rules of the pinned checker (`warpline.checker.manifest.rule_names`, over the checker's base
-   ledger with the project's `tools/notice_ledger.json`): a rule with no entry, an entry whose key is a rule the pin does not have,
+   ledger): a rule with no entry, an entry whose key is a rule the pin does not have,
    and an id an entry lists under `rules` that is no row. The section is the checker's own map to fsla's mechanism, not a standard:
    an entry is keyed by the checker rule's name and carries `guidance`, one line -- the atom or
    practice, the standards anchor, the lab page with the evidence, or "nothing beyond the generic fix" where fsla has nothing to
@@ -158,7 +158,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 
 | lint | baseline (2026-09-14) | what burns it down |
 |---|---|---|
-| `work_codes.py` | 558 | prose: `DELETIONS.md` 162 and `open-work.md` 59 need rows that say what each change did; the rest are test and tool docstrings |
+| `work_codes.py` | 558; 90 (2026-11-27) | prose: `open-work.md` needs rows that say what each change did; the rest are test and tool docstrings. `DELETIONS.md`, a history ledger whose rows quote the campaign names of their day, is exempt |
 | `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `fsla` exports), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, a library's reads) |
 | `drift_guards.py` | 20 over 11 rules | the table below |

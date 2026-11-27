@@ -7,7 +7,7 @@ installs the prebuilt wheel (`README.md`), takes the binary inside it
 on faith, and never runs anything in this file.
 
 The closed-world build (`docs/build.md`) is gated on an EXACT `ptxas` string and an exact set of the surrounding
-tools the docs name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing that by hand on a new machine is
+tools the docs name (`clangd`, `ast-grep`, ...). Reproducing that by hand on a new machine is
 exactly the kind of silent drift the rest of this repository refuses, so every one of them is a pin the graph or init
 installs, on a host and in the devbox container alike (`//:image`, `.devcontainer/`): an isolated, portable machine for
 a box with no host of its own to set up, which runs the host's same loop.
@@ -215,7 +215,6 @@ on a host they are the host OS's own, which init does not install.
 | the CUDA toolkit: `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `cu++filt`, `compute-sanitizer` | fsla-devtools' `pins/cuda_toolkit_pin.json` (NVIDIA's redistributable components, by the manifest's digest), fetched by the graph as `@cuda_tools` and read through `dev_config.cuda_home()`; on no PATH (torch takes its toolkit from the nvcc on PATH without following links) | the ratified toolchain (`docs/build.md` rule 1, `cu13`: CUDA 13.5, V13.5.37) for every tool outside the graph's own rules; the same copy is the test tiers' and the binary gates' |
 | `mold` 2.42.0 | fsla-devtools' `pins/mold_pin.json`, the graph's `@mold` | the extension's only linker |
 | Nsight Compute 2026.4, Nsight Systems 2026.5 | fsla-devtools' `pins/nsight_compute_pin.json` and `pins/nsight_systems_pin.json` (NVIDIA's redistributable components at the toolkit's manifest, by digest), init | PM sampling (pipe timeline) and the measurement tools' Nsight Compute, found by its pin; timelines |
-| `hyperfine`, `difftastic` (`difft`) | fsla-devtools' `pins/hyperfine_pin.json` and `pins/difftastic_pin.json` (pinned GitHub releases, sha256-verified), init | ad-hoc wall-clock comparisons outside the declared timing sessions; structural diffs |
 | `ast-grep`, `py-spy`, `clangd` 22, `clang-format` 19.1.7 | `requirements.lock` (the environment) | structural code search; live Python profiling; the editor's language server, at the pinned clang-tidy's LLVM major; the formatter `.clang-format` names |
 | `graphviz`, `sqlite3` | the image's package layer; a host's own | dependency rendering, the store's record index inspection |
 | `universal-ctags` | the image's package layer; a host's own | cross-referencing the `csrc/` tree |

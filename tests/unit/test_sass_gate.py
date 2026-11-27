@@ -1,5 +1,5 @@
 """The SASS gate on compiled probes, through the command the library's gate actions run (warpline's `check`: its manifest and its
-comparison) with the declarations fsla writes (`bazel/gate_declarations.py`) and the project's ledger: a clean kernel, one whose
+comparison) with the declarations fsla writes (`bazel/gate_declarations.py`): a clean kernel, one whose
 runtime-indexed local array must go to local memory, one whose division calls its slow path (a call that is not one), and two
 whose MMA loops convert on the conversion unit or read global memory (§29's step lints) beside one that converts on the FMA pipe
 and stages by `cp.async` -- the gate's refusals are what it reads, proven on a cubin that has them. The step lints are the
@@ -31,7 +31,6 @@ import kernels  # noqa: E402
 
 #: the probe, compiled by the graph's CUDA rule (tests/BUILD.bazel's `sass_gate_probe`): its one cubin
 PROBE = ROOT / "tests" / "_objs" / "sass_gate_probe" / "sass_gate_probe.pic.o"
-LEDGER = ROOT / "tools" / "notice_ledger.json"
 RULES = json.loads((ROOT / "docs" / "rules.json").read_text())
 
 
@@ -56,7 +55,7 @@ def written(cubin, *stated, arms=(), source=()):
 
 
 def check(cubin, tmp_path, doc, notices=""):
-    """`warpline check` on the cubin, as the gate's actions run it (the graph's toolkit, the project's ledger, the build's notices):
+    """`warpline check` on the cubin, as the gate's actions run it (the graph's toolkit, the build's notices):
     its exit, its printed text and the manifest it wrote."""
     checked.checker()
     from warpline.checker import cli  # noqa: PLC0415 -- `checked.checker()` puts the pinned checker on the path
@@ -65,7 +64,7 @@ def check(cubin, tmp_path, doc, notices=""):
     decl.write_text(json.dumps(doc))
     log.write_text(notices)
     argv = ["check", str(cubin), "--toolkit", dev_config.cuda_home(), "--declare", str(decl),
-            "--ledger", str(LEDGER), "--notices", str(log), "--manifest", str(manifest)]
+            "--notices", str(log), "--manifest", str(manifest)]
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         code = cli.main(argv)

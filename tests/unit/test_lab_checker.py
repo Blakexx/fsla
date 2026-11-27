@@ -113,13 +113,13 @@ def test_a_refused_notice_is_shown_with_its_row_and_an_unknown_one_quoted_whole(
                               findings=(SimpleNamespace(where="k", count=2, what="ptxas info : (C7777) new"),))
     line, = lab.render_refusal(unknown)
     assert line.startswith("k: 2 x the toolkit printed a notice the ledger has no row for (ptxas C7777):\n      ptxas info : (C7777) new")
-    assert "add a row to tools/notice_ledger.json" in line
+    assert "add a row to warpline's base ledger" in line
 
 
 @needs_checker
 def test_every_hazard_names_a_rule_the_checker_has():
     c = checked.checker()
-    known = set(c.rules.registry()) | set(c.manifest.rule_names(checked.project_ledger())) | set(c.rules.profile_registry())
+    known = set(c.rules.registry()) | set(c.manifest.rule_names(checked.notice_ledger())) | set(c.rules.profile_registry())
     assert set(lab.HAZARD_RULES.values()) | set(lab.PRESENCE_RULES.values()) | {"convergence_call"} <= known
 
 

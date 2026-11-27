@@ -34,10 +34,8 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
    `lab -- page <name> --instance LABEL`, never typed.
 
 THE TWO ENTRIES. Every command that reads an experiment's build runs from the experiment's run target,
-`bazel run //measure/lab:<name>.run -- <command> ...` (`run` when none is given; `sass`, `ncu`, `ledger`, `waits`, `steps`,
-`pack`), which hands `tools/lab.py` the build in its runfiles and the stamp -- no command builds anything; the others read
-records or a pack, from `bazel run //tools:lab -- <command> <name> ...` (`list`, `path`, `trace`, `page`, `carried`,
-`ledger-dumps`, `ledger --packed`), and each entry refuses the other's commands by name.
+`bazel run //measure/lab:<name>.run -- <command> ...` (`run` when none is given; `sass`, `ncu`, `ledger`, `waits`, `steps`), which hands `tools/lab.py` the build in its runfiles and the stamp -- no command builds anything; the others read
+records, from `bazel run //tools:lab -- <command> <name> ...` (`list`, `path`, `trace`, `page`), and each entry refuses the other's commands by name.
 `bazel run //tools:lab -- list` names the experiments by their QUESTION;
 `bazel run //measure/lab:<name>.run -- sass [REGEX] [--full]` shows each kernel's registers and leading opcodes (or the whole
 disassembly). `bazel run //measure/lab:<name>.run -- ncu --metric M [--metric ...]` reads
@@ -102,16 +100,12 @@ a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joine
 the token carry's, the gather's, the stamp probe's and the clock probe's pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
-`ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the
-SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
---print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
-`ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest, the launch and each kernel's file),
-mapped here to the phases through that same binary, the dumps read from where the box handed them back (the backfilled ones are samples at `@fsla//tools:lab`, where no tool stores); `--per` divides every count by the launch's CTA-windows. Each
-phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
+`ledger <name> [--per <n>] [--top N]` divides every count by the launch's CTA-windows (`--per`) and shows the `N` source lines issuing the most
+shared wavefronts. Each phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
 conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;
-then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its
-first N: an experiment's first is its checked launch, the timed ones follow.
-<a id="profile-checked"></a>A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump (a carried one or a live one)
+then the source lines issuing the shared wavefronts. The profiled launch is each kernel's first, the experiment's checked launch.
+
+<a id="profile-checked"></a>A record's PROFILE IS CHECKED (KERNEL_STANDARDS 30): `ledger` runs the checker's profile rule `shared_wavefronts_excess` on each kernel's dump
 and REFUSES, exit 1, where a kernel's shared wavefronts in excess of the conflict-free count are over what the experiment declares -- zero undeclared. The refusal names the
 kernel, then each source line that issues the excess with its count a CTA-window (`--per`) and in the launch, the checker's fix and fsla's note. Declare it as
 `b.expect(k, "BANK_CONFLICT", "<=", n)` with its `//:` reason above it (the [hazards](#hazards)): `n` is the excess wavefronts of a CTA-WINDOW
@@ -150,7 +144,7 @@ toolkit laid them out: an address span between a backward branch and its target 
 and a cold block laid inside such a span are not in one). The static ledger reads the same loops. What stays in `tools/lab.py` is the project's own: a bound
 declared `<=` and naming a kernel with tensor steps (`bound_failures`), the DEBTS below, the refusals' texts (`REFUSAL_TEXT`), and the checks of
 the experiment's own source -- an experiment outside `_PRE_TIMELINE` (the experiments written before these checks; the list only shrinks) is
-refused by `run` and by `pack` unless its header comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use,
+refused by `run` unless its header comment states a `TIMELINE:` -- each phase's stream, which load is a stage ahead of which use,
 the live registers -- and where its source has a warp collective after a conditional's `?` (`collective_selected`: only the lanes the condition
 takes reach a collective every lane must). Past `_PRE_TIMELINE` every kernel of an experiment, budgeted or exempt, is held to every hazard;
 inside it, `LOOP_CONVERGENCE` is held in budgeted kernels only and the others not at all. The experiments past `_PRE_TIMELINE` that had
@@ -160,21 +154,21 @@ purpose declares its count in `main` with its reason (`carry_window`'s ready ski
 straight after the group's steps). The advisories `lab waits` (what could precede a wait, `waits_report`) and `lab steps` (the figures of
 `step_port` and `step_work` over each region of a kernel) never refuse.
 
-<a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (`tools/notice_ledger.json`), the project's default for every build, the lab's and the production gate's
-(the SASS gate's check reads the units' ptxas reports against it too, `--ledger`). nvcc and ptxas say, beside the code, what they did to
+<a id="ledger"></a>THE LEDGER OF THE TOOLKIT'S NOTICES (warpline's base ledger, `warpline/checker/base_ledger.py`), the default for every build, the lab's and the production gate's
+(the SASS gate's check reads the units' ptxas reports against it too). nvcc and ptxas say, beside the code, what they did to
 it: a loop they proved unreachable, a kernel's asynchronous MMAs serialized, a register they spilled. The checker reads EVERY
 notice and warning of a build (`notices.read_notices`: ptxas's `info` and `warning` lines with a code and without, nvcc's
-`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger -- its BASE ledger with the project's, `tools/notice_ledger.json`: a project row overrides the base row of the same tool, code and text or adds one, and the file's seven rows are the ones whose reason and fix name the lab's pages and constructs. One row
+`file(line): warning #N-D: ...`, a bare `Potential Performance Loss: ...`) and looks each up in the ledger; fsla's pointers for a notice's rule are the notes (the `checker` section of `docs/rules.json`). One row
 for each notice either tool can print that the lab has seen or knows the template of -- the toolkit's codes are not
 documented and a template's code is unknown until a build emits it, so a row is matched by its tool, its code where it
 names one, and its text (the template's fixed words, `{}` for a number or a name), and a row with no code matches the
 template whatever code the toolkit gave it. A notice the ledger has no row for REFUSES the build and is quoted whole, with
-the instruction to add a row (`notice_without_row`, which no declaration lifts); so nothing the toolkit says is dropped unread.
+the instruction to add a row to warpline's base ledger (`notice_without_row`, which no declaration lifts); so nothing the toolkit says is dropped unread.
 
 THE ONE ROW TYPE. A row is `tool, code, text, rule, allow, reason, fix`: the notice is counted under its RULE, at the function it names (a kernel's
 notices of one rule are summed over its rows), and `allow` is the row's default allowance -- 0 when absent (a refusal: the experiment is not what it
 measures, or the code is defective: a `setmaxnreg` the toolkit ignored, a variable read before it is set, a kernel that spills registers or keeps a stack frame;
-the refusal prints the row's fix), a count, or `null` for a notice accepted by default (counted, printed in a pack's report where it may matter and its cost is not
+the refusal prints the row's fix), a count, or `null` for a notice accepted by default (counted, printed in the run's report where it may matter and its cost is not
 measured -- C7519, the arrive the toolkit injected; #128-D, a loop proved unreachable: a measured loop that is not run measures nothing -- and silent for
 the toolkit's per-function summary and a name nothing reads, #177-D). A DECLARATION beside the kernel overrides the row's allowance for the kernels its
 pattern names, with its own reason, and may tighten as well as allow: an experiment declares the count of its hazard (`STEPS_SERIALIZED`, `WAIT_INJECTED`: the rules
@@ -186,7 +180,7 @@ does to the SASS the kernel runs. If the kernel it names no longer runs the stre
 serialized, a wait or an arrive the source did not write, a register trade that did not happen, local memory traffic),
 the row's allowance is 0, and a kernel that can mean the form declares its count (a new rule joins `HAZARD_RULES` under a hazard's name). If it
 may matter and nothing measures it, the allowance is `null` and the notice is reported; the `docs/lab/` page that measures it is named in the row's reason. If it
-cannot reach the SASS, `null` with the reason said, and the rule `build_info` or `unused_variable` where the pack's report is to leave it out. A new row lands in the same commit as the experiment that
+cannot reach the SASS, `null` with the reason said, and the rule `build_info` or `unused_variable` where the report is to leave it out. A new row lands in the same commit as the experiment that
 printed it; a notice is never accepted for want of a decision, and acceptance of a notice whose cost is merely
 unmeasured is a report.
 
@@ -196,7 +190,7 @@ spilled to local memory"), `--warn-on-local-memory-usage` (`-warn-lmem-usage`: "
 two warnings (`Registers are spilled to local memory in function 'k', N bytes spill stores, N bytes spill loads` and
 `Local memory used for function 'k', size of stack frame: N bytes`) are ledger rows and refuse like any other. They are the lab's check of local memory: the frame's size is the warning's own.
 
-<a id="waits"></a>THE WAIT REPORT. `pack` prints, and `bazel run //measure/lab:<name>.run -- waits --arch sm_90a` prints alone,
+<a id="waits"></a>THE WAIT REPORT. `bazel run //measure/lab:<name>.run -- waits --arch sm_90a` prints
 one line a distinct tensor wait of each kernel (kernels with the same lines collapse, a count each; at most six lines a
 kernel and sixteen groups of kernels): `wait(N): K candidates (loads a, stores b, async c, other d) before STOP` -- the instructions after the wait,
 in straight-line code up to the next branch, barrier, tensor issue or wait (STOP), that touch none of the registers the
@@ -207,7 +201,7 @@ operand width reaches (`.64`, `.WIDE`: two; `.128`: four), so no candidate touch
 (a load after a store that read an accumulator is dropped, but a candidate store may still alias a load that stays after
 the wait: the author checks the address dependence); a candidate is moved only if the arrival or barrier ordering it sits under allows.
 
-<a id="steps"></a>THE STEP REPORTS. `pack` prints, and `bazel run //measure/lab:<name>.run -- steps --arch sm_90a` prints alone, two lines a
+<a id="steps"></a>THE STEP REPORTS. `bazel run //measure/lab:<name>.run -- steps --arch sm_90a` prints two lines a
 kernel that holds tensor steps (kernels with the same lines collapse): what ONE step costs, read from the SASS, so a
 prediction of a step's cost is made from these lines and not counted by hand. A kernel with several regions of steps
 (each innermost loop that holds one, each step outside such a loop) prints their range and the figures of the one with
@@ -224,7 +218,7 @@ the most.
 `Bench::expect(kernel, "STEP_PORT", "<=", bytes)` and `"STEP_WORK"` (the total instructions) are declared bounds, `<=`
 only: undeclared, nothing is refused; declared, a region of the kernel over it refuses the run, and a bound that matches
 no kernel with a step is refused too. The registers a kernel holds are not a bound here: ptxas's allocation is in the
-pack file and a kernel that does not fit its launch bounds spills and is refused for local memory; nothing holds a
+record's kernels and a kernel that does not fit its launch bounds spills and is refused for local memory; nothing holds a
 lab kernel to a role's register budget. `carry_token` bounds both by
 the most of its rows and `wgmma_width` bounds `STEP_PORT` at 2,048 + 32 N.
 NOT COUNTED: the copy engine's writes (bulk copies, the tensor memory access), bank conflicts, lanes masked off, generic
@@ -238,26 +232,16 @@ the binary and, beside it, the facts about its code that every reader of the exp
 functions' names, the compile's diagnostics and the toolkit's version (`_FACTS` in `bazel/lab.bzl`, `PARTS` in `tools/lab.py`, written by
 `tools/lab_facts.py`). THE CHECKS are the target's validation (`tools/lab_check.py`: the SASS checker, the notices' ledger and the experiment's declarations,
 over those files, in the lab's own words), so `bazel build //measure/lab:<name>` refuses an experiment `run` would refuse, and so does its run target
-(`<name>.run`), whose build runs the validation; `run`, `ncu` and `pack` check again what they read. A command that reports findings on an experiment the checks
+(`<name>.run`), whose build runs the validation; `run` and `ncu` check again what they read. A command that reports findings on an experiment the checks
 refuse runs with them off (`bazel run --norun_validations //measure/lab:<name>.run -- sass`) and prints them itself; every command reads the files
 (`lab.Built`) the run target hands it (`--built`, the directory of the build in its runfiles), and none runs a compiler, a disassembler or a build.
-A pack holds the same files, so `ledger --packed` reads a packed experiment as the target is read. The lab builds sm_90a alone (the tree's one
+The lab builds sm_90a alone (the tree's one
 architecture; a card of another is refused by name).
 
-<a id="pack"></a>A CARD ELSEWHERE. A box that is not started from the devbox image ([`setup.md`](../../setup.md)) carries a driver and
-no toolkit, so an experiment for it is built and checked here and run there: `bazel run //measure/lab:<name>.run -- pack --arch sm_90a --into DIR` builds the experiment's
-target with its checks (a refusal fails the build, with the text `run` prints) and copies its outputs -- no compile of its own: an unchanged experiment is
-Bazel's cache hit -- the binary, the files beside it that every reader of the experiment's code reads (the cubin, the listings,
-the demangled names, the assembler's log, the toolkit's version: [below](#graph)) and a pack file (the kernels' registers
-and opcodes, the toolkit, the commit, the binary's digest); on the card, `tools/lab.py carried <name> --from DIR --into
-OUT [--no-counters HOST]` (the counters read where the box holds the pinned profiler, the host named where it grants
-none) runs the pack's binary by its digest through the sequence `run` runs (`measure`: the inputs, a
-quiet GPU, the repetitions under a kill timeout, `--timeout`, the checks; `--blocks N`, for `run` too, the grid held to N CTAs,
-a lighter load on the card, a record of its own) and writes the record with the pack's build facts as files under `OUT/<name>/`
-(`<arch>[.blocks<N>].json` and its `.trace/`), which the box hands back. `--no-counters HOST` is the caller's DECLARATION that the named host grants no profiler counters: the record
+`--blocks N` (on `run`) holds the grid to N CTAs, a lighter load on the card, a record of its own. `--no-counters HOST` is the caller's DECLARATION that the named host grants no profiler counters: the record
 then carries the written exception in their place (`counters_exception`: the host, what stands in --
-`docs/KERNEL_STANDARDS.md` §16 addendum 4). `run` takes the same flag; without it a profiler that fails fails the
-run. An experiment with budgeted kernels, whose gate reads executed counts, is neither packed nor recorded under
+`docs/KERNEL_STANDARDS.md` §16 addendum 4); without it a profiler that fails fails the
+run. An experiment with budgeted kernels, whose gate reads executed counts, is not recorded under
 the exception.
 
 An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.py` beside it whose `write(directory)`
@@ -276,10 +260,10 @@ counters under `counters`. It prices nothing: a count times a rate bounds perfec
 
 <a id="warpline"></a>THE STAMP HEADER AND THE RECORD. `measure/lab/lab.cuh` includes `warpline/stamp.cuh` (the in-kernel stamp of the warpline module, pinned in
 `MODULE.bazel`) and `warpline/host.hpp` (its host writer of the native record, plain C++17). the experiments' compile takes them as the dependencies `@warpline//:stamp` and `@warpline//:host` (`bazel/lab.bzl`). The includes are compile-time
-only, so `pack` and `carried` need nothing of warpline at run time: the packed binary writes the records itself. Both entries
+only, so the binary writes the records itself and needs nothing of warpline at run time. Both entries
 hand `tools/lab.py` the directory of warpline's Python package too (`FSLA_WARPLINE_PYTHON`, `@warpline//:warpline`), which
-`tools/lab_trace.py` reads the records with and `lab.py` checks them with (`tools/checked.py` is the one seam to the checker); a box that runs a pack outside Bazel has none, and
-`carried` there writes the records unchecked (`lab trace` checks them where warpline is).
+`tools/lab_trace.py` reads the records with and `lab.py` checks them with (`tools/checked.py` is the one seam to the checker); a run outside Bazel has none, and
+writes the records unchecked (`lab trace` checks them where warpline is).
 `trace_record` is the one place the lab's row meets warpline's: the lab's row head (the count of entries issued and the CTA's shared base, 32 words)
 is not warpline's (`kHead` entries, the count in the first), so a row is given to `Record::add_row` by its entries and its issued count, and
 the entries are the lab's own but in three places -- the sites `entry` and `exit` are the launch's edges (a phase-begin mark there is

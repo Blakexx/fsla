@@ -233,7 +233,7 @@ echo "rule 2: no PTX image, the binary carries cubins alone" > "$3"
 def _sass_gate(ctx, so, stem, probes = False):
     """THE SASS GATE (KERNEL_STANDARDS section 20) on the linked library `so`: warpline's check (`warpline_check_actions`, its manifest
     and its comparison) once a built architecture, on the graph's disassemblers, with the units' ptxas reports as the build's notices,
-    the project's ledger and the architecture's declarations file (`_gated`: fsla's declarations, its arms and source kernels as
+    and the architecture's declarations file (`_gated`: fsla's declarations, its arms and source kernels as
     presences, its notes, strict); and closed-world rule 2 (`_PTX_GATE`). A refusal fails its action, so the library's build. Returns
     the verdicts (each check's comparison text and rule 2's, `<stem>.<arch>.check.txt` and `<stem>.ptx.txt`) and the static manifests
     (`<stem>.<arch>.manifest.json`)."""
@@ -247,7 +247,6 @@ def _sass_gate(ctx, so, stem, probes = False):
         arch = arch,
         toolkit = toolkit,
         notices = reports,
-        ledger = ctx.file._ledger,
     ) for arch in sorted(declared)]
     ptx = ctx.actions.declare_file(stem + ".ptx.txt")
     ctx.actions.run_shell(
@@ -260,13 +259,12 @@ def _sass_gate(ctx, so, stem, probes = False):
     )
     return [c.report for c in checks] + [ptx], [c.manifest for c in checks]
 
-#: the SASS gate's inputs, every library rule's: warpline's check (`WARPLINE_CHECK_ATTRS`), the graph's disassemblers, the project's
-#: ledger, and what the declarations are written from
+#: the SASS gate's inputs, every library rule's: warpline's check (`WARPLINE_CHECK_ATTRS`), the graph's disassemblers, and what the
+#: declarations are written from
 _SASS_GATE_ATTRS = WARPLINE_CHECK_ATTRS | {
     "_gate_declarations": attr.label(default = "//bazel:gate_declarations.py", allow_single_file = True),
     "_gate_sources": attr.label(default = "//bazel:gate_sources"),
     "_rules": attr.label(default = "//:docs/rules.json", allow_single_file = True),
-    "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),
     "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True, cfg = "exec"),
     "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True, cfg = "exec"),
     "_cuxxfilt": attr.label(default = "@cuda_tools//:bin/cu++filt", allow_single_file = True, cfg = "exec"),

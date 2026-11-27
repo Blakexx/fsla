@@ -55,14 +55,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
                    "a Nsight Compute CLI the machine's toolchain file may name, for the checkouts on this machine that "
                    "read it; this tree finds the pinned one by its pin (`ncu()`). A loader refuses a key it does not "
                    "declare, so it stays declared while machine files carry it"),
-        "sccache": Key("path?", None,
-                       "an sccache the machine's toolchain file may name, for the checkouts on this machine that read "
-                       "it; this tree reads none. A loader refuses a key it does not declare, so it stays declared "
-                       "while machine files carry it"),
-        "sccache_enabled": Key("bool", True,
-                               "the sccache switch the machine's toolchain file may hold, for the checkouts on this "
-                               "machine that read it; this tree reads none. A loader refuses a key it does not declare, "
-                               "so it stays declared while machine files carry it"),
         "mold": Key("path?", None,
                     "a mold the machine's toolchain file may name, for the checkouts on this machine that read it; this "
                     "tree links with the graph's (@mold). A loader refuses a key it does not declare, so it stays "
@@ -167,8 +159,7 @@ def cuda_home() -> str:
 def warpline_python() -> str | None:
     """The directory that holds the `warpline` package, which reads the lab's traced rows: the pinned module's
     (`@warpline//:warpline`), which `bazel run //tools:lab` hands in (`FSLA_WARPLINE_PYTHON`) and a test tier carries as
-    data, where it is the module's directory of the tier's runfiles. None where the process has none (a box that runs a
-    pack outside Bazel: its binary writes the records, and nothing there reads them)."""
+    data, where it is the module's directory of the tier's runfiles. None where the process has none (a run outside Bazel: the binary writes the records, and nothing there reads them)."""
     found = os.environ.get("FSLA_WARPLINE_PYTHON")
     if not found and os.environ.get("TEST_SRCDIR"):
         found = str(Path(os.environ["TEST_SRCDIR"]) / "warpline+")

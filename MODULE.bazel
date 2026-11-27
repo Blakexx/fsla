@@ -38,7 +38,7 @@ register_toolchains("@gcc_toolchain_x86_64//:all")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "0db2f5ef6a61fa24968b9f075d592c106eae947f",
+    commit = "63d778ca50a7ba96cfe280ffd5209323bffd0941",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 

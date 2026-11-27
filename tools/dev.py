@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 #: THE DEVBOX'S TOOLS outside the graph's environment: a developer's commands, each a pinned release in its own
 #: versioned folder under `host.tools_dir` (`dev_config.pinned`), linked into every checkout's venv (`dev-env`) and found by
 #: its pin, never recorded as a machine key -- see docs/setup.md#the-devbox
-DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
+DEV_TOOLS = ("nsight_compute", "nsight_systems")
 #: THE CUDA TOOLKIT is the graph's (`@cuda_tools`, read by `dev_config.cuda_home`); init fetches none. Its pin is the graph's
 #: (fsla-devtools' `pins/cuda_toolkit_pin.json`), which `check` holds the graph's nvcc to -- see docs/setup.md#the-devbox
 TOOLKIT = "cuda_toolkit"

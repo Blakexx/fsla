@@ -96,7 +96,7 @@ def arm_declaration(rule, allow, reason, where = {}, arch = None):
     `where` selects (`{field: [values]}`, every arm where none), its kernel pattern generated from each arm's template arguments, not written by hand.
 
     Args:
-      rule: a rule of the checker, or a notice rule of the project's ledger (`tools/notice_ledger.json`).
+      rule: a rule of the checker, or a notice rule of the checker's ledger.
       allow: the count the arm's kernel may keep.
       reason: why; required.
       where: the arms it covers, by the key's fields.

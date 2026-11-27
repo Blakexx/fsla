@@ -46,7 +46,7 @@ mirrors the oracle roster one for one — a bench roster that does not match the
 roster is a roster with kernels nobody measures — and it includes the carry, whose body
 does not exist on this line and whose arm therefore refuses by name rather than reporting
 a number for something that did not run. `provider.py` is fsla's runner: given a central cell
-it offers the subjects this binary runs on it, each at its call counts (`prefill@calls=4`), or refuses the cell by a
+it offers the subjects this binary runs on it, or refuses the cell by a
 fact of the cell or the binary, never by its name; each entry runs in its bundle's environment.
 
 **A timing session** interleaves timing entries of fsla checkouts, and of other libraries, call by call under one

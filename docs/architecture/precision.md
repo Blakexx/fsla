@@ -26,7 +26,7 @@ nothing bounds what accumulation embeds.
 | the fold | the coefficient of a (token, leaf) -- its levels' bytes with the token's scales, multiplied in fp32 where the bytes are expanded -- rounded to bf16 once; the values bf16 as stored | fp32 |
 | the readout | the state as a bf16 operand; the read coefficient bf16 | fp32 |
 | the intra | a window's token pairs' products exact (u8 rows, integer MMAs); the pair's weight bf16; the values bf16 | fp32 |
-| the output's sum | a token's partial sums from every CTA that reads it | fp32 inside a CTA; across CTAs the plan's: fp32, or one f16 line a CTA a token, scaled by a power of two from one coarse bound re-based each segment and stored with the state -- 0.083% a token at the median with 512 leaves a CTA ([`arith_model`](../internals/tools/arith_model.md#f16)) |
+| the output's sum | a token's partial sums from every CTA that reads it | fp32 inside a CTA; across CTAs the plan's: fp32, or one f16 line a CTA a token, scaled by a power of two from one coarse bound re-based each segment and stored with the state -- 0.083% a token at the median with 512 leaves a CTA (recorded 2026-11-11) |
 | decode | the bundle's token, the stored state | each written element updated in fp32 and rounded to its group's unit (2^-23 of the group's largest) |
 | the output | `y = P / den`, bf16 | -- |
 
@@ -52,8 +52,8 @@ Per token, `|dy| / |y|` against fp64 on continuous values (`docs/testing.md`).
 MEASURED on kernels (2026-10-03 and 2026-10-12, sm_86 (ampere branch, unreproducible here), the carry's own output, median a token): a bf16 family 0.16-0.20% on the flagship cells; the fp16 family 0.018-0.029%. The class is accepted on every
 card (Blake, 2026-11-09): it is the bf16 output store's own.
 
-MODELLED for this family before any kernel of it exists ([`tools/arith_model.py`](../internals/tools/arith_model.md),
-2026-11-09: the fp64 recurrence on the formatted operands, rounded only where a kernel of the family rounds; the
+MODELLED for this family before any kernel of it exists (recorded 2026-11-09 by a tool since deleted, `docs/internals/DELETIONS.md`:
+the fp64 recurrence on the formatted operands, rounded only where a kernel of the family rounds; the
 median / the 99th percentile a token): carry-alt-k4-256x256-T1024 0.134 / 0.202%, carry-dense-256x256-T1024 0.132 / 0.191%, carry-alt-k4-256x256-T65536
 0.115 / 0.174%, carry-dense-256x256-T65536 0.021 / 0.167%. The intra's weight, rounded once a token pair, carries the worst tokens
 everywhere; the fold's coefficient, the state as an operand and the read coefficient average over the leaves a token
@@ -62,7 +62,7 @@ ones.
 
 THE SUM'S WIDTH IS THE PLAN'S because f16 costs by the partials it joins and the op counts none (R24): 29 f16 lines
 a token (512 leaves a CTA, added in fp32 first) are 0.083% a token at the median on carry-alt-k4-256x256-T65536, 58 are 0.115%, the
-family's own error being 0.115% ([`arith_model`](../internals/tools/arith_model.md#f16); MODELLED on that one
+family's own error being 0.115% (recorded 2026-11-11; MODELLED on that one
 sparse cell -- a dense read side and wider levels are NOT modelled). So the producer's planner chooses the width from the
 declaration's structure, the levels' widths and walks. A sum a fold group with the groups merged in fp32 reads
 0.023%, and is no form: its merge costs what the fp32 line does
