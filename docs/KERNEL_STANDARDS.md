@@ -248,7 +248,9 @@ command, no old path survives"; "the lab's experiments compile in the graph"). A
 profile, a sanitizer run, a build of a library or wheel and a package install run as the graph's actions, never as a
 command typed in a checkout nor a tool's own subprocess outside a graph rule: `.claude/hooks/graph_only.py` refuses
 `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`, `compute-sanitizer`, `cmake`, `make`, `ninja` and the pip installs
-as typed command words, naming the target that does it; `GRAPH_OVERRIDE=<why>` on the command is the stated exception.
+as typed command words, naming the target that does it, and a typed `git worktree add` or `remove`, naming the worktree
+tool that keeps the machine's cap on live worktrees (Blake, 2026-11-27: "a hook rule like the ones that already refuse
+hand-typed toolchain commands" ... "ok"); `GRAPH_OVERRIDE=<why>` on the command is the stated exception.
 The commit gate (`//:graph_only`, `tools/lint/graph_only.py`) refuses the same steps in tracked code, with no baseline: its
 allowlist is one entry a call site, each citing a graph rule whose action runs the step or one of the clauses below.
 WHAT STAYS OUTSIDE THE GRAPH, and why (the only clauses; a step outside the graph that none of them names moves into a
