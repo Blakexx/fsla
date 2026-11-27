@@ -36,7 +36,8 @@ def test_the_logit_gain_sweeps_the_realized_density():
 
     sweep = [by_name(name) for name in SWEEP]
     assert [c.gain for c in sweep] == sorted(c.gain for c in sweep), "the sweep is listed by rising gain"
-    assert len({dataclasses.replace(c, gain=1.0) for c in sweep}) == 1, "the sweep moves the gain alone, on one input"
+    #: a cell's note is prose about it, and each of these names its gain: the input is every other field
+    assert len({dataclasses.replace(c, gain=1.0, note="") for c in sweep}) == 1, "the sweep moves the gain alone, on one input"
     densities = [_write_density(build(c)["routes"]) for c in sweep]
     assert all(a >= b for a, b in zip(densities, densities[1:])), (
         f"realized write densities {densities} do not fall as the gain rises; the gain is not the density knob")
