@@ -346,8 +346,8 @@ stored sample is never rewritten), which `//:docrefs` resolves inside the pin, a
 `trace`/`path`, the floor model (`tools/carry_floor.py`), the rates' check (`measure/rates.py`) -- read it there, handed
 its root by the graph (`FSLA_DATA`, `measure/data.py`). A LAB RECORD is read through one function, `lab_record(experiment,
 arch)` (with `blocks` or `variant` where the question is another's): the newest sample of the run's record its question
-keys (`lab_semantics`: the experiment, the architecture, the kind -- `run`, `counters`, `ledger` -- the grid it was held to
-and a named condition), its traced rows or a ledger's dumps the sample's parts. `bazel run //measure/lab:NAME.run`
+keys (`lab_semantics`: the experiment, the architecture, the kind -- `run` or `counters` -- the grid it was held to
+and a named condition), its traced rows the sample's parts. `bazel run //measure/lab:NAME.run`
 stores a new sample into the store's checkout (at its own label), never this tree, and it becomes citable when a commit of
 the data repository holding it is pushed and the pin moves to it. The records the lab kept as plain files before it
 stored through the store are BACKFILLED samples, each file's bytes its output unchanged, marked `backfilled` with the
