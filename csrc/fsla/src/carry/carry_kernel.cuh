@@ -322,7 +322,7 @@ __device__ __forceinline__ void fold_role(const Operands& o, const plan::Prefill
   fold_levels(c, p, fold, base, shift, mask);
   const FoldPositions positions = fold_positions(o, c, p, fold, shift, mask);
   //: THE FOLD'S SETS ARE CONSECUTIVE LEAF GROUPS of the write side, from its levels' first groups' on -- see docs/internals/common/plan/leaf_groups.md#order
-  const plan::LeafGroups leaves = plan::leaf_groups(c, false);
+  const plan::LeafGroups leaves = plan::leaf_groups(c, false, 0);
   const int first_leaf = plan::leaf_group_of(leaves, base);
   //: a head's value lines are addressed by an unsigned 32-bit offset from the call's base, a level's rows by a signed one
   std::int64_t rows_most = 0;

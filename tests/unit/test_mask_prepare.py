@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from conftest import one_read_head
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +40,7 @@ def _planner_sizes(width_bits: int) -> list[int]:
     run = subprocess.run([str(TOOL), "--cta-carve", ";".join(str(width_bits) for _ in densities), "--write-density", ";".join("256" for _ in densities),
                           "--read-density", ";".join(str(d) for d in densities)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
-    lines = [json.loads(line) for line in run.stdout.splitlines()]
+    lines = [one_read_head(json.loads(line)) for line in run.stdout.splitlines()]
     assert len(lines) == 256
     return [1 << line["read_size_bits"][0] for line in lines]
 
@@ -81,7 +82,7 @@ def _planner(calls: list[tuple[list[int], list[int], list[int]]]) -> list[dict]:
     run = subprocess.run([str(TOOL), "--cta-carve", join([c[0] for c in calls]), "--write-density", join([c[2] for c in calls]),
                           "--read-density", join([c[1] for c in calls])], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
-    lines = [json.loads(line) for line in run.stdout.splitlines()]
+    lines = [one_read_head(json.loads(line)) for line in run.stdout.splitlines()]
     assert len(lines) == len(calls)
     return lines
 

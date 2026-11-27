@@ -22,12 +22,15 @@ struct LeafGroups {
   int outer_at[kCarveMaxLevels];
 };
 
-//: THE LEAF GROUPS of a side of a carve -- see docs/internals/common/plan/leaf_groups.md#order
-FSLA_CARVE_FN constexpr LeafGroups leaf_groups(const PrefillCarve& c, bool read) {
+//: THE LEAF GROUPS of a side of a carve, the write side's or (`read`) read head `head`'s -- see docs/internals/common/plan/leaf_groups.md#order
+FSLA_CARVE_FN constexpr LeafGroups leaf_groups(const PrefillCarve& c, bool read, int head) {
   LeafGroups g{};
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
-    const int group = read ? c.read_group_bits[l] : c.write_group_bits[l];
+    int group = c.write_group_bits[l];
+    FSLA_CARVE_UNROLL
+    for (int h = 0; h < kCarveMaxReadHeads; ++h)
+      group = read && h == head ? c.read_group_bits[h][l] : group;
     const int box = read ? c.carve_bits[l] : c.fold_bits[l];
     const int along = l < c.levels ? c.width_bits[l] - group : 0;
     const int inside = l < c.levels && box > group ? box - group : 0;
@@ -98,8 +101,8 @@ namespace leaf_proof {
 constexpr PrefillCarve two_levels(int write0, int write1, int read0, int read1) {
   const int width_bits[2] = {8, 8};
   const int write_density[2] = {write0, write1};
-  const int read_density[2] = {read0, read1};
-  return prefill_carve(2, width_bits, write_density, read_density);
+  const int read_density[1][kCarveMaxLevels] = {{read0, read1}};
+  return prefill_carve<PrefillPolicy>(2, width_bits, write_density, read_density, 1);
 }
 
 //: the measured cell: level 0 sparse for the write side and whole for the read side, level 1 the reverse
@@ -107,7 +110,7 @@ constexpr PrefillCarve cell() { return two_levels(4, 256, 256, 4); }
 
 //: a leaf group and back, over every leaf group of a side
 constexpr bool round_trips(const PrefillCarve& c, bool read) {
-  const LeafGroups g = leaf_groups(c, read);
+  const LeafGroups g = leaf_groups(c, read, 0);
   for (int leaf = 0; leaf < (1 << g.bits); ++leaf) {
     int group[kCarveMaxLevels] = {};
     leaf_group_levels(g, leaf, group);
@@ -116,9 +119,9 @@ constexpr bool round_trips(const PrefillCarve& c, bool read) {
   return true;
 }
 
-static_assert(leaf_groups(cell(), false).bits == 6 && leaf_groups(cell(), true).bits == 6,
+static_assert(leaf_groups(cell(), false, 0).bits == 6 && leaf_groups(cell(), true, 0).bits == 6,
               "the cell has 64 leaf groups a side");
-static_assert(leaf_groups(two_levels(4, 4, 4, 4), false).bits == 12,
+static_assert(leaf_groups(two_levels(4, 4, 4, 4), false, 0).bits == 12,
               "two levels at 4 live digits of 256 are 4,096 leaf groups of 16 leaves");
 static_assert(round_trips(cell(), false) && round_trips(cell(), true)
                   && round_trips(two_levels(4, 4, 4, 4), false)

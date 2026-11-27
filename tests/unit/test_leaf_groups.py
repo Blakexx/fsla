@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import one_read_head
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -30,7 +32,7 @@ def _run(calls: list[tuple[list[int], list[int], list[int]]]) -> list[dict]:
     run = subprocess.run([str(TOOL), "--cta-carve", arg(lambda c: c[0]), "--write-density", arg(lambda c: c[1]), "--read-density", arg(lambda c: c[2])],
                          capture_output=True, text=True, timeout=600)
     assert run.returncode == 0, run.stderr
-    out = [json.loads(line) for line in run.stdout.splitlines()]
+    out = [one_read_head(json.loads(line)) for line in run.stdout.splitlines()]
     assert len(out) == len(calls)
     return out
 

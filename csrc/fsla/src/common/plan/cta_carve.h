@@ -22,6 +22,9 @@ namespace fsla::plan {
 
 inline constexpr int kCarveMaxLevels = 4;
 
+//: FIXED by the interface: the most read heads the carve takes beside the one write head, a group's query heads; no card decides it -- see docs/internals/common/plan/cta_carve.md#read-heads
+inline constexpr int kCarveMaxReadHeads = 8;
+
 //: a level is at most 256 digits wide: 8 bits
 inline constexpr int kCarveMaxWidthBits = 8;
 
@@ -121,58 +124,94 @@ struct CtaCarve {
   int carve_bits[kCarveMaxLevels];
 };
 
-//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each side's sizes a level (the group its density gives, as log2).
-//: EACH DOUBLING GOES TO THE LEVEL THAT SAVES THE MOST FETCHES: a side's LEFT is the product of size over share on the levels where its size is still the larger, and a level's saving half of each side's left that still needs it; then the smaller share, a level the read side needs, the lower level
-FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* write_bits,
-                                           const int* read_bits, int levels) {
-  CtaCarve a{levels, {}};
-  //: a side's shortfall, the log2 of its left: the doublings its sizes are above the shares, kept as the shares grow
-  int write_short = 0, read_short = 0;
-  FSLA_CARVE_UNROLL
-  for (int l = 0; l < kCarveMaxLevels; ++l) {
-    write_short += l < levels ? write_bits[l] : 0;
-    read_short += l < levels ? read_bits[l] : 0;
+//: A CARVE POLICY weighs a doubling: `worth` of doubling a level, from each party's shortfall (the log2 of its left) and whether the doubling halves it. The carve is compiled with one -- see docs/internals/common/plan/cta_carve.md#policy
+//: THE TOTAL SAVING: the fetches the doubling saves, half of the left of every party it halves, added over the write side and each read head
+struct TotalSaving {
+  FSLA_CARVE_FN static constexpr std::int64_t worth(int write_short, bool writes,
+                                                    const int* read_short, const bool* reads,
+                                                    int read_heads) {
+    //: half of a left `2^short`; a party a level halves has a shortfall of one at least
+    std::int64_t saved = writes ? (std::int64_t{1} << write_short) >> 1 : 0;
+    FSLA_CARVE_UNROLL
+    for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+      saved += h < read_heads && reads[h] ? (std::int64_t{1} << read_short[h]) >> 1 : 0;
+    }
+    return saved;
   }
+};
+
+//: THE PREFILL'S POLICY: the one its kernels, the mask-preparation pass and the tool are compiled with
+using PrefillPolicy = TotalSaving;
+
+//: THE CTA'S CARVE of `levels` levels (docs/internals/common/plan/cta_carve.md): the carve bits of each, from the widths' bits and each party's sizes a level (the group its density gives, as log2), the write side's and `read_heads` read heads' (`read_bits[h][l]`).
+//: EACH DOUBLING GOES TO THE LEVEL OF THE MOST WORTH BY THE POLICY: a party's LEFT is the product of size over share on the levels where its size is still the larger; then the smaller share, a level a read head needs, the lower level
+template <class Policy>
+FSLA_CARVE_FN constexpr CtaCarve cta_carve(const int* width_bits, const int* write_bits,
+                                           const int (*read_bits)[kCarveMaxLevels], int read_heads,
+                                           int levels) {
+  CtaCarve a{levels, {}};
+  //: a party's shortfall, the log2 of its left: the doublings its sizes are above the shares, kept as the shares grow
+  int write_short = 0;
+  int read_short[kCarveMaxReadHeads] = {};
+  FSLA_CARVE_UNROLL
+  for (int l = 0; l < kCarveMaxLevels; ++l) write_short += l < levels ? write_bits[l] : 0;
+  FSLA_CARVE_UNROLL
+  for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+    FSLA_CARVE_UNROLL
+    for (int l = 0; l < kCarveMaxLevels; ++l) {
+      read_short[h] += h < read_heads && l < levels ? read_bits[h][l] : 0;
+    }
+  }
+
   FSLA_CARVE_TRIPS
   for (int step = 0; step < kCtaLeafBits; ++step) {
-    const bool tied = write_short == read_short, write_more = write_short > read_short;
-    int best = -1, best_key = -1, best_writes = 0, best_reads = 0;
+    int best = -1, best_writes = 0;
+    std::int64_t best_key = -1;
+    bool best_reads[kCarveMaxReadHeads] = {};
     FSLA_CARVE_UNROLL
     for (int l = 0; l < kCarveMaxLevels; ++l) {
       const int share = a.carve_bits[l];
       const bool open = l < levels && share + 1 <= width_bits[l];
-      const int writes = write_bits[l] > share ? 1 : 0, reads = read_bits[l] > share ? 1 : 0;
-      //: the savings compared without their products: the side with more left counts first and the other second; sides with as much left count alike
-      const int more = write_more ? writes : reads, less = write_more ? reads : writes;
-      const int first = tied ? writes + reads : more;
-      const int second = tied ? 0 : less;
+      const bool writes = write_bits[l] > share;
+      bool reads[kCarveMaxReadHeads] = {};
+      bool any_reads = false;
+      FSLA_CARVE_UNROLL
+      for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+        reads[h] = h < read_heads && read_bits[h][l] > share;
+        any_reads = any_reads || reads[h];
+      }
+      const std::int64_t worth = Policy::worth(write_short, writes, read_short, reads, read_heads);
       const int spare = kCarveMaxWidthBits - share;
-      const int key = open ? (first << 6) | (second << 5) | (spare << 1) | reads : -1;
+      const std::int64_t key = open ? (worth << 5) | (spare << 1) | (any_reads ? 1 : 0) : -1;
       const bool takes = key > best_key;
       best = takes ? l : best;
       best_key = takes ? key : best_key;
-      best_writes = takes ? writes : best_writes;
-      best_reads = takes ? reads : best_reads;
+      best_writes = takes ? (writes ? 1 : 0) : best_writes;
+      FSLA_CARVE_UNROLL
+      for (int h = 0; h < kCarveMaxReadHeads; ++h) best_reads[h] = takes ? reads[h] : best_reads[h];
     }
+
     FSLA_CARVE_UNROLL
     for (int l = 0; l < kCarveMaxLevels; ++l) a.carve_bits[l] += l == best ? 1 : 0;
     write_short -= best_writes;
-    read_short -= best_reads;
+    FSLA_CARVE_UNROLL
+    for (int h = 0; h < kCarveMaxReadHeads; ++h) read_short[h] -= best_reads[h] ? 1 : 0;
   }
   return a;
 }
 
-//: every level index is 0-based; -1 is none. `write_density` and `read_density` are each side's densities as clamped, `write_group_bits` and `read_group_bits` the groups a kernel reads (the sizes, raised where a set would hold fewer than 16 leaves);
-//: `write_order` and `read_order` are each side's loop order over the levels, outermost first (`carve_loop_order`); `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
+//: every level index is 0-based; -1 is none. `read_heads` is the read heads the call has (1 to 8), a read field `[h]` read head `h`'s. `write_density` and `read_density` are the densities as clamped, `write_group_bits` and `read_group_bits` the groups a kernel reads (the sizes, raised where a set would hold fewer than 16 leaves);
+//: `write_order` is the write side's loop order over the levels, outermost first (`carve_loop_order`), and `read_order` the read side's ONE order, of every head: the levels by the heads' densities summed; `carve_bits` are the CTA's carve of each level; `split_level` is the level the two fold warpgroups split along
 //: and `folds` their count; `fold_bits` a fold's bits of each level; `fold_set_leaves` and `fold_sets` the leaves a token is expanded over at once on the write side and the
-//: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for the read side over the whole carve; `unit_bits` the bits of a level's CTA index its write group spans, and `unit_ctas` the CTAs inside one combination of write groups (they see one token schedule and are taken together)
+//: separate sets a fold holds; `read_set_leaves` and `read_sets` the same for a read head over the whole carve; `unit_bits` the bits of a level's CTA index its write group spans, and `unit_ctas` the CTAs inside one combination of write groups (they see one token schedule and are taken together)
 struct PrefillCarve {
   int levels;
+  int read_heads;
   int width_bits[kCarveMaxLevels];
   int write_density[kCarveMaxLevels];
-  int read_density[kCarveMaxLevels];
+  int read_density[kCarveMaxReadHeads][kCarveMaxLevels];
   int write_group_bits[kCarveMaxLevels];
-  int read_group_bits[kCarveMaxLevels];
+  int read_group_bits[kCarveMaxReadHeads][kCarveMaxLevels];
   int write_order[kCarveMaxLevels];
   int read_order[kCarveMaxLevels];
   int carve_bits[kCarveMaxLevels];
@@ -183,35 +222,48 @@ struct PrefillCarve {
   int fold_leaves;
   int fold_set_leaves;
   int fold_sets;
-  int read_set_leaves;
-  int read_sets;
+  int read_set_leaves[kCarveMaxReadHeads];
+  int read_sets[kCarveMaxReadHeads];
   int unit_bits[kCarveMaxLevels];
   std::int64_t unit_ctas;
 };
 
-//: THE CARVE of a call, from `levels` (0 to 4) levels' width bits (0 to 8) and each side's densities, `width_bits[0 .. levels)`, `write_density[0 .. levels)` and `read_density[0 .. levels)`;
-//: TOTAL: a density outside 1..256 (256ths of a level's digits) is CLAMPED into 1..256, `levels` into 0..4 and a width into 0..8; it has no failure path
+//: THE CARVE of a call under a policy, from `levels` (0 to 4) levels' width bits (0 to 8), the write side's densities and each of `read_heads` (1 to 8) read heads': `width_bits[0 .. levels)`, `write_density[0 .. levels)` and `read_density[h][0 .. levels)`;
+//: TOTAL: a density outside 1..256 (256ths of a level's digits) is CLAMPED into 1..256, `levels` into 0..4, a width into 0..8 and `read_heads` into 1..8; it has no failure path
+template <class Policy>
 FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_bits,
                                                    const int* write_density,
-                                                   const int* read_density) {
+                                                   const int (*read_density)[kCarveMaxLevels],
+                                                   int read_heads) {
   PrefillCarve c{};
   levels = carve_clamp(levels, 0, kCarveMaxLevels);
+  read_heads = carve_clamp(read_heads, 1, kCarveMaxReadHeads);
   c.levels = levels;
+  c.read_heads = read_heads;
+  //: the read side's one order is the levels by the heads' densities summed (docs/internals/common/plan/cta_carve.md#loop-order)
+  int read_sum[kCarveMaxLevels] = {};
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
     if (l < levels) {
       c.width_bits[l] = carve_clamp(width_bits[l], 0, kCarveMaxWidthBits);
       c.write_density[l] = carve_clamp(write_density[l], kLeastDensity, kWholeDensity);
-      c.read_density[l] = carve_clamp(read_density[l], kLeastDensity, kWholeDensity);
       //: a level's size from its density, which a set's least may raise below
       c.write_group_bits[l] = prefill_group_bits(c.write_density[l], c.width_bits[l]);
-      c.read_group_bits[l] = prefill_group_bits(c.read_density[l], c.width_bits[l]);
+      FSLA_CARVE_UNROLL
+      for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+        if (h < read_heads) {
+          c.read_density[h][l] = carve_clamp(read_density[h][l], kLeastDensity, kWholeDensity);
+          c.read_group_bits[h][l] = prefill_group_bits(c.read_density[h][l], c.width_bits[l]);
+          read_sum[l] += c.read_density[h][l];
+        }
+      }
     }
   }
   carve_loop_order(c.write_density, levels, c.write_order);
-  carve_loop_order(c.read_density, levels, c.read_order);
+  carve_loop_order(read_sum, levels, c.read_order);
   //: the shares are picked from the sizes; a set's least raises a group after, and never past a share
-  const CtaCarve a = cta_carve(c.width_bits, c.write_group_bits, c.read_group_bits, levels);
+  const CtaCarve a =
+      cta_carve<Policy>(c.width_bits, c.write_group_bits, c.read_group_bits, read_heads, levels);
   c.cta_leaves = 1;
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
@@ -235,28 +287,37 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
   c.fold_leaves = c.cta_leaves / c.folds;
 
   c.fold_set_leaves = 1;
-  c.read_set_leaves = 1;
   c.unit_ctas = 1;
+  FSLA_CARVE_UNROLL
+  for (int h = 0; h < kCarveMaxReadHeads; ++h) c.read_set_leaves[h] = 1;
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
     c.fold_bits[l] = c.carve_bits[l] - (l == c.split_level ? 1 : 0);
   }
   carve_least_sets(c.write_order, levels, c.fold_bits, c.write_group_bits);
-  carve_least_sets(c.read_order, levels, c.carve_bits, c.read_group_bits);
+  FSLA_CARVE_UNROLL
+  for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+    if (h < read_heads) carve_least_sets(c.read_order, levels, c.carve_bits, c.read_group_bits[h]);
+  }
   FSLA_CARVE_UNROLL
   for (int l = 0; l < kCarveMaxLevels; ++l) {
     const int write_set =
         c.write_group_bits[l] < c.fold_bits[l] ? c.write_group_bits[l] : c.fold_bits[l];
-    const int read_set =
-        c.read_group_bits[l] < c.carve_bits[l] ? c.read_group_bits[l] : c.carve_bits[l];
     c.fold_set_leaves <<= write_set;
-    c.read_set_leaves <<= read_set;
+    FSLA_CARVE_UNROLL
+    for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+      const int group = c.read_group_bits[h][l], share = c.carve_bits[l];
+      c.read_set_leaves[h] <<= h < read_heads ? (group < share ? group : share) : 0;
+    }
     const int over = c.write_group_bits[l] - c.carve_bits[l];
     c.unit_bits[l] = over > 0 ? over : 0;
     c.unit_ctas <<= c.unit_bits[l];
   }
   c.fold_sets = c.fold_leaves / c.fold_set_leaves;
-  c.read_sets = c.cta_leaves / c.read_set_leaves;
+  FSLA_CARVE_UNROLL
+  for (int h = 0; h < kCarveMaxReadHeads; ++h) {
+    c.read_sets[h] = h < read_heads ? c.cta_leaves / c.read_set_leaves[h] : 0;
+  }
   return c;
 }
 
@@ -300,8 +361,8 @@ namespace carve_proof {
 constexpr PrefillCarve cell() {
   const int width_bits[2] = {8, 8};
   const int write_density[2] = {4, 256};
-  const int read_density[2] = {256, 4};
-  return prefill_carve(2, width_bits, write_density, read_density);
+  const int read_density[1][kCarveMaxLevels] = {{256, 4}};
+  return prefill_carve<PrefillPolicy>(2, width_bits, write_density, read_density, 1);
 }
 
 constexpr int cta_along(std::int64_t place, int level) {

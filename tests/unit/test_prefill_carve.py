@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import one_read_head
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -27,7 +28,7 @@ def _carve(widths: list[int], write: list[int], read: list[int]):
 
 def _out(run) -> dict:
     assert run.returncode == 0, run.stderr
-    out = json.loads(run.stdout)
+    out = one_read_head(json.loads(run.stdout))
     assert out["fold_leaves"] * out["folds"] == out["cta_leaves"]
     assert out["fold_sets"] * out["fold_set_leaves"] == out["fold_leaves"] and out["read_sets"] * out["read_set_leaves"] == out["cta_leaves"]
     assert out["units_per_head"] * out["unit_ctas"] == out["ctas_per_head"]

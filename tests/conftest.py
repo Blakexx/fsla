@@ -57,6 +57,14 @@ device_torch_lib = torch.cuda
 # -----------------------------------------------------------------------------
 
 
+def one_read_head(out: dict) -> dict:
+    """A carve of ONE read head as `plan_tool --cta-carve` prints it, each read field its one head's: the tool prints a read
+    field as a list, an entry a read head (`read_heads` of them)."""
+    assert out["read_heads"] == 1, out["read_heads"]
+    per_head = {"read_density", "read_size_bits", "read_group_bits", "read_set_leaves", "read_sets"}
+    return {key: value[0] if key in per_head or key.startswith("read_leaf_") else value for key, value in out.items()}
+
+
 def reference_produce(layer, x, consumer=None):
     """THE REFERENCE PRODUCER: ``(routes, values, masks)`` of a layer's producer by the torch composition
     (`fsla.ops.produce._composition`, the fp64, host and gradient path), never the CUDA produce kernel. The masks come

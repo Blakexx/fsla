@@ -211,9 +211,9 @@ inline Call make(Shape shape, int windows) {
     c.density[1] = c.density[kLevels];
   }
   const int width_bits[kLevels] = {kWidthBits, kWidthBits};
-  const int read[kLevels] = {c.density[0] + 1, c.density[1] + 1};
+  const int read[1][plan::kCarveMaxLevels] = {{c.density[0] + 1, c.density[1] + 1}};
   const int write[kLevels] = {c.density[kLevels] + 1, c.density[kLevels + 1] + 1};
-  c.carve = plan::prefill_carve(kLevels, width_bits, write, read);
+  c.carve = plan::prefill_carve<plan::PrefillPolicy>(kLevels, width_bits, write, read, 1);
   for (int l = 0; l < kLevels; ++l) c.ctas <<= kWidthBits - c.carve.carve_bits[l];
   c.values.resize(c.tokens * kLine);
   for (size_t i = 0; i < c.values.size(); ++i) c.values[i] = value_byte(i);

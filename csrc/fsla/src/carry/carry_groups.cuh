@@ -36,16 +36,17 @@ constexpr int side_at(bool read) { return read ? 0 : kLevels; }
 
 //: THE CARVE OF A CALL, from its densities as the mask-preparation pass reads them (a byte `b` is `b + 1` 256ths, the read side's row first) -- see docs/internals/carry/carry_groups.md#carve
 __device__ __forceinline__ plan::PrefillCarve carve_of(const Operands& o) {
-  int width[kLevels] = {}, write[kLevels] = {}, read[kLevels] = {};
+  //: the call hands one read head's densities
+  int width[kLevels] = {}, write[kLevels] = {}, read[1][kLevels] = {};
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     width[l] = o.width_bits[l];
     if (l < o.levels) {
-      read[l] = plan::carve_density(o.masked[0], l, o.density[l]);
+      read[0][l] = plan::carve_density(o.masked[0], l, o.density[l]);
       write[l] = plan::carve_density(o.masked[kWriteSide], l, o.density[o.levels + l]);
     }
   }
-  return plan::prefill_carve(o.levels, width, write, read);
+  return plan::prefill_carve<plan::PrefillPolicy>(o.levels, width, write, read, 1);
 }
 
 //: A CTA'S PLACE IN THE CALL: its head, its slice of the value channels and its index along each level -- see docs/internals/carry/carry_groups.md#place

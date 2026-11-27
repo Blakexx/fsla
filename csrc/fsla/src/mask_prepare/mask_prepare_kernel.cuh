@@ -167,23 +167,25 @@ __device__ __forceinline__ void form(const Args& a, int s, std::int64_t head, in
 //: THE SIDE'S LEAF GROUPS, from the call's carve, handed in shared words; a density byte `b` is `b + 1` 256ths. ITS OWN FUNCTION, not inlined: its values are allocated apart from the walk's -- see docs/internals/mask_prepare/mask_prepare.md#the-kernel
 __device__ __noinline__ void hand_leaf_groups(const Args& a, const std::uint8_t* density, int side,
                                               int* handed) {
-  int width[kLevels] = {}, write[kLevels] = {}, read[kLevels] = {};
+  //: the call hands one read head's densities
+  int width[kLevels] = {}, write[kLevels] = {}, read[1][kLevels] = {};
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
     width[l] = a.width_bits[l];
     if (l < a.levels) {
       //: A LEVEL-SIDE WITH NO MASK IS WALKED WHOLE, whatever its density byte: the mask's absence is the dense flag, and the workspace is sized by it
-      read[l] = plan::carve_density(a.masked[0], l, density[l]);
+      read[0][l] = plan::carve_density(a.masked[0], l, density[l]);
       write[l] = plan::carve_density(a.masked[plan::kWriteSide], l, density[a.levels + l]);
     }
   }
-  const plan::PrefillCarve c = plan::prefill_carve(a.levels, width, write, read);
-  const plan::LeafGroups g = plan::leaf_groups(c, side == 0);
+  const plan::PrefillCarve c =
+      plan::prefill_carve<plan::PrefillPolicy>(a.levels, width, write, read, 1);
+  const plan::LeafGroups g = plan::leaf_groups(c, side == 0, 0);
   if (threadIdx.x != 0) return;
   handed[kHandedBits] = g.bits;
 #pragma unroll
   for (int l = 0; l < kLevels; ++l) {
-    handed[kHandedGroup + l] = side == 0 ? c.read_group_bits[l] : c.write_group_bits[l];
+    handed[kHandedGroup + l] = side == 0 ? c.read_group_bits[0][l] : c.write_group_bits[l];
     handed[kHandedInner + l] = g.inner[l];
     handed[kHandedInnerAt + l] = g.inner_at[l];
     handed[kHandedOuter + l] = g.outer[l];

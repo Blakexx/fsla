@@ -56,9 +56,9 @@ struct Row {
 //: the host's lines and counts of the read side of a call of `tokens` tokens, against `got` in the library's layout: the lines and the counts that differ
 void compare(const Row& row, const std::vector<uint32_t>* mask, long long tokens, const std::vector<uint8_t>& got, long long* wrong) {
   const int widths[kLevels] = {kWidthBits, kWidthBits}, whole[kLevels] = {256, 256};
-  const int read[kLevels] = {row.byte[0] + 1, row.byte[1] + 1};
-  const plan::PrefillCarve c = plan::prefill_carve(kLevels, widths, whole, read);
-  const plan::LeafGroups g = plan::leaf_groups(c, true);
+  const int read[1][plan::kCarveMaxLevels] = {{row.byte[0] + 1, row.byte[1] + 1}};
+  const plan::PrefillCarve c = plan::prefill_carve<plan::PrefillPolicy>(kLevels, widths, whole, read, 1);
+  const plan::LeafGroups g = plan::leaf_groups(c, true, 0);
   const long long words = (tokens + 31) / 32, windows = (words + kWords - 1) / kWords;
   const size_t block = static_cast<size_t>(plan::leaf_block_bytes(g.bits, kWords));
   wrong[0] = wrong[1] = 0;
@@ -75,7 +75,7 @@ void compare(const Row& row, const std::vector<uint32_t>* mask, long long tokens
         //: the call's own tokens of the word, then each listed level's group's digits ORed
         uint32_t want = word < tokens / 32 ? ~0u : word == tokens / 32 ? (1u << (tokens % 32)) - 1u : 0u;
         for (int l = 0; l < kLevels; ++l) {
-          const int gb = c.read_group_bits[l];
+          const int gb = c.read_group_bits[0][l];
           if (gb == kWidthBits || !row.masked[l]) continue;
           uint32_t any = 0;
           for (int d = 0; d < (1 << gb) && word < words; ++d) {
@@ -171,8 +171,8 @@ int main(int argc, char** argv) {
     ragged.tokens = checked_tokens;
     ragged.words = static_cast<int>((checked_tokens + 31) / 32);
     ragged.windows = ctas;
-    const int widest[kLevels] = {256, 256}, read[kLevels] = {row.byte[0] + 1, row.byte[1] + 1};
-    const plan::LeafGroups g = plan::leaf_groups(plan::prefill_carve(kLevels, widths, widest, read), true);
+    const int widest[kLevels] = {256, 256}, read[1][plan::kCarveMaxLevels] = {{row.byte[0] + 1, row.byte[1] + 1}};
+    const plan::LeafGroups g = plan::leaf_groups(plan::prefill_carve<plan::PrefillPolicy>(kLevels, widths, widest, read, 1), true, 0);
     const size_t held = static_cast<size_t>(ctas) * static_cast<size_t>(plan::leaf_block_bytes(g.bits, kWords));
     LAB_CHECK(cudaMemset(dwork, 0x5a, held));
     timed<<<ctas, pass::kThreads>>>(b.times, ragged, ddensity, dwork, 1, 0);

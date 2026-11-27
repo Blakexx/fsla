@@ -6,7 +6,7 @@ writes a leaf group's mask words and count ([`mask_prepare.md`](../../mask_prepa
 the carry's fold, whose sets are consecutive leaf groups (the owner, 2026-11-25: "an actual per group mask with counts would work too"; "we can concer mask prep pass
 into just materializing these group masks").
 
-Symbols: a level's GROUP is `1 << group_bits[l]` of its digits, the side's (`write_group_bits`, `read_group_bits` of the carve); a level `width_bits[l]` wide has
+Symbols: a level's GROUP is `1 << group_bits[l]` of its digits, the side's (`write_group_bits`, or a read head's `read_group_bits[h]`, of the carve); a level `width_bits[l]` wide has
 `1 << (width_bits[l] - group_bits[l])` groups along it; a BOX is what one consumer holds of a level -- a fold on the write side (`fold_bits`), the CTA on the read side
 (`carve_bits`); a SET is a group inside a box.
 
@@ -15,7 +15,7 @@ Symbols: a level's GROUP is `1 << group_bits[l]` of its digits, the side's (`wri
 A LEAF GROUP is one group on each of the side's levels. A side has `1 << bits` of them, `bits` the sum over its levels of `width_bits[l] - group_bits[l]`: a level walked
 whole is one group and adds nothing.
 
-`leaf_groups(carve, read)` gives the order. A level's group index is cut in two fields of the leaf group's index:
+`leaf_groups(carve, read, head)` gives the order of the write side's (`read` false) or of read head `head`'s. A level's group index is cut in two fields of the leaf group's index:
 
 - its INNER bits, `inner[l] = max(0, box_bits[l] - group_bits[l])`: the low bits of the group index, those that vary inside one box. They are placed at `inner_at[l]`, the
   side's densest level's lowest (the side's loop order, innermost first), and together they are the index's low `inner_bits`.

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import one_read_head
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -32,7 +33,7 @@ def _run(calls: list[tuple[list[int], list[int], list[int]]]) -> list[dict]:
     run = subprocess.run([str(TOOL), "--cta-carve", arg(lambda c: c[0]), "--write-density", arg(lambda c: c[1]), "--read-density", arg(lambda c: c[2])],
                          capture_output=True, text=True, timeout=600)
     assert run.returncode == 0, run.stderr
-    out = [json.loads(line) for line in run.stdout.splitlines()]
+    out = [one_read_head(json.loads(line)) for line in run.stdout.splitlines()]
     assert len(out) == len(calls)
     return out
 
@@ -164,3 +165,74 @@ def test_the_properties_over_every_call_of_depth_1_to_3_and_a_fixed_sample_of_de
         print("  ", c)
     # a call ends below 512 leaves only where it has fewer than 512 leaves, every level at its width
     assert all(sum(c[0]) < 9 for c in below)
+
+
+# --- several read heads (grouped queries): the write side and each read head are parties of the one rule ---------
+
+def _run_heads(calls: list[tuple[list[int], list[int], list[list[int]]]]) -> list[dict]:
+    """The tool's answers to calls of (width bits, write densities, each read head's densities), a read field a list of the heads'."""
+    arg = lambda pick: ";".join(",".join(map(str, pick(c))) for c in calls)  # noqa: E731
+    reads = ";".join("/".join(",".join(map(str, head)) for head in c[2]) for c in calls)
+    run = subprocess.run([str(TOOL), "--cta-carve", arg(lambda c: c[0]), "--write-density", arg(lambda c: c[1]), "--read-density", reads],
+                         capture_output=True, text=True, timeout=600)
+    assert run.returncode == 0, run.stderr
+    out = [json.loads(line) for line in run.stdout.splitlines()]
+    assert len(out) == len(calls)
+    return out
+
+
+def _total_saving_carve(widths: list[int], parties: list[list[int]], read_parties: int) -> list[int]:
+    """The rule, restated: nine doublings, each to the level of the largest saving -- half of the left of every party it
+    halves, added -- then the smaller share, a level a read head needs, the lower level. `parties` are sizes as bits, the
+    write side first, the last `read_parties` the read heads."""
+    carve = [0] * len(widths)
+    for _ in range(9):
+        best, best_key = None, None
+        for level, width in enumerate(widths):
+            if carve[level] + 1 > width:
+                continue
+            halves = [party[level] > carve[level] for party in parties]
+            saving = sum(_left(party, carve) // 2 for party, cut in zip(parties, halves) if cut)
+            key = (saving, -carve[level], any(halves[-read_parties:]), -level)
+            if best_key is None or key > best_key:
+                best, best_key = level, key
+        if best is not None:
+            carve[best] += 1
+    return carve
+
+
+def test_several_read_heads_are_parties_of_the_one_rule_over_a_fixed_sample():
+    rng = random.Random(20261127)
+    calls = []
+    for _ in range(4000):
+        depth, heads = rng.choice((1, 2, 3, 4)), rng.choice((1, 2, 3, 4, 8))
+        calls.append(([rng.choice((2, 4, 6, 8)) for _ in range(depth)], [rng.choice((1, 4, 32, 255, 256)) for _ in range(depth)],
+                      [[rng.choice((1, 4, 32, 255, 256)) for _ in range(depth)] for _ in range(heads)]))
+    for call, out in zip(calls, _run_heads(calls)):
+        widths, _write, reads = call
+        assert out["read_heads"] == len(reads), call
+        assert out["carve_bits"] == _total_saving_carve(widths, [out["write_size_bits"], *out["read_size_bits"]], len(reads)), call
+        #: the read side has ONE loop order, the levels by the heads' densities summed, the lower level outside a tie
+        summed = [sum(head[level] for head in out["read_density"]) for level in range(len(widths))]
+        assert out["read_order"] == sorted(range(len(widths)), key=lambda level: (summed[level], level)), call
+        #: each head has its own groups and sets over the one carve
+        for head in range(len(reads)):
+            assert out["read_sets"][head] * out["read_set_leaves"][head] == out["cta_leaves"], call
+            assert all(g >= s for g, s in zip(out["read_group_bits"][head], out["read_size_bits"][head], strict=True)), call
+            assert out["read_set_leaves"][head] >= min(16, out["cta_leaves"]), call
+            assert out["read_leaf_one_to_one"][head] is True, call
+
+
+def test_read_heads_that_are_alike_pull_the_carve_toward_the_level_they_need():
+    # the write side sparse on level 0 and whole on level 1, a head a group of 32 digits on level 0: one head carves
+    # 8 x 64; more heads alike are more of the read side's fetches, and level 0 takes a doubling at two heads and
+    # another at eight -- 16 x 32, then 32 x 16. A cell whose sides already tie does not move: the measured cell stays 32 x 16
+    calls = [([8, 8], [1, 256], [[32, 1]] * heads) for heads in (1, 2, 4, 8)] + [([8, 8], [4, 256], [[256, 4]] * heads) for heads in (1, 4)]
+    carves = [out["carve_bits"] for out in _run_heads(calls)]
+    assert carves == [[3, 6], [4, 5], [4, 5], [5, 4], [5, 4], [5, 4]]
+
+
+def test_the_tool_refuses_more_read_heads_than_the_carve_takes_and_a_head_of_another_depth():
+    for reads in ("/".join(["256,4"] * 9), "256,4/256"):
+        run = subprocess.run([str(TOOL), "--cta-carve", "8,8", "--write-density", "4,256", "--read-density", reads], capture_output=True, text=True, timeout=60)
+        assert run.returncode != 0 and "--read-density" in run.stderr, reads

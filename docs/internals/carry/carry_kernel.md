@@ -94,7 +94,7 @@ groups ([`carry_groups.md`](carry_groups.md)); the coefficients are a round's by
   part and running its own rounds -- so a fold's four warps issue copies together whatever its sets. A SET'S WORD a lane
   is one word of the set's line, the write side's leaf group of that index ([`carry_groups.md`](carry_groups.md#lines)): the fold's sets are the write
   side's consecutive leaf groups from `first_leaf`, the leaf group of the fold's first group a level
-  (`plan::leaf_group_of` of `plan::leaf_groups(carve, false)`, [`../common/plan/leaf_groups.md`](../common/plan/leaf_groups.md#order)), so the set `i` of a fold is line
+  (`plan::leaf_group_of` of `plan::leaf_groups(carve, false, 0)`, [`../common/plan/leaf_groups.md`](../common/plan/leaf_groups.md#order)), so the set `i` of a fold is line
   `first_leaf + i`. The line holds the call's own tokens alone, so nothing is masked and nothing is ANDed in the fold. Its address is formed once a fold and a step on a window. THE WORD IS
   LOADED A SET AHEAD AND USED WHERE IT IS NEXT NEEDED: a warp issues in order, so a word used where it is loaded holds the warp there until it lands, whatever
   was meant to run under it. The listing ([`carry_list.md`](carry_list.md#lay)) lays the set's tokens in the warp's list (`FoldTokens`, a tile of the CTA's layout: 8 warps of 1,056 places, 16.5 KB on the hopper card), a round reads its 32 places there, and the fetch

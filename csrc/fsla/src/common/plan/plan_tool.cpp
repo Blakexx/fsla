@@ -80,18 +80,32 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   };
   line("levels", n(c.levels));
   line("width_bits", list(c.width_bits));
+  //: A READ FIELD IS A LIST, an entry a read head: `of(h)` each head's entry
+  const auto heads = [&](const auto& of) {
+    std::string out = "[";
+    for (int h = 0; h < c.read_heads; ++h) out += (h ? ", " : "") + of(h);
+    return out + "]";
+  };
+
+  line("read_heads", n(c.read_heads));
   line("write_density", list(c.write_density));
-  line("read_density", list(c.read_density));
+  line("read_density", heads([&](int h) { return list(c.read_density[h]); }));
   //: a level's size, the group its density gives before a set's least raises it
-  int write_size[fsla::plan::kCarveMaxLevels] = {}, read_size[fsla::plan::kCarveMaxLevels] = {};
+  int write_size[fsla::plan::kCarveMaxLevels] = {};
   for (int l = 0; l < c.levels; ++l) {
     write_size[l] = fsla::plan::prefill_group_bits(c.write_density[l], c.width_bits[l]);
-    read_size[l] = fsla::plan::prefill_group_bits(c.read_density[l], c.width_bits[l]);
   }
   line("write_size_bits", list(write_size));
-  line("read_size_bits", list(read_size));
+  line("read_size_bits", heads([&](int h) {
+         int size[fsla::plan::kCarveMaxLevels] = {};
+         for (int l = 0; l < c.levels; ++l) {
+           size[l] = fsla::plan::prefill_group_bits(c.read_density[h][l], c.width_bits[l]);
+         }
+         return list(size);
+       }));
+
   line("write_group_bits", list(c.write_group_bits));
-  line("read_group_bits", list(c.read_group_bits));
+  line("read_group_bits", heads([&](int h) { return list(c.read_group_bits[h]); }));
   line("write_order", list(c.write_order));
   line("read_order", list(c.read_order));
   line("carve_bits", list(c.carve_bits));
@@ -102,8 +116,8 @@ void print_carve_fields(const fsla::plan::PrefillCarve& c, const char* separator
   line("fold_leaves", n(c.fold_leaves));
   line("fold_set_leaves", n(c.fold_set_leaves));
   line("fold_sets", n(c.fold_sets));
-  line("read_set_leaves", n(c.read_set_leaves));
-  line("read_sets", n(c.read_sets));
+  line("read_set_leaves", heads([&](int h) { return n(c.read_set_leaves[h]); }));
+  line("read_sets", heads([&](int h) { return n(c.read_sets[h]); }));
   line("unit_bits", list(c.unit_bits));
   line("unit_ctas", n(c.unit_ctas));
 }
@@ -300,7 +314,7 @@ void print_policy(const std::string& text) {
               static_cast<long long>(p.heads));
 }
 
-//: THE CARVE of one call: the levels' width bits and each side's densities (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
+//: THE CARVE of one call: the levels' width bits, the write side's densities and each read head's (comma lists of one length, the read heads' apart by `/`), as one JSON object of the carve's fields and the launch's counts of its widths
 void print_cta_carve(const std::string& widths_text, const std::string& write_text,
                      const std::string& read_text) {
   using namespace fsla::plan;
@@ -314,36 +328,54 @@ void print_cta_carve(const std::string& widths_text, const std::string& write_te
   };
   const auto width = bits(widths_text, "--cta-carve");
   const auto write = bits(write_text, "--write-density");
-  const auto read = bits(read_text, "--read-density");
-  if (write.size() != width.size() || read.size() != width.size()) {
-    refuse("--cta-carve, --write-density and --read-density take one number a level");
+  std::vector<std::vector<std::int64_t>> read;
+  for (std::size_t at = 0; at <= read_text.size();) {
+    std::size_t end = read_text.find('/', at);
+    if (end == std::string::npos) end = read_text.size();
+    read.push_back(bits(read_text.substr(at, end - at), "--read-density"));
+    at = end + 1;
+  }
+  if (read.size() > kCarveMaxReadHeads) {
+    refuse("--read-density takes 1 to " + std::to_string(kCarveMaxReadHeads)
+           + " read heads, apart by /");
+  }
+  bool one_a_level = write.size() == width.size();
+  for (const auto& head : read) one_a_level = one_a_level && head.size() == width.size();
+  if (!one_a_level) {
+    refuse(
+        "--cta-carve, --write-density and each read head of --read-density take one number a level");
   }
 
   const int levels = static_cast<int>(width.size());
   int w[kCarveMaxLevels] = {};
   int density_write[kCarveMaxLevels] = {};
-  int density_read[kCarveMaxLevels] = {};
+  int density_read[kCarveMaxReadHeads][kCarveMaxLevels] = {};
+  const int read_heads = static_cast<int>(read.size());
   for (int l = 0; l < levels; ++l) {
     w[l] = static_cast<int>(width[l]);
     density_write[l] = static_cast<int>(write[l]);
-    density_read[l] = static_cast<int>(read[l]);
+    for (int h = 0; h < read_heads; ++h) density_read[h][l] = static_cast<int>(read[h][l]);
   }
   //: the carve is total (a density is clamped into 1..256); the CTAs a head are the launch's, `units_per_head` their quotient by the carve's unit CTAs
-  const PrefillCarve c = prefill_carve(levels, w, density_write, density_read);
+  const PrefillCarve c =
+      prefill_carve<PrefillPolicy>(levels, w, density_write, density_read, read_heads);
   const PrefillLaunch p = prefill_launch_of(c.width_bits, c.levels);
   std::printf("{");
   print_carve_fields(c, ", ");
   std::printf(", \"ctas_per_head\": %lld, \"units_per_head\": %lld",
               static_cast<long long>(p.ctas_per_head),
               static_cast<long long>(p.ctas_per_head / c.unit_ctas));
-  //: each side's leaf groups, and the most its shape allows: a level is masked here where its density is under the whole
-  for (int side = 0; side < 2; ++side) {
-    const bool is_read = side == 1;
-    const char* const name = is_read ? "read" : "write";
-    const LeafGroups g = leaf_groups(c, is_read);
+
+  //: the write side's leaf groups and each read head's, and the most a shape allows: a level is masked here where its density is under the whole. A read field is a list, an entry a head
+  struct Leaf {
+    std::string bits, inner_bits, inner, inner_at, outer, outer_at, most, one_to_one;
+  };
+
+  const auto leaf_of = [&](bool is_read, int head) {
+    const LeafGroups g = leaf_groups(c, is_read, head);
     int masked = 0;
     for (int l = 0; l < c.levels; ++l) {
-      const int density = is_read ? c.read_density[l] : c.write_density[l];
+      const int density = is_read ? c.read_density[head][l] : c.write_density[l];
       masked |= density < kWholeDensity ? 1 << l : 0;
     }
     //: a leaf group's index is its levels' groups, one to one: every leaf group up to 65,536 of them, an odd stride over more
@@ -356,15 +388,43 @@ void print_cta_carve(const std::string& widths_text, const std::string& write_te
       leaf_group_levels(g, leaf, group);
       one_to_one = leaf_group_of(g, group) == leaf;
     }
+    return Leaf{std::to_string(g.bits),
+                std::to_string(g.inner_bits),
+                json_list(g.inner, c.levels),
+                json_list(g.inner_at, c.levels),
+                json_list(g.outer, c.levels),
+                json_list(g.outer_at, c.levels),
+                std::to_string(leaf_group_bits_most(c.levels, c.width_bits, masked)),
+                one_to_one ? "true" : "false"};
+  };
+  const auto print_leaf = [](const char* name, const Leaf& f) {
     std::printf(
-        ", \"%s_leaf_bits\": %d, \"%s_leaf_inner_bits\": %d, \"%s_leaf_inner\": %s, "
+        ", \"%s_leaf_bits\": %s, \"%s_leaf_inner_bits\": %s, \"%s_leaf_inner\": %s, "
         "\"%s_leaf_inner_at\": %s, \"%s_leaf_outer\": %s, \"%s_leaf_outer_at\": %s, "
-        "\"%s_leaf_bits_most\": %d, \"%s_leaf_one_to_one\": %s",
-        name, g.bits, name, g.inner_bits, name, json_list(g.inner, c.levels).c_str(), name,
-        json_list(g.inner_at, c.levels).c_str(), name, json_list(g.outer, c.levels).c_str(), name,
-        json_list(g.outer_at, c.levels).c_str(), name,
-        leaf_group_bits_most(c.levels, c.width_bits, masked), name, one_to_one ? "true" : "false");
+        "\"%s_leaf_bits_most\": %s, \"%s_leaf_one_to_one\": %s",
+        name, f.bits.c_str(), name, f.inner_bits.c_str(), name, f.inner.c_str(), name,
+        f.inner_at.c_str(), name, f.outer.c_str(), name, f.outer_at.c_str(), name, f.most.c_str(),
+        name, f.one_to_one.c_str());
+  };
+  print_leaf("write", leaf_of(false, 0));
+  Leaf reads;
+  for (int h = 0; h < c.read_heads; ++h) {
+    const Leaf f = leaf_of(true, h);
+    const char* const sep = h ? ", " : "[";
+    reads.bits += sep + f.bits;
+    reads.inner_bits += sep + f.inner_bits;
+    reads.inner += sep + f.inner;
+    reads.inner_at += sep + f.inner_at;
+    reads.outer += sep + f.outer;
+    reads.outer_at += sep + f.outer_at;
+    reads.most += sep + f.most;
+    reads.one_to_one += sep + f.one_to_one;
   }
+  for (std::string* field : {&reads.bits, &reads.inner_bits, &reads.inner, &reads.inner_at,
+                             &reads.outer, &reads.outer_at, &reads.most, &reads.one_to_one}) {
+    *field += "]";
+  }
+  print_leaf("read", reads);
   std::printf("}\n");
 }
 
