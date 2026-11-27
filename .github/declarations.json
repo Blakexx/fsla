@@ -1,5 +1,4 @@
 {
- "public": "Blakexx/fsla",
  "ships": [
   ".bazelrc",
   ".bazeliskrc",
@@ -33,7 +32,6 @@
   ".claude",
   "CLAUDE.md"
  ],
- "private": [],
  "allow": {},
  "agent_files": false,
  "emails": [

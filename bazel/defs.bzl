@@ -10,6 +10,7 @@ load(
     "@fsla_devtools//bazel:rules.bzl",
     _checkout_test = "checkout_test",
     _device_lane = "device_lane",
+    _docrefs_test = "docrefs_test",
     _pytest_tier = "pytest_tier",
     _tool_run = "tool_run",
     _tool_test = "tool_test",
@@ -603,6 +604,11 @@ def tool_test(**kwargs):
 def checkout_test(name, cmd, **kwargs):
     """A check of the commit, run in the checkout, outside the sandbox, never cached."""
     _checkout_test(name = name, cmd = cmd, venv = VENV, anchor = Label("//:MODULE.bazel"), **kwargs)
+
+def docrefs_test(**kwargs):
+    """The doc references (fsla-devtools' `fsla_devtools.docrefs`), on the environment's interpreter, in the checkout."""
+    _docrefs_test(python = Label("@fsla_env//:python"), tool = Label("@docrefs//:docrefs.py"),
+                  anchor = Label("//:MODULE.bazel"), **kwargs)
 
 _DEV_RUN = """\
 #!/bin/bash

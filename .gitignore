@@ -9,7 +9,7 @@ dist/
 /.bazel/
 
 # the binary plugin's build outputs: the graph writes them under `.bazel/bin/fsla_cu13/`, never the source tree; docs cite the record,
-# and `tools/docrefs.py` reads a path the tree ignores as a generated one
+# and the doc references (`//:docrefs`) read a path the tree ignores as a generated one
 /fsla_cu13/_build_config.py
 /fsla_cu13/*.so
 

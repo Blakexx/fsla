@@ -237,9 +237,10 @@ index (`GIT_INDEX_FILE`, which `@fsla_tree` reads when the hook hands it in).
   new toolkit reruns it) as `FSLA_CUDA_HOME`, which `dev_config.cuda_home()` returns; outside a tier it asks the graph for the same repository (`bazel query --output=location @cuda_tools//:bin/nvcc`). The sanitizer lane (`//tests:sanitizer`,
   `bazel/defs.bzl`'s `device_lane`, `manual`) runs as a device tier does, passing the toolkit's own compute-sanitizer
   by its path ([`testing.md`](testing.md#the-sanitizer-lane)).
-- THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test`): what git knows rather than
-  a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every doc reference
-  pinned, read, current and resolving (`tools/docrefs.py`: nothing pending, unread or broken), the devbox image the one the tree names and checked (`tools/dev.py container
+- THE CHECKS OF THE COMMIT (`//:commit_checks`, `bazel/defs.bzl`'s `checkout_test` and `docrefs_test`): what git
+  knows rather than a file set -- no ratchet's baseline grown against HEAD's (`tools/lint/ratchet.py --grown`), every
+  doc reference pinned, read, current and resolving (`//:docrefs`, fsla-devtools' `fsla_devtools.docrefs`: nothing
+  pending, unread or broken), the devbox image the one the tree names and checked (`tools/dev.py container
   gate`, which builds `//:image`). Each runs in the
   checkout, outside the sandbox and never cached, its input the repository's state.
 

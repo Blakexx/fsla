@@ -11,7 +11,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "string_list_flag")
 load("@fsla_env//:flags.bzl", "BUILT_ARCHS", "CXX11_ABI", "TOOLCHAIN", "TORCH", "TORCH_CUDA", "VENV")
 load("//bazel:arms.bzl", "ARM_FAMILIES")
-load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "lab_run", "tool_run", "tool_test", "tree_part", "tree_test")
+load("//bazel:defs.bzl", "census_test", "checkout_test", "committed_file", "compile_database", "dev_run", "docrefs_test", "full_contract_test", "lock_update", "ratify_census", "ratify_run", "fsla_extension", "fsla_instrument", "fsla_wheels", "lab_run", "tool_run", "tool_test", "tree_part", "tree_test")
 load("@fsla_devtools//bazel:rules.bzl", "bazel_version_test")
 load("@fsla_tree//:tree.bzl", "TRACKED")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
@@ -506,12 +506,28 @@ checkout_test(
     cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
 )
 
-#: every doc reference pinned and read; a `data:` citation resolves in the pinned data (@fsla_data)
-checkout_test(
+#: every doc reference pinned and read (fsla-devtools' `fsla_devtools.docrefs`, under this repository's configuration): a
+#: dotted name resolves under these package roots; a page under docs/internals/ mirrors the source at its stem under
+#: csrc/fsla/src/, and one under docs/internals/tools/ the tool at its stem; the deletion ledger is never read; a
+#: `data:` citation resolves in the pinned data (@fsla_data)
+docrefs_test(
     name = "docrefs",
     size = "small",
-    cmd = ["python3", "tools/docrefs.py"],
-    tools = {"@fsla_data//:root": "--data"},
+    data = "@fsla_data//:root",
+    exclude = ["docs/internals/DELETIONS.md"],
+    lock = "docs/references.lock.json",
+    mirrors = {
+        "docs/internals/": "csrc/fsla/src/",
+        "docs/internals/tools/": "tools/",
+    },
+    packages = {
+        "bench": "measure",
+        "fsla": "",
+        "fsla_cu13": "",
+        "measure": "",
+        "tests": "",
+        "tools": "",
+    },
 )
 
 #: every agent lesson names a mechanism the tree holds (docs/internals/LEARNINGS.md)

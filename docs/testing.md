@@ -227,10 +227,14 @@ the build names) and the host arm switch's probe over a synthetic selection head
 A document nothing checks is a document that drifts. These run in the commit gate, read files and never touch a device
 ([`internals/tools/lint.md`](internals/tools/lint.md)):
 
-- **`tools/docrefs.py`**: every citation a doc makes of the tree is pinned to its target's content; a new
-  citation is read and accepted, and a commit that changes a cited target re-reads its citations and re-pins them in
-  the same commit: the gate fails on any pending, unread or broken reference
-  ([`internals/tools/docrefs.md`](internals/tools/docrefs.md)).
+- **The doc references (`//:docrefs`)**: every citation a doc makes of the tree is pinned to its target's content in
+  `docs/references.lock.json`; a new citation is read and accepted, and a commit that changes a cited target re-reads
+  its citations and re-pins them in the same commit: the gate fails on any pending, unread or broken reference. The
+  checker is fsla-devtools' `fsla_devtools.docrefs` (its README, `The doc references`, says what a reference is and
+  what moves a pin); `BUILD.bazel`'s `docrefs` target is this tree's configuration -- the package roots a dotted name
+  resolves under, the mirror rules (a page under `docs/internals/` mirrors the source at its stem under
+  `csrc/fsla/src/`, one under `docs/internals/tools/` the tool under `tools/`), the deletion ledger left unread, and
+  the pinned data a `data:` citation resolves in ([`measurement.md`](measurement.md#the-data)).
 - **`tools/lint/lint_standards.py`'s mirror rules**: every source file under `csrc/fsla/` has a mirror doc at the same
   relative path (minus `src/`); every internals anchor a source cites resolves; a hazard stub's slug is its
   anchor; no doc defines an anchor twice; a page names only identifiers the tree carries (or declares them `ABSENT`).

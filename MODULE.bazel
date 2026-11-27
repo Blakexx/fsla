@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "6bc741919b34be96ef4cfdf8f972fbe28bfb0e42",
+    commit = "b25ada8eec4e1880152a8bc56add737a6d93a855",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -91,7 +91,9 @@ environment.data(
 )
 #: every central cell's description as a target (`@fsla_cells//:<cell>`), which a timing entry takes (docs/measurement.md)
 environment.cells(name = "fsla_cells")
-use_repo(environment, "clang_tidy", "cuda_tools", "fsla_cells", "fsla_data", "host_cc", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
+#: the doc references' tool (fsla-devtools' `fsla_devtools.docrefs`), which `//:docrefs` runs
+environment.docrefs(name = "docrefs")
+use_repo(environment, "clang_tidy", "cuda_tools", "docrefs", "fsla_cells", "fsla_data", "host_cc", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
 
 #: THE DEVBOX IMAGE (docs/setup.md#the-devbox-image): a thin wrapper around the bootstrap. Its base carries what a host
 #: supplies itself before the graph -- Ubuntu 22.04 with git, gcc, python3 and curl -- a Docker Official Image by digest
