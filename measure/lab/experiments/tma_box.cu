@@ -3,17 +3,14 @@
 // warp? METHOD: a CTA an SM, a ring of three 48 KB stages, a loader and a warpgroup that waits on each stage's FULL
 // barrier, reads a word of it a thread and releases it (its EMPTY barrier); the operands L2-resident (each CTA its
 // own 128-token tile of an 8.6 MB `x` of hidden 256, every CTA the same 256 x 256 weights), the K-steps of four jobs.
-// THE FORMS: `cp.async` 16 bytes a lane by one warp into wgmma's unswizzled K-major bricks (the projection's
-// `stage`); one tensor copy an operand of a 2-d box of 128-byte lines, 128-byte swizzled (the form a swizzled wgmma
+// THE FORMS: `cp.async` 16 bytes a lane by one warp into wgmma's unswizzled K-major bricks; one tensor copy an operand of a 2-d box of 128-byte lines, 128-byte swizzled (the form a swizzled wgmma
 // descriptor reads); one tensor copy an operand of a 3-d box of 16-byte lines (8 values, rows, the K chunks: the
 // unswizzled bricks themselves). The last three stages landed are checked byte for byte in every CTA.
 // TIMELINE: the loader's trip is a stage: its slot's EMPTY edge, the copies (one thread's two tensor copies after
 // its stated bytes, or a warp's 96 `cp.async` and their landed arrivals), the FULL edge. The reader's trip: the FULL
 // edge, a word a thread, the EMPTY arrival. Live: nothing held.
 // see docs/internals/tools/lab.md#tma-box
-#include <cuda.h>
 #include <cuda_bf16.h>
-#include <dlfcn.h>
 
 #include "lab.cuh"
 
@@ -26,19 +23,6 @@ constexpr int kThreads = 128 + 32;
 enum Form : int { kCpAsync = 0, kBox128, kBox16, kForms };
 const char* kFormName[kForms] = {"cp.async, a warp, 16 bytes a lane", "a tensor copy, 128-byte lines swizzled",
                                  "a tensor copy, 16-byte lines (the unswizzled bricks)"};
-
-//: an operand's stage by `cp.async`: R rows, two lanes a row's 32 bytes (the projection's `stage`)
-template <int R>
-__device__ __forceinline__ void stage(uint32_t dst, const __nv_bfloat16* src, int lane) {
-  const int row = lane >> 1, half = lane & 1;
-  const uint32_t to = dst + (row >> 3) * 256 + half * 128 + (row & 7) * 16;
-  const __nv_bfloat16* from = src + static_cast<long long>(row) * kHidden + half * 8;
-#pragma unroll
-  for (int rb = 0; rb < R / 16; ++rb)
-#pragma unroll
-    for (int kp = 0; kp < 4; ++kp)
-      lab::cp_async16(to + kp * (R * 32) + rb * 512, from + static_cast<long long>(rb) * 16 * kHidden + kp * 16);
-}
 
 template <int FORM>
 __global__ void __launch_bounds__(kThreads, 1)
@@ -66,8 +50,8 @@ __global__ void __launch_bounds__(kThreads, 1)
       if (i >= kStages) lab::mbar_wait(empty + 8 * slot, ((i / kStages) - 1) & 1);
       const uint32_t at = base + slot * kStageBytes, bar = full + 8 * slot;
       if constexpr (FORM == kCpAsync) {
-        stage<kTokens>(at, x + static_cast<long long>(blockIdx.x) * kTokens * kHidden + k, lane);
-        stage<kCols>(at + kXBytes, w + k, lane);
+        lab::cp_async_bricks<kTokens>(at, x + static_cast<long long>(blockIdx.x) * kTokens * kHidden + k, kHidden, lane);
+        lab::cp_async_bricks<kCols>(at + kXBytes, w + k, kHidden, lane);
         lab::mbar_arrive_when_landed(bar);
       } else if (lane == 0) {
         lab::mbar_expect(bar, kStageBytes);
@@ -167,16 +151,8 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * kBarsAt));
   LAB_CHECK(cudaMemcpy(x, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMemcpy(w, hw.data(), hw.size() * 2, cudaMemcpyHostToDevice));
-  //: THE TENSOR MAPS, from the driver (its library is the running one's: no toolkit is linked for it)
-  using Encode = CUresult (*)(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*, const cuuint64_t*,
-                              const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave, CUtensorMapSwizzle,
-                              CUtensorMapL2promotion, CUtensorMapFloatOOBfill);
-  void* const driver = dlopen("libcuda.so.1", RTLD_NOW);
-  const auto encode = driver ? reinterpret_cast<Encode>(dlsym(driver, "cuTensorMapEncodeTiled")) : nullptr;
-  if (!encode) {
-    std::fprintf(stderr, "tma_box: the driver's cuTensorMapEncodeTiled is not reachable\n");
-    return 2;
-  }
+  //: THE TENSOR MAPS, by the driver's encoder (`lab.cuh`)
+  const auto encode = lab::tensor_map_encoder("tma_box");
   const auto map2 = [&](CUtensorMap& m, void* p, long long outer, int box_outer) {
     const cuuint64_t dims[2] = {kHidden, static_cast<cuuint64_t>(outer)}, strides[1] = {kHidden * 2};
     const cuuint32_t box[2] = {kK, static_cast<cuuint32_t>(box_outer)}, steps[2] = {1, 1};
@@ -195,10 +171,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "tma_box: cuTensorMapEncodeTiled refused a 2-d map\n");
     return 2;
   }
-  const bool three = map3(x3, x, rows, kTokens) == CUDA_SUCCESS && map3(w3, w, kCols, kCols) == CUDA_SUCCESS;
+  if (map3(x3, x, rows, kTokens) != CUDA_SUCCESS || map3(w3, w, kCols, kCols) != CUDA_SUCCESS) {
+    std::fprintf(stderr, "tma_box: cuTensorMapEncodeTiled refused a 3-d map\n");
+    return 2;
+  }
   run<kCpAsync>(b, x2, w2, x, w, out);
   run<kBox128>(b, x2, w2, x, w, out);
-  if (three) run<kBox16>(b, x3, w3, x, w, out);
-  else std::fprintf(stderr, "tma_box: cuTensorMapEncodeTiled refused the 3-d map; its form is not measured\n");
+  run<kBox16>(b, x3, w3, x, w, out);
   return 0;
 }

@@ -10,8 +10,6 @@
 // thread states the chunk's bytes at the barrier of its parity; the readers' barrier (the CTA's, or the
 // cluster's); the copy issued (in `cast`, by rank 0 alone). Live: nothing held.
 // see docs/internals/tools/lab.md#value-cast
-#include <cuda.h>
-#include <dlfcn.h>
 
 #include "lab.cuh"
 
@@ -121,16 +119,8 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&table, host.size()));
   LAB_CHECK(cudaMemcpy(table, host.data(), host.size(), cudaMemcpyHostToDevice));
   LAB_CHECK(cudaMalloc(&out, static_cast<size_t>(b.sms) * 2 * kTileBytes));
-  //: THE TENSOR MAP, from the driver (its library is the running one's: no toolkit is linked for it)
-  using Encode = CUresult (*)(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*, const cuuint64_t*,
-                              const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave, CUtensorMapSwizzle,
-                              CUtensorMapL2promotion, CUtensorMapFloatOOBfill);
-  void* const driver = dlopen("libcuda.so.1", RTLD_NOW);
-  const auto encode = driver ? reinterpret_cast<Encode>(dlsym(driver, "cuTensorMapEncodeTiled")) : nullptr;
-  if (!encode) {
-    std::fprintf(stderr, "value_cast: the driver's cuTensorMapEncodeTiled is not reachable\n");
-    return 2;
-  }
+  //: THE TENSOR MAPS, by the driver's encoder (`lab.cuh`)
+  const auto encode = lab::tensor_map_encoder("value_cast");
   CUtensorMap map;
   const cuuint64_t dims[2] = {kRowBytes, kTableRows}, strides[1] = {kRowBytes};
   const cuuint32_t box[2] = {kRowBytes, kTokens}, steps[2] = {1, 1};

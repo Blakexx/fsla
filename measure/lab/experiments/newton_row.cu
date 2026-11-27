@@ -1,16 +1,20 @@
-// measure/lab/experiments/newton_row.cu -- QUESTION: the producer's entmax threshold is Newton from the left on the
-// projection's accumulators (Blake's ruling of 2026-11-27: Newton, gated by this row): on a `wgmma` m64n256
-// accumulator's rows, how many steps does a row take, a warp (its 16 rows' vote), what does a 64-token block cost in
-// cycles, and is the support EXACT against the fp64 sorted closed form? METHOD: a warpgroup holds a 64-token block of
-// 256 logits a token in the m64n256 accumulator's own layout (a thread's `d[4 q + 2 j + i]` is row `16 w + g + 8 j`,
-// column `8 q + 2 t + i`: `wgmma_regs`), loaded before the clock; one or two warpgroups a CTA, a CTA an SM. The solve
-// is ampere's `entmax_rows` on that layout: each row shifted by its max (a lane-local tree and two shuffles), then from
-// `-2` (alpha 1.5) or `-1` (alpha 2) each step the count, sum and sum of squares of the values past the bound (one
-// compare and three predicated adds a value), the closed form on that support, the settled test's count (one compare
-// and one predicated add a value), and a Newton step; a warp's vote over its 16 rows ends the loop, cap 16. The inputs
-// are `tests/integration/test_production_levels.py`'s stress kinds at 256 columns (random, near the boundary, a
-// collapsed support, five times the scale); the oracle is the sorted closed form in fp64 (the entmax package's
-// `entmax15` and `sparsemax` algorithm). Every row's support, threshold and step count is written.
+// measure/lab/experiments/newton_row.cu -- QUESTION: the producer's entmax threshold is solved on the projection's
+// accumulators by Newton from the left: on a `wgmma` m64n256 accumulator's rows, how many steps does a row take, and a
+// warp (its 16 rows' vote), what does a 64-token block cost in cycles, and is the support EXACT against the fp64 sorted
+// closed form? THE MATHEMATICS: with a row shifted by its max (`x = z - max`), alpha 1.5's level is `((x - tau) /
+// 2)_+^2` and alpha 2's `(x - tau)_+`; `f(tau) = sum level - 1` is convex and decreasing and `f(-2) >= 0` (alpha 2:
+// `f(-1) >= 0`, the max alone), so Newton from there never passes the root. At a bound `lo`, with `r = max(x - lo, 0)`,
+// `n` the count of `r > 0`, `s1 = sum r`, `s2 = sum r^2`: alpha 1.5's step is `lo + (s2 - 4) / (2 s1)`, alpha 2's `lo +
+// (s1 - 1) / n`; the closed form on the support `{x > lo}` is `lo + u`, `u` the smaller root of `n u^2 - 2 s1 u + s2 -
+// 4` (alpha 2: `u = (s1 - 1) / n`), and it is the root exactly when no member lies below it, which the count of `x >=
+// lo + u` against `n` decides. METHOD: a warpgroup holds a 64-token block of 256 logits a token in the m64n256
+// accumulator's own layout (a thread's `d[4 q + 2 j + i]` is row `16 w + g + 8 j`, column `8 q + 2 t + i`:
+// `wgmma_regs`), loaded before the clock; one or two warpgroups a CTA, a CTA an SM. Each step is a pass over a thread's
+// 128 values (a subtract, a max, an add, a multiply-add and a compare-add a value, then the settled count's
+// compare-add), two shuffles a sum, and the warp's vote over its 16 rows ends the loop, cap 16. The inputs are
+// `tests/integration/test_production_levels.py`'s stress kinds at 256 columns (random, near the boundary, a collapsed
+// support, five times the scale); the oracle the sorted closed form in fp64 (the entmax package's `entmax15` and
+// `sparsemax` algorithm). Every row's support, threshold and step count is written.
 // TIMELINE: no load in the clock: the block is in registers before it. A trip is one solve: the max and shift, then the
 // steps, each a pass over the 128 values a thread, two shuffles a sum and one vote. Live: the 128 accumulators, the two
 // rows' bounds and sums.
@@ -26,19 +30,6 @@ namespace newton_row {
 constexpr int kWidth = 256, kBlockRows = 64, kValues = 128, kCap = 16;
 enum Kind : int { kRandom = 0, kNear, kCollapsed, kLarge, kKinds };
 const char* kKindName[kKinds] = {"random", "near the boundary", "a collapsed support", "five times the scale"};
-
-//: where `z > lo`: its count, value and square added -- one compare and three predicated adds
-__device__ __forceinline__ void sums_past(float z, float lo, float& k, float& P, float& Q) {
-  asm("{\n .reg .pred p;\n setp.gt.f32 p, %3, %4;\n @p add.rn.f32 %0, %0, 0f3F800000;\n"
-      " @p add.rn.f32 %1, %1, %3;\n @p fma.rn.f32 %2, %3, %3, %2;\n}"
-      : "+f"(k), "+f"(P), "+f"(Q)
-      : "f"(z), "f"(lo));
-}
-
-//: one where `z >= tau`: one compare, one predicated add
-__device__ __forceinline__ void count_at(float z, float tau, float& n) {
-  asm("{\n .reg .pred p;\n setp.ge.f32 p, %1, %2;\n @p add.rn.f32 %0, %0, 0f3F800000;\n}" : "+f"(n) : "f"(z), "f"(tau));
-}
 
 //: a row's sum over the 4 lanes that hold it (the lanes of one `g`)
 __device__ __forceinline__ float row_sum(float v) {
@@ -92,23 +83,31 @@ __global__ void __launch_bounds__(128 * WG, 1)
       bool settled = true;
 #pragma unroll
       for (int j = 0; j < 2; ++j) {
-        float k = 0.0f, P = 0.0f, Q = 0.0f;
+        //: the row's sums past its bound: `r = max(x - lo, 0)`, its count, sum and sum of squares
+        float n = 0.0f, s1 = 0.0f, s2 = 0.0f;
 #pragma unroll
-        for (int v = 0; v < 64; ++v) sums_past(d[at(j, v)], lo[j], k, P, Q);
-        const float here = k;
-        k = row_sum(k);
-        P = row_sum(P);
-        Q = row_sum(Q);
-        tau[j] = A15 ? __fdividef(P - ::denseref::ops::sqrt_approx(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k) : __fdividef(P - 1.0f, k);
+        for (int v = 0; v < 64; ++v) {
+          const float r = fmaxf(d[at(j, v)] - lo[j], 0.0f);
+          n += r > 0.0f ? 1.0f : 0.0f;
+          s1 += r;
+          s2 = fmaf(r, r, s2);
+        }
+        const float here = n;
+        n = row_sum(n);
+        s1 = row_sum(s1);
+        s2 = row_sum(s2);
+        //: the closed form on the support `{x > lo}`, and Newton's step (alpha 2's is the closed form itself)
+        const float u = A15 ? __fdividef(s1 - ::denseref::ops::sqrt_approx(fmaxf(s1 * s1 - n * (s2 - 4.0f), 0.0f)), n)
+                            : __fdividef(s1 - 1.0f, n);
+        tau[j] = lo[j] + u;
         float past = 0.0f;
 #pragma unroll
-        for (int v = 0; v < 64; ++v) count_at(d[at(j, v)], tau[j], past);
-        const bool done = (tau[j] <= lo[j]) | (past == here);
+        for (int v = 0; v < 64; ++v) past += d[at(j, v)] >= tau[j] ? 1.0f : 0.0f;
+        //: settled: no member of the support below the closed form, so it is the root
+        const bool done = (u <= 0.0f) | (past == here);
         settled = settled & done;
         first[j] = (first[j] == 0 && done) ? step + 1 : first[j];
-        lo[j] = A15 ? lo[j] + __fdividef((Q - 2.0f * P * lo[j] + k * lo[j] * lo[j]) * 0.25f - 1.0f,
-                                         0.5f * (P - k * lo[j]))
-                    : tau[j];
+        lo[j] = A15 ? lo[j] + __fdividef(s2 - 4.0f, 2.0f * s1) : tau[j];
       }
       const bool all = __all_sync(0xffffffffu, settled);
       if (all) break;
