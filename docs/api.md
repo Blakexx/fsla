@@ -553,7 +553,10 @@ environment the FlashAttention comparison arm runs in.
 
 ### 4.2 Segments: the layer bounds its own working set
 
-The op runs one segment and knows nothing of segmentation. The layer is handed a SEGMENT HANDLE (`segments=`, or `None`: one prefill is
+The op runs one segment and knows nothing of segmentation: SEGMENTATION IS THE LAYER'S CONCERN (the owner, 2026-11-26, on whether
+the constitution's R24 needed amending for it: "the prefill op is not aware segmentation, it still computes everything for its kernel in its one launch
+function from its input. segmnetation is a layer concern"). R24 governs the op and its kernels and stands as written: the segment the op is handed is its
+whole call, and its launch function derives everything for that call. The layer is handed a SEGMENT HANDLE (`segments=`, or `None`: one prefill is
 one op call), a function from the call's context to the MOST TOKENS a step may hold, and the plan of a call is made once, by the
 planner, which reads the card's window ([`internals/common/plan/segments.md`](internals/common/plan/segments.md); the owner, 2026-11-26: "they all should return a token answer, the memory handle is like a function the user calls that returns a
 fucntion they give us"; "i was thinking we could just call it once and it yields the whole exceution plan"):

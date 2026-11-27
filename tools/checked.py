@@ -50,7 +50,8 @@ def checker() -> SimpleNamespace:
         raise SystemExit("the checker is warpline's, which the graph hands the tool: bazel run //tools:<tool> -- ...")
     if root not in sys.path:
         sys.path.insert(0, root)
-    from warpline.checker import declare, manifest, model, ncu, readers, rules
+    from warpline import declare
+    from warpline.checker import manifest, model, ncu, readers, rules
     from warpline.checker import notices as ledgers
     from warpline.checker.rules import _steps as steps
     return SimpleNamespace(declare=declare, manifest=manifest, model=model, ncu=ncu, readers=readers, rules=rules, ledgers=ledgers, steps=steps,
@@ -104,7 +105,7 @@ def declarations(entries: list[dict]) -> list:
     """The checker's loaded declarations of `entries` (`kernel`: a regex over the demangled name, `rule`, `allow`, `reason`): the rules of
     the model, the profiles and the project's ledger are the rules a declaration may name."""
     c = checker()
-    return c.declare.load_declarations(json.dumps({"declarations": entries}), c.rules.registry(), c.declare.rule_names(project_ledger()))
+    return c.declare.load_declarations(json.dumps({"declarations": entries}), c.rules.registry(), c.manifest.rule_names(project_ledger()))
 
 
 def compare(kernels: list, rules: Iterable[str], declarations: list, notes: dict[str, str], notices: list | None = None):

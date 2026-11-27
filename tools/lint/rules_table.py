@@ -204,9 +204,9 @@ def checker_rules(root: Path) -> list[str] | None:
     if not found or not (Path(found) / "warpline" / "checker").is_dir():
         return None
     sys.path.insert(0, found)
-    from warpline.checker import declare, notices
+    from warpline.checker import manifest, notices
     ledger = notices.merge(notices.base_ledger(), notices.load_ledger((root / LEDGER).read_text()))
-    return declare.rule_names(ledger)
+    return manifest.rule_names(ledger)
 
 
 def coverage_of(rows: list[dict], leaves: set[str], every: set[str]) -> list[str]:

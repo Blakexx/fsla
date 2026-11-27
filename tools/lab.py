@@ -324,7 +324,7 @@ def guidance() -> dict[str, str]:
     evidence; a refusal prints it after the checker's own fix (`note`). The checker refuses a note for a name that is no rule of its pin."""
     entries = json.loads((ROOT / "docs" / "rules.json").read_text())["checker"]
     notes = {rule: entry["guidance"] for rule, entry in entries.items()}
-    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().declare.rule_names(checked.project_ledger()))
+    checked.checker().declare.load_notes(json.dumps({"notes": notes}), checked.checker().manifest.rule_names(checked.project_ledger()))
     return notes
 
 

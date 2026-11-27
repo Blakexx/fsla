@@ -98,7 +98,7 @@ def test_a_rule_whose_entry_has_no_triggers_names_no_source_text_for_it_and_is_n
 @needs_checker
 def test_the_lab_prints_the_checkers_fix_then_the_fsla_note_after_a_refusal():
     notes = lab.guidance()
-    assert set(notes) == set(checked.checker().declare.rule_names(checked.project_ledger()))
+    assert set(notes) == set(checked.checker().manifest.rule_names(checked.project_ledger()))
     refusal = SimpleNamespace(rule="step_rolled", kernel="k", count=4, allowed=0, message="", fix="write the steps a straight block",
                               note=notes["step_rolled"], findings=(SimpleNamespace(where="0x57d0", count=4, what="x"),))
     line, = lab.render_refusal(refusal)
