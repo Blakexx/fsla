@@ -32,7 +32,7 @@ kernel:
   yet (`docs/internals/tools/review_gate.md#pipelined`).
 
 ## The instruments
-- Perf: `bazel run //measure:session_entmax` (a clock-locked interleaved timing session over this tree's timing entries,
+- Perf: `bazel run //measure:session_entmax` (an interleaved timing session, its clock claim `unlocked`, over this tree's timing entries,
   stored; `docs/measurement.md`), `bazel run //measure:store_oracle_tier` (the oracle tier on the device, recorded) and
   `bazel run //measure:store_static_manifest` (the static manifests, recorded); attribution:
   `bazel run //tools:region_ledger -- --csv <ncu SourceCounters> --so <.so> --member <cubin member>
