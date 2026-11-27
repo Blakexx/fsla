@@ -496,7 +496,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, segments=None)
+FSLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, segments=SegmentPolicy(max_tokens=65_536))
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.dense_state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -556,26 +556,39 @@ environment the FlashAttention comparison arm runs in.
 The op runs one segment and knows nothing of segmentation: SEGMENTATION IS THE LAYER'S CONCERN (the owner, 2026-11-26, on whether
 the constitution's R24 needed amending for it: "the prefill op is not aware segmentation, it still computes everything for its kernel in its one launch
 function from its input. segmnetation is a layer concern"). R24 governs the op and its kernels and stands as written: the segment the op is handed is its
-whole call, and its launch function derives everything for that call. The layer is handed a SEGMENT HANDLE (`segments=`, or `None`: one prefill is
-one op call), a function from the call's context to the MOST TOKENS a step may hold, and the plan of a call is made once, by the
-planner, which reads the card's window ([`internals/common/plan/segments.md`](internals/common/plan/segments.md); the owner, 2026-11-26: "they all should return a token answer, the memory handle is like a function the user calls that returns a
-fucntion they give us"; "i was thinking we could just call it once and it yields the whole exceution plan"):
+whole call, and its launch function derives everything for that call. The layer is handed a SEGMENT POLICY (`segments=`), the most tokens and the
+most WRITE heads a step may hold, `None` on an axis meaning no limit there (the owner, 2026-11-26: "i think its reasonable to support a
+segmentationpolicy primtive that has like max_tokens, max_heads, null meaning no limit"), or a SEGMENT HANDLE, a function of the call's context
+returning one, or `None`, one prefill one op call. The plan of a call is made once, by the planner, which reads the card's window
+([`internals/common/plan/segments.md`](internals/common/plan/segments.md); the owner, 2026-11-26: "i was thinking we could just call it once and it
+yields the whole exceution plan"):
 
 ```python
-fsla.max_tokens(8192)             # a handle: no step longer than 8,192 tokens
-fsla.max_memory(1 << 30)          # a handle: no step whose workspace and inputs, at their worst case, pass 1 GiB
-fsla.segment_plan(length, maximum)   # the plan: its steps, and the tokens a step
+fsla.SegmentPolicy(max_tokens=8192, max_heads=16)   # no step longer than 8,192 tokens or wider than 16 write heads
+fsla.max_tokens(8192)                               # SegmentPolicy(max_tokens=8192)
+fsla.max_memory(1 << 30)                            # a handle: no step whose workspace and inputs, at their worst case, pass 1 GiB
+fsla.segment_plan(length, policy, batch=B, heads=H) # the plan: its head blocks, and the token steps in each
 ```
 
-- **A handle states a maximum and the plan takes the largest whole number of windows under it**, so a caller never needs the card's
-  window ("so the user doesnt need to be aware of our window sematncis"). The window grid is global, so a boundary on a window boundary
-  moves no pair: a segmented call is the whole call (the op's readout to fp32 ULPs, `tests/integration/test_layer_segments.py`). Per
-  step the layer projects that stretch's routes and values, runs `prefill` on it and carries the state to the next, so the projections
-  are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. A stateless call that spans
-  steps carries a state of its own and hands none back.
-- **A sequence of any length is served, and the caller pads nothing.** One no longer than the maximum is ONE step, a partial window
+- **The default is `SegmentPolicy(max_tokens=65_536)`**: 64 windows a step of every head. It is revisited when the prefill is first timed.
+- **A policy states maxima and the plan takes the largest whole number of windows under the token maximum**, so a caller never needs the
+  card's window ("so the user doesnt need to be aware of our window sematncis"). The window grid is global, so a boundary on a window boundary
+  moves no pair: a segmented call is the whole call (the op's readout to fp32 ULPs, `tests/integration/test_layer_segments.py`).
+- **`max_heads` counts write heads, the state's owners, and never splits a query group** (the owner, 2026-11-26: "we are just saying heads is
+  write heads, and all read heads must live for any write head? we wont split inside a write head"): a step takes every query head reading its
+  write heads. The state is batch-major with write heads inside a sequence, and the op updates a contiguous plane in place, so a head block is
+  WHOLE SEQUENCES (`max_heads // H` of them where the maximum holds one sequence's `H` write heads) or a RANGE OF ONE SEQUENCE'S write heads (where it
+  does not). The layer is ungrouped (its query heads are its write heads); the plan is made over write heads so a grouped layer reads it unchanged.
+- **The layer's loop: for each head block, for each token range**, the step projects only that block's heads (each per-head weight's rows of
+  them: `route_W`, `route_bias`, `gain_bias`, and `v_W`'s `d_v` rows a head) over that stretch of tokens, runs `prefill` on it and writes the
+  output's block, so the projections are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. Blocks
+  are independent; within a block the token steps run in order, carrying that block's state. STATELESS: a block that spans steps carries a fresh
+  state of its own, and nothing is handed back. STATEFUL: where there is more than one block, the caller's state is bound to the whole call first
+  (where it carries nothing, a zeroed plane, with no whole-call produce) and each block runs on a VIEW of its rows of the plane
+  ([`internals/state.md#view`](internals/state.md#view)), so its update lands in the caller's plane in place.
+- **A sequence of any length is served, and the caller pads nothing.** One no longer than the token maximum is ONE step, a partial window
   included (the kernels run a partial last window). The last step of a longer one holds what is left.
-- **A maximum below one window is refused where the sequence must be split.** Tokens of one window interact, so a split sits on a
+- **A token maximum below one window is refused where the sequence must be split.** Tokens of one window interact, so a split sits on a
   window boundary and the least step of a split sequence is one window: 10,000 tokens under a maximum of 500, or 800 under 500, has no
   plan, and the planner refuses it, naming the window (the owner, 2026-11-26: "sure we can not allow such a case").
 - **`max_memory` bounds what a step holds beside the state**: the op's workspace at its WORST CASE and the step's projected inputs
@@ -584,14 +597,18 @@ fsla.segment_plan(length, maximum)   # the plan: its steps, and the tokens a ste
   and no density is read: the workspace is the prepared masks of the most leaf groups the shape allows, a sixteenth of its leaves a
   side ([`internals/common/plan/leaf_groups.md`](internals/common/plan/leaf_groups.md#most)), and the inputs are each side's rows and
   scales, the masks and the values. One planner function sums them, each part from the function that sizes it
-  ([`internals/common/plan/segments.md`](internals/common/plan/segments.md#step)). Where one window does not fit the limit, no
-  segmentation serves it and the call is refused ("will refuse if there is no form of segmentation that exists that can serve it").
-  Outside the limit: the state, the same however the call is cut, and the call's output, assembled whole.
-- **A handle is any function of the context** (`fsla.segmentation.SegmentContext`: the levels' digits, each side's maskable levels
-  and batch-heads, the value width, the device) that returns a token maximum, or `None` for no limit. It is told no window and needs none.
+  ([`internals/common/plan/segments.md`](internals/common/plan/segments.md#step)). TOKENS FIRST: the handle's policy is the most whole windows
+  whose step of every head fits; only where one window of every head does not fit, one window and the most write heads whose one-window step
+  fits ([`internals/common/plan/segments.md`](internals/common/plan/segments.md#policy)). Where one window of one write head does not fit the
+  limit, no segmentation serves it and the call is refused, naming the bytes ("will refuse if there is no form of segmentation that exists that
+  can serve it"). Outside the limit: the state, the same however the call is cut, and the call's output, assembled whole.
+- **A handle is any function of the context** (`fsla.segmentation.SegmentContext`: the levels' digits, each side's maskable levels, the
+  batch, the write heads and query heads a sequence, the value width, the device) that returns a `SegmentPolicy`, or `None` for one op call. It
+  is told no window and needs none.
 
-A call of the layer needs the producer and the prefill, which are not built on this line (`KernelNotBuilt`); the plan, the handles and
-their refusals are built (`tests/unit/test_segmentation.py`).
+A call of the layer needs the producer and the prefill, which are not built on this line (`KernelNotBuilt`); the plan, the policy, the
+handle, their refusals, the state's view and the layer's loop (with a stand-in for the op) are built and tested on the host
+(`tests/unit/test_segmentation.py`, `tests/unit/test_state_view.py`).
 
 ## 5. What is deliberately not here
 

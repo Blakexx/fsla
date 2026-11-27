@@ -64,8 +64,16 @@ from fsla.ops.produce import (
 from fsla.routing.decay import validate_decay_source
 from fsla.routing.producer import Routing, _init_packed_router
 from fsla.routing.side_gain import init_side_gain_bias
-from fsla.routing.types import activation_properties
-from fsla.segmentation import SegmentContext, SegmentHandle, SegmentPlan, segment_plan
+from fsla.routing.types import LeafMassDecay, activation_properties
+from fsla.segmentation import (
+    DEFAULT_SEGMENTS,
+    HeadBlock,
+    SegmentContext,
+    SegmentHandle,
+    SegmentPlan,
+    SegmentPolicy,
+    segment_plan,
+)
 
 if TYPE_CHECKING:
     from fsla._state import FSLAState
@@ -123,10 +131,12 @@ class FSLA(nn.Module):
         decay: a decay source (:mod:`fsla.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
-        segments: a segment handle (:func:`fsla.max_tokens`, :func:`fsla.max_memory`, or any function from a
-            :class:`~fsla.segmentation.SegmentContext` to the most tokens a step may hold), or ``None`` for none (one prefill is
-            one op call). The layer's, not the op's: the plan of a call is made once (:func:`fsla.segment_plan`), and the layer
-            loops over its steps carrying the state (docs/api.md section 4.2).
+        segments: a :class:`~fsla.SegmentPolicy` (the most tokens and write heads a step may hold; :func:`fsla.max_tokens`
+            makes one), a segment handle (:func:`fsla.max_memory`, or any function from a
+            :class:`~fsla.segmentation.SegmentContext` to a policy or ``None``), or ``None`` (one prefill is one op call).
+            The default is 64 windows a step of every head, ``SegmentPolicy(max_tokens=65_536)``. The layer's, not the op's:
+            the plan of a call is made once (:func:`fsla.segment_plan`), and the layer loops over its head blocks and, in
+            each, its token steps, carrying the block's state (docs/api.md section 4.2).
     """
 
     def __init__(
@@ -138,7 +148,7 @@ class FSLA(nn.Module):
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
-        segments: SegmentHandle | None = None,
+        segments: SegmentPolicy | SegmentHandle | None = DEFAULT_SEGMENTS,
     ) -> None:
         super().__init__()
         if not isinstance(routing, Routing):
@@ -148,9 +158,9 @@ class FSLA(nn.Module):
                 "callable feature map is not taken (docs/api.md section 2).")
         if type(d_v) is not int or d_v < 1:
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
-        if segments is not None and not callable(segments):
-            raise TypeError(f"segments is a segment handle (fsla.max_tokens, fsla.max_memory, a function of the call's context), or None; "
-                            f"got {type(segments).__name__}")
+        if segments is not None and type(segments) is not SegmentPolicy and not callable(segments):
+            raise TypeError(f"segments is a fsla.SegmentPolicy, a segment handle (fsla.max_memory, a function of the call's context "
+                            f"returning a policy or None), or None; got {type(segments).__name__}")
         for name, value in (("hidden_size", hidden_size), ("num_heads", num_heads)):
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive exact int, got {value!r}")
@@ -286,8 +296,8 @@ class FSLA(nn.Module):
         return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
     def _produce(self, x: torch.Tensor):
-        """One stretch of tokens into the format: ``(routes, values, masks, density)``, from one producer call, the masks in the
-        prefill's layout and the density of those masks."""
+        """One stretch of tokens of every head into the format: ``(routes, values, masks, density)``, from one producer call,
+        the masks in the prefill's layout and the density of those masks."""
         return produce_prefill(x, self.routing, self._weights(x))
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
@@ -303,39 +313,81 @@ class FSLA(nn.Module):
         return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
-        """THE PREFILL (docs/api.md section 4.2). With no ``segments`` it is one op call: the producer's one call and
-        :func:`fsla.prefill`, which builds its own descriptor and workspace. With a handle the plan is made once
-        (:func:`fsla.segment_plan`) and each step projects its own stretch of tokens, runs the op on it and carries the state
-        to the next, so the projections are bounded with the op. A stateless call that spans steps carries a state of its own
-        and hands none back."""
+        """THE PREFILL (docs/api.md section 4.2). A call the plan does not cut is one op call: the producer's one call and
+        :func:`fsla.prefill`, which builds its own descriptor and workspace. Else the plan is made once
+        (:func:`fsla.segment_plan`), and for each head block, for each token range, the step projects only that block's
+        heads over that stretch of tokens, runs the op on it and writes the output's block, carrying the block's state to its
+        next step, so the projections are bounded with the op. Stateless: a block that spans steps carries a fresh state of
+        its own and nothing is handed back. Stateful, over more than one block: the caller's state is bound to the whole call
+        first (a zeroed plane where it carries nothing) and each block runs on a view of its rows, so its update lands in the
+        caller's plane in place."""
         plan = self._segment_plan(x)
-        if plan.steps == 1:
-            return self._prefill_step(x, state, decay)
-        carried = dense_state() if state is None else state
-        outs = []
-        for start, end in plan.bounds():
-            out, carried = self._prefill_step(x[:, start:end], carried, decay)
-            outs.append(out)
-        return torch.cat(outs, dim=1), (None if state is None else carried)
+        weights = self._weights(x)
+        blocks = plan.blocks()
+        if len(blocks) == 1 and plan.steps == 1:
+            return self._prefill_step(x, weights, state, decay)
+        if state is not None and len(blocks) > 1:
+            state._bind_plane(batch=plan.batch, heads=plan.heads, widths=tuple(self.routing.topology.widths), d_v=self.head_v_dim,
+                              device=x.device)
+        out = torch.empty(plan.batch, plan.length, plan.heads, self.head_v_dim, dtype=torch.float32, device=x.device)
+        for block in blocks:
+            sequences, heads = slice(*block.batch), slice(*block.heads)
+            carried = state if len(blocks) == 1 or state is None else state._view(block.batch, block.heads)
+            if carried is None and plan.steps > 1:
+                carried = dense_state()
+            block_weights, block_decay = self._block_weights(weights, block), self._block_decay(decay, block)
+            for start, end in plan.bounds():
+                y, carried = self._prefill_step(x[sequences, start:end], block_weights, carried, block_decay)
+                out[sequences, start:end, heads] = y
+        return out, state
 
-    def _prefill_step(self, x: torch.Tensor, state, decay):
-        """One step: one stretch of tokens through the producer and the op."""
-        routes, values, masks, density = self._produce(x)
+    def _prefill_step(self, x: torch.Tensor, weights: ProducerWeights, state, decay):
+        """One step: one stretch of tokens through the producer, over the heads ``weights`` hold, and the op."""
+        routes, values, masks, density = produce_prefill(x, self.routing, weights)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
         return prefill(routes, values, masks, density, state=state, decay=decay)
 
-    def _segment_plan(self, x: torch.Tensor) -> SegmentPlan:
-        """The plan of this call: one step with no handle; else the handle's maximum for the call's context, and the plan under it."""
-        length = x.shape[1]
-        if self.segments is None:
-            return SegmentPlan(steps=1, tokens=length, length=length)
+    def _block_weights(self, weights: ProducerWeights, block: HeadBlock) -> ProducerWeights:
+        """The weights of a head block's write heads: each per-head weight's rows of those heads, ``v_W``'s ``d_v`` rows a
+        head (the layer is ungrouped, so a write head's query heads are itself)."""
+        first, last = block.heads
+        if (first, last) == (0, self.num_heads):
+            return weights
+        heads = slice(first, last)
+        return ProducerWeights(route_W=weights.route_W[heads],
+                               route_bias=None if weights.route_bias is None else weights.route_bias[heads],
+                               gain_bias=weights.gain_bias[heads],
+                               v_W=weights.v_W[first * self.head_v_dim:last * self.head_v_dim])
+
+    def _block_decay(self, decay, block: HeadBlock):
+        """The decay dials of a head block's write heads."""
+        first, last = block.heads
+        if decay is None or (first, last) == (0, self.num_heads):
+            return decay
+        return LeafMassDecay(dials=tuple(dial[first:last] for dial in decay.dials))
+
+    def _segment_context(self, x: torch.Tensor) -> SegmentContext:
+        """What a handle is told of this call: the levels' digits, each side's maskable levels, the batch, the write and query
+        heads a sequence (one count: the layer is ungrouped), the value width and the device."""
         levels = self.routing.topology.levels
         masked = tuple(sum(1 << l for l, level in enumerate(levels) if activation_properties(level.activation(duty)).exact_zeros)
                        for duty in ("read", "write"))
-        batch_heads = x.shape[0] * self.num_heads
-        context = SegmentContext(widths=tuple(self.routing.topology.widths), masked=masked, heads=(batch_heads, batch_heads),
-                                 value_width=self.head_v_dim, device=x.device)
-        return segment_plan(length, self.segments(context), device=x.device)
+        return SegmentContext(widths=tuple(self.routing.topology.widths), masked=masked, batch=x.shape[0],
+                              write_heads=self.num_heads, query_heads=self.num_heads, value_width=self.head_v_dim,
+                              device=x.device)
+
+    def _segment_plan(self, x: torch.Tensor) -> SegmentPlan:
+        """The plan of this call: one op call with no segments, or where a handle returns no policy; else the plan under the
+        policy, or under the policy the handle returns for the call's context."""
+        batch, length = x.shape[0], x.shape[1]
+        policy = self.segments
+        if policy is not None and type(policy) is not SegmentPolicy:
+            policy = policy(self._segment_context(x))
+            if policy is not None and type(policy) is not SegmentPolicy:
+                raise TypeError(f"a segment handle returns a fsla.SegmentPolicy or None, got {type(policy).__name__}")
+        if policy is None:
+            return SegmentPlan.whole(length, batch, self.num_heads)
+        return segment_plan(length, policy, batch=batch, heads=self.num_heads, device=x.device)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

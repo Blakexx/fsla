@@ -163,24 +163,28 @@ StepShape shape_of(const std::vector<int64_t>& widths, const std::vector<int64_t
                   "a step has each side's masked levels and batch-heads");
   const StepShape s = step_shape(widths.data(), static_cast<int64_t>(widths.size()), masked.data(),
                                  heads.data(), value_width);
-  STD_TORCH_CHECK(s.levels > 0, "a step has 1 to ", kCarveMaxLevels,
-                  " levels, each a power of two from 2 to 256 wide, a batch-head or more a side "
-                  "and a value channel or more");
+  STD_TORCH_CHECK(
+      s.levels > 0, "a step has 1 to ", kCarveMaxLevels,
+      " levels, each a power of two from 2 to 256 wide, a batch-head or more a side "
+      "(the read side's a whole number of the write side's) and a value channel or more");
   return s;
 }
 
 }  // namespace
 
-std::vector<int64_t> fsla_segment_plan(int64_t length, int64_t maximum, int64_t device) {
-  STD_TORCH_CHECK(length >= 1 && maximum >= kNoMaximum,
-                  "a segment plan takes a token or more and a maximum of 0 (no limit) or more");
+std::vector<int64_t> fsla_segment_plan(int64_t length, int64_t max_tokens, int64_t max_heads,
+                                       int64_t batch, int64_t heads, int64_t device) {
+  STD_TORCH_CHECK(length >= 1 && batch >= 1 && heads >= 1 && max_tokens >= kNoMaximum
+                      && max_heads >= kNoMaximum,
+                  "a segment plan takes a token, a sequence and a write head or more, and each "
+                  "maximum 0 (no limit) or more");
   const int window = window_of_device(device);
-  const SegmentPlan plan = segment_plan(length, maximum, window);
-  STD_TORCH_CHECK(plan.steps > 0, "a call of ", length, " tokens under a maximum of ", maximum,
+  const SegmentPlan plan = segment_plan(length, max_tokens, max_heads, batch, heads, window);
+  STD_TORCH_CHECK(plan.steps > 0, "a call of ", length, " tokens under a maximum of ", max_tokens,
                   " must be split, and a split sits on a window boundary: the window is ", window,
-                  " tokens, so no step of at most ", maximum,
+                  " tokens, so no step of at most ", max_tokens,
                   " exists. The least maximum that serves a call longer than itself is ", window);
-  return {plan.steps, plan.tokens};
+  return {plan.steps, plan.tokens, plan.sequences, plan.heads};
 }
 
 std::vector<int64_t> fsla_step_bytes(std::vector<int64_t> widths, std::vector<int64_t> masked,
@@ -193,22 +197,24 @@ std::vector<int64_t> fsla_step_bytes(std::vector<int64_t> widths, std::vector<in
   return {workspace_bytes(shape, windows, window), operand_bytes(shape, windows, window)};
 }
 
-int64_t fsla_step_tokens(std::vector<int64_t> widths, std::vector<int64_t> masked,
-                         std::vector<int64_t> heads, int64_t value_width, int64_t limit,
-                         int64_t device) {
+std::vector<int64_t> fsla_step_policy(std::vector<int64_t> widths, std::vector<int64_t> masked,
+                                      std::vector<int64_t> heads, int64_t value_width,
+                                      int64_t limit, int64_t device) {
   STD_TORCH_CHECK(limit >= 1, "a memory limit is a byte or more");
   const StepShape shape = shape_of(widths, masked, heads, value_width);
   const int window = window_of_device(device);
-  const int64_t tokens = step_tokens_within(shape, limit, window);
-  if (tokens == 0) {
-    const int64_t held = workspace_bytes(shape, 1, window), given = operand_bytes(shape, 1, window);
+  const StepPolicy policy = step_policy_within(shape, limit, window);
+  if (policy.tokens == 0) {
+    const StepShape one = write_head_of(shape);
+    const int64_t held = workspace_bytes(one, 1, window), given = operand_bytes(one, 1, window);
     std::string why = "no segmentation serves a memory limit of " + std::to_string(limit);
-    why += " bytes on this call: one window of " + std::to_string(window) + " tokens needs ";
-    why += std::to_string(held + given) + " bytes, the op's workspace at its worst case ";
-    why += std::to_string(held) + " and its projected inputs " + std::to_string(given);
+    why += " bytes on this call: one window of " + std::to_string(window) + " tokens of one write";
+    why +=
+        " head needs " + std::to_string(held + given) + " bytes, the op's workspace at its worst";
+    why += " case " + std::to_string(held) + " and its projected inputs " + std::to_string(given);
     STD_TORCH_CHECK(false, why);
   }
-  return tokens;
+  return {policy.tokens, policy.heads};
 }
 
 std::string fsla_call_facts(std::string kernel) {

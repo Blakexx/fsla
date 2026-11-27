@@ -29,8 +29,8 @@ def test_the_mask_preparation_pass_registers_its_two_ops_with_their_schemas():
     assert '"mask_prepare_bytes(int[] widths, int[] masked, int[] heads, int tokens, int device) -> int");' in text
 
 
-def test_the_segment_plan_and_a_steps_bytes_and_tokens_register_with_their_schemas():
+def test_the_segment_plan_and_a_steps_bytes_and_policy_register_with_their_schemas():
     text = re.sub(r'"\s*\n\s*"', "", API.read_text())
-    assert '"fsla_segment_plan(int length, int maximum, int device) -> int[]");' in text
+    assert '"fsla_segment_plan(int length, int max_tokens, int max_heads, int batch, int heads, int device) -> int[]");' in text
     assert '"fsla_step_bytes(int[] widths, int[] masked, int[] heads, int value_width, int tokens, int device) -> int[]");' in text
-    assert '"fsla_step_tokens(int[] widths, int[] masked, int[] heads, int value_width, int limit, int device) -> int");' in text
+    assert '"fsla_step_policy(int[] widths, int[] masked, int[] heads, int value_width, int limit, int device) -> int[]");' in text

@@ -26,8 +26,10 @@ implementation per form, which each takes whatever parameters it needs). The int
 and the seam the ops take the plane in and hand it back through, private to the library: `_kernel_entry(routes, *, d_v)`
 binds the state to the call (or checks the call against what it is bound to) and returns the plane the kernel reads,
 `_kernel_commit(plane)` takes the plane a call that bound a FRESH state stored into, `_require_carrying()` refuses a
-decode step on a state with nothing to continue from, and `_decode_entry(routes)` returns the plane a decode step
-updates in place. Everything that handles a state holds the interface; the dense state is the one thing that is
+decode step on a state with nothing to continue from, `_decode_entry(routes)` returns the plane a decode step
+updates in place, and the layer's segmentation takes the last two ([the view](#view)): `_bind_plane(*, batch, heads, widths, d_v, device)`
+binds the state from a call's shape facts alone and holds a zeroed plane where it carries nothing, and `_view(batch, heads)` is a state
+over a range of batch-heads sharing its plane. Everything that handles a state holds the interface; the dense state is the one thing that is
 constructed. `tests/unit/test_state_interface.py` pins the interface and that the dense state takes no argument.
 
 The dense state takes no argument because each of the three was paging's, or had one built value: `pool_slack` and
@@ -212,6 +214,24 @@ Two consequences follow and are stated where they belong: a continuation can SKI
 blocks, because a skipped block leaves its own atoms carrying what they held
 ([`engine/rules.md#run-table`](engine/rules.md#run-table)), and a FRESH bind cannot —
 its plane is uninitialized and is written whole.
+
+### <a id="view"></a>A view over a range of batch-heads
+
+The layer cuts a call into head blocks ([`../api.md`](../api.md) section 4.2), and a stateful call over more than one block runs each block on
+a VIEW of the caller's state. The plane is batch-major, a row a batch-head, write heads inside a sequence, and a block is whole sequences or a
+range of one sequence's write heads, so its rows are ONE CONTIGUOUS RUN: sequences `[b0, b1)` and write heads `[h0, h1)` of a `[B, H]` state
+are rows `[b0 * H + h0, (b1 - 1) * H + h1)`. `_view((b0, b1), (h0, h1))` is a `DenseState` whose plane is that slice of the caller's (no copy),
+whose shape is `[b1 - b0, h1 - h0, N, cols]` and whose format is the caller's with its page ids, `ids`, restated for those rows; a block whose
+rows are not one run, or a state that carries nothing, is refused. A call on the view is an ordinary continuation of a state of that shape:
+`_kernel_entry` checks the block's routing against the view's format and hands back the slice, the launch advances it in place, and the caller's
+plane holds the update. The views of a call's blocks partition the rows, so no two blocks touch one row.
+
+The caller's state is bound to the whole call FIRST, from the shape facts alone (`_bind_plane`: the batch, the write heads, the levels' widths, the
+value width and the device), never from a whole-call produce, which is the bundle segmentation exists to avoid: a state that carries nothing
+gets a ZEROED plane, and a block's first step then continues from the zero state, which is the fresh sequence, its skipped atoms already
+holding zero ([the continuation](#the-dense-continuation)). A bound state is checked against the call, and a carried plane is kept.
+`tests/unit/test_state_view.py` pins the view on the host: its rows, shape and format, that a write through it lands in the plane, its
+refusals, and the bind.
 
 ## <a id="arms"></a>5. There is one arm, and no bridge
 

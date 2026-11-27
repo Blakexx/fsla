@@ -1,9 +1,11 @@
 """THE OP ON ONE SEGMENT, AND THE LAYER'S SEGMENTS.
 
 `fsla.prefill` runs the prefill call over the segment it is handed, building its own descriptor and workspace, and continues
-the state it is handed; the layer splits a sequence into the steps of its segment handle's plan, so its projections are bounded with the op.
-Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
-readout to fp32 ULPs, the layer's through its bf16 output projection), and the refusal of a plan no split can serve (docs/api.md section 4.2).
+the state it is handed; the layer cuts a call into the head blocks and token steps of its segment policy's plan, so its projections
+are bounded with the op. Graded here: the op against the fp64 oracle per slot, a segmented call against the whole call (the op's own
+readout to fp32 ULPs, the layer's through its bf16 output projection), over token steps, head blocks of whole sequences and of a range
+of one sequence's heads, stateless and on views of the caller's state, and the refusal of a plan no split can serve (docs/api.md
+section 4.2).
 """
 from __future__ import annotations
 
@@ -94,37 +96,69 @@ def test_segments_carried_through_a_state_are_the_whole_call():
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
 
 
+#: the policies a call of 2 sequences of 4 heads is cut by: token steps, whole sequences a block, a range of one sequence's
+#: heads a block, and both axes at once
+_POLICIES = [lambda w: fsla.max_tokens(2 * w), lambda w: fsla.SegmentPolicy(max_heads=4), lambda w: fsla.SegmentPolicy(max_heads=3),
+             lambda w: fsla.SegmentPolicy(max_tokens=w, max_heads=1)]
+
+
 @_LAYER_PREFILL
-def test_a_segmented_layer_matches_the_whole_call():
-    layer = _layer().cuda().eval()
-    x = torch.randn(1, 4 * window_of(), 64, device="cuda")
+@pytest.mark.parametrize("policy", _POLICIES)
+def test_a_segmented_layer_matches_the_whole_call(policy):
+    layer = _layer(heads=4, segments=None).cuda().eval()
+    x = torch.randn(2, 4 * window_of(), 64, device="cuda")
     with torch.no_grad():
         whole, whole_cont = layer(x)
     assert whole_cont.state is None
-    layer.segments = fsla.max_tokens(2 * window_of())
+    layer.segments = policy(window_of())
     with torch.no_grad():
         segmented, cont = layer(x)
-    assert cont.state is None, "a stateless call hands no state back, however many segments it ran"
+    assert cont.state is None, "a stateless call hands no state back, however it is cut"
     #: the op's readouts agree to fp32 ULPs; the layer's output passes a bf16 projection, one ULP of it
     torch.testing.assert_close(segmented, whole, rtol=2 ** -7, atol=float(whole.abs().max()) * 2 ** -7)
 
 
 @_LAYER_PREFILL
-def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
-    layer = _layer().cuda().eval()
-    x = torch.randn(1, 4 * window_of(), 64, device="cuda")
+@pytest.mark.parametrize("policy", _POLICIES)
+def test_a_stateful_segmented_call_leaves_the_whole_calls_state(policy):
+    """Head blocks run on views of the caller's state, bound to the whole call first, so the segmented call's state is the
+    whole call's; a continuation after it, on the whole state, is the whole call's continuation."""
+    layer = _layer(heads=4, segments=None).cuda().eval()
+    x, more = torch.randn(2, 4 * window_of(), 64, device="cuda"), torch.randn(2, window_of(), 64, device="cuda")
     with torch.no_grad():
         _, whole = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
-        layer.segments = fsla.max_tokens(window_of())
+        y_whole, whole = layer(more, continuation=whole)
+        layer.segments = policy(window_of())
         _, segmented = layer(x, continuation=fsla.LayerContinuation(state=fsla.dense_state()))
+        layer.segments = None
+        y_segmented, segmented = layer(more, continuation=segmented)
     a, b = whole.state.materialize(), segmented.state.materialize()
     torch.testing.assert_close(b, a, rtol=0, atol=float(a.abs().max()) * 2 ** -20)
+    torch.testing.assert_close(y_segmented, y_whole, rtol=2 ** -7, atol=float(y_whole.abs().max()) * 2 ** -7)
+
+
+@_LAYER_PREFILL
+def test_the_memory_handle_cuts_a_call_whose_one_window_of_every_head_does_not_fit_by_heads():
+    from fsla.segmentation import step_bytes
+
+    layer = _layer(heads=4, segments=None).cuda().eval()
+    x = torch.randn(2, 2 * window_of(), 64, device="cuda")
+    context = layer._segment_context(x)
+    head = sum(step_bytes(dataclasses.replace(context, batch=1, write_heads=1, query_heads=1), window_of()))
+    layer.segments = fsla.max_memory(3 * head)
+    plan = layer._segment_plan(x)
+    assert (plan.tokens, plan.block_sequences, plan.block_heads) == (window_of(), 1, 3) and len(plan.blocks()) == 4
+    with torch.no_grad():
+        segmented, _ = layer(x)
+        layer.segments = None
+        whole, _ = layer(x)
+    torch.testing.assert_close(segmented, whole, rtol=2 ** -7, atol=float(whole.abs().max()) * 2 ** -7)
 
 
 def test_a_maximum_below_one_window_is_refused_before_anything_runs_when_the_sequence_must_be_split():
     """A split sits on a window boundary, so a sequence longer than a maximum that is below one window has no plan: the planner
     refuses it, naming the window, before the producer or any kernel. A sequence no longer than the maximum is one step."""
-    layer = _layer(segments=fsla.max_tokens(window_of() - 1)).cuda().eval()
+    layer = _layer(segments=fsla.SegmentPolicy(max_tokens=window_of() - 1, max_heads=1)).cuda().eval()
     with torch.no_grad(), pytest.raises(RuntimeError, match=rf"the window is {window_of()} tokens"):
         layer(torch.randn(2, 3 * window_of(), 64, device="cuda"))
     assert layer._segment_plan(torch.empty(2, window_of() - 1, 64, device="cuda")).steps == 1

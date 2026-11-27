@@ -232,25 +232,36 @@ std::vector<std::int64_t> parse_widths(const std::string& text) {
   return out;
 }
 
-//: THE SEGMENT PLANS of calls (`length,maximum,window`, `;` between them; maximum 0 is no limit): a line of JSON each, `steps` 0 where the call has no plan
+//: THE SEGMENT PLANS of calls (`length,max_tokens,max_heads,batch,heads,window`, `;` between them; a maximum 0 is no limit): a line of JSON each, `steps` 0 where the call has no plan
 void print_segments(const std::string& text) {
   std::size_t at = 0;
   while (at <= text.size()) {
     std::size_t end = text.find(';', at);
     if (end == std::string::npos) end = text.size();
     const std::vector<std::int64_t> v = parse_widths(text.substr(at, end - at));
-    if (v.size() != 3 || v[0] < 1 || v[1] < fsla::plan::kNoMaximum || v[2] < 1) {
-      refuse("--segments takes length,maximum,window (maximum 0: no limit)");
+    if (v.size() != 6 || v[0] < 1 || v[1] < fsla::plan::kNoMaximum || v[2] < fsla::plan::kNoMaximum
+        || v[3] < 1 || v[4] < 1 || v[5] < 1) {
+      refuse(
+          "--segments takes length,max_tokens,max_heads,batch,heads,window (a maximum 0: no limit)");
     }
-    const auto plan = fsla::plan::segment_plan(v[0], v[1], static_cast<int>(v[2]));
-    std::printf("{\"steps\":%lld,\"tokens\":%lld}\n", static_cast<long long>(plan.steps),
-                static_cast<long long>(plan.tokens));
+    const auto plan =
+        fsla::plan::segment_plan(v[0], v[1], v[2], v[3], v[4], static_cast<int>(v[5]));
+    std::printf("{\"steps\":%lld,\"tokens\":%lld,\"sequences\":%lld,\"heads\":%lld}\n",
+                static_cast<long long>(plan.steps), static_cast<long long>(plan.tokens),
+                static_cast<long long>(plan.sequences), static_cast<long long>(plan.heads));
     at = end + 1;
   }
 }
 
-//: A STEP'S BYTES (`widths/masked/heads/value_width/windows/window`, comma lists, the read side first): its workspace and its operands, one JSON line
-void print_step(const std::string& text) {
+//: a step's shape and the two numbers that follow it on the command line
+struct StepText {
+  fsla::plan::StepShape shape;
+  std::int64_t first;
+  std::int64_t second;
+};
+
+//: A STEP'S SHAPE and its two last numbers from `widths/masked/heads/value_width/n/window` (comma lists, the read side first), refused by `flag` naming `form`
+StepText parse_step(const std::string& text, const char* flag, const char* form) {
   using namespace fsla::plan;
   std::vector<std::vector<std::int64_t>> part;
   std::size_t at = 0;
@@ -263,14 +274,30 @@ void print_step(const std::string& text) {
   const bool sized = part.size() == 6 && part[1].size() == kCarveSides
                      && part[2].size() == kCarveSides && part[3].size() == 1 && part[4].size() == 1
                      && part[5].size() == 1;
-  if (!sized) refuse("--step takes widths/masked/heads/value_width/windows/window");
+  if (!sized) refuse(std::string(flag) + " takes " + form);
   const StepShape s = step_shape(part[0].data(), static_cast<std::int64_t>(part[0].size()),
                                  part[1].data(), part[2].data(), part[3][0]);
-  if (s.levels < 1) refuse("--step: a part of the shape is outside the op's");
-  const int window = static_cast<int>(part[5][0]);
+  if (s.levels < 1) refuse(std::string(flag) + ": a part of the shape is outside the op's");
+  return {s, part[4][0], part[5][0]};
+}
+
+//: A STEP'S BYTES (`widths/masked/heads/value_width/windows/window`): its workspace and its operands, one JSON line
+void print_step(const std::string& text) {
+  using namespace fsla::plan;
+  const StepText t = parse_step(text, "--step", "widths/masked/heads/value_width/windows/window");
+  const int window = static_cast<int>(t.second);
   std::printf("{\"workspace\":%lld,\"operands\":%lld}\n",
-              static_cast<long long>(workspace_bytes(s, part[4][0], window)),
-              static_cast<long long>(operand_bytes(s, part[4][0], window)));
+              static_cast<long long>(workspace_bytes(t.shape, t.first, window)),
+              static_cast<long long>(operand_bytes(t.shape, t.first, window)));
+}
+
+//: A STEP'S POLICY under a byte limit (`widths/masked/heads/value_width/limit/window`): the most tokens and write heads a step (0: no limit), one JSON line, `tokens` 0 where no step fits
+void print_policy(const std::string& text) {
+  using namespace fsla::plan;
+  const StepText t = parse_step(text, "--policy", "widths/masked/heads/value_width/limit/window");
+  const StepPolicy p = step_policy_within(t.shape, t.first, static_cast<int>(t.second));
+  std::printf("{\"tokens\":%lld,\"heads\":%lld}\n", static_cast<long long>(p.tokens),
+              static_cast<long long>(p.heads));
 }
 
 //: THE CARVE of one call: the levels' width bits and each side's densities (comma lists of one length), as one JSON object of the carve's fields and the launch's counts of its widths
@@ -397,7 +424,8 @@ void print_entmax_kernel(const std::string& kernel, const Named& device_facts,
 
 int main(int argc, char** argv) {
   std::string kernel, device_text, call_text, model, grid_text, launch_text, lattice_text,
-      widths_text, cta_carve_text, write_density_text, read_density_text, segments_text, step_text;
+      widths_text, cta_carve_text, write_density_text, read_density_text, segments_text, step_text,
+      policy_text;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string flag = argv[i];
     if (flag == "--lattice") {
@@ -408,6 +436,8 @@ int main(int argc, char** argv) {
       segments_text = argv[i + 1];
     } else if (flag == "--step") {
       step_text = argv[i + 1];
+    } else if (flag == "--policy") {
+      policy_text = argv[i + 1];
     } else if (flag == "--write-density") {
       write_density_text = argv[i + 1];
     } else if (flag == "--read-density") {
@@ -431,7 +461,7 @@ int main(int argc, char** argv) {
     }
   }
   const bool launch_given = !kernel.empty() && !device_text.empty() && !call_text.empty();
-  const bool planned = !segments_text.empty() || !step_text.empty();
+  const bool planned = !segments_text.empty() || !step_text.empty() || !policy_text.empty();
   const bool alone = !lattice_text.empty() || !cta_carve_text.empty() || planned;
   if (argc % 2 == 0 || (!alone && !launch_given)) {
     refuse(
@@ -439,12 +469,18 @@ int main(int argc, char** argv) {
         "[--grid ...] (decode) | [--launch json] (prefill: the descriptor, or the launch's host half) | [--widths w,...] (an entmax kernel: the launch's "
         "levels' widths; --call takes several calls, `;` between them) | plan_tool --lattice w1,w2,... (the lattice of level widths, no device) | "
         "plan_tool --cta-carve width_bits,... --write-density w,... --read-density w,... (the carve of a call's widths and densities, no device) | "
-        "plan_tool --segments length,maximum,window;... (the segment plan of a call, no device) | "
-        "plan_tool --step widths/masked/heads/value_width/windows/window (a step's bytes, no device)");
+        "plan_tool --segments length,max_tokens,max_heads,batch,heads,window;... (the segment plan of a call, no device) | "
+        "plan_tool --step widths/masked/heads/value_width/windows/window (a step's bytes, no device) | "
+        "plan_tool --policy widths/masked/heads/value_width/limit/window (a step's policy under a byte limit, no device)");
   }
   if (!step_text.empty()) {
     if (argc != 3) refuse("--step stands alone");
     print_step(step_text);
+    return 0;
+  }
+  if (!policy_text.empty()) {
+    if (argc != 3) refuse("--policy stands alone");
+    print_policy(policy_text);
     return 0;
   }
   if (!segments_text.empty()) {

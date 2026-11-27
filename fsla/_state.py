@@ -26,6 +26,7 @@ error where the bytes are addressed, and nothing here polices it in advance.
 
 from __future__ import annotations
 
+import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -149,7 +150,11 @@ class StateFormat:
 
 def _format_of(routes, d_v: int, BH: int) -> StateFormat:
     """The descriptor a CALL presents: the routes' widths and the value stream's DV."""
-    widths = tuple(routes.topology.widths)
+    return _format_of_widths(tuple(routes.topology.widths), d_v, BH)
+
+
+def _format_of_widths(widths: tuple[int, ...], d_v: int, BH: int) -> StateFormat:
+    """The descriptor of ``BH`` batch-heads over levels of ``widths`` digits at value width ``d_v``."""
     n = 1
     for width in widths:
         n *= width
@@ -233,6 +238,16 @@ class FSLAState(ABC):
     @abstractmethod
     def _decode_entry(self, routes) -> torch.Tensor:
         """The plane one decode step reads and updates in place, after checking the step's routing against the bound format."""
+
+    @abstractmethod
+    def _bind_plane(self, *, batch: int, heads: int, widths: tuple[int, ...], d_v: int, device: torch.device) -> None:
+        """Bind this state to a call's shape from its facts alone (or check them against what it is bound to), and hold a
+        ZEROED plane where it carries nothing yet: what the layer does before it runs a call's head blocks on views."""
+
+    @abstractmethod
+    def _view(self, batch: tuple[int, int], heads: tuple[int, int]) -> FSLAState:
+        """A state over the rows of sequences ``batch`` and, of each, write heads ``heads`` (each ``(start, end)``), sharing
+        this state's plane: a call on it updates this state in place."""
 
 
 class DenseState(FSLAState):
@@ -331,3 +346,32 @@ class DenseState(FSLAState):
         self._format.check(_format_of(routes, self._format.DV,
                                       self._shape[0] * self._shape[1]))
         return self._plane
+
+    def _bind_plane(self, *, batch: int, heads: int, widths: tuple[int, ...], d_v: int, device: torch.device) -> None:
+        from fsla.engine.facts.planes import dense_plane
+
+        presented = _format_of_widths(tuple(widths), d_v, batch * heads)
+        if not self.bound:
+            self._shape = (batch, heads, presented.N, d_v + 1)
+            self._device = device
+            self._format = presented
+        else:
+            self._format.check(presented)
+        if self._plane is None:
+            self._plane = dense_plane(batch * heads, widths, d_v=d_v, device=self._device, zeros=True)
+
+    def _view(self, batch: tuple[int, int], heads: tuple[int, int]) -> DenseState:
+        """The plane's rows ``[b0 * H + h0, (b1 - 1) * H + h1)`` -- one contiguous run, because a view is whole sequences
+        or a range of one sequence's write heads -- with its shape and its format's page ids restated for them."""
+        self._require_carrying()
+        (b0, b1), (h0, h1) = batch, heads
+        B, H, N, cols = self._shape
+        if not (0 <= b0 < b1 <= B and 0 <= h0 < h1 <= H) or (b1 - b0 > 1 and h1 - h0 < H):
+            raise ValueError(f"a view of a [{B}, {H}] state is whole sequences or a range of one sequence's heads, so its rows "
+                             f"are one contiguous run; got sequences {batch} and heads {heads}")
+        first, last = b0 * H + h0, (b1 - 1) * H + h1
+        view = DenseState()
+        view._shape, view._device = (b1 - b0, h1 - h0, N, cols), self._device
+        view._format = dataclasses.replace(self._format, ids=(last - first) * self._format.atoms_per_bh)
+        view._plane = self._plane[first:last]
+        return view

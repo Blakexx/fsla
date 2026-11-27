@@ -17,7 +17,7 @@ from fsla._state import DenseState, FSLAState
 
 #: what a caller may ask of a state, and the seam the ops take the plane in and hand it back through.
 _ASKED = ("format", "bound", "shape", "device", "dtype", "carries", "materialize", "clone")
-_SEAM = ("_kernel_entry", "_kernel_commit", "_require_carrying", "_decode_entry")
+_SEAM = ("_kernel_entry", "_kernel_commit", "_require_carrying", "_decode_entry", "_bind_plane", "_view")
 
 
 def test_the_interface_declares_what_a_caller_asks_and_the_seam_the_ops_use():

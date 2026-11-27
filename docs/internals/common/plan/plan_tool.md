@@ -16,8 +16,12 @@ an owed descriptor, `built`, or `outside the contract`. The launch needs no cont
 `--lattice w1,w2,...` stands alone and needs no device: the lattice law's solve ([`lattice.md`](lattice.md)) of the level widths, printed as the same `lattice:` line (`k`, `m`, `bc`, `owners`, `spans`, `grids`) and a
 `constants:` line (`atom_leaves`, `cap_bc`, `max_span`, `max_span_k`). `tests/unit/test_lattice.py` ties its answers to the extension's (`fsla_decode_lattice`) and the atom's leaves it prints to Python's `MMA_K_QUANTUM`.
 
-`--segments length,maximum,window;...` stands alone and needs no device: the segment plan ([`segments.md`](segments.md)) of each call, a line of JSON
-(`steps`, `tokens`; `maximum` 0 is no limit, `steps` 0 a call with no plan).
+`--segments length,max_tokens,max_heads,batch,heads,window;...` stands alone and needs no device: the segment plan ([`segments.md`](segments.md)) of each
+call of `batch` sequences of `heads` write heads, a line of JSON (`steps`, `tokens`, and a head block's `sequences` and `heads`; a maximum 0 is no limit,
+`steps` 0 a call with no plan).
+
+`--policy widths/masked/heads/value_width/limit/window` stands alone and needs no device: a step's policy under `limit` bytes ([`segments.md`](segments.md#policy))
+as one line of JSON, `tokens` and `heads` (`heads` 0: every head; `tokens` 0: no step fits), the shape as `--step` takes it.
 
 `--step widths/masked/heads/value_width/windows/window` stands alone and needs no device: a step's bytes ([`segments.md`](segments.md#step)) as one line of JSON,
 `workspace` and `operands`; the first three are comma lists (the levels' widths; each side's masked levels, a bit a level, and batch-heads, the read side first).
