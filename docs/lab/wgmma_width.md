@@ -37,4 +37,4 @@ WHAT IT SHOWS.
 - A GROUP OF 32 EIGHT-COLUMN STEPS is 625 cycles: a box of 256 leaves folded 8 at a step, 19.5 a step with its
   round trip.
 
-Record: `measure/lab/results/wgmma_width/sm_90a.json`.
+Record: `data:lab/wgmma_width/sm_90a.json`.

@@ -64,4 +64,4 @@ uniform registers is not what the traffic slows, some 24-27 cycles a step alone 
 immunity, and the form for the carry; if the move is, the loaded steps' growth. Measured: some 25 alone and 27 beside
 each, as predicted for a move the traffic does not slow.
 
-Record: `measure/lab/results/step_queue/sm_90a.json`.
+Record: `data:lab/step_queue/sm_90a.json`.

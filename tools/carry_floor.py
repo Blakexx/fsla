@@ -13,7 +13,7 @@ digits a token, drawn uniformly; a dense one all of them). A BOX is `--box` digi
 `--cluster` boxes along each level. A token's digits are independent draws, so every count below is an expectation.
 
 THE TERMS, SM-cycles a token (each line of the report says which rate it used and whether that rate is MEASURED --
-read from an H100 lab record under `measure/lab/results/` at run time -- or ESTIMATED, a constant of this file with
+read from an H100 lab record in the pinned data (`data:lab/`, measure/data.py) at run time -- or ESTIMATED, a constant of this file with
 its reason):
 - tensor: the leaves a token reads, times the channels, over the pipe's products a cycle (`wgmma_rate`);
   a value width under 64 runs wgmma's 64 rows (the idle half), and the readout's leaves of a list in a box run
@@ -63,7 +63,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-RESULTS = ROOT / "measure" / "lab" / "results"
+
+from measure import data  # noqa: E402 -- the path insert above must precede it
 
 #: wgmma's rows: the channels a warpgroup's MMA carries
 MMA_ROWS = 64
@@ -81,13 +82,13 @@ SMS = 132
 
 def median(lab: str, row: str) -> float:
     """A lab record's row on the H100: its median (refused if the record or the row is gone)."""
-    path = RESULTS / lab / "sm_90a.json"
+    path = data.lab(lab) / "sm_90a.json"
     if not path.exists():
-        raise SystemExit(f"carry_floor: no record {path.relative_to(ROOT)}")
+        raise SystemExit(f"carry_floor: no record data:lab/{lab}/sm_90a.json")
     for result in json.loads(path.read_text())["results"]:
         if result["name"] == row:
             return float(result["median"])
-    raise SystemExit(f"carry_floor: {path.relative_to(ROOT)} has no row `{row}`")
+    raise SystemExit(f"carry_floor: data:lab/{lab}/sm_90a.json has no row `{row}`")
 
 
 def measured() -> dict[str, tuple[float, str]]:

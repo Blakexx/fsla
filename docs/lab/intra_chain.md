@@ -63,4 +63,4 @@ WHAT IT SHOWS.
   hopper intra runs in CTAs of its own: after the carry first (Blake, 2026-11-13), its share of the call measured
   before any overlap is built.
 
-Record: `measure/lab/results/intra_chain/sm_90a.json`.
+Record: `data:lab/intra_chain/sm_90a.json`.

@@ -107,7 +107,7 @@ as git will write it. Inside it then runs `python3 tools/bootstrap.py`, `bazel r
 one is the verdict) and the commit gate; then the GPU and a call through torch's flash backend, a lock the HOST holds
 seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum), and an iteration build of
 the library for the device's architecture, imported. The result, each step's time and the cold start (the clone, the
-bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `fsla_results` at
+bootstrap, init and the venv: what a fresh machine pays before it can work) are stored through `fsla_devtools.results` at
 `environment` under the image's digest. A green
 run's volumes go with it; a red run's stay for a look until the next run.
 

@@ -36,4 +36,4 @@ WHAT IT SHOWS.
 - THE READOUT READS THE IMAGE EXACTLY, a box's 16 steps 558 cycles (35 a step): the M|N-major tile a read digit
   is what a step takes as its A.
 
-Record: `measure/lab/results/state_image/sm_90a.json`.
+Record: `data:lab/state_image/sm_90a.json`.

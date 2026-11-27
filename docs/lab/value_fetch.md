@@ -72,4 +72,4 @@ WHAT IT IS NOT. The fetch alone: every thread issues copies and does nothing els
 that fetches its value lines by token index while it folds is NOT MEASURED. Whether a tensor step reads rows landed
 whole is [`step_swizzle`](step_swizzle.md)'s.
 
-Record: `measure/lab/results/value_fetch/sm_90a.json`.
+Record: `data:lab/value_fetch/sm_90a.json`.

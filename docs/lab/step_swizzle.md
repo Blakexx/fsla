@@ -37,4 +37,4 @@ that the three cost the same, the step's read of its operand not being a thread'
 medians are within 0.003 cycles. WHAT IT IS NOT: a statement about B's layout, about a step issued while threads
 store into the tile it reads, or about rows off a 1,024-byte boundary.
 
-Record: `measure/lab/results/step_swizzle/sm_90a.json`.
+Record: `data:lab/step_swizzle/sm_90a.json`.

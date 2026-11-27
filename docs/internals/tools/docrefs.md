@@ -9,13 +9,22 @@ no longer describes.
 ## What a reference is
 
 `references` reads every tracked markdown file except the deletion ledger (a ledger row describes the tree at its own
-commit), outside fenced code blocks, and takes four forms:
+commit), outside fenced code blocks, and takes five forms:
 
 - a possessive, a path in code font followed by `'s` and a name in code font: the name's primitive in that file;
 - a dotted name in code font whose first component is one of `PACKAGES`: the longest prefix that is a module in the
   tree, and the rest as the primitive in it;
 - a path in code font with a known suffix or a trailing `/`: the file or directory;
+- a path in code font that starts `data:` (`data:lab/<experiment>/<arch>.json`): that file or directory of THE PINNED
+  DATA, the data repository at the one commit `MODULE.bazel` pins (`@fsla_data`), which the check is handed by its
+  BUILD file (`--data`, `@fsla_data//:root`) and resolves the path in; checked only to exist there, since the pin fixes
+  its content ([`measurement.md`](../../measurement.md#the-data));
 - a markdown link: the file, or the section its `#anchor` names.
+
+`move OLD NEW` is a target that moved -- a file, a directory or every path under a prefix, into the tree or into the
+pinned data: each pin of a target under `OLD` is re-pinned under `NEW`, read as it was read, and each doc's text is
+rewritten from `OLD` to `NEW`, refused with nothing written unless every moved target resolves at its new path to the
+digest its pin holds (the lab's records moved to `data:lab` this way, every pin's content the same).
 
 `locate` finds a target in a `Version` of the tree (the working tree, or a commit). A Python primitive is a function,
 class, method or constant, found through `ast` and followed through a `from x import name` re-export; it is hashed as

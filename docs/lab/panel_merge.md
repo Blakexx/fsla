@@ -30,4 +30,4 @@ WHAT IT SHOWS.
   times its two rows' bytes. A warp here holds two tokens in flight; whether more in flight brings the fixed part
   down is not in this experiment.
 
-Record: `measure/lab/results/panel_merge/sm_90a.json`.
+Record: `data:lab/panel_merge/sm_90a.json`.

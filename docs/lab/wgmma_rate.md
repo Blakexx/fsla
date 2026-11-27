@@ -35,5 +35,5 @@ WHAT IT SHOWS.
   row (136) reads 96 here, in a kernel that differs from that one in three ways (descriptors held, A's words held,
   launch bounds): the register operand is not what was slow, and which difference was is not isolated.
 
-Record: `measure/lab/results/wgmma_rate/sm_90a.json`; its counters are the written exception (no profiler on that
+Record: `data:lab/wgmma_rate/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

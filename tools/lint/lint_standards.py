@@ -606,6 +606,8 @@ def _repo_identifier_text() -> str:
                 if (path.suffix in suffixes and "third_party" not in path.parts
                         and "__pycache__" not in path.parts):
                     chunks.append(path.read_text(errors="ignore"))
+        #: a lab experiment's name is the tree's identifier, by its source's name (its records are the pinned data's)
+        chunks += [path.stem for path in (ROOT / "measure" / "lab" / "experiments").glob("*.cu")]
         _REPO_TEXT = "\n".join(chunks)
     return _REPO_TEXT
 

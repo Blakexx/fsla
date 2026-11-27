@@ -25,4 +25,4 @@ WHAT IT SHOWS.
 - ONE WARP IS FOUR TIMES THAT (33.4): the rows scale with the warps issuing, up to four.
 - A TABLE THE CACHE CANNOT HOLD costs 1.6 times as much with four warps (13.7).
 
-Record: `measure/lab/results/value_gather/sm_90a.json`.
+Record: `data:lab/value_gather/sm_90a.json`.

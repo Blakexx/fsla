@@ -56,7 +56,7 @@ DEVBOX_REPO = "fsla-devbox"
 DEVBOX_DIGEST = ROOT / "tools" / "devbox_image.json"
 #: the clean room's container and the prefix of its volumes
 CHECK_VOLUMES = "fsla-devbox-check"
-#: the `fsla_results` location of the container checks, one record per image digest
+#: the store's location of the container checks (`fsla_devtools.results`), one record per image digest
 RESULTS_ENVIRONMENT = "environment"
 
 
@@ -183,13 +183,13 @@ def site_packages(venv: Path) -> Path:
     return Path(out.stdout.strip())
 
 
-#: the shared checkouts every venv here imports, by a one-line `.pth` naming each: the store's `fsla_results` and
-#: fsla-devtools' `fsla_devtools`
-LINKED = {"fsla_results.pth": "store.root", "fsla_devtools.pth": "workspace.devtools"}
+#: the shared checkouts every venv here imports, by a one-line `.pth` naming each: fsla-devtools' `fsla_devtools` (the
+#: store's code among it, `fsla_devtools.results`; the store's data repository is data, which nothing imports)
+LINKED = {"fsla_devtools.pth": "workspace.devtools"}
 
 
 def link_packages() -> list[Path]:
-    """`fsla_results` and `fsla_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
+    """`fsla_devtools` importable from every interpreter that runs here, by the `LINKED` `.pth` files:
     each checkout's own venv (`checkout_venv`: it names the environment as a plain path, which reads none of its .pth
     files). Never the machine's own python: nothing here runs from it."""
     sites = [site_packages(v) for v in (checkout_venv(c) for c in _worktrees()) if v is not None]
@@ -328,7 +328,7 @@ def cmd_init(a) -> int:
     for name in DEV_TOOLS:
         ensure_pinned(name)
     for site in link_packages():
-        print(f"fsla_results, fsla_devtools: linked into {site}")
+        print(f"fsla_devtools: linked into {site}")
     for checkout in _worktrees():
         if not os.access(checkout / "tools" / "git-hooks" / "pre-commit", os.X_OK):
             continue
@@ -429,21 +429,20 @@ def cmd_check(a) -> int:
         f"workspace.suite holds the measurement suite's root: {suite}",
         "point workspace.suite at a fsla-bench checkout carrying its root declare.py")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
-    root = Path(dev_config.get("store.root"))
-    row((root / "fsla_results" / "store.py").is_file(), f"store.root is a fsla-results checkout: {root}",
-        "clone fsla-results to store.root, or point store.root at a checkout")
+    store = dev_config.get("store.root")
+    row(store is not None and (Path(store) / "records").is_dir() and (Path(store) / "lab").is_dir(),
+        f"store.root is a checkout of the data repository (records/, lab/): {store}",
+        "clone fsla-results to store.root, or point store.root at a checkout (`bazel run //:init` names the sibling one)")
     devtools = Path(dev_config.get("workspace.devtools"))
     row((devtools / "fsla_devtools" / "mirror.py").is_file(), f"workspace.devtools is a fsla-devtools checkout: {devtools}",
         "clone fsla-devtools to workspace.devtools, or point workspace.devtools at a checkout")
     #: the co-developed checkouts import in the checkout's own venv (its hooks, `container`)
     if readable and own is not None:
         python = own / "bin" / "python"
-        found = subprocess.run([str(python), "-c", "import fsla_results, fsla_devtools; "
-                                "print(fsla_results.ROOT); print(fsla_devtools.__file__)"], capture_output=True, text=True)
+        found = subprocess.run([str(python), "-c", "import fsla_devtools; print(fsla_devtools.__file__)"],
+                               capture_output=True, text=True)
         lines = found.stdout.split()
-        row(lines[:1] == [str(root / "records")], f"fsla_results imports from store.root in {python}",
-            "bazel run //:init")
-        row(lines[1:2] == [str(devtools / "fsla_devtools" / "__init__.py")],
+        row(lines[:1] == [str(devtools / "fsla_devtools" / "__init__.py")],
             f"fsla_devtools imports from workspace.devtools in {python}", "bazel run //:init")
     return _report(rows)
 
@@ -585,14 +584,14 @@ def cmd_dev_env(a) -> int:
         (venv / "bin" / json.loads(PINS[name].read_text())["command"]).symlink_to(dev_config.pinned(name))
 
     wire_hooks(checkout)
-    found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, fsla, fsla_devtools, fsla_results, torch; "
-                            "print(json.dumps({m.__name__: m.__file__ for m in (fsla, fsla_devtools, fsla_results, torch)}))"],
+    found = subprocess.run([str(venv / "bin" / "python"), "-c", "import json, fsla, fsla_devtools, torch; "
+                            "print(json.dumps({m.__name__: m.__file__ for m in (fsla, fsla_devtools, torch)}))"],
                            capture_output=True, text=True, cwd=venv.parent)
     if found.returncode:
         raise SystemExit(f"{venv}: its interpreter cannot import the tree's packages:\n{found.stderr[-2000:]}")
     origins = json.loads(found.stdout)
     want = {"fsla": checkout, "fsla_devtools": Path(dev_config.get("workspace.devtools")),
-            "fsla_results": Path(dev_config.get("store.root")), "torch": site_packages(Path(a.env))}
+            "torch": site_packages(Path(a.env))}
     wrong = [f"{name} from {origins[name]}, not {root}" for name, root in want.items()
              if not Path(origins[name]).resolve().is_relative_to(root.resolve())]
     if wrong:
@@ -736,7 +735,7 @@ def _git_mounts(staging: Path) -> list[str]:
 
 
 def _container_check(digest: str, tag: str) -> int:
-    from fsla_results import Store, checkout, portable
+    from fsla_devtools.results import Store, checkout, portable
 
     volumes = {f"{CHECK_VOLUMES}-home": "/root", f"{CHECK_VOLUMES}-work": str(CONTAINER_CHECKOUT.parent)}
     for volume in volumes:
@@ -808,8 +807,8 @@ def _container_gate() -> int:
     """KERNEL_STANDARDS §23 (3): a commit that changes the devbox image the tree names (`tools/devbox_image.json`, which
     the graph writes: `//:devbox_image` holds it to the image the graph builds) carries a passing container check for the
     new digest. So a commit that leaves the image alone needs no Docker (a rented box is itself a container)."""
-    from fsla_results import Store
-    from fsla_results import key as record_key
+    from fsla_devtools.results import Store
+    from fsla_devtools.results import key as record_key
 
     def named(rev: str) -> str | None:
         blob = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:{DEVBOX_DIGEST.relative_to(ROOT)}"],
@@ -867,7 +866,7 @@ BOOTSTRAP = ("init", "check", "show", "get", "clock", "dev-env", "worktree")
 
 def _from_own_venv() -> None:
     """Every other command runs from this checkout's own venv, re-executing this file there when another python started
-    it: the container reads `fsla_results`, which the venv links, never the host's own python."""
+    it: the container check stores through `fsla_devtools.results`, which the venv links, never the host's own python."""
     own = checkout_venv(ROOT)
     if own is None:
         raise SystemExit(f"{ROOT.name} has no venv of its own to run this from: bazel run //:dev_env")

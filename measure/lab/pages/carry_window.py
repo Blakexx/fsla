@@ -1,10 +1,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/carry_window.md`, generated from `measure/lab/results/carry_window/sm_90a.json`.
+"""The measured section of `docs/lab/carry_window.md`, generated from `data:lab/carry_window/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root` and rewrites, in the docs under `root`:
+`write(root, data, instance)` reads that record in the pinned data `data` and rewrites, in the docs under `root`:
 - `docs/lab/carry_window.md`: everything from its first `MEASURED (H100 80GB` up to the line starting
-  ``Record: `measure/lab/results``, every figure the record's own;
+  ``Record: `data:lab``, every figure the record's own;
 - `docs/ARCHITECTURE.md`: the five figures it restates of this record, each substituted where its pattern matches once;
 - `docs/lab/intra_window.md`: the carry's figure it quotes.
 `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the card's
@@ -30,12 +30,13 @@ from _record import Record
 SAME = 0.005
 
 
-def edges_section(root: pathlib.Path) -> str:
-    """THE LAUNCH'S EDGES, from the one-CTA record and its trace; empty where the record holds no edges row."""
+def edges_section(root: pathlib.Path, data: pathlib.Path) -> str:
+    """THE LAUNCH'S EDGES, from the one-CTA record and its trace in the pinned data; empty where the record holds no
+    edges row."""
     sys.path.insert(0, str(root / "tools"))
     import lab_trace
 
-    folder = root / "measure/lab/results/carry_window"
+    folder = data / "lab/carry_window"
     rec = json.loads((folder / "sm_90a.blocks1.json").read_text())
     windows = {r["name"]: r["median"] for r in rec["results"] if r.get("unit") == "cycles a window a CTA"}
     traces = dict(lab_trace.load(folder / "sm_90a.blocks1.trace"))
@@ -78,8 +79,8 @@ and coarse twins by its name with that suffix removed and replaced): each warp m
     return "\n".join(parts)
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    j = json.loads((root / "measure/lab/results/carry_window/sm_90a.json").read_text())
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
+    j = json.loads((data / "lab/carry_window/sm_90a.json").read_text())
     R = Record({r["name"]: r["median"] for r in j["results"]})
     # a role's steps as the page reads them: their issue and their wait together (the record holds the two apart),
     # a warpgroup's first warp's the same; the wait alone is kept under the site's name with " (wait)"
@@ -686,12 +687,12 @@ WHAT IT SHOWS.
   bound by the instructions it issues, and what holds each is not isolated.
 {COUNTERS}
 
-{edges_section(root)}
+{edges_section(root, data)}
 """
     p = root / "docs/lab/carry_window.md"
     s = p.read_text()
     a = s.index("MEASURED (H100 80GB")
-    b = s.index("Record: `measure/lab/results")
+    b = s.index("Record: `data:lab")
     p.write_text(s[:a] + text + s[b:])
 
     # the architecture's figures of this record, kept the record's

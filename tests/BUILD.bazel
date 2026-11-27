@@ -150,6 +150,8 @@ pytest_tier(
         ":sass_gate_probe",
     ],
     marks = "not cuda",
+    #: the pinned data (MODULE.bazel's `environment.data`): the H100 lab records the floor model and the rates read
+    repos = {"@fsla_data//:lab": "FSLA_DATA"},
     shard_count = 4,
     tests = ["tests/" + f for f in glob(
         ["unit/test_*.py"],
@@ -171,6 +173,7 @@ pytest_tier(
         "@warpline//:recorder",
     ],
     marks = "not cuda",
+    repos = {"@fsla_data//:lab": "FSLA_DATA"},
     tests = ["tests/" + f for f in glob(LAB_TESTS)],
 )
 

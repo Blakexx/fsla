@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/gather_rate.md`, generated from `measure/lab/results/gather_rate/sm_90a.json`.
+"""The measured section of `docs/lab/gather_rate.md`, generated from `data:lab/gather_rate/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root` and rewrites `docs/lab/gather_rate.md` under `root` from its
+`write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/gather_rate.md` under `root` from its
 `MEASURED` line to its end (where the page has none, it appends the section after the page's text), every figure the record's own and every comparative word chosen by the figures it compares. It REFUSES, naming what is
 missing, where the record is absent, holds none of the experiment's ten rows, or holds a row whose check failed.
 `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the card's
@@ -35,11 +35,11 @@ def row_name(table: str, what: str, rows: int) -> str:
     return f"{table}, {rows} rows in flight: {what}"
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    path = root / "measure/lab/results/gather_rate/sm_90a.json"
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
+    path = data / "lab/gather_rate/sm_90a.json"
     if not path.exists():
         raise SystemExit(
-            "lab page: no record at measure/lab/results/gather_rate/sm_90a.json -- the page's measured section is "
+            "lab page: no record at data:lab/gather_rate/sm_90a.json -- the page's measured section is "
             "generated from a run of the experiment recorded with `lab run gather_rate --record` on an sm_90a card"
         )
     d = json.loads(path.read_text())
@@ -92,7 +92,7 @@ spread of a row {100 * max(spread(n) for n in names.values()):.1f}%). {UNIT[0].u
 WHAT IT SHOWS.
 {shown}
 
-Record: `measure/lab/results/gather_rate/sm_90a.json`.
+Record: `data:lab/gather_rate/sm_90a.json`.
 """
     p = root / "docs/lab/gather_rate.md"
     s = p.read_text()

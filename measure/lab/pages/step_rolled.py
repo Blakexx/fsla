@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/step_rolled.md`, generated from `measure/lab/results/step_rolled/`.
+"""The measured section of `docs/lab/step_rolled.md`, generated from `data:lab/step_rolled/`.
 
-`write(root, instance)` reads `sm_90a.blocks1.json` and `sm_90a.blocks132.json` (one CTA and the full grid) under
+`write(root, data, instance)` reads, in the pinned data `data`, `sm_90a.blocks1.json` and `sm_90a.blocks132.json` (one CTA and the full grid) under
 `root` and rewrites `docs/lab/step_rolled.md` under `root` from its `MEASURED` line to its end (where the page has none,
 it appends the section after the page's text), every figure the records' own and every comparative word chosen by the
 figures it compares. It REFUSES, naming what is missing, where a record is absent, holds none of the experiment's three
@@ -32,13 +32,13 @@ FORMS = (
 GRIDS = (1, 132)
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     records = {}
     for n in GRIDS:
-        path = root / f"measure/lab/results/step_rolled/sm_90a.blocks{n}.json"
+        path = data / f"lab/step_rolled/sm_90a.blocks{n}.json"
         if not path.exists():
             raise SystemExit(
-                f"lab page: no record at measure/lab/results/step_rolled/sm_90a.blocks{n}.json -- the page's measured "
+                f"lab page: no record at data:lab/step_rolled/sm_90a.blocks{n}.json -- the page's measured "
                 "section is generated from runs of the experiment recorded with `lab run step_rolled --record` at one "
                 "CTA and at the full grid on an sm_90a card"
             )
@@ -86,7 +86,7 @@ spread of a row {100 * spread:.1f}%). {UNIT[0].upper()}{UNIT[1:]}:
 WHAT IT SHOWS.
 {chr(10).join(lines)}
 
-Record: `measure/lab/results/step_rolled/sm_90a.blocks1.json` and `sm_90a.blocks132.json`.
+Record: `data:lab/step_rolled/sm_90a.blocks1.json` and `sm_90a.blocks132.json`.
 """
     p = root / "docs/lab/step_rolled.md"
     s = p.read_text()

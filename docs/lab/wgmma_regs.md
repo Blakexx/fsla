@@ -50,5 +50,5 @@ WHAT IT SHOWS.
   descriptor inside this loop is one candidate the SASS shows, and the narrowed form here keeps three of those five
   instructions and is fast. No design rests on the rows here.
 
-Record: `measure/lab/results/wgmma_regs/sm_90a.json`; its counters are the written exception (no profiler on that
+Record: `data:lab/wgmma_regs/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

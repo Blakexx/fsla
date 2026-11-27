@@ -11,7 +11,7 @@ stored with its provenance. This document is what that sentence means.
 | method | fsla-devtools' `fsla_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
 | preconditions | the targets' requirements (`fsla_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
 | statistics | fsla-devtools' `fsla_devtools.verdict` | whether a difference is real |
-| record | `fsla_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
+| record | `fsla_devtools.results` (the measurements store) over the data repository, fsla-results | where a number lives afterwards, and which stored samples are a baseline |
 
 fsla measures itself with `bazel run //:measure -- run declare.py:all`; fsla-bench's root loads this file from each
 checkout it compares, declares every checkout's targets beside its attention reference, and times them in shared
@@ -293,13 +293,25 @@ timing session:
 
 A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 
-## The measurements record: `fsla_results`
+## The measurements record: `fsla_devtools.results`
 
-Every measuring tool stores what it measured through one library, `fsla_results`, in the fsla-results repository:
-`store.root` in the dev config (default `fsla-results` beside the checkouts), importable from every interpreter
-`bazel run //:init` provisions. A result measured in any worktree of a machine lands in that one repository, visible
-to every other at once; the devbox container has its own clone (`docs/setup.md#the-devbox-image`), whose records
-reach another machine's by git (`bazel run //:results -- commit`, then a push and a pull).
+Every measuring tool stores what it measured through one library, fsla-devtools' `fsla_devtools.results`, into the
+data repository, fsla-results, which holds data and no code: `store.root` in the dev config (`bazel run //:init` names
+the `fsla-results` checkout beside the checkouts), its `records/` the store's backend. A result measured in any
+worktree of a machine lands in that one checkout, visible to every other at once; the devbox container has its own
+clone (`docs/setup.md#the-devbox-image`), whose records reach another machine's by git (`bazel run //:results --
+commit`, then a push and a pull). A record carries no machine path and a timing names the commit of every checkout it
+ran, or the store refuses it (fsla-devtools' README, `The results store`).
+
+<a id="the-data"></a>THE DATA THIS TREE READS AND CITES is the data repository at ONE commit, pinned in `MODULE.bazel`
+(fsla-devtools' `environment.data` tag, `@fsla_data`, by the commit's archive digest), never the live checkout: a doc
+cites a record as `data:lab/<experiment>/<arch>.json` (or `data:records/<location>/<key>.json`), which `//:docrefs` resolves inside the
+pin, and the tools that read a record -- the lab's pages and its `trace`/`critical-path`, the floor model
+(`tools/carry_floor.py`), the rates' check (`measure/rates.py`) -- read it there, handed its root by the graph
+(`FSLA_DATA`, `measure/data.py`). The lab's records are under the data repository's `lab/`, moved from this tree with
+their history, byte-identical; `bazel run //tools:lab -- run NAME --record` writes a new one into the store's checkout
+(`lab/<name>/`), never this tree, and it becomes citable when a commit of the data repository holding it is pushed and
+the pin moves to it.
 
 A tool opens a store at its OWN LOCATION and hands it the SEMANTICS of what it measured -- the inputs its numbers
 depend on, reduced to identities (a commit and its tracked diff, a binary's manifest or file digest, the cells, the
@@ -326,9 +338,9 @@ A result is read from the store (`bazel run //:results -- show`, `history`, `lat
 terminal print.
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record.
-`bazel run //:results -- sql "..."` queries every location through a derived SQLite index beside the records
-(`history` and `latest` for one location; views flatten the stored outputs, and the fsla-results README lists them
-with the last, history, compare and baseline questions as SQL); `bazel run //:results -- verdict` is the regression
+`bazel run //:results -- sql "..."` queries every location through a derived SQLite index in the machine's cache
+(`history` and `latest` for one location; views flatten the stored outputs, and fsla-devtools' README lists them);
+`bazel run //:results -- verdict` is the regression
 judgement above; `bazel run //:results -- commit -m <message>` commits the records, after the repository's own check
 that every key recomputes from its semantics and every output exists. Pushing is the owner's act.
 The record kept before the library -- the per-run JSONL, the perf

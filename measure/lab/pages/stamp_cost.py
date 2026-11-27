@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/stamp_cost.md`, generated from `measure/lab/results/stamp_cost/sm_90a.json`.
+"""The measured section of `docs/lab/stamp_cost.md`, generated from `data:lab/stamp_cost/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root` and rewrites `docs/lab/stamp_cost.md` under `root` from its
+`write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/stamp_cost.md` under `root` from its
 `MEASURED (` line (the first run: from its `NOT YET MEASURED` line) through its `Record:` line, every figure the record's
 own. `instance` is the rented box's label (`nb...` Nebius, `hs...` Hyperstack, digits vast.ai), which only words the
 card's line. It returns the files it wrote (`lab page stamp_cost --instance LABEL`, docs/internals/tools/lab.md).
@@ -16,9 +16,9 @@ import pathlib
 from _record import Record
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
-    d = json.loads((root / "measure/lab/results/stamp_cost/sm_90a.json").read_text())
+    d = json.loads((data / "lab/stamp_cost/sm_90a.json").read_text())
     R = Record({r["name"]: r["median"] for r in d["results"]})
 
     STEPS = ("a wgmma step", "a chained step", "an independent step")
@@ -124,12 +124,12 @@ WHAT IT DECIDES.
   alone: on the independent step ({plain(I):.1f} cycles plain, eight operations) the lean stamp adds {lean_i1:.1f} cycles and the
   store alone {added(I, STORE, 1):.1f}.
 
-Record: `measure/lab/results/stamp_cost/sm_90a.json`.
+Record: `data:lab/stamp_cost/sm_90a.json`.
 """
     p = root / "docs/lab/stamp_cost.md"
     s = p.read_text()
     i = s.index("MEASURED (") if "MEASURED (" in s else s.index("NOT YET MEASURED")
-    rec = "Record: `measure/lab/results/stamp_cost/sm_90a.json`.\n"
+    rec = "Record: `data:lab/stamp_cost/sm_90a.json`.\n"
     j = s.index(rec, i) + len(rec) if rec in s[i:] else len(s)
     p.write_text(s[:i] + text + s[j:])
     return [p]

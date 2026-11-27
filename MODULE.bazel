@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "7da5dde27158330ba07ccda5c962d2d04228425e",
+    commit = "6849469fdea012da16f28e154e46a10d021d67e9",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -81,7 +81,15 @@ environment.cuda_toolkit(
     delete = ["curand/lib"],
     pin = "//tools:cuda_toolkit_pin.json",
 )
-use_repo(environment, "clang_tidy", "cuda_tools", "host_cc", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
+#: THE DATA, at ONE commit of the data repository (fsla-results): every record a doc cites (`data:lab/...`) and a tool
+#: reads (the lab's pages, the floor model, the rates) is the file at this pin, fixed content by the archive's digest
+environment.data(
+    name = "fsla_data",
+    commit = "77748901adb7f4aefe7b88fbdd5003504d4cca8d",
+    remote = "https://github.com/Blakexx/fsla-results",
+    sha256 = "50d05603fa2b770fe38a0c321a557a71c825211005f6a06ea65e1ddd5b63e5a9",
+)
+use_repo(environment, "clang_tidy", "cuda_tools", "fsla_data", "host_cc", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
 
 #: THE DEVBOX IMAGE (docs/setup.md#the-devbox-image): a thin wrapper around the bootstrap. Its base carries what a host
 #: supplies itself before the graph -- Ubuntu 22.04 with git, gcc, python3 and curl -- a Docker Official Image by digest

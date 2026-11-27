@@ -35,5 +35,5 @@ drain in flight changes nothing; a bulk add a token is slower than one a panel w
 does change is the warps' issue: one instruction a round from one thread where the warps' own drain is 32 a thread --
 its worth beside tensor work is not measured here (the round waits for its drain in every form).
 
-Record: `measure/lab/results/bulk_drain/sm_90a.json`; its counters are the written exception (no profiler on that
+Record: `data:lab/bulk_drain/sm_90a.json`; its counters are the written exception (no profiler on that
 box).

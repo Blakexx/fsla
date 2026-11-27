@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/mask_prepare_time.md`, generated from `measure/lab/results/mask_prepare_time/sm_90a.json`.
+"""The measured section of `docs/lab/mask_prepare_time.md`, generated from `data:lab/mask_prepare_time/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root`, and the lab kernel's record
-`measure/lab/results/mask_prep/sm_90a.json` it is set beside, and rewrites `docs/lab/mask_prepare_time.md` under `root`
+`write(root, data, instance)` reads that record in the pinned data `data`, and the lab kernel's record
+`data:lab/mask_prep/sm_90a.json` it is set beside, and rewrites `docs/lab/mask_prepare_time.md` under `root`
 from its `MEASURED (` line to its end: every figure a record's own or arithmetic on one. It REFUSES, naming what is
 missing, where a record is absent, the record lacks one of the experiment's rows or holds a row whose check
 failed, the record is not the one the predictions were written for (`PREDICTED_FOR`), or its misses are not the ones
@@ -53,10 +53,10 @@ def stored(group: int) -> float:
     return groups * (2 + (4 * WORDS if group > 1 else 0)) / (WORDS * TOKENS)
 
 
-def _load(root: pathlib.Path, experiment: str) -> dict:
-    path = root / "measure/lab/results" / experiment / "sm_90a.json"
+def _load(data: pathlib.Path, experiment: str) -> dict:
+    path = data / "lab" / experiment / "sm_90a.json"
     if not path.exists():
-        raise SystemExit(f"lab page: no record at measure/lab/results/{experiment}/sm_90a.json")
+        raise SystemExit(f"lab page: no record at data:lab/{experiment}/sm_90a.json")
     d = json.loads(path.read_text())
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
     if failed:
@@ -64,9 +64,9 @@ def _load(root: pathlib.Path, experiment: str) -> dict:
     return d
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    d = _load(root, "mask_prepare_time")
-    lab = _load(root, "mask_prep")
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
+    d = _load(data, "mask_prepare_time")
+    lab = _load(data, "mask_prep")
     if not d["git"]["sha"].startswith(PREDICTED_FOR) or d["git"].get("dirty"):
         raise SystemExit(
             f"lab page: the predictions here were written for the run of the experiment at {PREDICTED_FOR}, and the "
@@ -128,7 +128,7 @@ leaner form since that reading.
 
 {READING}
 
-Record: `measure/lab/results/mask_prepare_time/sm_90a.json`; the lab kernel's: `measure/lab/results/mask_prep/sm_90a.json`.
+Record: `data:lab/mask_prepare_time/sm_90a.json`; the lab kernel's: `data:lab/mask_prep/sm_90a.json`.
 """
     p = root / "docs/lab/mask_prepare_time.md"
     s = p.read_text()

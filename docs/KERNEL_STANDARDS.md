@@ -82,7 +82,7 @@ and narrowing the type — no store, no shuffle.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
 FSLA: the fold's fp32 accumulators become the readout's bf16 operand narrowed in place
 (`docs/ARCHITECTURE.md`, section 9) -- unbuilt. `[MACHINE]` MEASURED (H100, 2026-11-11, `wgmma_regs`:
-`measure/lab/results/wgmma_regs/sm_90a.json`): wgmma's `m64n16` accumulator is its register operand A's layout, so
+`data:lab/wgmma_regs/sm_90a.json`): wgmma's `m64n16` accumulator is its register operand A's layout, so
 the narrowing is one instruction a bf16 pair with no relayout -- four a thread a step, truncated or rounded at the same
 110 cycles a fold-and-readout step; a phase change that moves state is the transfer the design names, never an ad-hoc copy.
 
@@ -118,7 +118,7 @@ parity without a comment naming the invariant.
   (`hopper/flash_fwd_kernel_sm90.h:82-83, 308-309, 360-361`), with the budgets `constexpr` per configuration.
 RULE: a warp is specialized only where its registers move with its role -- `setmaxnreg` hands a producer's to the
 consumers -- and only where the accumulator binds: a producer that holds a consumer's slice and folds nothing is
-waste. `[MACHINE]` MEASURED (H100, 2026-11-11, `reg_trade`: `measure/lab/results/reg_trade/sm_90a.json`): a state folded
+waste. `[MACHINE]` MEASURED (H100, 2026-11-11, `reg_trade`: `data:lab/reg_trade/sm_90a.json`): a state folded
 before a trade of 24 against 232 registers a thread is read out exactly after it, and the trade costs about 200
 cycles a warp, once. `[COMPILER]` (ptxas of toolkit 13.0, sm_90a; the honoured form is `reg_trade`'s kernel, the two refused ones were
 compiled once and are recorded on `docs/lab/reg_trade.md`, not kept in the tree): `setmaxnreg` is
@@ -708,7 +708,7 @@ Two days of fold work rested on a per-instruction cost table that a later experi
 probe that replaced it measured instructions ptxas had folded or turned into calls. So:
 1. A CLAIM ABOUT THE HARDWARE OR THE COMPILER — a rate, an overlap, a cost beside the tensor pipe, what ptxas does to a
    pattern — is a rule only when a lab experiment measured it (`measure/lab/experiments/`, run by `tools/lab.py`;
-   docs/internals/tools/lab.md), and the rule names the experiment, its record (`measure/lab/results/<name>/<sm_XX>.json`)
+   docs/internals/tools/lab.md), and the rule names the experiment, its record (`data:lab/<name>/<sm_XX>.json`)
    and the architectures it holds on. An architecture not measured is stated as unmeasured; a new card or toolkit
    re-runs the experiments its rules cite. A RECORD OF A CARD THIS LINE DOES NOT BUILD (sm_80, sm_86) is kept only where its experiment measures a kernel
    every card runs and a rule here cites it as measured on sm_86 with its sm_90a run owed; an experiment on the

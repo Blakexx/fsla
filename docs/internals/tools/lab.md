@@ -17,7 +17,9 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
    convergence call nobody declared (the SASS gate's classification, `tools/sass_gate.py`: ptxas's loop-exit
    `CALL.REL.NOINC` and guarded fallbacks are not ones); checks the GPU is quiet; runs the repetitions; prints median, min and max and flags a result
    whose samples spread past 5%.
-3. `--record` writes `measure/lab/results/<name>/<sm_XX>.json` — the device, driver, toolkit, commit, the results with
+3. `--record` writes `lab/<name>/<sm_XX>.json` into the store's checkout (the dev config's `store.root`, the data
+   repository, never this tree), cited once a pushed commit of it is the pin as `data:lab/<name>/<sm_XX>.json`
+   ([`measurement.md`](../../measurement.md#the-data)) — the device, driver, toolkit, commit, the results with
    their samples, and each kernel's registers and leading opcodes — and, for an experiment with traced rows, beside it
    `<sm_XX>.trace/`, a warpline record a traced row, each checked by warpline ([`#trace`](#trace)). A rule cites this file.
 4. The finding becomes a law in `docs/KERNEL_STANDARDS.md` (§26), naming the experiment, the record and the
@@ -82,8 +84,8 @@ by a few hundred cycles has the waiter's own chain nearly as long beside it, and
 more than that margin). `--html` draws three windows of each row's first CTA, a lane a warp, a blocking wait's release
 a line from its releaser. The traced row's window beside its untraced twin's is the trace's own cost.
 `bazel run //tools:lab -- page <name> --instance LABEL` regenerates an experiment's page's measured section from its
-record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, instance)`, which reads
-`measure/lab/results/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
+record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, data, instance)`, which reads, in the pinned data,
+`data:lab/<name>/<arch>.json` and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
 a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's, the gather rate's, the gather group's,
 the token carry's, the gather's, the stamp probe's and the clock probe's pages have their modules; every other page's typed section stands as recorded and is not edited by

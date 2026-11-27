@@ -36,7 +36,7 @@ WHAT IT SHOWS.
 
 THE PREDICTIONS WRITTEN BEFORE THIS RUN, AND THEIR BASIS.
 - ONCE-READ: the first run (the experiment at 92c67f2d, the record
-  `measure/lab/results/mask_prep/sm_90a.first.json`) measured 5.08, 3.45 and 2.60 at groups of 1, 4 and 16
+  `data:lab/mask_prep/sm_90a.first.json`) measured 5.08, 3.45 and 2.60 at groups of 1, 4 and 16
   digits, and the kernel's memory traffic is the same in both runs: each within about 4% of that.
 - IN CACHE: the compiled walk issues 2.9, 1 and 0.38 warp-instructions a token at groups of 1, 4 and 16
   digits, priced at 2.9 warp-instructions a cycle an SM: the rate of the first run's row at a group of 1 digit,
@@ -60,4 +60,4 @@ worth, so at groups of 4 and 16 digits, where a CTA's round is 16 and 64 windows
 and store the same words, counts and totals to the same places. The outputs are the same whichever CTA writes them;
 the rows' times include those shared stores. At a group of one digit each CTA owns its own windows.
 
-Records: `measure/lab/results/mask_prep/sm_90a.json`, and the first run's, `measure/lab/results/mask_prep/sm_90a.first.json`.
+Records: `data:lab/mask_prep/sm_90a.json`, and the first run's, `data:lab/mask_prep/sm_90a.first.json`.

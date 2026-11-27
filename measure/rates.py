@@ -20,9 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).absolute().parents[1]
 
 from hardware import registry  # noqa: E402
+from measure import data as pinned  # noqa: E402
 
 CONFIG = ROOT / "measure" / "rates.json"
-RESULTS = ROOT / "measure" / "lab" / "results"
 #: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
 #: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
 PIPE_RATES = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
@@ -100,18 +100,18 @@ def _source_findings(where: str, arch: str, rate: Rate) -> list[str]:
         return [] if rate.where else [f"{where}: a {rate.kind} rate names no source"]
     if not rate.on:
         return [f"{where}: a measured rate names no product it was measured on (`on`)"]
-    record = RESULTS / rate.where / f"{arch}.json"
+    record, cited = pinned.lab(rate.where) / f"{arch}.json", f"data:lab/{rate.where}/{arch}.json"
     if not record.is_file():
-        return [f"{where}: its lab record {record.relative_to(ROOT)} does not exist"]
+        return [f"{where}: its lab record {cited} does not exist"]
     data = json.loads(record.read_text())
     medians = {r["name"]: r["median"] for r in data["results"]}
     findings = []
     if slugify_gpu(data.get("device", "")) != rate.on:
-        findings.append(f"{where}: {record.relative_to(ROOT)} was recorded on `{data.get('device')}`, not `{rate.on}`")
+        findings.append(f"{where}: {cited} was recorded on `{data.get('device')}`, not `{rate.on}`")
     if rate.row not in medians:
-        findings.append(f"{where}: {record.relative_to(ROOT)} has no result `{rate.row}`")
+        findings.append(f"{where}: {cited} has no result `{rate.row}`")
     elif abs(rate.cycles - medians[rate.row]) > TOLERANCE * max(1.0, medians[rate.row]):
-        findings.append(f"{where}: {rate.cycles} in {CONFIG.name}, {medians[rate.row]:.4f} in {record.relative_to(ROOT)}")
+        findings.append(f"{where}: {rate.cycles} in {CONFIG.name}, {medians[rate.row]:.4f} in {cited}")
     return findings
 
 

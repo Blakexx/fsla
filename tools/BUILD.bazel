@@ -88,6 +88,12 @@ lab_run(
     library = "@warpline//:warpline",
 )
 
+#: THE CARRY'S FLOOR MODEL, handed the pinned data, whose H100 lab records its measured rates are read from
+lab_run(
+    name = "carry_floor",
+    tool = "tools/carry_floor.py",
+)
+
 #: THE SASS GATE by hand, handed the checker as the lab is (the graph's gate action reads the same way)
 lab_run(
     name = "sass_gate",
@@ -115,7 +121,6 @@ filegroup(
 ) for name in [
     "arith_model",
     "bank_model",
-    "carry_floor",
     "kernel_targets",
     "kernels",
     "life_ranges",

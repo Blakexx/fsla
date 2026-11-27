@@ -168,7 +168,7 @@ lab_run(
 
 tool_run(
     name = "results",
-    module = "fsla_results",
+    module = "fsla_devtools.results",
 )
 
 #: the content checks over a staged diff or a pushed range (`--staged`, `--range A..B`): the pre-commit and pre-push
@@ -354,6 +354,8 @@ tree_test(
     cmd = ["python3", "tools/lint/lint_standards.py"],
     data = [":tree"],
     git = True,
+    #: the rates' check reads the lab records the measured rates name, in the pinned data
+    repos = {"@fsla_data//:lab": "FSLA_DATA"},
 )
 
 #: THE GRAPH RUNS THE TOOLCHAIN (KERNEL_STANDARDS#s14-graph): no tracked code runs a toolkit tool, a build tool, an install or a
@@ -491,10 +493,12 @@ checkout_test(
     cmd = ["python3", "tools/lint/ratchet.py", "--grown"],
 )
 
+#: every doc reference pinned and read; a `data:` citation resolves in the pinned data (@fsla_data)
 checkout_test(
     name = "docrefs",
     size = "small",
     cmd = ["python3", "tools/docrefs.py"],
+    tools = {"@fsla_data//:root": "--data"},
 )
 
 #: every agent lesson names a mechanism the tree holds (docs/internals/LEARNINGS.md)

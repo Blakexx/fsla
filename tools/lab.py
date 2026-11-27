@@ -16,7 +16,7 @@ spread, and writes a record keyed by the architecture.
     bazel run //tools:lab -- ncu smem_rates --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
     bazel run //tools:lab -- page carry_window --instance LABEL
 
-`--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
+`--record` writes `lab/<name>/<sm_XX>.json` in the store's checkout (or `<sm_XX>.counters.json` for `ncu`), the file a
 KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `pack` builds the target with its checks (a
 refusal fails the build) and copies its outputs; every other command builds the target without them and prints the checks' findings itself. `ncu` reads hardware counters per kernel
 (the median over its launches) where a question is about traffic rather than time. An experiment that reads data (a
@@ -51,7 +51,6 @@ import sass
 ROOT = Path(__file__).absolute().parents[1]
 LAB = ROOT / "measure" / "lab"
 EXPERIMENTS = LAB / "experiments"
-RESULTS = LAB / "results"
 
 #: a result whose largest sample exceeds its smallest by more than this is flagged unstable
 SPREAD = 1.05
@@ -65,6 +64,27 @@ def _dev_config():
     import dev_config
 
     return dev_config
+
+
+def _pinned():
+    """The pinned data (measure/data.py: the data repository at the commit MODULE.bazel pins, which the lab's run target
+    hands it), imported where a command reads a record: the graph's actions read none."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from measure import data
+
+    return data
+
+
+def _recorded(name: str) -> Path:
+    """Where `--record` writes an experiment's records: the store's checkout (the dev config's `store.root`), under
+    `lab/<name>/` -- never this tree; the pinned data is what reads them, once a commit of the store holds them."""
+    return Path(_dev_config().get("store.root")) / "lab" / name
+
+
+def _record_path(spelled: str) -> Path:
+    """A `--record` to read: `data:lab/...` is the pinned data's file, anything else a path as given."""
+    return _pinned().resolve(spelled)
 
 
 def experiments() -> dict[str, Path]:
@@ -849,7 +869,7 @@ def page(name: str, instance: str) -> int:
     spec = importlib.util.spec_from_file_location(f"{name}_page", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    for written in module.write(ROOT, instance):
+    for written in module.write(ROOT, _pinned().root(), instance):
         print(f"wrote {written.relative_to(ROOT)}")
     return 0
 
@@ -899,7 +919,7 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
          record: bool, digests: dict[str, str], counters: dict[str, dict], refused: dict | None = None,
          built: dict | None = None, into: Path | None = None, blocks: int = 0, toolkit: str | None = None) -> Path:
-    """The run's record: into `measure/lab/results` under `--record`, else the scratch space (`into`: that directory
+    """The run's record: into the store's checkout (`lab/<name>/`) under `--record`, else the scratch space (`into`: that directory
     instead). `refused`: the written exception of a host that grants no counters, in their place. `built`: a pack's
     toolkit and commit, where the binary was built on another machine (`pack`); else `toolkit` is the version of the
     graph's that built it."""
@@ -917,7 +937,7 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
         body["counters_exception"] = refused
     if blocks:
         body["blocks"] = blocks
-    target = (into / name if into else RESULTS / name if record
+    target = (into / name if into else _recorded(name) if record
               else _dev_config().scratch("lab") / "results" / name) / (f"{arch}.blocks{blocks}.json" if blocks else f"{arch}.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
@@ -1132,7 +1152,7 @@ def counters(name: str, metrics: list[str], record: bool) -> int:
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": git_state(),
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "metrics": metrics,
             "inputs": digests, "kernels": found}
-    target = (RESULTS / name if record else _dev_config().scratch("lab") / "results" / name) / f"{arch}.counters.json"
+    target = (_recorded(name) if record else _dev_config().scratch("lab") / "results" / name) / f"{arch}.counters.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
     print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
@@ -1282,7 +1302,7 @@ def is_wait(site: str) -> bool:
 
 def timelines(name: str, pattern: str | None, record: Path | None, skip: int, out: Path | None) -> int:
     """A RECORD'S TRACED ROWS read by `lab_trace`: its traces beside it, its windows' cycles from it."""
-    path = record or (RESULTS / name / f"{sass.device_arch()}.json")
+    path = record or (_pinned().lab(name) / f"{sass.device_arch()}.json")
     traces = path.with_name(path.name.replace(".json", ".trace"))
     if not traces.is_dir():
         print(f"lab: no traces beside {path} (a record's traced rows write {traces.name})")
@@ -1302,7 +1322,7 @@ def critical_path(name: str, pattern: str | None, record: Path | None) -> int:
     are least is the window's path, and only its phases can shorten the window. A row whose two least-waiting roles
     are within `PATH_MARGIN` of the window of each other names no path."""
     arch = sass.device_arch() if record is None else None
-    path = record or (RESULTS / name / f"{arch}.json")
+    path = record or (_pinned().lab(name) / f"{arch}.json")
     rows = {r["name"]: r for r in json.loads(path.read_text())["results"]}
     windows = {n for n, r in rows.items() if r.get("unit") == "cycles a window a CTA"}
     sites: dict[str, list[tuple[str, str, float]]] = {}
@@ -1455,7 +1475,7 @@ def main() -> int:
     s.add_argument("--arch", help="compile for this architecture (sm_90a, ...) in place of the device's: SASS only")
     r = sub.add_parser("run")
     r.add_argument("experiment")
-    r.add_argument("--record", action="store_true", help="write the record into measure/lab/results")
+    r.add_argument("--record", action="store_true", help="write the record into the store's checkout, lab/<experiment>/")
     k = sub.add_parser("pack", help="build and check an experiment here for a card elsewhere")
     k.add_argument("experiment")
     k.add_argument("--arch", required=True)
@@ -1495,12 +1515,14 @@ def main() -> int:
     c2 = sub.add_parser("path", help="each clocked row's roles' waits and busy cycles: the role the window waits on")
     c2.add_argument("experiment")
     c2.add_argument("--row", help="a regex over the rows' names")
-    c2.add_argument("--record", type=Path, help="the record to read (default: this card's in measure/lab/results)")
+    c2.add_argument("--record", type=_record_path, help="the record to read, a path or `data:lab/...` (default: this card's "
+                                                        "in the pinned data)")
     t = sub.add_parser("trace", help="a traced row's timelines: each role's time by state, who released its waits, "
                                      "and the window's path walked back through those releases")
     t.add_argument("experiment")
     t.add_argument("--row", help="a regex over the traced rows' names")
-    t.add_argument("--record", type=Path, help="the record whose traces to read (default: this card's)")
+    t.add_argument("--record", type=_record_path, help="the record whose traces to read, a path or `data:lab/...` "
+                                                       "(default: this card's in the pinned data)")
     t.add_argument("--skip", type=int, default=3, help="the first windows left out of the steady span")
     t.add_argument("--html", type=Path, help="write three windows of each row's first CTA here, a lane a warp")
     pg = sub.add_parser("page", help="regenerate an experiment's page's measured section from its record")
@@ -1515,7 +1537,7 @@ def main() -> int:
     n = sub.add_parser("ncu")
     n.add_argument("experiment")
     n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
-    n.add_argument("--record", action="store_true", help="write the counters into measure/lab/results")
+    n.add_argument("--record", action="store_true", help="write the counters into the store's checkout, lab/<experiment>/")
     args = ap.parse_args()
 
     if args.cmd == "list":

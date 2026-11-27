@@ -299,8 +299,8 @@ must never be able to fail a merge.
 ## Measurement, and the tests that guard it
 
 Performance work has its own document — [`measurement.md`](measurement.md) — because the instruments are as much a
-subject of review as the kernel. The timing system's own non-vacuity tests live with it, in fsla-devtools and
-fsla-results; this repository's is `tests/unit/test_bench_provider.py`, which plants an
+subject of review as the kernel. The timing system's and the store's own non-vacuity tests live with them, in
+fsla-devtools; this repository's is `tests/unit/test_bench_provider.py`, which plants an
 iteration build of a declared arm family and another library's data, and requires each refusal by name, and
 requires that the `prefill` arm, whose carry is not built, is offered on no cell.
 `bazel run //:ratify -- --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).

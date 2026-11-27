@@ -40,4 +40,4 @@ WHAT IT SHOWS.
 - AT 132 CTAs, A FENCE A STEP: 23.19 cycles a step, the same as the 23.19 of STRAIGHT: a fence a step is free.
 - AT 132 CTAs, EACH STEP IN A ROLLED LOOP OF A RUN-TIME COUNT: 37.63 cycles a step, 1.62 times the 23.19 of STRAIGHT (14.44 cycles a step above).
 
-Record: `measure/lab/results/step_rolled/sm_90a.blocks1.json` and `sm_90a.blocks132.json`.
+Record: `data:lab/step_rolled/sm_90a.blocks1.json` and `sm_90a.blocks132.json`.

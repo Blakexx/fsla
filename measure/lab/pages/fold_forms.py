@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/fold_forms.md`, generated from `measure/lab/results/fold_forms/sm_90a.json`.
+"""The measured section of `docs/lab/fold_forms.md`, generated from `data:lab/fold_forms/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root` and rewrites `docs/lab/fold_forms.md` under `root` from its
+`write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/fold_forms.md` under `root` from its
 `MEASURED (` line (the page ends before it, at the end of THE FORM, until a record is written) to its end, every
 figure the record's own and every comparative word chosen by the figures it compares. It REFUSES, naming what is
 missing, where the record is absent, holds none of the experiment's four rows, or holds a row whose check failed.
@@ -31,11 +31,11 @@ ROWS = (
 )
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    path = root / "measure/lab/results/fold_forms/sm_90a.json"
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
+    path = data / "lab/fold_forms/sm_90a.json"
     if not path.exists():
         raise SystemExit(
-            "lab page: no record at measure/lab/results/fold_forms/sm_90a.json -- the page's measured section is "
+            "lab page: no record at data:lab/fold_forms/sm_90a.json -- the page's measured section is "
             "generated from a run of the experiment recorded with `lab run fold_forms --record` on an sm_90a card"
         )
     d = json.loads(path.read_text())
@@ -84,7 +84,7 @@ WHAT IT SHOWS.
 {line(TABLE, "THE TILE FORM, ITS DENSE LINES FETCHED FROM THE LEVEL")}
 - THE CHEAPEST FORM is {cheapest.split(':')[0]}: {least:,.0f} {UNIT}, {least / tile:.2f} of the tile form's.
 
-Record: `measure/lab/results/fold_forms/sm_90a.json`.
+Record: `data:lab/fold_forms/sm_90a.json`.
 """
     p = root / "docs/lab/fold_forms.md"
     s = p.read_text()

@@ -28,7 +28,7 @@ def result(name, median):
 
 
 def record(root, name, results, checked):
-    d = root / "measure/lab/results" / name
+    d = root / "lab" / name
     d.mkdir(parents=True)
     (d / "sm_90a.json").write_text(json.dumps({
         "device": "NVIDIA H100 80GB HBM3", "driver": "580.0", "date": "2026-01-01T00:00:00", "reps": 7,
@@ -75,12 +75,12 @@ def test_the_measured_section_is_written_from_a_record_and_rewritten_alike(tmp_p
     before = p.read_text()
     results = CASES[name](gen)
     record(tmp_path, name, results, [(r["name"], True) for r in results[:3]])
-    assert gen.write(tmp_path, "nbabc") == [p]
+    assert gen.write(tmp_path, tmp_path, "nbabc") == [p]
     once = p.read_text()
     assert once.startswith(before[: before.index("MEASURED")])
     assert "MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM abc, driver 580.0; 2026-01-01" in once
     assert "the experiment at\n01234567" in once
-    gen.write(tmp_path, "nbabc")
+    gen.write(tmp_path, tmp_path, "nbabc")
     assert p.read_text() == once
 
 
@@ -88,7 +88,7 @@ def test_the_measured_section_is_written_from_a_record_and_rewritten_alike(tmp_p
 def test_an_absent_record_is_refused(tmp_path, name):
     tree(tmp_path, name)
     with pytest.raises(SystemExit, match="no record"):
-        generator(name).write(tmp_path, "nbabc")
+        generator(name).write(tmp_path, tmp_path, "nbabc")
 
 
 @pytest.mark.parametrize("name", CASES)
@@ -99,7 +99,7 @@ def test_a_row_the_record_lacks_is_refused_by_name(tmp_path, name):
     lost = results.pop(0)["name"]
     record(tmp_path, name, results, [])
     with pytest.raises(SystemExit, match="holds no row"):
-        gen.write(tmp_path, "nbabc")
+        gen.write(tmp_path, tmp_path, "nbabc")
     assert lost
 
 
@@ -110,12 +110,12 @@ def test_a_failed_check_is_refused(tmp_path, name):
     results = CASES[name](gen)
     record(tmp_path, name, results, [(results[0]["name"], False)])
     with pytest.raises(SystemExit, match="failed checks"):
-        gen.write(tmp_path, "nbabc")
+        gen.write(tmp_path, tmp_path, "nbabc")
 
 
 def rolled_record(root, results, checked):
     """`step_rolled`'s page reads two records, one CTA and the full grid, as the lab writes them."""
-    d = root / "measure/lab/results/step_rolled"
+    d = root / "lab/step_rolled"
     d.mkdir(parents=True, exist_ok=True)
     for blocks in (1, 132):
         (d / f"sm_90a.blocks{blocks}.json").write_text(json.dumps({
@@ -135,12 +135,12 @@ def test_step_rolled_page_is_written_from_its_two_records_and_rewritten_alike(tm
     before = p.read_text()
     results = rolled_results(gen)
     rolled_record(tmp_path, results, [(r["name"], True) for r in results])
-    assert gen.write(tmp_path, "nbabc") == [p]
+    assert gen.write(tmp_path, tmp_path, "nbabc") == [p]
     once = p.read_text()
     assert once.startswith(before[: before.index("MEASURED")].rstrip("\n"))
     assert "MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM abc, driver 580.0; 2026-01-01" in once
     assert "1.50 times the 20.00 of STRAIGHT" in once and "a fence a step is free" in once
-    gen.write(tmp_path, "nbabc")
+    gen.write(tmp_path, tmp_path, "nbabc")
     assert p.read_text() == once
 
 
@@ -148,12 +148,12 @@ def test_step_rolled_refuses_an_absent_record_a_missing_row_and_a_failed_check(t
     gen = generator("step_rolled")
     tree(tmp_path, "step_rolled")
     with pytest.raises(SystemExit, match="no record"):
-        gen.write(tmp_path, "nbabc")
+        gen.write(tmp_path, tmp_path, "nbabc")
     results = rolled_results(gen)
     lost = results.pop(0)
     rolled_record(tmp_path, results, [])
     with pytest.raises(SystemExit, match="holds no row"):
-        gen.write(tmp_path, "nbabc")
+        gen.write(tmp_path, tmp_path, "nbabc")
     rolled_record(tmp_path, results + [lost], [(lost["name"], False)])
     with pytest.raises(SystemExit, match="failed checks"):
-        gen.write(tmp_path, "nbabc")
+        gen.write(tmp_path, tmp_path, "nbabc")

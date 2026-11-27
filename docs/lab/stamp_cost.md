@@ -68,4 +68,4 @@ WHAT IT DECIDES.
   alone: on the independent step (29.3 cycles plain, eight operations) the lean stamp adds 8.0 cycles and the
   store alone 17.0.
 
-Record: `measure/lab/results/stamp_cost/sm_90a.json`.
+Record: `data:lab/stamp_cost/sm_90a.json`.

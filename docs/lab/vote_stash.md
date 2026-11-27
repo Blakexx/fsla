@@ -26,4 +26,4 @@ own 84% of the flat stream is this lab's one block of eight warps (issue 10%, DR
 warp's item bits in an 8 KB shared tile, its rows out as 64-byte runs at the item's end: the on-chip footprint a
 second stage needs), packed stash: 6 warps an SM 424.0 (k 4) / 398.1 (k 16), 4 warps with three stages 407.8 / 297.5,
 against 8 warps untiled 441.6 at k 4 -- the tile's footprint costs warps, and four warps cannot hide the walk at k 16.
-Record: `measure/lab/results/vote_stash/sm_86.json`.
+Record: `data:lab/vote_stash/sm_86.json`.

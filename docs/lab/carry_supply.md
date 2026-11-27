@@ -196,4 +196,4 @@ rounds in flight, and a form that skips the copy instructions of a round's dead 
 WHAT IT IS NOT: the fold. No step runs and no accumulator is held; the other roles are stubs; the rows carry no
 scale; the call is one head and its values are the cache's.
 
-Record: `measure/lab/results/carry_supply/sm_90a.json` (the run after the held climb), the five stamped rows' timelines beside it.
+Record: `data:lab/carry_supply/sm_90a.json` (the run after the held climb), the five stamped rows' timelines beside it.

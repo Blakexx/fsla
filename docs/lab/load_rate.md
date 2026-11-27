@@ -48,4 +48,4 @@ WHAT IT SHOWS.
 - [`value_gather`](value_gather.md)'s 33.4 and 8.5 are this experiment's narrow rows at 16 in flight (33.0, 8.5):
   the store into shared memory added nothing, and the number was the ring's depth.
 
-Record: `measure/lab/results/load_rate/sm_90a.json`.
+Record: `data:lab/load_rate/sm_90a.json`.

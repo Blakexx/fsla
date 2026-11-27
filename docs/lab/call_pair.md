@@ -39,4 +39,4 @@ WHAT IT SHOWS.
   second kernel waits for is NOT ISOLATED; it is a sixteenth of what a launch of 16 calls lost, so a launch of one
   call may lose more.
 
-Record: `measure/lab/results/call_pair/sm_90a.json`.
+Record: `data:lab/call_pair/sm_90a.json`.

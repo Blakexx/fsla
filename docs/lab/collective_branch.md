@@ -6,7 +6,7 @@ Mirrors `measure/lab/experiments/collective_branch.cu`, an experiment of the lab
 Eight shuffle chains in a loop, one shuffling warp a scheduler: with no role-dependent control flow the shuffle is
 inline (8.3 cycles a shuffle), and so under a branch on the block index or a kernel argument (8.3); under a branch on
 the warp id (13.6) or with the role setting the trip count (13.9) it is a CALL into a convergence subroutine, ~1.65x.
-Record: `measure/lab/results/collective_branch/sm_86.json`.
+Record: `data:lab/collective_branch/sm_86.json`.
 
 ON HOPPER THE ROW NO LONGER REPRODUCES. The record above is sm_86 (RTX 3080 Ti, 2026-10-04): there the role-dependent
 forms compiled to a CALL into a convergence subroutine. This tree's toolkit (CUDA 13.5, `tools/cuda_toolkit_pin.json`) builds the same source for sm_90a

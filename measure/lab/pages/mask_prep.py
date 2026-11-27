@@ -1,11 +1,11 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/mask_prep.md`, generated from `measure/lab/results/mask_prep/sm_90a.json`.
+"""The measured section of `docs/lab/mask_prep.md`, generated from `data:lab/mask_prep/sm_90a.json`.
 
-`write(root, instance)` reads that record under `root` and rewrites `docs/lab/mask_prep.md` under `root` from its
+`write(root, data, instance)` reads that record in the pinned data `data` and rewrites `docs/lab/mask_prep.md` under `root` from its
 `MEASURED (` line to its end, every figure a record's own and every comparative word chosen by the figures it
 compares. The record is graded against the predictions written before its run, whose basis is the experiment's FIRST
-run, the record `measure/lab/results/mask_prep/sm_90a.first.json`. It REFUSES, naming what is missing, where either
+run, the record `data:lab/mask_prep/sm_90a.first.json`. It REFUSES, naming what is missing, where either
 record is absent, the record lacks one of the experiment's twelve rows or holds a row whose check failed, the record
 is not the one the predictions were written for (`PREDICTED_FOR`), or its misses are not the ones the reading below
 speaks of (`MISSED`): a new run's predictions, their basis and the reading of its misses are written here, the
@@ -57,10 +57,10 @@ issue there. What does bound it is OPEN: the cache's read rate fits (the pass re
 group size), and so do the shared stores of the in-cache rows below, and no run of this experiment separates them."""
 
 
-def _load(root: pathlib.Path, name: str, what: str) -> dict:
-    path = root / "measure/lab/results/mask_prep" / name
+def _load(data: pathlib.Path, name: str, what: str) -> dict:
+    path = data / "lab/mask_prep" / name
     if not path.exists():
-        raise SystemExit(f"lab page: no record at measure/lab/results/mask_prep/{name} -- {what}")
+        raise SystemExit(f"lab page: no record at data:lab/mask_prep/{name} -- {what}")
     d = json.loads(path.read_text())
     failed = [c["variant"] for c in d["checks"] if c["lab"] == "check" and not c["ok"]]
     if failed:
@@ -68,9 +68,9 @@ def _load(root: pathlib.Path, name: str, what: str) -> dict:
     return d
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
-    d = _load(root, "sm_90a.json", "the page's measured section is generated from a run recorded on an sm_90a card")
-    first = _load(root, "sm_90a.first.json", "the experiment's first run, the basis of the predictions the page grades")
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
+    d = _load(data, "sm_90a.json", "the page's measured section is generated from a run recorded on an sm_90a card")
+    first = _load(data, "sm_90a.first.json", "the experiment's first run, the basis of the predictions the page grades")
     if not d["git"]["sha"].startswith(PREDICTED_FOR):
         raise SystemExit(
             f"lab page: the predictions here were written for the run of the experiment at {PREDICTED_FOR}, and the "
@@ -113,7 +113,7 @@ def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
     rate = ISSUED[0] / F[CELLS[0] + GROUPS[0][1] + FIRST_CACHED]
     basis = [
         f"- ONCE-READ: the first run (the experiment at {first['git']['sha'][:8]}, the record",
-        f"  `measure/lab/results/mask_prep/sm_90a.first.json`) measured {was[0]:.2f}, {was[1]:.2f} and {was[2]:.2f} at groups of 1, 4 and 16",
+        f"  `data:lab/mask_prep/sm_90a.first.json`) measured {was[0]:.2f}, {was[1]:.2f} and {was[2]:.2f} at groups of 1, 4 and 16",
         "  digits, and the kernel's memory traffic is the same in both runs: each within about 4% of that.",
         f"- IN CACHE: the compiled walk issues {ISSUED[0]:g}, {ISSUED[1]:g} and {ISSUED[2]:g} warp-instructions a token at groups of 1, 4 and 16",
         f"  digits, priced at {rate:.1f} warp-instructions a cycle an SM: the rate of the first run's row at a group of 1 digit,",
@@ -157,7 +157,7 @@ worth, so at groups of 4 and 16 digits, where a CTA's round is 16 and 64 windows
 and store the same words, counts and totals to the same places. The outputs are the same whichever CTA writes them;
 the rows' times include those shared stores. At a group of one digit each CTA owns its own windows.
 
-Records: `measure/lab/results/mask_prep/sm_90a.json`, and the first run's, `measure/lab/results/mask_prep/sm_90a.first.json`.
+Records: `data:lab/mask_prep/sm_90a.json`, and the first run's, `data:lab/mask_prep/sm_90a.first.json`.
 """
     p = root / "docs/lab/mask_prep.md"
     s = p.read_text()

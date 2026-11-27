@@ -64,5 +64,5 @@ and of the nanosecond timer's low word, the read's value xor-ed into a value the
 WHAT IT DECIDES, the reads: a read of the cycle counter costs 53.0 cycles a step (82.0 against the integer body's 29.0, 2.8 times) and 29.0 ns (44.8 against 15.8); a read of the nanosecond timer costs 53.0 cycles a step (82.0 against the integer body's 29.0, 2.8 times) and 29.0 ns (44.8 against 15.8). THE TWO READS COST THE SAME: the timer's step is 82.0 cycles and 44.8 ns, the counter's 82.0 cycles and 44.8 ns (called the same within 0.5%).
 THE RATE IS ONE FOR ALL THREE BODIES: they run 1830.0 to 1830.0 cycles a microsecond, within 0.0% of one another.
 
-Record: `measure/lab/results/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
+Record: `data:lab/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
 and `sm_90a.unlocked.blocks1.json` (unlocked), these four of five bodies; `sm_90a.reads.blocks1.json` (locked, one CTA, all seven bodies).

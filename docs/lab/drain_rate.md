@@ -32,4 +32,4 @@ WHAT IT SHOWS.
   2.44 times (46.7). A carry's drains sit near the first.
 - Every SM drains at once here: whether the rate is an SM's own or the card's shared between them is NOT separated.
 
-Record: `measure/lab/results/drain_rate/sm_90a.json`.
+Record: `data:lab/drain_rate/sm_90a.json`.

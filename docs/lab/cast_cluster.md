@@ -40,4 +40,4 @@ WHAT IT SHOWS.
   4. The 33 cycles a kilobyte the carry's fill and [`value_cast`](value_cast.md) read as a multiprocessor's rate
   is two tiles' depth, not a ceiling.
 
-Record: `measure/lab/results/cast_cluster/sm_90a.json`.
+Record: `data:lab/cast_cluster/sm_90a.json`.

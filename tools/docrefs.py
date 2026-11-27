@@ -7,6 +7,7 @@
     bazel run //:docrefs -- accept --whole DOC  # the whole of DOC was read: every reference in it is read
     bazel run //:docrefs -- prune              # drop the pins of references no doc makes any more
     bazel run //:docrefs -- init               # pin today's references, unread; refused when a lock exists
+    bazel run //:docrefs -- move OLD NEW       # a target moved: every doc's citation and its pin follow it, the content proven the same
 
 A REFERENCE is a doc's citation of a primitive: `` `tools/ratify.py`'s `main` ``, a dotted name in code font whose
 module is in the tree (`` `fsla.ops.carry.carry_forward` ``), a path in code font, or a link (`[x](build.md#wheels)`).
@@ -51,6 +52,11 @@ PACKAGES = {"fsla": "", "tests": "", "tools": "", "measure": "", "bench": "measu
 PATH_SUFFIXES = (".py", ".md", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".json", ".toml", ".yaml", ".yml", ".sh", ".in",
                  ".cfg", ".txt", ".lock")
 CPP_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
+
+#: A path in code font that starts `data:` names a file of THE PINNED DATA (`@fsla_data`, MODULE.bazel's `environment.data`),
+#: which the check is handed by its BUILD file (`--data`): its root is that file's directory
+DATA_PREFIX = "data:"
+DATA: Path | None = None
 
 POSSESSIVE = re.compile(r"`([^`\s]+)`'s `([A-Za-z_][\w.]*)(?:\(\))?`")
 CODE = re.compile(r"`([^`\n]+)`")
@@ -114,6 +120,14 @@ def _dotted(span: str, files: set[str]) -> Target | None:
         if module:
             return Target(module, ".".join(parts[k:]))
     return Target("/".join(parts) + ".py", "")  #: a name under our packages that is no module: broken
+
+
+def _data(span: str) -> Target | None:
+    """A file or directory of the pinned data (`data:lab/<experiment>/<arch>.json`), a path inside the data repository
+    at the commit MODULE.bazel pins: checked to exist there, never hashed -- the pin is the content's."""
+    if not span.startswith(DATA_PREFIX) or any(c in span for c in " <>*{}$~|,;=()[]…"):
+        return None
+    return Target(span.rstrip("/"))
 
 
 def _path(span: str, doc: str, files: set[str]) -> Target | None:
@@ -183,7 +197,7 @@ def references(doc: str, files: set[str], pinned: frozenset[str] = frozenset()) 
             found.setdefault(Target(_resolve_path(path, files) or path, name), lineno)
             rest = rest.replace(f"`{path}`'s `{name}`", "")
         for span in CODE.findall(rest):
-            target = _dotted(span, files) or _path(span, doc, files)
+            target = _dotted(span, files) or _data(span) or _path(span, doc, files)
             if target:
                 found.setdefault(target, lineno)
                 continue
@@ -336,6 +350,10 @@ def _generated(path: str) -> bool:
 def locate(target: Target, version: Version) -> tuple[str, str] | None:
     """``(source, normalized)``: the target's text as written and as hashed; ``("", "")`` for a target checked only to
     exist; None when it resolves to nothing."""
+    if target.path.startswith(DATA_PREFIX):
+        if DATA is None:
+            raise SystemExit("docrefs: a doc cites the pinned data and no data was handed (`--data`, the graph's @fsla_data)")
+        return ("", "") if (DATA / target.path[len(DATA_PREFIX):]).exists() else None
     if not (target.path in version.files or any(f.startswith(target.path + "/") for f in version.files)):
         return ("", "") if version.commit is None and _generated(target.path) else None
     text = version.text(target.path)
@@ -438,13 +456,50 @@ def _pin(target: Target, digest: str | None, sha: str, doc: str, reviewed: bool)
     return {"doc": doc, "target": str(target), "sha256": digest, "pinned_at": sha, "reviewed": reviewed}
 
 
+def move(spelled: list[str], files: set[str], lock: dict[tuple[str, str], dict]) -> int:
+    """A TARGET MOVED (a file, a directory, every path under a prefix): each doc's citation of `OLD...` becomes `NEW...`
+    and its pin follows, read as it was read -- refused, and nothing written, unless every moved target resolves at its
+    new path to the digest its pin holds, so a move re-pins only content that is the same."""
+    if len(spelled) != 2:
+        raise SystemExit("docrefs move: name the old and the new path (`move measure/lab/results data:lab`)")
+    old, new = spelled
+    moved, refused = {}, []
+    for (doc, target), pin in sorted(lock.items()):
+        if not (target == old or target.startswith(old + "/")):
+            continue
+        after = Target(new + target[len(old):])
+        digest = read(after, files)
+        if digest is None or digest != pin["sha256"]:
+            refused.append(f"  {doc}: `{target}` -> `{after}` reads {digest!r}, its pin {pin['sha256']!r}")
+            continue
+        moved[(doc, target)] = {**pin, "target": str(after)}
+    if refused:
+        print("docrefs move: these targets are not the same content at the new path; nothing is moved:")
+        print("\n".join(refused))
+        return 1
+    texts = {doc: (ROOT / doc).read_text() for doc in docs(files)}
+    for doc, text in texts.items():
+        if old in text:
+            (ROOT / doc).write_text(text.replace(old, new))
+    for key, pin in moved.items():
+        del lock[key]
+        lock[(pin["doc"], pin["target"])] = pin
+    _dump(lock)
+    print(f"docrefs: moved {len(moved)} pin(s) from `{old}` to `{new}`, in {sum(old in t for t in texts.values())} doc(s)")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", nargs="?", default="check", choices=("check", "pending", "accept", "prune", "init"))
-    ap.add_argument("docs", nargs="*", help="accept: the docs whose references were read")
+    ap.add_argument("command", nargs="?", default="check", choices=("check", "pending", "accept", "prune", "init", "move"))
+    ap.add_argument("docs", nargs="*", help="accept: the docs whose references were read; move: OLD NEW")
     ap.add_argument("--whole", action="store_true",
                     help="accept: every reference in the doc was read, not only the new and changed ones")
+    ap.add_argument("--data", type=Path, help="the pinned data's BUILD file (@fsla_data//:root): `data:` citations "
+                                              "resolve in its directory")
     a = ap.parse_intermixed_args()
+    global DATA
+    DATA = a.data.parent if a.data else None
     files = tracked()
     found = survey(files, _lock())
 
@@ -488,6 +543,9 @@ def main() -> int:
             return 1
         print(f"docrefs: accepted {', '.join(a.docs)}")
         return 0
+
+    if a.command == "move":
+        return move(a.docs, files, lock)
 
     if a.command == "prune":
         gone = [k for k in lock if k not in found]

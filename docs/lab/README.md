@@ -1,7 +1,7 @@
 # The lab's experiments
 
 One page per experiment, mirroring `measure/lab/experiments/<name>.cu`: the question it asks of the machine, its
-method, its record (`measure/lab/results/<name>/<sm_XX>.json`) and what it settled. How an experiment is written, run
+method, its record (`data:lab/<name>/<sm_XX>.json`) and what it settled. How an experiment is written, run
 and recorded, and what guards a measurement, is [`docs/internals/tools/lab.md`](../internals/tools/lab.md); a law
 about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s26`](../KERNEL_STANDARDS.md#s26)).
 
@@ -63,7 +63,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 
 ## The toolkit's move to 13.5: records that carry the 13.0 build
 
-Every record under `measure/lab/results/` but `carry_token`'s carries the 13.0 build (`Build cuda_13.0.r13.0/compiler.36260728_0`;
+Every record under `data:lab/` but `carry_token`'s carries the 13.0 build (`Build cuda_13.0.r13.0/compiler.36260728_0`;
 `carry_token`'s two records, of 2026-11-23, carry 13.5); the tree's toolkit
 is 13.5 ([`docs/KERNEL_STANDARDS.md#s26`](../KERNEL_STANDARDS.md#s26): a new toolkit re-runs the experiments its rules cite). A
 `[COMPILER]` or `[MACHINE]` rule's records, by what each needs:

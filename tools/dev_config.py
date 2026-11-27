@@ -75,11 +75,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
                      "machine's files, and an older loader refuses a key it does not declare): a path on PATH"),
     },
     **MACHINE,
-    "store": {
-        "root": Key("path", str(SIBLINGS / "fsla-results"),
-                    "the measurements store: its own git repository, shared by every worktree on the machine "
-                    "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
-    },
     "workspace": {
         "suite": Key("path", str(SIBLINGS / "fsla-bench"),
                      "the fsla-bench checkout whose measurement suite (its root declare.py) runs this tree's declarations"),
@@ -118,6 +113,8 @@ HANDOFFS = {
     "PATH": "the search path bazelisk hands what it runs, the front door's directory first (`check` finds the user's "
             "`bazel` past it)",
     "FSLA_NVCC_THREADS": "host.nvcc_threads, which the front door hands the graph's compile flags (bazel/flags.py)",
+    "FSLA_DATA": "the pinned data's root (@fsla_data, MODULE.bazel's `environment.data`), which the graph hands what reads "
+                 "a stored record (bazel/defs.bzl's `lab_run`, a check's or a tier's `repos`; measure/data.py)",
 }
 
 
@@ -210,7 +207,10 @@ def windows_tool(rel: str) -> Path | None:
 
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `bazel run //:init` writes."""
-    found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}}
+    found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "store": {}, "workspace": {}}
+    #: the measurements store (fsla-devtools' `store.root`, which names no default): the data repository's checkout beside
+    #: the checkouts
+    found["store"]["root"] = str(SIBLINGS / "fsla-results")
     system32 = Path("/mnt/c/Windows/System32")
     if system32.exists():
         found["host"]["windows_system32"] = str(system32)

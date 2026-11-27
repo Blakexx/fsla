@@ -50,8 +50,8 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The lock directory, scratch directory and GPU lock directory are writable.
 - This checkout's own scratch directory (`host.scratch`, one folder a checkout) is printed, green by itself.
 - The clock is set, or the host is marked unlocked.
-- The worktrees folder exists; `store.root` is a fsla-results checkout, and `fsla_results` and `fsla_devtools` import
-  from `store.root` and `workspace.devtools` in the checkout's own venv.
+- The worktrees folder exists; `store.root` is a checkout of the data repository (fsla-results: `records/`, `lab/`),
+  and `fsla_devtools` imports from `workspace.devtools` in the checkout's own venv.
 
 <a id="action-hooks"></a>
 **The action-hook dispatcher** (`.claude/hooks/repo_hooks.py`; KERNEL_STANDARDS `#every-rule-has-a-row`, the `hook` mechanism; the hooks, the manifest and what the dispatcher trusts: [`lint.md`](lint.md#action-hooks)). A rule enforced by a hook holds only in a session that fires it, and a session may start in any checkout, so `init` installs the one generic dispatcher at the user level and `check` has a row that it is current, wired and rooted. The roots it may run code under are the machine-dependent value `workspace.hook_roots` (null: this repository's checkouts and `workspace.worktrees`); `~/.claude/repo_hooks_roots.json` is derived from it on every `init` and never edited (KERNEL_STANDARDS §23.1: one location). `init` does nothing where `~/.claude` is absent (the devbox image).
@@ -68,13 +68,13 @@ does it write `clock.json`.
 **`dev-env`** is `bazel run //:dev_env`'s implementation, which passes the checkout and the graph's environment
 (its store venv, interpreter and uv). It writes the checkout's venv, `venv-<checkout>` beside it, on the environment's
 interpreter. Its site holds five `.pth` files, read in name order: the checkout's root (`aa_fsla_<name>.pth`), the
-co-developed sibling checkouts (`fsla_devtools.pth`, `fsla_results.pth`, `LINKED`), the environment's site-packages
+graph's output (`ab_fsla_<name>_built.pth`), the co-developed sibling checkout (`fsla_devtools.pth`, `LINKED`), the environment's site-packages
 (`zz_fsla_env.pth`, the venv's marker) and the bytecode prefix (`zz_fsla_pycache.pth`: `sys.pycache_prefix` under
 `host.build_cache`, so no `__pycache__` lands in the checkout). An activated venv is a developer's shell, so its bin
 carries every command the devbox has: the environment's (ruff, pytest, ast-grep, clangd, py-spy, ...), run by the
 venv's interpreter so they import what its site names, and the devbox's pinned tools (hyperfine, difft, ncu, nsys),
 linked from their folders under `host.tools_dir`, one install a machine whichever checkout links it. It refuses
-until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `fsla`, `fsla_devtools`, `fsla_results` and `torch` each import from
+until init has installed them. It replaces only a venv it wrote, wires the checkout's commit gate to run from it, and refuses unless `fsla`, `fsla_devtools` and `torch` each import from
 where those files say.
 
 **`worktree <name> <sha>`** creates the worktree in `workspace.worktrees`, then runs `bazel run //:dev_env` and
@@ -88,7 +88,7 @@ Docker loads it (`//:image_tarball`), tagged `fsla-devbox:<digest[:12]>`.
 - `check` (`bazel run //:container_check`) is the clean room: `CONTAINER_LOOP` run step by step by `docker exec` in a
   container on fresh volumes of its own, which clones the checkouts from their git directories mounted read-only
   (`CLONED`, this checkout with its staged change), each step timed; `COLD_START` names the steps a fresh machine pays
-  before it can work. It stores the result through `fsla_results` at `environment`, one record per image digest, and
+  before it can work. It stores the result through `fsla_devtools.results` at `environment`, one record per image digest, and
   a green check removes its volumes; the digest the tree names is the graph's (`bazel run //:devbox_image_update` writes
   `tools/devbox_image.json`, `//:devbox_image` holds it).
 - `compose` (`bazel run //:container_compose`) writes `.devcontainer/compose.local.yaml`: the image's tag, the
@@ -98,13 +98,13 @@ Docker loads it (`//:image_tarball`), tagged `fsla-devbox:<digest[:12]>`.
   digest (that the name is the image the graph builds is `//:devbox_image`'s). A commit that leaves the image alone needs no
   Docker.
 
-**The measurements store** (`store.root`, a fsla-results checkout) is importable from every interpreter that runs
-here: `init` links `fsla_results` into each checkout's own venv (it names the environment's site-packages as a plain
-path, which reads none of its `.pth` files), by a one-line `fsla_results.pth`, and `dev-env` links each venv it
-writes. The store's own command line is `bazel run //:results`
-(`commit -m` commits the records).
+**The measurements store** (`store.root`, a checkout of the data repository, fsla-results, which `init` names: the
+sibling `fsla-results`) is data, which nothing imports; its code is fsla-devtools' (`fsla_devtools.results`), which
+`init` links into each checkout's own venv (it names the environment's site-packages as a plain path, which reads none
+of its `.pth` files) by a one-line `fsla_devtools.pth`, and `dev-env` links each venv it writes. The store's own command
+line is `bazel run //:results` (`commit -m` commits the records).
 
-`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container reads `fsla_results`, which it links; the host's own python carries nothing of this project. The sibling repositories gate through their own graphs (`bazel test //:gate`, fsla-devtools' commit gate), from no venv of this tree's.
+`init`, `check`, `show`, `get`, `clock`, `dev-env` and `worktree` run from whichever python starts them (`dev-env`'s is the environment's, through its run target); `container` re-executes itself under the checkout's own venv (`bazel run //:dev_env`), because the container check stores through `fsla_devtools.results`, which it links; the host's own python carries nothing of this project. The sibling repositories gate through their own graphs (`bazel test //:gate`, fsla-devtools' commit gate), from no venv of this tree's.
 
 **`get`** prints one value, for a person or a shell.
 

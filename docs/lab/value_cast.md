@@ -32,4 +32,4 @@ shares no sum's ([`cluster_sum`](cluster_sum.md)) and no state's ([`state_move`]
 would spread the cluster's barrier over more bytes and bring the multicast towards the own copy, never under it by
 this form; chunks past 8 KB are UNMEASURED.
 
-Record: `measure/lab/results/value_cast/sm_90a.json`.
+Record: `data:lab/value_cast/sm_90a.json`.

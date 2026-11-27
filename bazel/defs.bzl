@@ -649,39 +649,45 @@ def tool_run(**kwargs):
 
 _LAB_RUN = """\
 #!/bin/bash
-# a tool that reads compiled code through warpline, as a run target (bazel/defs.bzl's lab_run): {tool} in the checkout, on the checkout's own venv, handed
-# the directory that holds the `warpline` package (the checker, and the library that reads the traced rows) by its resolved path (the runfiles' links do not
-# outlive the run)
+# a tool that reads compiled code through warpline or the lab's records, as a run target (bazel/defs.bzl's lab_run): {tool} in the checkout, on the
+# checkout's own venv, handed the pinned data's root (`FSLA_DATA`, measure/data.py) and the directory that holds the `warpline` package (the checker, and
+# the library that reads the traced rows), each by its resolved path (the runfiles' links do not outlive the run)
 set -euo pipefail
 checkout="${{BUILD_WORKSPACE_DIRECTORY:?run through bazel run}}"
-package="$(readlink -f {package})"
-venv="$(git -C "$checkout" config --get fsla.venv || true)"
+data="$(dirname "$(readlink -f {data})")"
+{package}venv="$(git -C "$checkout" config --get fsla.venv || true)"
 if [ ! -x "$venv/bin/python" ]; then
   echo "$checkout has no venv of its own (git config fsla.venv)" >&2
   exit 1
 fi
 cd "$checkout"
-export FSLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"
-exec "$venv/bin/python" {tool} "$@"
+export FSLA_DATA="$data"
+{warpline}exec "$venv/bin/python" {tool} "$@"
 """
 
 def _lab_run_impl(ctx):
-    package, files = warpline_root(ctx, ctx.attr.library)
+    package, files = warpline_root(ctx, ctx.attr.library) if ctx.attr.library else (None, [])
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
     what = "-m " + shell.quote(ctx.attr.module) if ctx.attr.module else shell.quote(ctx.attr.tool)
-    ctx.actions.write(script, _LAB_RUN.format(tool = what, package = shell.quote(package.short_path)), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files))]
+    ctx.actions.write(script, _LAB_RUN.format(
+        tool = what,
+        data = shell.quote(ctx.file.data.short_path),
+        package = 'package="$(readlink -f %s)"\n' % shell.quote(package.short_path) if package else "",
+        warpline = 'export FSLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"\n' if package else "",
+    ), is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(files = files + [ctx.file.data]))]
 
 lab_run = rule(
     implementation = _lab_run_impl,
     executable = True,
     attrs = {
-        "library": attr.label(mandatory = True, doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`)"),
-        "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker"),
+        "library": attr.label(doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`); none for a tool that reads records only"),
+        "data": attr.label(default = "@fsla_data//:root", allow_single_file = True, doc = "the pinned data, by its root's BUILD file (MODULE.bazel's `environment.data`)"),
+        "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker, or the lab's records"),
         "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, whose instruments read compiled code)"),
     },
-    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate; or `module`: the measurements) run by `bazel run` in the checkout, handed the directory of " +
-          "warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
+    doc = "The lab (`tools/lab.py`, or `tool`: the SASS gate, the floor model; or `module`: the measurements) run by `bazel run` in the checkout, handed the " +
+          "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 
 def tree_part(parts = {}):

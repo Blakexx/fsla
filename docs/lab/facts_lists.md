@@ -65,4 +65,4 @@ WHAT IT SHOWS.
   copies at both ends, and its floor.
 - ONE CELL WIDTH, two densities, live digits spread evenly: a dense level and a clustered one are unmeasured.
 
-Record: `measure/lab/results/facts_lists/sm_90a.json`.
+Record: `data:lab/facts_lists/sm_90a.json`.

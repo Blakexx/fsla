@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The measured section of `docs/lab/clock_time.md`, generated from the five records in `measure/lab/results/clock_time/`.
+"""The measured section of `docs/lab/clock_time.md`, generated from the five records in `data:lab/clock_time/`.
 
-`write(root, instance)` reads `sm_90a.json` and `sm_90a.blocks1.json` (the clock locked: the lab's sessions lock it)
+`write(root, data, instance)` reads, in the pinned data `data`, `sm_90a.json` and `sm_90a.blocks1.json` (the clock locked: the lab's sessions lock it)
 and `sm_90a.unlocked.json` and `sm_90a.unlocked.blocks1.json` (the clock as the card left it) -- the four of five bodies,
 one commit -- and, read apart, `sm_90a.reads.blocks1.json` (the clock locked, one CTA, all seven bodies: the integer body
 and the two with a read of a clock a step, a later commit) under `root` and rewrites
@@ -27,9 +27,9 @@ FILES = ("sm_90a.json", "sm_90a.blocks1.json", "sm_90a.unlocked.json", "sm_90a.u
 READS = "sm_90a.reads.blocks1.json"
 
 
-def write(root: pathlib.Path, instance: str) -> list[pathlib.Path]:
+def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
     inst = instance
-    folder = root / "measure/lab/results/clock_time"
+    folder = data / "lab/clock_time"
     recs = {f: json.loads((folder / f).read_text()) for f in FILES}
     rows = {f: Record({r["name"]: r["median"] for r in d["results"]}) for f, d in recs.items()}
     reads = json.loads((folder / READS).read_text())
@@ -233,7 +233,7 @@ WHAT IT DECIDES.
 - A STEP IN REAL TIME, locked against unlocked: {step_line(WGMMA, "a wgmma step")}; {step_line(INT, "an integer step")}.
 
 {reads_text}
-Record: `measure/lab/results/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
+Record: `data:lab/clock_time/sm_90a.json` and `sm_90a.blocks1.json` (the clock locked) and `sm_90a.unlocked.json`
 and `sm_90a.unlocked.blocks1.json` (unlocked), these four of five bodies; `sm_90a.reads.blocks1.json` (locked, one CTA, all seven bodies).
 """
     p = root / "docs/lab/clock_time.md"

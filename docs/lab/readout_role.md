@@ -32,4 +32,4 @@ WHAT IT SHOWS.
   readout's steps and its panel's stores included, where [`drain_role`](drain_role.md)'s two panels merged by the
   drain read 36.2, 21.1 and 11.7. With four it is a fifth over the line's own 9.8; with two it is three fifths over it.
 
-Record: `measure/lab/results/readout_role/sm_90a.json`.
+Record: `data:lab/readout_role/sm_90a.json`.

@@ -44,4 +44,4 @@ final kernel").
 WHAT IT IS NOT: a floor for the built kernel -- there a role arrives while the one that waits on it is still at
 work, and the waits overlap that work.
 
-Record: `measure/lab/results/carry_skeleton/sm_90a.json`.
+Record: `data:lab/carry_skeleton/sm_90a.json`.

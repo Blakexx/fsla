@@ -55,4 +55,4 @@ WHAT IT SHOWS.
 - A PLAIN STORE OF THE SAME LINE IS 1.8 CYCLES AND DOES NOT SLOW WITH THE WARPS -- of lines it rewrites, which
   its cache holds. That is no store's cost to a line nothing has touched; [`slot_sum`](slot_sum.md) asks that.
 
-Record: `measure/lab/results/add_rate/sm_90a.json`.
+Record: `data:lab/add_rate/sm_90a.json`.

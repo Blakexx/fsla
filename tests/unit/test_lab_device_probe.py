@@ -44,7 +44,7 @@ def tree(tmp_path, card):
     """A root holding what `write` reads (the rates, the record, the page) and the registry to refuse into."""
     (tmp_path / "measure").mkdir(parents=True)
     shutil.copy(ROOT / RATES, tmp_path / RATES)
-    d = tmp_path / "measure/lab/results/device_probe"
+    d = tmp_path / "lab/device_probe"
     d.mkdir(parents=True)
     (d / "sm_90a.json").write_text(json.dumps(record(card)))
     (tmp_path / "docs/lab").mkdir(parents=True)
@@ -67,7 +67,7 @@ def test_each_model_gets_its_own_candidate_id_and_every_device_fact_with_its_row
                 "max_threads_per_sm": card["threads"], "sm_count": card["sms"], "l2_bytes": card["l2"]}
     for fact, value in expected.items():
         assert part["facts"][fact]["value"] == value
-        assert fact in part["facts"][fact]["measured_by"] and "measure/lab/results/device_probe/sm_90a.json" in part["facts"][fact]["measured_by"]
+        assert fact in part["facts"][fact]["measured_by"] and "lab/device_probe/sm_90a.json" in part["facts"][fact]["measured_by"]
     assert set(part["facts"]) | set(part["unestablished"]) == device_facts
     for fact, record_ in part["facts"].items():
         assert sum(k in record_ for k in registry.PROVENANCE) == 1
@@ -100,7 +100,7 @@ def test_a_failed_check_and_an_absent_row_are_refused():
 
 def test_write_puts_the_candidate_beside_the_parts_and_the_registry_refuses_it_until_renamed(tmp_path):
     root = tree(tmp_path, UNKNOWN)
-    written = generator().write(root, "nb123")
+    written = generator().write(root, root, "nb123")
     candidate = root / "hardware/parts/device/cc860_nvidia_geforce_rtx_3090.candidate.json"
     assert candidate in written and json.loads(candidate.read_text())["facts"]["sm_count"]["value"] == 82
     assert "MEASURED (" in (root / "docs/lab/device_probe.md").read_text() and "cc860_nvidia_geforce_rtx_3090" in (root / "docs/lab/device_probe.md").read_text()

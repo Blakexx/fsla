@@ -192,4 +192,4 @@ WHAT IT SHOWS.
   unmeasured; the pass beside a running carry is unmeasured (the carry filling from a stream the host laid is
   [`carry_window`](carry_window.md)'s); the same kernels on another rented card are not compared.
 
-Record: `measure/lab/results/gather_pass/sm_90a.json`.
+Record: `data:lab/gather_pass/sm_90a.json`.
