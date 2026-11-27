@@ -42,6 +42,7 @@ sanitizer row, a budget line, a phase ledger, an overlap row — are declared in
 | **M-c** | **Skip-induced wave drift.** Boxes that skip windows race ahead of busy ones and de-phase the CTAs' shared working set in L2; measure on a built carry before designing a fix (a grid-wide window edge, a shared liveness scan, or a skip that keeps its stream position). | [`ARCHITECTURE.md` §6.3](ARCHITECTURE.md#63-the-carry--the-inter-window-term) |
 | **M-d** | **The class-drift check.** No gate asserts that a two-branches-agree class's declared members still cover the code's branches. | [`testing.md`](testing.md) |
 | **M-e** | **Spec requirement IDs.** Every normative clause an immutable `[SPEC-...]` ID, tests citing IDs only, CI checking each cited ID exists once and pinning its clause's content hash. | — |
+| **M-f** | **The clock on the rented card.** KERNEL_STANDARDS §32.7 compares two builds only in a clock-locked session; every session target claims `unlocked` (the container gets no clock reader), so the verdict reads unlocked sessions and nothing refuses them. Open: lock the clock on the VM and hand the container a reader that verifies it, or keep unlocked sessions out of verdicts. | [`measurement.md`](measurement.md#comparing-two-builds) |
 
 ## The surface
 

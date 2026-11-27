@@ -2217,6 +2217,7 @@
   {"doc": "docs/open-work.md", "pinned_at": "0fb5eb86f74c", "reviewed": true, "sha256": "", "target": "docs/lab/mask_prepare_time.md"},
   {"doc": "docs/open-work.md", "pinned_at": "d8dd0936f7c2", "reviewed": true, "sha256": "", "target": "docs/lab/reg_trade.md"},
   {"doc": "docs/open-work.md", "pinned_at": "fbb38e2e3e0f", "reviewed": true, "sha256": "", "target": "docs/measurement.md"},
+  {"doc": "docs/open-work.md", "pinned_at": "078bbd8d5bab", "reviewed": true, "sha256": "af551480e301ae46", "target": "docs/measurement.md#comparing-two-builds"},
   {"doc": "docs/open-work.md", "pinned_at": "fbb38e2e3e0f", "reviewed": true, "sha256": "", "target": "docs/testing.md"},
   {"doc": "docs/open-work.md", "pinned_at": "e379d33489e1", "reviewed": true, "sha256": "9a35d7b63ba2203a", "target": "fsla/__init__.py::dense_state"},
   {"doc": "docs/open-work.md", "pinned_at": "a91be1e98087", "reviewed": true, "sha256": "573a0755a304c531", "target": "fsla/__init__.py::density_of_masks"},
