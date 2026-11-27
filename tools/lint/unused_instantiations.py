@@ -7,7 +7,7 @@ graph compiled: its mangled name is among the entry functions `ptxas -v` reporte
 a template no unit instantiates is the closed world leaking, and that is the gating finding.
 
 SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. `ptxas -v` reports ENTRY FUNCTIONS ONLY. A
-`__device__` helper (`ops.cuh`'s `stage_run`, `geom.cuh`'s `geom_read_index`, ...) is normally `__forceinline__` and
+`__device__` helper (`ops.cuh`'s `stage_run`, ...) is normally `__forceinline__` and
 inlined into every kernel that calls it; it has NO standalone symbol in a report regardless of whether it is used.
 Checking `__device__` templates the same way as `__global__` ones was tried first and produced 65 findings out of 81
 candidates, essentially all of them live, frequently-called helpers this codebase already declares as "wrapped once, call

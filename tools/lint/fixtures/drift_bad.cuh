@@ -28,9 +28,4 @@ inline void admit_descriptor(int depth, bool is_decode) {
   if (is_decode && depth > 2) return;
 }
 
-__device__ void carve() {
-  const auto set = sub_boxes(2, 256, 8);
-  (void)set;
-}
-
 }  // namespace fixture
