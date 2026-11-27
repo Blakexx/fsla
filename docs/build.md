@@ -29,8 +29,8 @@ bazel run //:wheels                                    # the two wheels of a cle
 
 A build's PARAMETERS are the graph's settings -- `--//:archs` and `--//:contract`
 ([`build-graph.md`](build-graph.md#compile)) -- and everything about the MACHINE is the dev config.
-`host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets: beyond the target count it buys
-nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
+`nvcc --threads` is each unit's number of `-gencode` targets, set by the compile rule (`bazel/cuda.bzl`), never by the
+machine: beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. Every build runs under the
 machine-wide host budget, which the front door takes for it ([`build-graph.md`](build-graph.md#front-door)); any other
 CPU-heavy command runs under the same pool with `python -m fsla_devtools.locks.host [--exclusive] -- <cmd>`.
 
