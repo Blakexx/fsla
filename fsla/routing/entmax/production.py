@@ -211,7 +211,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
     rows at stream ``(b * H_w + w) * G + g`` -- the public ``[B, T, H, ·]`` as a permute -- and each solve of head ``g``
     writes the strided view of its rows (:func:`_head`), whose streams are the logits' ``b * H_w + w``. A level's write
     solve writes the first tied head's rows as its second output; a further tied head's rows are copied from the write
-    side's, and the backward hands the write solve the sum of the tied heads' incoming gradients.
+    side's, and the backward hands the write solve the write side's and every tied head's incoming gradients, as the
+    two cotangents it adds (their sum's two terms where there are more than two, :func:`_two_terms`).
     """
 
     @staticmethod
@@ -311,8 +312,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
             write_target = d_logits[..., layout.write_columns(index)]
             tied = layout.tied_heads(index)
             if tied:
-                #: the tied solve's form: the first tied head's rows and gradient first, the write side's second -- the
-                #: further tied heads' gradients summed into the second
+                #: the tied solve's form: the first tied head's rows; its gradient first and the write side's second,
+                #: or with several tied heads the two terms of every cotangent's sum (`_two_terms`)
                 first = tied[0]
                 d_first, d_second = _head(d_read, G, first), d_write
                 if len(tied) > 1:
