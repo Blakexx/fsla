@@ -254,6 +254,7 @@
   {"doc": "docs/api.md", "pinned_at": "e7b06cc8e87c", "reviewed": true, "sha256": "b230c161c24c6cff", "target": "docs/internals/common/plan/segments.md#step"},
   {"doc": "docs/api.md", "pinned_at": "3360bacd82eb", "reviewed": true, "sha256": "", "target": "docs/internals/common/state_page.md"},
   {"doc": "docs/api.md", "pinned_at": "e379d33489e1", "reviewed": true, "sha256": "ce42c5a43d925b24", "target": "docs/internals/decode/decode.md#capture"},
+  {"doc": "docs/api.md", "pinned_at": "cfb8cae42fc5", "reviewed": true, "sha256": "6c44d5f931e22d4b", "target": "docs/internals/entmax/factor.md#read-heads"},
   {"doc": "docs/api.md", "pinned_at": "41db5dbcb26e", "reviewed": true, "sha256": "468b3b3f623bde04", "target": "docs/internals/facts/liveness_contract.md#alignment"},
   {"doc": "docs/api.md", "pinned_at": "b6465d84ec22", "reviewed": true, "sha256": "fc1cddd06eec0145", "target": "docs/internals/hardware/registry.md#the-owed-folder"},
   {"doc": "docs/api.md", "pinned_at": "65a77fa58f2c", "reviewed": true, "sha256": "", "target": "docs/internals/padding.md"},

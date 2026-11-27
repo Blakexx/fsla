@@ -347,7 +347,7 @@ per-side or per-head structure is not declared).
 **Every activation is nonnegative** (the registry's `nonnegative` column, `fsla/routing/activations.py`): the v1 routing is nonnegative and
 its readout normalized, and a row that is not is refused at the declaration. Construction refuses, naming the reason: an activation with no
 registry row, one whose row is not nonnegative, one the producer does not solve, a read tuple whose length is not the topology's depth, and a
-width below 2. A level whose untied read entry and write side both make exact zeros is allowed: two solves, two supports, and nothing makes them overlap, where a tied entry is one solve and one support.
+width below 2. A level whose untied read entry and write side both make exact zeros is allowed: two solves, two supports, and nothing makes them overlap, where a tied entry is one solve and one support. One accepted declaration is refused later, at the solve: a level SEVERAL read heads tie has no gradient built, so a call on the kernels that requires one is refused by name ([`internals/entmax/factor.md`](internals/entmax/factor.md#read-heads)); its forward without a gradient runs.
 The layer refuses a read count that is neither its `G` nor one, naming both (`Routing.layout`).
 
 Depth, leaf count `N`, the packed router width and the per-level logit offsets are all DERIVED from the declaration

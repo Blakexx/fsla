@@ -50,9 +50,10 @@ class Routing:
         bias: a learned bias on the routing projection.
 
     Construction validates the whole declaration -- every activation a registry row, nonnegative and one the producer
-    solves, every read tuple the topology's depth and a width of at least 2 -- so an unbuildable model fails here and
-    never inside a forward. A level whose untied read and whose write both make exact zeros is two solves with two
-    supports, which nothing makes overlap; it is allowed. The read
+    solves, every read tuple the topology's depth and a width of at least 2. A level whose untied read and whose
+    write both make exact zeros is two solves with two supports, which nothing makes overlap; it is allowed. ONE
+    declaration it accepts fails later: the gradient of a level several read heads tie is not built, and the solve
+    refuses a call that requires it (:func:`fsla.routing.entmax.production.production_routing_levels`). The read
     count against the layer's group is :meth:`layout`'s.
     """
 
