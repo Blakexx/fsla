@@ -19,7 +19,7 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
    whose samples spread past 5%.
 3. It STORES the record through the results store (`fsla_devtools.results`) at its run target's label, in the store's checkout (the
    dev config's `store.root`, the data repository, never this tree): a sample of the record its question keys
-   (`measure/data.py`'s `lab_semantics`: the experiment, the architecture, the kind `run`, the grid `--blocks` held it to),
+   (`measure/data.py`'s `lab_semantics`: the experiment, the architecture, the kind `run`, the grid `--blocks` held it to, and a named condition `--variant` the person running it states -- `unlocked`, the clock not locked: the lab reads no condition itself),
    its output the run's body — the device, driver, toolkit, commit, the results with their samples, and each kernel's
    registers and leading opcodes — and, for an experiment with traced rows, its PARTS `trace/row<i>.json`, a warpline record
    a traced row, each checked by warpline ([`#trace`](#trace)); its provenance the workspace's stamp (the run target's
@@ -106,7 +106,7 @@ by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 SourceCounters dumps a rented box made of `lab pack`'s binary (`ncu --section SourceCounters --page source
 --print-source sass --csv`, a kernel's launch after the first `--skip` of them, one file a kernel named
 `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest, the launch and each kernel's file),
-mapped here to the phases through that same binary; `--per` divides every count by the launch's CTA-windows. Each
+mapped here to the phases through that same binary, its record a sample at `@fsla//tools:lab` (the kind `ledger`, which `lab_record` does not read: `ledger --packed` reads its dumps); `--per` divides every count by the launch's CTA-windows. Each
 phase reports its executed instructions, its shared-memory wavefronts, those over the conflict-free count (bank
 conflicts), its share of the stall samples and, for the phases holding the most, their three largest stall reasons;
 then the source lines issuing the shared wavefronts. `ledger-dumps --skip N` profiles each kernel's launch after its

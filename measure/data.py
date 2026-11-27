@@ -21,7 +21,8 @@ from fsla_devtools.results import Store, key, label_path
 VARIABLE = "FSLA_DATA"
 #: how a doc names a file of the pinned data: `data:records/<label path>/<run>/output.json`
 PREFIX = "data:"
-#: what a lab record is of: a timed run (`lab run`), the profiler's counters (`lab ncu`), a carried ledger's dumps
+#: what a lab record is of: a timed run (`lab run`) and the profiler's counters (`lab ncu`), at the experiment's run
+#: target's label; a carried ledger's dumps, at `@fsla//tools:lab` (the carried path's, which `lab_record` does not read)
 KINDS = ("run", "counters", "ledger")
 
 

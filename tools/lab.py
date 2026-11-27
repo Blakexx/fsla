@@ -937,7 +937,7 @@ def traces_of(device: dict) -> list[str]:
 
 
 def store_record(name: str, arch: str, body: dict, *, kind: str, provenance: dict, blocks: int = 0, traces: list[str] = (),
-          no_store: bool = False, store_root: Path | None = None) -> str:
+          no_store: bool = False, store_root: Path | None = None, variant: str | None = None) -> str:
     """THE RECORD STORED (`fsla_devtools.results`): a sample at the run target's own label, its semantics `lab_semantics`,
     its body the output and each traced row a part (`trace/row<i>.json`); in the store's checkout (`store.root`),
     `store_root`, or under `--no-store` the scratch store. Returns the sample's output as a doc cites it once a pushed
@@ -956,7 +956,8 @@ def store_record(name: str, arch: str, body: dict, *, kind: str, provenance: dic
         parts[f"trace/row{i}.json"].write_text(text)
     root = scratch_store() / "records" if no_store else store_root
     lab = Store(HANDED["label"], root)
-    sample = lab.put(data.lab_semantics(name, arch, kind=kind, blocks=blocks), output_file=output, parts=parts or None,
+    sample = lab.put(data.lab_semantics(name, arch, kind=kind, blocks=blocks, variant=variant), output_file=output,
+                     parts=parts or None,
                      provenance={"run": run, **provenance}, run=run)
     shutil.rmtree(staged, ignore_errors=True)
     print(f"lab: stored {lab.label} sample {sample['run']}: {lab.output(sample)}"
@@ -1080,7 +1081,7 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, built: dic
         print(f"lab: recorded {keep(name, arch, body, traces_of(device), into, opts.blocks)}")
         return 0
     store_record(name, arch, body, kind="run", blocks=opts.blocks, traces=traces_of(device), no_store=opts.no_store,
-                 store_root=opts.store_root,
+                 store_root=opts.store_root, variant=opts.variant,
                  provenance={"checkouts": {"fsla": workspace_stamp()}, "device": body["device"], "driver": body["driver"],
                              "toolkit": body["toolkit"], "binary": hashlib.sha256(binary.read_bytes()).hexdigest(),
                              "inputs": digests})
@@ -1563,6 +1564,9 @@ def main() -> int:
         timed.add_argument("--timeout", type=int, default=900, help="seconds before the experiment is killed")
         timed.add_argument("--blocks", type=int, default=0,
                            help="the grid held to N CTAs, a lighter load: a record of its own")
+        timed.add_argument("--variant", help="a named condition the run is held to (`unlocked`: the clock not locked), "
+                                              "a record of its own; the lab does not read the condition, the person "
+                                              "running it names it")
         timed.add_argument("--no-counters", metavar="HOST",
                            help="this host grants no profiler counters: name it, and the record carries the "
                                 "exception in their place (a box that holds the pinned profiler reads them)")
