@@ -1,7 +1,7 @@
 """fsla's declarations (`declare.py`), as fsla-bench's root declares them with a timing server: this checkout's build,
 machine facts, diff sides and timing registrations, and no instrument (fsla records its instruments with Bazel's own
-targets, `//measure:store_oracle_tier`); a layer arm is registered per construction on the cells declared for it, and a
-decode step only on a cell that decodes, beside the clock reader; every declared code digest names files that exist;
+targets, `//measure:store_oracle_tier`); a layer arm is registered once, on every layer cell it takes, and a decode step
+only on a cell that decodes, beside the clock reader; every declared code digest names files that exist;
 loading the file imports neither fsla nor torch. No GPU: nothing is built."""
 from __future__ import annotations
 
@@ -34,13 +34,16 @@ def test_the_checkout_declares_its_build_facts_sides_and_timing_and_no_instrumen
     assert got["targets"]["fsla/binary"].holds == {} and not got["targets"]["fsla/binary"].cache
 
 
-def test_a_layer_arm_is_registered_per_construction_on_its_cells():
+def test_a_layer_arm_is_registered_once_on_every_layer_cell_it_takes():
     targets = declared()["targets"]
-    assert {"fsla/entmax_solve@layer=chunk-p73-pinned", "fsla/entmax_solve@layer=chunk-decode-w16",
-            "fsla/decode_step@layer=chunk-decode-w16", "fsla/clock"} <= set(targets)
-    assert "fsla/decode_step@layer=chunk-p73-pinned" not in targets
-    assert targets["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {
-        "cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
+    assert {"fsla/entmax_solve", "fsla/layer_prefill", "fsla/layer_op", "fsla/decode_step", "fsla/clock"} <= set(targets)
+    decoding = {t.params["cell"] for t in targets["fsla/decode_step"].inputs}
+    solving = {t.params["cell"] for t in targets["fsla/entmax_solve"].inputs}
+    #: the decode step is registered on the cells whose decode steps are not none, a fact of the cell
+    assert decoding == {"layer-alt-entmax1.5-16x16-T128-h2-dec8-fp32", "layer-dense-softmax-256-T128-h2-dec8-fp32"}
+    assert decoding < solving and "layer-alt-entmax1.5-64x64-T2048" in solving
+    assert targets["cells/layer-alt-entmax1.5-16x16-T128-h2-dec8-fp32"].params == {
+        "cell": "layer-alt-entmax1.5-16x16-T128-h2-dec8-fp32"}
 
 
 def test_every_declared_code_digest_names_files_that_exist():
@@ -80,15 +83,15 @@ def test_a_backward_surface_admits_only_the_cells_under_the_retained_state_budge
     """The rule is STATED, so the excluded cells are a consequence a reader can compute and not a run that died: the
     oracle side retains the fp64 state at every token and its peak is measured at over nine times that."""
     from fsla_devtools.build.declare import load
-    from fsla_devtools.cells import central
+    from fsla_devtools.cells import cell, central
 
     d = load(ROOT / "declare.py")
     admitted = d["surface_cells"]("oracle")
     #: both of the oracle tier, so the budget alone parts them: 16 MiB of state admitted, 520 MiB refused
-    assert admitted and "one-box-short" in admitted and "flat-small-carried" not in admitted
-    for name, record in central().cells.items():
-        if d["kind"](name) == "carry" and record["params"].get("tier") == "oracle":
-            assert (name in admitted) == (d["retained_state_bytes"](record) < d["RETAINED_STATE_BUDGET"])
+    assert admitted and "carry-alt-k4-16x16-T64" in admitted and "carry-dense-64x64-T128-carried" not in admitted
+    for name in central().cells:
+        if cell(name).kind == "carry" and cell(name).tier == "oracle":
+            assert (name in admitted) == (d["retained_state_bytes"](name) < d["RETAINED_STATE_BUDGET"])
 
 
 def test_loading_the_declarations_imports_neither_fsla_nor_torch():

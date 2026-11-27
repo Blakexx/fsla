@@ -79,7 +79,7 @@ def test_the_op_hands_back_the_fp64_state(spec):
 def test_a_chained_call_equals_one_long_call():
     """THE STATE IS THE WHOLE CONTRACT of a chunked prefill: two calls over the halves, one state between them, give
     the long call's readout and final state, each against the oracle's one long run."""
-    spec = by_name("flagship-alt-k4-L4096")
+    spec = by_name("carry-alt-k4-256x256-T4096")
     half = spec.tokens // 2
     state = fsla.dense_state()
     ys = [call(operands(spec, part), state=state)[0] for part in (slice(0, half), slice(half, spec.tokens))]
@@ -95,7 +95,7 @@ def test_a_chained_call_equals_one_long_call():
 def test_the_per_slot_rule_fails_what_a_global_max_passes():
     """The rule the cells are graded in can fail (docs/testing.md): a small slot moved by a hundredth of the readout's
     largest magnitude passes a global max-relative test at 2% and fails per slot."""
-    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("carry-alt-k4-256x256-T1024"))
     want = oracle(routes, values)
     planted = want.y.clone()
     i = int(torch.argmin(want.y.abs().flatten()))
@@ -109,7 +109,7 @@ def test_the_per_slot_rule_fails_what_a_global_max_passes():
 def test_the_intra_term_is_actually_present():
     """NON-VACUITY: the inter term alone fails the op's gate on a multi-window cell, so a call that dropped the intra
     (or the carry) could not pass. Runs no kernel."""
-    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("carry-alt-k4-256x256-T1024"))
     read, write = routes.dequantized()
     num, den, _ = reference.inter_reference(tuple(x.double() for x in read), tuple(x.double() for x in write), values.dequantized().double(), routes.topology.widths, window_of())
     want = oracle(routes, values)
@@ -123,7 +123,7 @@ def test_a_prefill_with_a_decay_is_outside_the_contract():
     made -- as a call outside the contract, before any kernel could run."""
     from tests.descriptors import prefill_descriptor
 
-    routes, values, _masks, _density = operands(by_name("flagship-alt-k4"))
+    routes, values, _masks, _density = operands(by_name("carry-alt-k4-256x256-T1024"))
     with pytest.raises(RuntimeError, match="outside FSLA's prefill contract"):
         prefill_descriptor(routes.topology, d_v=values.width, decay=True, tokens=routes.tokens, batch_heads=routes.batch * routes.heads,
                            stateful=False, device=routes.device)

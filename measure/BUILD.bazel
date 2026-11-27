@@ -26,13 +26,13 @@ filegroup(
     ],
 )
 
-#: THE PRODUCER'S SOLVE on the pinned layer cell under the construction declared for it (`cells/layer.py`'s
-#: `chunk-p73-pinned`): the one layer arm whose kernels this line builds
+#: THE PRODUCER'S SOLVE on the pinned layer cell (the mid-size entmax layer at B 2, H 8, hidden 512): the one layer arm
+#: whose kernels this line builds
 timing_entry(
-    name = "entmax_solve_layer-B2-T2048-H8-h512-dv64-bf16-s0",
-    cells = ["@fsla_cells//:layer-B2-T2048-H8-h512-dv64-bf16-s0"],
+    name = "entmax_solve_layer-alt-entmax1.5-64x64-T2048",
+    cells = ["@fsla_cells//:layer-alt-entmax1.5-64x64-T2048"],
     executor = "measure.executors:timed",
-    params = {"arm": "entmax_solve@layer=chunk-p73-pinned"},
+    params = {"arm": "entmax_solve"},
 )
 
 #: the SM clock as this binary reads it, which proves a locked host's clock before and after a session
@@ -47,7 +47,7 @@ interleaved_timing(
     name = "session_entmax",
     claim = "unlocked",
     clock = ":clock",
-    entries = [":entmax_solve_layer-B2-T2048-H8-h512-dv64-bf16-s0"],
+    entries = [":entmax_solve_layer-alt-entmax1.5-64x64-T2048"],
 )
 
 #: THE STATIC MANIFESTS' RECORD: each built architecture's (`//:static_manifest`), keyed by the library it reads and the

@@ -5,16 +5,18 @@ is `docs/testing.md`. This file is the map.
 
 **THE CELLS ARE FSLA-DEVTOOLS' (`fsla_devtools.cells`), and there is one registry for every package.** A cell is an
 input -- a carry cell's routing amplitudes, gain, values and the state it enters with; a layer cell's hidden states and
-values -- with its draw and the regime it proves, so a name means one input everywhere it appears, in fsla and in the
-libraries fsla is compared against. A cell names nothing fsla runs it with. `measure/cells/` is fsla's reading:
+values, and the routing and logit gain its layer is built with -- with its draw and the regime it proves, every kind in
+one form (`fsla_devtools.cells.form.Cell`) and named by its own fields (`carry-alt-k4-256x256-T1024`,
+`layer-alt-entmax1.5-64x64-T2048`), so a name means one input everywhere it appears, in fsla and in the libraries fsla
+is compared against. A cell's routing is stated in `fsla.Routing`'s terms: the topology, a write entry a level, a read
+tuple a read head. A cell names nothing fsla runs it with. `measure/cells/` is fsla's reading:
 
-* `cells/__init__.py` — a central cell's typed record by name (`by_name`), the carry cells by tier (`carry_cells`) and
-  a cell's draw (`realize`). What the carry kernel is given for a cell is built where it is timed
-  (`subjects.carry_operands`).
-* `cells/layer.py` — FSLA's layer CONSTRUCTIONS (a routing template, widths, a gain), each named with the central layer
-  inputs it was declared for, from which the amplitudes are PRODUCED. It is the only way to price the producer's own
-  solve or a decode step through the layer. A layer arm's fixture builds each part (the layer, the inputs, the produced
-  routes) when the arm first reads it.
+* `cells/__init__.py` — a central cell's record by name (`by_name`), the carry cells by tier (`carry_cells`) and a carry
+  cell's draw (`realize`). What the carry kernel is given for a cell is built where it is timed (`subjects.bundle_of`).
+* `cells/layer.py` — the FSLA layer a layer cell builds (`routing`: the cell's entries as an `fsla.Routing`; the cell's
+  write heads, group, value width and gain), from which the amplitudes are PRODUCED. It is the only way to price the
+  producer's own solve or a decode step through the layer. A layer arm's fixture builds each part (the layer, the
+  inputs, the produced routes) when the arm first reads it.
 
 **`BUILD.bazel` — THE TIMING ENTRIES AND SESSIONS, THE INSTRUMENTS AND THE RECORDS' STORES.** Each `timing_entry` is
 one executor of `executors.py` on central cells (`@fsla_cells//:<cell>`) in this tree's bundle; each
@@ -43,10 +45,8 @@ mirrors the oracle roster one for one — a bench roster that does not match the
 roster is a roster with kernels nobody measures — and it includes the carry, whose body
 does not exist on this line and whose arm therefore refuses by name rather than reporting
 a number for something that did not run. `provider.py` is fsla's runner: given a central cell
-it offers the subjects this binary runs on it, with their dials
-(`carry_forward@schedule=identity`) and on a layer cell their constructions
-(`decode_step@layer=chunk-decode-w16`), or refuses the cell by name; arms build in their own
-checkout's venv.
+it offers the subjects this binary runs on it, each at its call counts (`prefill@calls=4`), or refuses the cell by a
+fact of the cell or the binary, never by its name; arms build in their own checkout's venv.
 
 **A timing session** interleaves timing entries of fsla checkouts, and of other libraries, call by call under one
 stopwatch and the GPU and clock locks (`fsla_devtools.timing.session`, `docs/measurement.md`), and stores the raw

@@ -10,22 +10,22 @@ instruments, with Bazel's own targets: `bazel run //measure:session_entmax`, `ba
 (`measure/BUILD.bazel`, docs/measurement.md).
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
-machine facts, every run), the diff sides and the kernel-vs-oracle diff, and the timing registrations:
-`entmax_solve@layer=C`, `layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`)
-for each FSLA construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock
-reader. No carry, intra or producer kernel is built on this line, so the registrations that reach one record its
-refusal. Every target that reads the binary depends on the binary and the environment, whose outputs reach its key.
+machine facts, every run), the diff sides and the kernel-vs-oracle diff, and the timing registrations: `entmax_solve`,
+`layer_prefill`, `decode_step` and the op on the layer's own bundle (`layer_op`), each on every central layer cell it
+takes (a decode step on the cells that take steps: a fact of the cell), and the clock reader. No carry, intra or
+producer kernel is built on this line, so the registrations that reach one record its refusal. Every target that reads
+the binary depends on the binary and the environment, whose outputs reach its key.
 Every cell is a NODE (`fsla_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
-by name at run time. This file imports nothing of fsla's: it reads the constructions from `measure/cells/layer.py` by
-path.
+by name at run time. This file imports nothing of fsla's: what it reads of a cell is the central record
+(`fsla_devtools.cells.cell`).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from fsla_devtools.build.declare import Env, load
-from fsla_devtools.cells import central
+from fsla_devtools.cells import cell, central
 from fsla_devtools.cells.declare import cells as cell_nodes
 from fsla_devtools.timing.declare import register_clock_reader, register_timing
 
@@ -40,11 +40,6 @@ def checkout(path, *, python: str, label: str) -> Env:
     return Env(label, python, str(path), {"PYTHONPATH": f"{path}:{path}/tools"})
 
 
-def kind(cell: str) -> str:
-    """A central cell's kind, by its data provider's module (`fsla_devtools.cells.carry`, `.layer`, `.qkv`)."""
-    return central().cell(cell)["data"].split(":")[0].rsplit(".", 1)[-1]
-
-
 def _code(entry: str, data=()) -> dict:
     return {"entry": entry, "roots": IMPORT_ROOTS, "data": list(data)}
 
@@ -52,7 +47,7 @@ def _code(entry: str, data=()) -> dict:
 def declare(g, env: Env, *, timing) -> dict:
     """EVERY target this checkout has, its timing entries registered with `timing` (a timing server). A node declares
     the cells it runs on; nothing here takes a cell list, and a build that wants fewer prunes by label."""
-    layer = [c for c in sorted(central().cells) if kind(c) == "layer"]
+    layer = [c for c in sorted(central().cells) if cell(c).kind == "layer"]
     #: THE LIBRARY IS THE BUILD GRAPH'S (docs/build-graph.md#use): the node runs every build (uncached) -- Bazel's cache
     #: is the build's key, and the node's output, the library's digest, keys every target that reads the binary -- and
     #: holds no host slot, since the graph's front door takes the host budget itself (a holder never starts a Bazel
@@ -67,16 +62,10 @@ def declare(g, env: Env, *, timing) -> dict:
     if verdict is not None:
         out["diffs"]["carry-vs-oracle"] = verdict
     timed = _code("measure/executors.py", ["measure/bench"])
-    constructions = load(Path(env.cwd) / "measure" / "cells" / "layer.py")["CONSTRUCTIONS"]
-    for construction in constructions.values():
-        takes = [c for c in layer if c in construction.cells]
-        for arm in LAYER_ARMS:
-            wanted = [c for c in takes if arm != "decode_step" or central().cell(c)["params"]["decode_steps"] > 0]
-            if wanted:
-                name = f"{arm}@layer={construction.name}"
-                out["entries"][name] = register_timing(g, name, server=timing, env=env, executor=EXECUTORS + "timed",
-                                                       cells=cell_nodes(g, wanted), params={"arm": name}, deps=facts,
-                                                       code=timed)
+    for arm in LAYER_ARMS:
+        wanted = [c for c in layer if arm != "decode_step" or cell(c).decode_steps > 0]
+        out["entries"][arm] = register_timing(g, arm, server=timing, env=env, executor=EXECUTORS + "timed",
+                                              cells=cell_nodes(g, wanted), params={"arm": arm}, deps=facts, code=timed)
     out["clock"] = register_clock_reader(g, "clock", server=timing, env=env, executor=EXECUTORS + "read_clock", deps=facts,
                                          code=_code("measure/executors.py"))
     return out
@@ -109,21 +98,18 @@ RETAINED_STATE_BUDGET = 512 * 2**20
 BACKWARD_SURFACES = ("oracle",)
 
 
-def retained_state_bytes(record: dict, batch: int = 1, heads: int = 2) -> int:
-    params = record["params"]
-    leaves = 1
-    for width in params["widths"]:
-        leaves *= width
-    return batch * heads * params["tokens"] * leaves * (params["dv"] + 1) * 8
+def retained_state_bytes(name: str, batch: int = 1, heads: int = 2) -> int:
+    c = cell(name)
+    return batch * heads * c.tokens * c.routing.N * (c.dv + 1) * 8
 
 
 def surface_cells(surface: str) -> list:
     """The cells one surface runs on: its kind, at its tier where it has one, and under the backward's budget where the
     surface runs a backward."""
-    _executor, kind_, tier, _holds = SURFACES[surface]
-    return sorted(name for name, record in central().cells.items()
-                  if kind(name) == kind_ and (tier is None or record["params"].get("tier") == tier)
-                  and (surface not in BACKWARD_SURFACES or retained_state_bytes(record) < RETAINED_STATE_BUDGET))
+    _executor, kind, tier, _holds = SURFACES[surface]
+    return sorted(name for name in central().cells
+                  if cell(name).kind == kind and (tier is None or cell(name).tier == tier)
+                  and (surface not in BACKWARD_SURFACES or retained_state_bytes(name) < RETAINED_STATE_BUDGET))
 
 
 SIDE_CODE = ("tests/oracle/sides.py", ["tests/oracle", "fsla", "measure"])

@@ -5,7 +5,7 @@ stored with its provenance. This document is what that sentence means.
 
 | layer | where | answers |
 |---|---|---|
-| cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
+| cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input in one form, named once for every package by its own fields, with its draw, seed and proven regime |
 | subjects | `measure/subjects.py`, `measure/provider.py` (fsla's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
 | timing targets | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `timing_entry`, `interleaved_timing`) | WHAT IS TIMED: each entry an executor on cells in this tree's bundle, each session a run target over entries |
 | instruments and stores | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `instrument`, `results_store`) | WHAT IS RECORDED of a build: a build output (the static manifests) or an instrument's JSON (the oracle tier on the device), each a run target that stores it unless the store holds it |

@@ -10,12 +10,12 @@ carry. A subject that is absent from the roster while its kernel exists is the d
 mirroring exists to catch; a subject whose kernel is unbuilt refuses by name, which is an
 honest report rather than a number for something that did not run.
 
-**TWO CELL KINDS, ONE REGISTRY** (fsla-devtools' central cells). A subject declares which kind it takes.
-``kind="carry"`` is a drawn cell (`fsla_devtools.cells.carry`): amplitudes put directly on the simplex, with the state
-the sequence enters with, which is what the carry family's oracle and probe run -- read through `measure.cells`.
-``kind="layer"`` is a layer input (`fsla_devtools.cells.layer`) under one of FSLA's constructions
-(`measure.cells.layer`): a producer, a routing template and a gain, from which the amplitudes are PRODUCED -- the
-only way to price the producer's own solve or a decode step through the layer.
+**TWO CELL KINDS, ONE FORM** (fsla-devtools' central cells, `fsla_devtools.cells.form.Cell`). A subject declares which
+kind it takes. ``kind="carry"`` is a drawn cell (`fsla_devtools.cells.carry`): amplitudes put directly on the simplex,
+with the state the sequence enters with, which is what the carry family's oracle and probe run -- read through
+`measure.cells`. ``kind="layer"`` is a layer cell (`fsla_devtools.cells.layer`): an input and the routing and logit gain
+its layer is built with (`measure.cells.layer`), from which the amplitudes are PRODUCED -- the only way to price the
+producer's own solve or a decode step through the layer.
 
 **EVERYTHING OUTSIDE THE LAUNCH IS BUILT ONCE, HERE.** The bundle and its descriptor:
 all of it happens before the callable is returned, so a timed span wraps the launch and nothing else.
@@ -107,7 +107,7 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     from fsla.routing.masks import masks_and_density
     from fsla.routing.types import Topology
 
-    topology = Topology.opaque(spec.widths)
+    topology = Topology.opaque(spec.routing.topology)
     #: the cell's drawn write gain folded into write level 0, as a producer folds its own (docs/CONSTITUTION.md#r23)
     read = [x[:, tokens] for x in drawn.read]
     write = [x[:, tokens] for x in drawn.write]
@@ -137,7 +137,7 @@ def entmax_solve(fx) -> Launch:
     def run():
         return production_routing_levels(logits, layout)
 
-    return Launch(name=f"entmax_solve|{spec.name}|{fx['construction'].name}", call=run)
+    return Launch(name=f"entmax_solve|{spec.name}", call=run)
 
 
 def layer_prefill(fx) -> Launch:
@@ -150,7 +150,7 @@ def layer_prefill(fx) -> Launch:
         with torch.no_grad():
             return layer._prefill(x, None, None)[0]
 
-    return Launch(name=f"layer_prefill|{spec.name}|{fx['construction'].name}", call=run)
+    return Launch(name=f"layer_prefill|{spec.name}", call=run)
 
 
 def layer_op(fx) -> Launch:
@@ -167,7 +167,7 @@ def layer_op(fx) -> Launch:
         return prefill(routes, values, masks, density)[0]
 
     run()
-    return Launch(name=f"layer_op|{spec.name}|{fx['construction'].name}", call=run)
+    return Launch(name=f"layer_op|{spec.name}", call=run)
 
 
 def decode_step(fx) -> Launch:
@@ -209,7 +209,7 @@ def decode_step(fx) -> Launch:
             y, _state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
         return y
 
-    return Launch(name=f"decode_step|{spec.name}|{fx['construction'].name}", call=run, reset=reset)
+    return Launch(name=f"decode_step|{spec.name}", call=run, reset=reset)
 
 
 #: THE ROSTER: one entry per kernel this line carries. The op-level subjects' `symbol` is the carry's, the first launch of the op
@@ -254,17 +254,22 @@ def _intra_reads(widths) -> bool:
     return intra_ops.reads(widths)
 
 
-def applicable(spec, kind: str, calls: int = 1) -> list[str]:
-    """Which subjects a cell can carry at a call count: its KIND, the counts a subject is
-    priced at, the chain's whole windows, and each subject's own condition."""
+def applicable(spec, calls: int = 1) -> list[str]:
+    """Which subjects a cell can carry at a call count, by the cell's own FACTS: its kind, the counts a subject is
+    priced at, the chain's whole windows, its backing, and each subject's own condition (its decode steps and group,
+    its widths)."""
     out = []
     for name, subject in SUBJECTS.items():
-        if subject.kind != kind or calls not in subject.calls or not _splits(spec.tokens, calls):
+        if subject.kind != spec.kind or calls not in subject.calls or not _splits(spec.tokens, calls):
             continue
-        if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
+        if name == "decode_step" and (spec.decode_steps == 0 or spec.group != 1):
+            #: decode's step reads one head count today: a grouped bundle is refused (`RouteFactors.refuse_grouped`)
+            continue
+        #: the state is the dense state alone (docs/api.md section 1): a paged backing has no constructor
+        if spec.backing != "dense":
             continue
         #: the intra runs at widths it reads (any length: a partial last window has its own arms)
-        if name == "prefill" and not _intra_reads(spec.widths):
+        if name == "prefill" and not _intra_reads(spec.routing.topology):
             continue
         out.append(name)
     return out

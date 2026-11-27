@@ -40,8 +40,8 @@ WHY NOT 16-BIT FLOAT OPERANDS WITH 5 EXPONENT BITS. The fp16 family (the branch 
 state and a token's unbounded sum inside f16's range by machinery: the state's image at an exponent a digit, list
 exponents, pre-scaled coefficients, a dense row's floor at 2^-13, a pass that bounded each token's sum, and a switch of
 accumulation by card. Its last measurement (2026-11-09, sm_86 (ampere branch, unreproducible here)) closed it: with each (token, digit)'s factor on the
-read rows before the MMA, the rows under f16's normal floor 2^-14 were 32% at flagship-alt-k4, 71% at alt-k16, 57% at
-cohort-k16 and 100% at flagship-dense. bf16's 8 exponent bits hold every one of those values with no machinery, at 8
+read rows before the MMA, the rows under f16's normal floor 2^-14 were 32% at carry-alt-k4-256x256-T1024, 71% at alt-k16, 57% at
+cohort-k16 and 100% at carry-dense-256x256-T1024. bf16's 8 exponent bits hold every one of those values with no machinery, at 8
 significant bits where f16 has 11.
 
 <a id="quality"></a>
@@ -54,14 +54,14 @@ card (Blake, 2026-11-09): it is the bf16 output store's own.
 
 MODELLED for this family before any kernel of it exists ([`tools/arith_model.py`](../internals/tools/arith_model.md),
 2026-11-09: the fp64 recurrence on the formatted operands, rounded only where a kernel of the family rounds; the
-median / the 99th percentile a token): flagship-alt-k4 0.134 / 0.202%, flagship-dense 0.132 / 0.191%, nl64k-alt-k4
-0.115 / 0.174%, nl64k-dense 0.021 / 0.167%. The intra's weight, rounded once a token pair, carries the worst tokens
+median / the 99th percentile a token): carry-alt-k4-256x256-T1024 0.134 / 0.202%, carry-dense-256x256-T1024 0.132 / 0.191%, carry-alt-k4-256x256-T65536
+0.115 / 0.174%, carry-dense-256x256-T65536 0.021 / 0.167%. The intra's weight, rounded once a token pair, carries the worst tokens
 everywhere; the fold's coefficient, the state as an operand and the read coefficient average over the leaves a token
 reads, and each alone costs under 0.02% at the 99th percentile on the dense cells and at most 0.10% on the alt-k4
 ones.
 
 THE SUM'S WIDTH IS THE PLAN'S because f16 costs by the partials it joins and the op counts none (R24): 29 f16 lines
-a token (512 leaves a CTA, added in fp32 first) are 0.083% a token at the median on nl64k-alt-k4, 58 are 0.115%, the
+a token (512 leaves a CTA, added in fp32 first) are 0.083% a token at the median on carry-alt-k4-256x256-T65536, 58 are 0.115%, the
 family's own error being 0.115% ([`arith_model`](../internals/tools/arith_model.md#f16); MODELLED on that one
 sparse cell -- a dense read side and wider levels are NOT modelled). So the producer's planner chooses the width from the
 declaration's structure, the levels' widths and walks. A sum a fold group with the groups merged in fp32 reads

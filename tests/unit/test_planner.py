@@ -226,10 +226,10 @@ def _cell_prefill_calls():
     from measure.cells import carry_cells
 
     for cell in carry_cells():
-        levels = len(cell.widths)
-        facts = [f"d_v={cell.dv}", f"levels={levels}", "decay=0", f"tokens={cell.tokens}", f"batch_heads={cell.heads * cell.group}",
+        levels = cell.routing.D
+        facts = [f"d_v={cell.dv}", f"levels={levels}", "decay=0", f"tokens={cell.tokens}", f"batch_heads={cell.H * cell.group}",
                  f"stateful={int(cell.state != 'none')}"]
-        facts += [f"width_bits_{k}={width.bit_length() - 1}" for k, width in enumerate(cell.widths, 1)]
+        facts += [f"width_bits_{k}={width.bit_length() - 1}" for k, width in enumerate(cell.routing.topology, 1)]
         yield pytest.param(",".join(facts), id=cell.name)
 
 

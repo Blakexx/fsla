@@ -100,7 +100,7 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     """THE RULE HAS TEETH on the carry's numerator: on a real cell the kernel's output passes, and a wiped median slot
     and the smallest slots moved past their allowance fail."""
     #: two windows at least, at the card's W: a one-window call's inter term is identically zero, nothing to plant
-    base = next(c for c in ORACLE_CELLS if c.name == "flagship-alt-k4")
+    base = next(c for c in ORACLE_CELLS if c.name == "carry-alt-k4-256x256-T1024")
     spec = dataclasses.replace(base, tokens=max(base.tokens, 2 * window_of()))
     routes, values, num, _den = run(spec)
     assert_planted_errors_fail(in_truth(num, routes), ref(spec, routes, values)[0], output=CARRY_NUM,
@@ -114,18 +114,18 @@ def test_the_decomposition_is_exact():
     from fsla.ops.naive import naive_fsla
     from tests.oracle.oracle_fixtures import _topology
 
-    spec = next(c for c in ORACLE_CELLS if c.name == "one-box-multiwindow")
+    spec = next(c for c in ORACLE_CELLS if c.name == "carry-dense-16x16-T1024")
     read, write, gain, v = realize(spec).doubles()
     tot = None
     for W in (1, 8, 64):
-        ni, di, _ = reference.inter_reference(read, with_gain(write, gain), v, spec.widths, W)
-        na, da = reference.intra_reference(read, with_gain(write, gain), v, spec.widths, W)
+        ni, di, _ = reference.inter_reference(read, with_gain(write, gain), v, spec.routing.topology, W)
+        na, da = reference.intra_reference(read, with_gain(write, gain), v, spec.routing.topology, W)
         cur = (ni + na, di + da)
         if tot is None:
             tot = cur
         else:
             assert relative(cur[0], tot[0]) < 1e-12
             assert relative(cur[1], tot[1]) < 1e-12
-    topology = _topology(spec.widths)
+    topology = _topology(spec.routing.topology)
     y, _ = naive_fsla(v, read, with_gain(write, gain), topology, None, output_final_state=False)
     assert relative(tot[0] / (tot[1][..., None] + READOUT_EPS), y) < 1e-10

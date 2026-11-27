@@ -63,11 +63,11 @@ def producer(record: dict, **_params) -> dict:
     from fsla.routing.entmax.reference import entmax, entmax_forward
 
     cell = build_cell(record)
-    drawn = producer_cells.realize(cell)
-    logits, mask = drawn
-    p, support, tau = entmax_forward(z=logits, alpha=cell.alpha, dim=-1, mask=mask)
+    alpha = producer_cells.alpha(cell)
+    logits, mask = producer_cells.realize(cell)
+    p, support, tau = entmax_forward(z=logits, alpha=alpha, dim=-1, mask=mask)
     grad_in = logits.clone().requires_grad_(True)
-    values = entmax(z=grad_in, alpha=cell.alpha, dim=-1, mask=mask)
+    values = entmax(z=grad_in, alpha=alpha, dim=-1, mask=mask)
     cotangent = torch.linspace(-1.0, 1.0, values.numel(), dtype=torch.float64).reshape(values.shape)
     (dz,) = torch.autograd.grad(values, grad_in, grad_outputs=cotangent)
     return {"p": p, "support": support.to(torch.float64), "tau": tau, "dz": dz}
@@ -92,10 +92,10 @@ def oracle(record: dict, *, batch: int = 1, heads: int = 2, **_params) -> dict:
     if getattr(cell, "decay", None):
         gen = torch.Generator().manual_seed(cell.seed + 1)
         decay = LeafMassDecay(dials=tuple(torch.rand(heads, w, generator=gen, dtype=torch.float64) * 0.3 + 0.1
-                                          for w in cell.widths))
+                                          for w in cell.routing.topology))
     #: THE SAME ROUTING THE ORACLE TIER BUILDS OVER -- untied softmax on both sides -- so this comparison and the
     #: kernel-vs-oracle gates are asking about one object
-    widths = tuple(cell.widths)
+    widths = cell.routing.topology
     topology = Topology(widths=widths, write=(softmax(),) * len(widths), read=((softmax(),) * len(widths),))
     operands = _flatten(v=v, g_write=g_write, read=read, write=write,
                         dials=None if decay is None else decay.dials)

@@ -4,7 +4,7 @@
 """THE bf16 FAMILY'S ARITHMETIC, MODELLED against the fp64 recurrence on a cell's own draw: u8 rows at every level,
 bf16 values and operands, fp32 accumulation and an fp32 sum.
 
-    bazel run //tools:arith_model -- flagship-alt-k4 nl64k-dense [--window 1024] [--json model.json]
+    bazel run //tools:arith_model -- carry-alt-k4-256x256-T1024 carry-dense-256x256-T65536 [--window 1024] [--json model.json]
 
 The cell's bundle is put in the format first -- each level's rows u8 unit-max with its fp32 scale (a dense level
 too: no floor, a zero a zero), the values bf16 unit-max with an fp32 scale a token -- and the fp64 recurrence

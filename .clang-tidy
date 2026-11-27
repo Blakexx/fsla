@@ -1,5 +1,5 @@
 # The host-TU lint: the graph's `//csrc/fsla:clang_tidy_host` runs it (`tools/lint/unit_lints.py`), with the PINNED
-# clang-tidy (tools/clang_tidy_pin.json), on every `.cpp` the library links (today csrc/fsla/fsla_api.cpp). The device units have their own profile,
+# clang-tidy (fsla-devtools' pins/clang_tidy_pin.json), on every `.cpp` the library links (today csrc/fsla/fsla_api.cpp). The device units have their own profile,
 # tools/lint/clang-tidy-device.yaml. Every finding fails the gate (WarningsAsErrors).
 #
 # The check set is deliberately narrow: bugprone (real correctness classes)

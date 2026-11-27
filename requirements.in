@@ -31,7 +31,7 @@ ast-grep-cli==0.45.2
 # --- the devbox's developer tools: a developer's commands the tree does not run, which the dev image and every
 # checkout's venv carry (docs/setup.md) ---
 py-spy==0.4.3
-#: the editor's language server, at the pinned clang-tidy's LLVM major (tools/clang_tidy_pin.json)
+#: the editor's language server, at the pinned clang-tidy's LLVM major (fsla-devtools' pins/clang_tidy_pin.json)
 clangd==22.1.1
 
 # --- shared pytest core ---

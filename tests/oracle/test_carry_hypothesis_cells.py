@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import pytest
 import torch
+from fsla_devtools.cells.carry import declared_sparsity
+from fsla_devtools.cells.form import Cell, Routing
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from measure.cells import CarryCell
 from measure.cells import carry_cells as registry_cells
 from tests.oracle.test_carry_vs_oracle import check, run
 
@@ -28,24 +29,27 @@ pytestmark = [
 ]
 
 #: THE SHAPES THE REGISTRY DECLARES, read off it: a topology or a value width added there is picked up here
-_SHAPES = sorted({(cell.widths, cell.tokens, cell.dv) for cell in registry_cells(tier="oracle")})
+_SHAPES = sorted({(cell.routing.topology, cell.tokens, cell.dv) for cell in registry_cells(tier="oracle")})
 #: the shapes a sparse declaration is drawn on: those where one of the registry's cells declares a sparse side
-_SPARSE_SHAPES = sorted({(cell.widths, cell.tokens, cell.dv) for cell in registry_cells(tier="oracle")
-                         if any(read or write for read, write in cell.declared_sparsity())})
+_SPARSE_SHAPES = sorted({(cell.routing.topology, cell.tokens, cell.dv) for cell in registry_cells(tier="oracle")
+                         if any(read or write for read, write in declared_sparsity(cell))})
 
 
 @st.composite
-def drawn_cells(draw) -> CarryCell:
-    """One drawn `CarryCell` on the central registry's own record shape, so a shrunk failure is reportable by name
-    and can be pasted into fsla-devtools' `carry.json` as a fixed cell."""
+def drawn_cells(draw) -> Cell:
+    """One drawn carry cell in the central registry's own form (`fsla_devtools.cells.form.Cell`): the alternation at
+    the drawn k_tok, so a shrunk failure is reportable by its computed name and can be pasted into fsla-devtools'
+    `carry.json` as a fixed cell."""
     widths, tokens, dv = draw(st.sampled_from(_SHAPES))
     k_tok = draw(st.sampled_from([2, 4, 8, 16, None]) if (widths, tokens, dv) in _SPARSE_SHAPES else st.none())
     seed = draw(st.integers(min_value=0, max_value=2 ** 16))
     #: a cohort divides the length exactly and means something only once k_tok narrows the support
     cohort = draw(st.none() if k_tok is None else st.sampled_from([None, 32, 64]))
-    return CarryCell(name=f"hypothesis-{widths}-{dv}-{k_tok}-{cohort}-{seed}", seed=seed, widths=widths, dv=dv,
-                     tokens=tokens, draw="dense" if k_tok is None else ("cohort" if cohort else "alt"), k_tok=k_tok,
-                     cohort=cohort, support=1.0, backing="dense", state="fresh", tier="oracle", regime=None)
+    sparse = "dense" if k_tok is None else f"k{k_tok}"
+    routing = Routing(topology=widths, write=tuple("dense" if level % 2 else sparse for level in range(len(widths))),
+                      read=(tuple(sparse if level % 2 else "dense" for level in range(len(widths))),))
+    return Cell(kind="carry", seed=seed, tokens=tokens, routing=routing, dv=dv, draw="cohort" if cohort else "iid",
+                cohort=cohort, tier="oracle")
 
 
 @settings(deadline=None, max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])

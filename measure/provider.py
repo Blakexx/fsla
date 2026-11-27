@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """FSLA'S RUNNER: this checkout's bench subjects as timed arms, built on central cells for the timing system.
 
-`arms(cell)` takes a central carry cell (a shape, a draw and the state it binds) or a central layer cell (an input)
-and returns a builder for every arm this checkout runs on it, or refuses the cell by raising:
+`arms(cell)` takes a central carry cell (a routing, a draw and the state it binds) or a central layer cell (an input,
+and the routing and gain its layer is built with) and returns a builder for every arm this checkout runs on it, or
+refuses the cell by raising, always by a FACT of the cell or the binary and never by the cell's name:
 - any cell, when the binary is an iteration build (its build record's `iteration` mark: a narrowed `--//:contract`, or architectures
   other than the built set), or lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): a narrowed binary
   carries a subset of the tree, and its own generated table is that subset, so the record is what refuses it;
-- data that is neither kind.
+- a cell of another kind.
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
 binary carries at the cell's shape (the carry arm the prefill launch function selects for the cell's call for `prefill`, the decode arm for
 `decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
-(`Subject.calls`), and on a layer cell `@layer=C` for each FSLA construction declared for that input
-(`measure.cells.layer.CONSTRUCTIONS`). Only the arm asked for is built.
+(`Subject.calls`). Only the arm asked for is built.
 Building one proves two things before anything is timed, and refuses the arm by name when either fails: from a fact the
 device produces, that this binary carries the subject's family (its stamp entry; a path or a hash cannot catch a stale
 binary), and that `import fsla` resolved inside this checkout.
@@ -35,37 +35,24 @@ from pathlib import Path
 CHECKOUT = Path(os.path.abspath(__file__)).parents[1]
 
 
-def arm_name(subject: str, *, calls: int = 1, construction: str | None = None) -> str:
-    """An arm's name: the subject, then a call count other than one, then a layer arm's construction."""
-    return subject + (f"@calls={calls}" if calls != 1 else "") + (f"@layer={construction}" if construction else "")
+def arm_name(subject: str, *, calls: int = 1) -> str:
+    """An arm's name: the subject, then a call count other than one."""
+    return subject + (f"@calls={calls}" if calls != 1 else "")
 
 
 def arms(data) -> dict:
     """Every arm this checkout runs on a cell's data, each as a builder; raises to refuse the cell."""
-    from itertools import product
-
-    from fsla_devtools.cells.carry import CarryCell
-    from fsla_devtools.cells.layer import LayerCell
-
-    from measure.cells.layer import CONSTRUCTIONS
     from measure.subjects import SUBJECTS, applicable
 
     _refuse_an_iteration_binary()
     _refuse_a_partial_binary()
-    if isinstance(data, CarryCell):
-        kind, constructions = "carry", [None]
-    elif isinstance(data, LayerCell):
-        kind, constructions = "layer", [c for c in CONSTRUCTIONS.values() if data.name in c.cells]
-        if not constructions:
-            raise LookupError(f"{data.name}: no FSLA construction is declared for this layer cell")
-    else:
-        raise TypeError(f"fsla's runner takes a central carry cell or layer cell, got {type(data).__name__}")
+    if data.kind not in ("carry", "layer"):
+        raise TypeError(f"fsla's runner takes a central carry cell or layer cell, got a {data.kind} cell")
     out = {}
     for subject in SUBJECTS.values():
-        for construction, calls in product(constructions, subject.calls):
-            if subject.name in applicable(data, kind, calls) and _kernel_carried(subject.name, data, construction):
-                name = arm_name(subject.name, calls=calls, construction=construction and construction.name)
-                out[name] = partial(_build, subject.name, kind, data, calls, construction)
+        for calls in subject.calls:
+            if subject.name in applicable(data, calls) and _kernel_carried(subject.name, data):
+                out[arm_name(subject.name, calls=calls)] = partial(_build, subject.name, data, calls)
     return out
 
 
@@ -132,9 +119,9 @@ def _refuse_a_partial_binary() -> None:
                                "hand-assembled build) measures a subset of the tree; rebuild it (`bazel run //:library`)")
 
 
-def _kernel_carried(subject: str, spec, construction) -> bool:
-    """Whether this binary carries the kernel `subject` launches at the cell's shape, or a layer cell's construction
-    (the cell's own facts are `measure.subjects.applicable`'s)."""
+def _kernel_carried(subject: str, spec) -> bool:
+    """Whether this binary carries the kernel `subject` launches at the cell's shape (the cell's own facts are
+    `measure.subjects.applicable`'s)."""
     from fsla.ops import decode
 
     #: the carry is not built on this line (`fsla.ops.carry`): no arm of it is carried, so the op's prefill is never offered
@@ -143,11 +130,11 @@ def _kernel_carried(subject: str, spec, construction) -> bool:
     if subject == "decode_step":
         rows = decode.arms()
         padded = [dv for dv, _d, _decay in rows if dv >= spec.dv]
-        return bool(padded) and (min(padded), len(construction.widths), False) in rows
+        return bool(padded) and (min(padded), spec.routing.D, False) in rows
     return True
 
 
-def _build(name: str, kind: str, spec, calls: int, construction):
+def _build(name: str, spec, calls: int):
     import torch
     from fsla_devtools.timing import Timed
 
@@ -165,7 +152,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
     if not fsla_file.is_relative_to(CHECKOUT):
         raise RuntimeError(f"`import fsla` resolved outside this checkout ({CHECKOUT.name}); the arm would time another "
                            "tree's binary under this tree's name")
-    fx = {"cell": spec} if kind == "carry" else _layer_fixture(spec, construction)
+    fx = {"cell": spec} if spec.kind == "carry" else _layer_fixture(spec)
     fx.update(calls=calls)
     launch = subject.build(fx)
     BUILD_CONFIG = _build_config()
@@ -180,11 +167,9 @@ def _build(name: str, kind: str, spec, calls: int, construction):
         torch.cuda.synchronize()
         return start.elapsed_time(end)
 
-    widths = spec.widths if kind == "carry" else construction.widths
-    cell = {"cell": spec.name, "kind": kind, "subject": name, "level": subject.level, "calls": calls,
-            "state": getattr(spec, "state", None), "backing": getattr(spec, "backing", None),
-            "construction": construction and construction.name, "tokens": spec.tokens, "d_v": spec.dv,
-            "widths": list(widths),
+    cell = {"cell": spec.name, "kind": spec.kind, "subject": name, "level": subject.level, "calls": calls,
+            "state": spec.state, "backing": spec.backing, "tokens": spec.tokens, "d_v": spec.dv,
+            "widths": list(spec.routing.topology),
             "ptxas": BUILD_CONFIG.get("ptxas"),
             "family_stamp": int(stamp()), "device": torch.cuda.get_device_name(0),
             "sm": registry.device_arch(props.major, props.minor),
@@ -194,7 +179,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
                  outside_allocator=launch.outside_allocator)
 
 
-def _layer_fixture(spec, construction):
+def _layer_fixture(spec):
     from measure.cells.layer import build
 
-    return build(spec, construction)
+    return build(spec)

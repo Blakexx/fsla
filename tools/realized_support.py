@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE REALIZED SUPPORT: what a layer construction's producer routes on its cell -- per level and side, the nonzero
-digits a token in the rows the kernels read (the bundle, after quantization), as the mean, the median, the 99th
-percentile and the level's fraction, and whether the side is declared sparse. A layer reading's regime is this, not the
-construction's name: a carry cell DECLARES its support, a layer construction's weights realize one.
+"""THE REALIZED SUPPORT: what a layer cell's producer routes -- per level and side, the nonzero digits a token in the
+rows the kernels read (the bundle, after quantization), as the mean, the median, the 99th percentile and the level's
+fraction, and whether the side is declared sparse. A layer reading's regime is this, not the cell's name: a carry cell
+DECLARES its support, a layer cell's weights realize one.
 
-    bazel run //tools:realized_support -- [nl64k-alt-h4] [--json support.json]   # one construction, or every one
+    bazel run //tools:realized_support -- [layer-alt-entmax1.5-256x256-T65536-h4] [--json support.json]   # one layer cell, or every one
 
 Docs: docs/internals/tools/realized_support.md.
 """
@@ -43,24 +43,25 @@ def support(routes) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("construction", nargs="?", default=None)
+    ap.add_argument("cell", nargs="?", default=None)
     ap.add_argument("--json", type=Path, default=None)
     a = ap.parse_args()
 
+    from fsla_devtools.cells import build as build_cell
+    from fsla_devtools.cells import central
     from fsla_devtools.locks.gpu import gpu_lock
 
     from measure.cells import by_name
-    from measure.cells.layer import CONSTRUCTIONS, build
+    from measure.cells.layer import build
 
-    chosen = list(CONSTRUCTIONS) if a.construction is None else [a.construction]
+    chosen = [by_name(a.cell)] if a.cell else [c for c in map(build_cell, central().cells.values()) if c.kind == "layer"]
     rows = []
     with gpu_lock(mode="shared"):
-        for c in chosen:
-            for name in CONSTRUCTIONS[c].cells:
-                for r in support(build(by_name(name), CONSTRUCTIONS[c])["routes"]):
-                    rows.append({"construction": c, "cell": name, **r})
+        for cell in chosen:
+            for r in support(build(cell)["routes"]):
+                rows.append({"cell": cell.name, **r})
     for r in rows:
-        print(f"{r['construction']} {r['cell']} level {r['level']} {r['side']:5s} {'sparse' if r['sparse'] else 'dense '} "
+        print(f"{r['cell']} level {r['level']} {r['side']:5s} {'sparse' if r['sparse'] else 'dense '} "
               f"{r['mean']:7.2f} a token (median {r['median']:.0f}, p99 {r['p99']:.0f}) of {r['width']}, "
               f"{100 * r['fraction']:.1f}%")
     if a.json:
