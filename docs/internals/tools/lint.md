@@ -114,7 +114,7 @@ a `permissionDecision` of `deny` with its reason. One generic dispatcher, `.clau
 session, runs only checkouts under the dev config's `workspace.hook_roots` (a cloned stranger's manifest never runs) and
 returns the first refusal; the install is [`dev.md`](dev.md#action-hooks), and a hook holds only where it is installed.
 Four exist, each with its patterns and its override in its own docstring: `no_polling.py` (KERNEL_STANDARDS §14),
-`no_verify.py` (`#no-verify`), `graph_only.py` (`KERNEL_STANDARDS#s14-graph`: the toolchain is the graph's, so a toolchain or install command typed by hand is refused, and the refusal names the graph target that does the step; `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
+`no_verify.py` (`#no-verify`), `graph_only.py` (`KERNEL_STANDARDS#s14-graph`: the toolchain is the graph's, so a toolchain or install command typed by hand is refused, and the refusal names the graph target that does the step; a `git worktree add` or `remove` typed by hand is refused the same way, naming the worktree tool, which keeps the machine's cap on live worktrees (Blake, 2026-11-27); `tests/unit/test_graph_only.py`) and `guidance.py`, which is advisory and never refuses: on an Edit, MultiEdit or Write of a kernel
 source (`csrc/**/*.cu*`, `measure/lab/**/*.cu*`) it injects the `guidance` of each entry of the `checker` section of `docs/rules.json` whose
 `triggers` match the edit's new text (a branch around a tensor step, a new shared store, a collective), and says nothing of an edit
 that matches none. `portable_claude.py` gates them like every file under `.claude/` ([above](#portable-agent-files)).

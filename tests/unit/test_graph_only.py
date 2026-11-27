@@ -34,6 +34,9 @@ def run(command):
     ("CUDA_VISIBLE_DEVICES=0 sudo ncu ./x", "//tools:lab -- ncu"),
     ("echo ok; /usr/local/cuda/bin/nvcc x.cu", "//:library"),
     ("x=$(nvcc --version)", "//:library"),
+    ("git worktree add ../w origin/master", "bazel --worktree add"),
+    ("git -C /tmp/repo worktree add -b x ../w HEAD", "bazel --worktree add"),
+    ("cd r && git worktree remove --force ../w", "bazel --worktree remove"),
 ])
 def test_a_toolchain_or_install_command_is_refused_with_its_target(command, target):
     out = run(command)
@@ -55,6 +58,9 @@ def test_a_toolchain_or_install_command_is_refused_with_its_target(command, targ
     "python3 -m pytest tests/unit",
     "ls /opt/cuda/bin/nvcc-notes",
     "git commit -m 'make it so'",
+    "git worktree list",
+    "git worktree prune",
+    "bazel --worktree add ../w HEAD",
 ])
 def test_a_graph_command_text_or_override_passes(command):
     assert run(command) is None

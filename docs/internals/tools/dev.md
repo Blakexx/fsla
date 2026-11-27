@@ -85,7 +85,7 @@ across every FSLA repository), naming the clean, merged ones to remove; then it 
 cache when any checkout built that commit's library. It imports `fsla` and the extension from inside the worktree.
 Never a bare `git worktree add`: its commits are refused until `bazel run //:dev_env`, and it bypasses the cap.
 
-**Removing a worktree** is the same tool's, through the front door, beside the create: `bazel --worktree remove` run in a
+A worktree is never made or removed with a `git worktree` typed by hand: the action hook (`.claude/hooks/graph_only.py`) refuses it and names this tool. **Removing a worktree** is the same tool's, through the front door, beside the create: `bazel --worktree remove` run in a
 worktree removes that one -- its Bazel output base expunged first (`bazel clean --expunge`), then the checkout
 (`git worktree remove`) -- and `bazel --worktree remove <path>` another; it refuses a dirty or unmerged worktree unless
 named with `--force`, and never removes a main checkout. It starts no Bazel build, so the free-space floor never refuses

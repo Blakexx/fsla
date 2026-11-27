@@ -2,7 +2,8 @@
 """Refuse a Bash command that runs a toolchain or install command by hand in a checkout; the build graph runs them
 (Blake, 2026-11-21, "what runs outside the graph moves into it"): `nvcc`, `ptxas`, `cuobjdump`, `nvdisasm`, `ncu`, `nsys`,
 `compute-sanitizer`, `cmake`, `make`, `ninja`, and `pip install` (also `uv pip install`, `python -m pip install`), as a command
-word, by name or by a path ending in one. A word inside a quoted string, a heredoc body or an argument (`git log | grep nvcc`,
+word, by name or by a path ending in one; and `git worktree add|remove`, which the machine's worktree tool does under its cap
+(Blake, 2026-11-27). A word inside a quoted string, a heredoc body or an argument (`git log | grep nvcc`,
 `echo "nvcc is a compiler"`) is text, not a command, and a `bazel` command passes whatever its arguments (`bazel run
 //tools:lab -- pack x`). The refusal names the target that does it. Override: `GRAPH_OVERRIDE="<why>"` in the command.
 Fired by the repo's dispatcher (`.claude/hooks/repo_hooks.py`); docs: docs/internals/tools/lint.md#action-hooks."""
@@ -31,6 +32,8 @@ TOOLS = {
     "ninja": "`bazel run //:library` (the graph builds the extension)",
 }
 PIP = "`bazel run //:dev_env` (this checkout's venv, synced from `requirements.lock`)"
+WORKTREE = ("`bazel --worktree add <path> <sha>` or `bazel --worktree remove [<path>]` (fsla-devtools' worktree tool, under the "
+            "machine's cap on live worktrees; here `bazel run //:worktree -- <name> <sha>` also sets one up)")
 #: words a command may carry before its own word
 PREFIX = {"sudo", "env", "time", "nohup", "exec", "command", "nice", "stdbuf", "setsid"}
 
@@ -96,6 +99,21 @@ def pip_install(words: list[str]) -> bool:
     return False
 
 
+def git_worktree(words: list[str]) -> bool:
+    """`git worktree add` or `git worktree remove`, with git's own options (`-C DIR`, `-c k=v`) before the subcommand."""
+    if base(words[0]) != "git":
+        return False
+    rest, i = [], 1
+    while i < len(words):
+        if words[i] in ("-C", "-c"):
+            i += 2
+            continue
+        if not words[i].startswith("-"):
+            rest.append(words[i])
+        i += 1
+    return rest[:1] == ["worktree"] and rest[1:2] in (["add"], ["remove"])
+
+
 def problem(command: str) -> str:
     """The redirect for the first toolchain or install command the text runs, or an empty string."""
     for words in commands(HEREDOC.sub(" ", command)):
@@ -110,6 +128,8 @@ def problem(command: str) -> str:
             return f"`{name}` runs by hand; run {TOOLS[name]}"
         if pip_install(words):
             return f"an install by hand; run {PIP}"
+        if git_worktree(words):
+            return f"a worktree made or removed by hand, past the machine's cap; run {WORKTREE}"
     return ""
 
 
@@ -123,7 +143,7 @@ if not OVERRIDE.search(command) and (why := problem(command)):
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": (
-            f"The graph runs the toolchain and the installs, never a command typed in a checkout: {why}. A justified "
+            f"The graph runs the toolchain, the installs and the worktrees, never a command typed in a checkout: {why}. A justified "
             "exception (a probe the graph has no target for): put `GRAPH_OVERRIDE=\"<why>\"` in the command."),
     }}))
 sys.exit(0)
