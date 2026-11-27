@@ -8,8 +8,6 @@ construction's name: a carry cell DECLARES its support, a layer construction's w
 
     bazel run //tools:realized_support -- [nl64k-alt-h4] [--json support.json]   # one construction, or every one
 
-`declare.py` runs it over every construction once a binary (`support`), stored beside the timing sessions.
-
 Docs: docs/internals/tools/realized_support.md.
 """
 from __future__ import annotations

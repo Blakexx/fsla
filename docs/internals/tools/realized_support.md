@@ -8,7 +8,7 @@ the level's width -- and whether the side is declared sparse (a dense side's zer
 
     bazel run //tools:realized_support -- [nl64k-alt-h4] [--json support.json]   # one construction, or every one
 
-`declare.py` declares it: every construction once a binary, stored at `fsla/support`.
+No target records it: the producer it reads is not built on this line, so it would record only a refusal.
 
 The construction's logit gain is the knob that moves it (`tests/integration/test_producer_sweep.py` holds the
 direction); `measure/cells/layer.py` declares the long layer at gains 1, 4 and 16, so a layer-level comparison spans the

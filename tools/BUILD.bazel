@@ -114,17 +114,14 @@ filegroup(
 ) for name in [
     "arith_model",
     "bank_model",
-    "kernel_targets",
     "kernels",
     "life_ranges",
     "op_timeline",
     "overlap_gate",
-    "pipe_counters",
     "realized_support",
     "region_ledger",
     "review_gate",
     "sass_bodies",
-    "stall_census",
     "supported",
     "wheels",
 ]]

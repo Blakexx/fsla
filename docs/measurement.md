@@ -8,14 +8,16 @@ stored with its provenance. This document is what that sentence means.
 | cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
 | subjects | `measure/subjects.py`, `measure/provider.py` (fsla's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
 | timing targets | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `timing_entry`, `interleaved_timing`) | WHAT IS TIMED: each entry an executor on cells in this tree's bundle, each session a run target over entries |
-| declarations | `declare.py` (this checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT ELSE RUNS: the build, the instruments, the diffs and their stores as targets of `fsla_devtools.build`; fsla-bench's sessions, which register `declare.py`'s timing entries |
+| instruments and stores | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `instrument`, `results_store`) | WHAT IS RECORDED of a build: a build output (the static manifests) or an instrument's JSON (the oracle tier on the device), each a run target that stores it unless the store holds it |
+| declarations | `declare.py` (a checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT fsla-bench RUNS: each checkout's build, machine facts, diff sides and timing registrations as targets of `fsla_devtools.build`, in fsla-bench's sessions and diffs |
 | method | fsla-devtools' `fsla_devtools.timing.session` (`interleave`, the session program) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
 | preconditions | the session program, `measure/provider.py` | what the box and the binary must be first |
 | statistics | fsla-devtools' `fsla_devtools.verdict` | whether a difference is real |
 | record | `fsla_devtools.results` (the measurements store) over the data repository, fsla-results | where a number lives afterwards, and which stored samples are a baseline |
 
-fsla times itself with `bazel run //measure:session_entmax` and checks itself (its instruments and diffs) with
-`bazel run //:measure -- run declare.py:all`; fsla-bench's root loads `declare.py` from each checkout it compares,
+fsla times itself with `bazel run //measure:session_entmax` and records its instruments with their store targets
+(`bazel run //measure:store_oracle_tier`, `bazel run //measure:store_static_manifest`); fsla-bench's root loads
+`declare.py` from each checkout it compares,
 registers every checkout's timing entries beside its attention reference, and times them in shared sessions of
 fsla-devtools' build system. Both interleave with one loop (`fsla_devtools.timing.session.interleave`): a number taken
 either way is the same measurement.
@@ -281,22 +283,16 @@ bound is a tool that can report a number nobody ships.
 * **A flat percentage threshold.** The IQR-derived line is better than every rule in the surveyed field; replacing it
   would reintroduce the invented number the derivation exists to avoid.
 
-## The build: everything declared, a run pruned by label
+## fsla-bench's declarations: a checkout's targets, a run pruned by label
 
-A checkout's `declare.py` declares EVERY target it has -- its build (the build graph's `bazel run //:library`, run
-every build: Bazel's cache is its key, and the library's digest, its output, keys every target that reads the binary),
-its machine
-facts, each instrument over the cells sized for measurement (`tier` probe or both), its timing arms, its diff sides
-and its own kernel-vs-oracle diff, the oracle tier as one node -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
-nothing of cells, groups or instruments: `--only 'fsla/support'` runs that instrument and what it needs, `--skip
-'*/timeline'` drops that instrument and everything that reads it. A node whose code, binary and inputs have not changed
-is a cache hit and does not run. The dev loop is a pruned run, seconds.
+A checkout's `declare.py` declares, for fsla-bench's root, every target the bench composes of it -- its build (the
+build graph's `bazel run //:library`, run every build: Bazel's cache is its key, and the library's digest, its output,
+keys every target that reads the binary), its machine facts, its timing arms, its diff sides and its own
+kernel-vs-oracle diff -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
+nothing of cells or groups (`--only`, `--skip`). A node whose code, binary and inputs have not changed is a cache hit and
+does not run.
 
-THE ORACLE TIER IS A TARGET (`fsla/oracle-tier`): the oracle battery run whole, keyed on its code and the binary, its
-output the counts, WHICH cases failed and the per-comparison margins (`--oracle-margins`, the worst per output kind),
-stored beside the instruments. A red cell is a stored fact.
-
-THE DIFFS. A SIDE is an executor run over cell nodes in the environment it names, its tensors kept in the build cache;
+<a id="the-diffs"></a>THE DIFFS. A SIDE is an executor run over cell nodes in the environment it names, its tensors kept in the build cache;
 a DIFF is two sides under one named rule -- `bit-identical`, the per-slot clause rule mirroring the oracle's, or
 `support-equal` -- with a claim (`expect` same or different) and a consequence (a build failure or a recorded verdict).
 A side proves which checkout's library it imported; a comparison that compared fewer quantities than it declared, or a
@@ -308,16 +304,27 @@ kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
 
 ## <a id="instruments"></a>The instruments
 
-Each is a target of `declare.py` (`INSTRUMENTS`), run per cell where it reads a launch, its output stored beside the
-timing session:
+AN INSTRUMENT is a tool's JSON over the files it reads (fsla-devtools' `instrument`, this tree's wrapper in
+`bazel/defs.bzl`): the tool runs in a tree of copies of those files, and one that cannot run on what it was handed
+writes `{"refused": WHY}`, which is its output and stops nothing else, while one that fails fails. Without a device it
+is an action, its JSON a build output; ON THE DEVICE (`device = True`, keyed on the devices' identity) it runs in the
+run phase of the store target that records it, never in a build, since a build holds the host budget and the GPU taken
+under it deadlocks against a measurement, which takes the GPU first ([`build-graph.md`](build-graph.md#front-door)).
 
-| target | tool | what it reads |
-|---|---|---|
-| `support` | [`tools/realized_support.py`](internals/tools/realized_support.md) | what each layer construction's weights route on its cells |
-| `oracle-tier` | the oracle battery | the counts, the failed cases, the margins |
+A STORE TARGET (fsla-devtools' `results_store`) records a build output: `bazel run` stores each of its files as a sample
+of the record its semantics key -- the source's label, the file's name and the content digest of every input it depends
+on (an instrument's tool, files and devices; the `inputs` it names) -- with the stamped commit as its provenance, and asks
+the store first: when the record already holds this outcome nothing is stored, so a second run over the same build
+stores nothing, into whichever store it is pointed at. A refusal is stored as a failed sample naming why.
+`-- --store-root DIR` stores into another records directory, `--no-store` runs a device instrument and keeps its JSON.
 
-The build's SASS signatures (KERNEL_STANDARDS §20) are no instrument: the library's SASS gate judges them on every build, and
-their static manifest is a build output, `//:static_manifest` ([`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#manifest)).
+| target | records | location | keyed by |
+|---|---|---|---|
+| `//measure:store_static_manifest` | each built architecture's static manifest (`//:static_manifest`, warpline's, the build output the SASS gate's comparison judged: [`internals/tools/sass_gate.md`](internals/tools/sass_gate.md#manifest)) | `fsla/static-manifest` | the library and warpline's checker |
+| `//measure:store_oracle_tier` | the oracle tier on the device (`measure/oracle_tier.py`): the counts, WHICH cases failed (a red case is a stored fact), every per-slot comparison's margins (`--oracle-margins`) and the worst per output kind; a host without a CUDA device refuses | `fsla/oracle-tier` | the tool, the library, the tree and the devices |
+
+The build's SASS signatures (KERNEL_STANDARDS §20) are no instrument: the library's SASS gate judges them on every build.
+The realized support (`tools/realized_support.py`) has no target: the producer it reads is not built on this line.
 
 A question about the machine itself, rather than a shipped kernel, is a lab experiment ([`lab/`](lab/README.md)).
 
@@ -352,12 +359,12 @@ and a timing only compares within the session that interleaved it.
 
 | location | writer | the semantics | a sample's output |
 |---|---|---|---|
-| `fsla/<instrument>` | a store target of `declare.py` or fsla-bench's root | the instrument target's semantics: its tool and arguments, code digest, the cells, the binary's and environment's outputs | the instrument's JSON per cell, with each cell's failure |
+| `fsla/static-manifest` | `bazel run //measure:store_static_manifest` | the source, the manifest's name (its architecture) and the content digests of the library and warpline's checker | the manifest |
 | `timing/session` | the session program (`bazel run //measure:session_entmax`), or a store target over fsla-bench's `measure_timing` | the session's semantics: every entry's executor, parameters, cells and bundle digest (fsla-bench's: every registration's executor, cells, code and binary), the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
 | `timing/memory` | a store target over fsla-bench's `measure_memory` | its registrations' executors and cells | each entry's peak memory |
 | `timing/null` | a store target over `measure_null_gate` (fsla-bench's root) | the gate's semantics: the registration, its cells, the timing parameters | the session of the two copies and, per cell, whether they agree |
 | `environment` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
-| `fsla/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
+| `fsla/oracle-tier` | `bazel run //measure:store_oracle_tier` | the instrument, its arguments and the content digests of its tool, the library, the tree and the devices' identity | the counts, the failed cases, the margins; or the refusal, as a failed sample |
 | `diff/<surface>` | a store target over a diff node | both sides' semantics and the rule | the verdict per cell and quantity, never a tensor |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in

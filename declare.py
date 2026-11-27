@@ -1,57 +1,38 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""FSLA'S DECLARATIONS: this checkout's targets for fsla-devtools' declared build system (`fsla_devtools.build`).
+"""FSLA'S DECLARATIONS: this checkout's targets for fsla-devtools' declared build system (`fsla_devtools.build`), for
+the root that composes checkouts (fsla-bench's).
 
-    bazel run //:measure -- plan declare.py:all
-    bazel run //:measure -- run declare.py:all --only 'fsla/phases' --skip '*/timeline'
-
-`declare(g, env, cells=..., timing=...)` declares one checkout's targets under the graph's scope and returns them (the
-timing registrations by arm name), so a root elsewhere (fsla-bench's) loads this file from each checkout it measures,
-calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is fsla checking
-itself: this checkout's instruments and diffs, every result stored. fsla times itself with Bazel's own targets, not
-here: `bazel run //measure:session_entmax` (`measure/BUILD.bazel`, docs/measurement.md).
+`declare(g, env, timing=...)` declares one checkout's targets under the graph's scope and returns them (the timing
+registrations by arm name), so a root elsewhere (fsla-bench's) loads this file from each checkout it measures, calls it
+per checkout with one shared timing server, and composes its own sessions. fsla times itself, and records its
+instruments, with Bazel's own targets: `bazel run //measure:session_entmax`, `bazel run //measure:store_oracle_tier`
+(`measure/BUILD.bazel`, docs/measurement.md).
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
-machine facts, every run), the instruments of `INSTRUMENTS` (the realized support once, cached; the SASS gate's static
-manifest is a build output of the library, `//:static_manifest`; no kernel has a pipe-counter or stall-census row on this
-line, so neither is declared), and with a timing server
-the timing registrations: `entmax_solve@layer=C`,
-`layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`) for each FSLA
-construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock reader. No carry, intra or producer kernel is built on this line, so the registrations that
-reach one record its refusal. Every
-target depends on the binary and the environment, whose outputs reach its key. Every cell is a NODE (`fsla_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
+machine facts, every run), the diff sides and the kernel-vs-oracle diff, and the timing registrations:
+`entmax_solve@layer=C`, `layer_prefill@layer=C`, `decode_step@layer=C` and the op on the layer's own bundle (`layer_op`)
+for each FSLA construction on the layer cells declared for it (a decode step on the cells that take steps), and the clock
+reader. No carry, intra or producer kernel is built on this line, so the registrations that reach one record its
+refusal. Every target that reads the binary depends on the binary and the environment, whose outputs reach its key.
+Every cell is a NODE (`fsla_devtools.cells.declare`) whose output is its record and the digest of the code that drew it;
 a target that runs on cells takes those nodes as its data inputs, so nothing here or in the build system resolves a cell
 by name at run time. This file imports nothing of fsla's: it reads the constructions from `measure/cells/layer.py` by
 path.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from fsla_devtools.build.declare import Env, load
 from fsla_devtools.cells import central
 from fsla_devtools.cells.declare import cells as cell_nodes
-from fsla_devtools.store import store
 from fsla_devtools.timing.declare import register_clock_reader, register_timing
 
-HERE = Path(__file__).resolve().parent
 EXECUTORS = "measure.executors:"
 #: where this checkout's repository-local imports resolve, for code digests
 IMPORT_ROOTS = ["tools", "."]
-#: name -> (tool, arguments, runs per carry cell, holds, data files its result depends on)
-INSTRUMENTS = {
-    #: what each layer construction's weights route on its cells (the layer readings' regime), once a binary
-    "support": ("tools/realized_support.py", [], False, {"gpu": 1}, ["measure/cells", "fsla"], 1800),
-}
 LAYER_ARMS = ("entmax_solve", "layer_prefill", "decode_step", "layer_op")
-#: seconds an instrument may run on one cell
-#: EACH INSTRUMENT'S TIMEOUT IS PER CELL AND SIZED TO THE INSTRUMENT: a phase-clock launch is seconds on the largest
-#: cell (37 cells in 1.1 minutes, measured 2026-09-16), an ncu replay minutes. A hang then costs one timeout and lands
-#: as that cell's recorded failure; under one hour for every instrument, `nl64k-dense`'s device hang cost a baseline
-#: four hours of waiting and never a record.
-#: a whole test tier is minutes, not one launch
-TIER_TIMEOUT_S = 3600
 
 
 def checkout(path, *, python: str, label: str) -> Env:
@@ -68,17 +49,10 @@ def _code(entry: str, data=()) -> dict:
     return {"entry": entry, "roots": IMPORT_ROOTS, "data": list(data)}
 
 
-def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict:
-    """EVERY target this checkout has. A node declares the cells it runs on; nothing here takes a cell list, and a build
-    that wants fewer prunes by label."""
-    cells = sorted(central().cells)
-    #: A MEASUREMENT RUNS ON CELLS SIZED FOR MEASUREMENT: the registry states who each carry cell is sized for
-    #: (`tier`: `oracle` for the fp64 reference, `probe` for a measurement, `both`), and an instrument or a timing
-    #: arm over a 16-token reference cell measures nothing -- the oracle-tier cells are the diff surfaces' and the
-    #: tier node's (`SURFACES`, `oracle-tier`), not the instruments'. Every carry cell declared here took a run from 12
-    #: cells to 49 and an ncu replay apiece (2026-09-16).
-    carry = [c for c in cells if kind(c) == "carry" and central().cell(c)["params"].get("tier") in ("probe", "both")]
-    layer = [c for c in cells if kind(c) == "layer"]
+def declare(g, env: Env, *, timing) -> dict:
+    """EVERY target this checkout has, its timing entries registered with `timing` (a timing server). A node declares
+    the cells it runs on; nothing here takes a cell list, and a build that wants fewer prunes by label."""
+    layer = [c for c in sorted(central().cells) if kind(c) == "layer"]
     #: THE LIBRARY IS THE BUILD GRAPH'S (docs/build-graph.md#use): the node runs every build (uncached) -- Bazel's cache
     #: is the build's key, and the node's output, the library's digest, keys every target that reads the binary -- and
     #: holds no host slot, since the graph's front door takes the host budget itself (a holder never starts a Bazel
@@ -87,28 +61,11 @@ def declare(g, env: Env, *, timing=None, instruments=tuple(INSTRUMENTS)) -> dict
                     code=_code("measure/executors.py"))
     environment = g.node("environment", executor=EXECUTORS + "probe_environment", env=env, cache=False)
     facts = {"binary": binary, "environment": environment}
-    out = {"binary": binary, "environment": environment, "instruments": {}, "entries": {}, "clock": None,
-           "sides": _sides(g, env, facts), "diffs": {}}
+    out = {"binary": binary, "environment": environment, "entries": {}, "clock": None, "sides": _sides(g, env, facts),
+           "diffs": {}}
     verdict = _kernel_vs_oracle(g, env, out["sides"])
     if verdict is not None:
         out["diffs"]["carry-vs-oracle"] = verdict
-    #: THE ORACLE TIER AS ONE TARGET: pytest over `tests/oracle`, keyed on the tier's code and the binary, cached while
-    #: both stand; its output is the outcome and the margins, stored beside the instruments (`fsla/oracle-tier`)
-    out["instruments"]["oracle-tier"] = g.node(
-        "oracle-tier", executor=EXECUTORS + "pytest_tier", env=env, deps=facts, holds={"gpu": 1},
-        params={"paths": ["tests/oracle"], "timeout": TIER_TIMEOUT_S},
-        code={"files": ["tests/oracle", "tests/conftest.py", "fsla", "measure"]})
-    for name in instruments:
-        tool, args, per_cell, holds, data, timeout = INSTRUMENTS[name]
-        if per_cell and not carry:
-            continue
-        out["instruments"][name] = g.node(
-            name, executor=EXECUTORS + "run_tool", env=env, deps=facts,
-            inputs=cell_nodes(g, carry) if per_cell else (), holds=holds,
-            params={"tool": tool, "args": args, "per_cell": per_cell, "timeout": timeout},
-            cache=not per_cell, code=_code(tool, data))
-    if timing is None:
-        return out
     timed = _code("measure/executors.py", ["measure/bench"])
     constructions = load(Path(env.cwd) / "measure" / "cells" / "layer.py")["CONSTRUCTIONS"]
     for construction in constructions.values():
@@ -202,16 +159,3 @@ def _kernel_vs_oracle(g, env: Env, sides: dict):
     #: for is red by decision until kernel work ships it), and the rest of the build measures on
     return diff(g, "diff/carry-vs-oracle", left=sides[kernel_surface], right=reference, strategy="per-slot",
                 params={"per_quantity": per_quantity}, minimum=len(nodes), on_difference="record")
-
-
-def root(g, python: str = sys.executable, label: str = "fsla", store_root: str = "") -> dict:
-    """fsla checking itself: every instrument and diff this checkout has, each stored, and the CLI prunes by label
-    (`--only`, `--skip`). Its timing is Bazel's (`//measure:session_entmax`)."""
-    env = checkout(HERE, python=python, label=label)
-    mine = declare(g.scoped(label), env)
-    root_dir = store_root or None
-    stores = [store(g, f"store/{name}", source=target, location=f"fsla/{name}", cache=target.cache, root=root_dir)
-              for name, target in mine["instruments"].items()]
-    stores += [store(g, f"store/{name}", source=node, location=f"fsla/{name}", root=root_dir)
-               for name, node in mine["diffs"].items()]
-    return {"all": g.group("all", stores)}

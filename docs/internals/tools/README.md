@@ -5,10 +5,10 @@ what it writes; a tool with more to say has its own page beside this one, and a 
 own module docstring. A tool that nothing runs is a tool to delete (`DELETIONS.md`), so the CALLED BY column is the
 column that matters.
 
-**No tool writes a measurement record except through a declared target.** A measurement is a target of
-`declare.py` (`fsla_devtools.build`), its result is stored by a store target beside it, and the tool itself prints or
-writes `--json`. A tool run by hand prints or writes `--json` and stores nothing; a stored reading is its `declare.py`
-target ([`measurement.md`](../../measurement.md)).
+**No tool writes a measurement record except through a declared target.** A measurement is a Bazel target of
+`measure/BUILD.bazel`: a timing session, or an instrument whose JSON its store target records (`results_store`), and the
+tool itself prints or writes `--json`. A tool run by hand prints or writes `--json` and stores nothing; a stored reading
+is its target's ([`measurement.md`](../../measurement.md#instruments)).
 
 ## The build
 
@@ -41,23 +41,21 @@ target ([`measurement.md`](../../measurement.md)).
 | [`usrmerge_layer.py`](../../setup.md#the-devbox-image) | the package layer for a merged-/usr base: what the packages ship under the base's top-level links into /usr, read from the base, goes under /usr | the graph's `//:devbox_debs` | the image's package layer |
 | [`derivation.py`](ratify.md#graph) | the derivation's golden harness, rendered from the declared cases | `ratify.py`, the graph's `derivation_harness_source` genrule | the harness source |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar; a frame map is one function's (`section`: offsets restart in every function) | `ratify.py`, `region_ledger.py`, `life_ranges.py` | — |
-| `kernel_targets.py` | the instruments' kernel families: each one's profiler filter, provider arm, cubin member, sources, budget and unit (`kernel_targets.md`) | `stall_census.py`, `pipe_counters.py` | — |
 | [`arith_model.py`](arith_model.md) | the bf16 family's arithmetic (u8 rows, bf16 values and operands, fp32 sums) modelled against the fp64 recurrence on a cell's draw, each rounding alone and all together | a person (a precision form's design) | prints, `--json` |
 | [`carry_floor.py`](carry_floor.md) | the hopper carry's floor a token for a routing shape, a box and a cluster, term by term, from the H100 labs' records and stated estimates | a shape, a box, a cluster | the terms, their total, the call's time beside FlashAttention's floor |
-| `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | `declare.py` (`support`) | `fsla/support` |
+| `realized_support.py` | a layer construction's realized routing support: each level's and side's nonzero digits a token in the bundle the producer emits (`realized_support.md`) | a person (a layer reading's regime) | `--json` |
 | `checked.py` | THE LAB'S SEAM TO THE CHECKER: warpline's checker imported from the directory the graph hands in, and what the lab asks of it: the model of the texts a built experiment's disassembly wrote, the one judgment (a manifest compared with the declarations), the profile rule (`lab.md#hazards`) | `lab.py` | -- (a module) |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `header_selfcheck.py` | every header has its compiled unit: the test over the graph's compile of each header alone (`bazel test //csrc/fsla:header_selfcheck`) | the gate's lints | — |
 
-## The instruments (each a target of `declare.py`)
+## The instruments
 
 | tool | what it is | called by | writes |
 |---|---|---|---|
 | [`op_timeline.py`](op_timeline.md) | a subject's calls under torch's profiler: kernel busy time against the GPU's idle, the gaps and the host work in them | a person | — |
-| [`pipe_counters.py`](pipe_counters.md) | the profiler's pipe and resource counters for one launch, and the standard counter set the lab reads | the `counters` target, `lab.py` | `--json` |
+| [`pipe_counters.py`](pipe_counters.md) | the standard counters: the profiler's counters the lab reads for every experiment kernel, and their reading by short name | `lab.py` | -- (a module) |
 | [`overlap_gate.py`](overlap_gate.md) | each kernel's perf rows against the largest of their floors (§28) | -- | exit 1 when red |
-| [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |
-| [`life_ranges.py`](life_ranges.md) | peak LIVE registers per source region, beside ptxas's allocation | the `registers` target | `--json` |
+| [`life_ranges.py`](life_ranges.md) | peak LIVE registers per source region, beside ptxas's allocation | a person | `--json` |
 | `region_ledger.py` | executed instructions and stall samples per COMPONENT, against the kernel's budget file | a person, attributing a phase | `--json` |
 | [`budgets.md`](budgets.md) | the budget's form and price table: an instruction budget by class, per MMA (KERNEL_STANDARDS §29); no `budgets/` directory exists yet, each kernel's budget file is owed | `region_ledger.py`, the lab | — |
 | [`bank_model.py`](bank_model.md) | the shared-memory wavefronts a warp instruction costs, from its lanes' byte addresses (§30) | a person, before a GPU run; the lab | — |

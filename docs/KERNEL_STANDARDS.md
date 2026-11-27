@@ -257,13 +257,14 @@ allowlist is one entry a call site, each citing a graph rule whose action runs t
 WHAT STAYS OUTSIDE THE GRAPH, and why (the only clauses; a step outside the graph that none of them names moves into a
 graph rule):
 - (a) THE PROFILER, on the host that grants its counters: `ncu` runs from the tool that reads its counters (`tools/lab.py`,
-  `tools/overlap_gate.py`, `tools/pipe_counters.py`, `tools/stall_census.py`) on the host whose driver grants them, which a sandboxed action
+  `tools/overlap_gate.py`) on the host whose driver grants them, which a sandboxed action
   does not choose and a rented host may refuse (Blake, 2026-11-07: "can we not start with vast, and then when we actually need to
   profile etc, we can find the best path forward"; §16 addendum 4 above: a gate that reads profiler counters runs on a host that grants them).
 - (b) MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as
   machine-wide locks, which Bazel cannot give an action: the timing session's program (fsla-devtools'
-  `fsla_devtools.timing.session`, which the run target `bazel run //measure:session_entmax` starts), and the instruments' workers
-  (`measure/executors.py`'s `pytest_tier`, and `fsla_devtools.build`'s, which `bazel run //:measure` triggers) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
+  `fsla_devtools.timing.session`, which the run target `bazel run //measure:session_entmax` starts), an instrument on the
+  device (`fsla_devtools.instrument`, which its store target's run starts: `bazel run //measure:store_oracle_tier`), and the
+  declared build system's workers (`fsla_devtools.build`'s, which fsla-bench's root runs) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
   believe we made it that way for specific reaosn and gaps in bazel").
 - (c) THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own
   compute-sanitizer), and `tools/sanitize_oracle.py` runs each (family, tool) pair as its own compute-sanitizer-wrapped pytest process under the GPU

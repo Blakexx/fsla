@@ -23,9 +23,8 @@ TOOLS = {
                  "or `bazel build //:static_manifest` (the library's, every rule's count at every kernel)",
     "nvdisasm": "`bazel run //tools:lab -- sass <name> [REGEX] [--full]`, `bazel build //csrc/fsla:<unit>_sass` (a unit's SASS as text) "
                  "or `bazel build //:static_manifest` (the library's, every rule's count at every kernel)",
-    "ncu": "`bazel run //tools:lab -- ncu <name> --metric M` (a lab row) or `bazel run //:measure -- run declare.py:all` "
-           "(a declared measurement)",
-    "nsys": "`bazel run //:measure -- run declare.py:all` (a declared measurement) or `bazel run //tools:lab -- run <name>`",
+    "ncu": "`bazel run //tools:lab -- ncu <name> --metric M` (a lab row)",
+    "nsys": "`bazel run //tools:lab -- run <name>` (a lab row) or `bazel run //measure:session_entmax` (a declared timing)",
     "compute-sanitizer": "`bazel test //tests:sanitizer` (the sanitizer lane, which passes the pinned toolkit's own)",
     "cmake": "`bazel run //:library` (the graph builds the extension)",
     "make": "`bazel run //:library` (the graph builds the extension)",

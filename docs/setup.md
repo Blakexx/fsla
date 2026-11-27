@@ -188,12 +188,11 @@ way it does on the bare host — the container adds no scheduling of its own. Th
 ## 6. Measure this checkout
 
 ```bash
-bazel run //:measure -- run declare.py:all --only 'fsla/support'
+bazel run //measure:store_static_manifest
 bazel run //measure:session_entmax
 ```
 
-fsla-devtools' build system runs this checkout's declarations (`declare.py`): the build graph's library
-(`bazel run //:library`, whose build runs the SASS gate) and the realized support, stored. The session builds the entmax solve's timing entry on its layer cell
+The first builds the graph's library (whose build runs the SASS gate) and records its static manifests. The session builds the entmax solve's timing entry on its layer cell
 (`measure/BUILD.bazel`) and times it under the GPU and clock locks, stored as one `timing/session` record. A member
 this binary cannot run is recorded as that member's failure in the session's output, not skipped, and a session in
 which nothing set up fails -- which is the check this step stands in for: that the graph's build in the container

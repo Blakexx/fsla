@@ -401,7 +401,8 @@ _READERS = rule("every graph action and run target that reads SASS hands its too
                 "Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits.")
 _SANITIZER = clause("c", "THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own")
 _RATIFY = rule("//:ratify (`ratify_run`) and the census tests (`census_test`), on the graph's ptxas (`ratify.cuda_bin`)", "ONE toolchain location for nvcc and ptxas, the build's own")
-_MEASURE = clause("b", "MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as")
+_ORACLE_TIER = rule("//measure:oracle_tier (`instrument`), run on the device by its store target `//measure:store_oracle_tier`",
+                    "THE ORACLE TIER ON THE DEVICE (`oracle_tier.py`)")
 _PROFILER = clause("a", "THE PROFILER, on the host that grants its counters")
 
 #: ONE ENTRY A CALL SITE -- (file, the function it is in, the tool) -- NAMING WHAT RUNS IT, no baseline: an entry that matches no site fails
@@ -423,15 +424,13 @@ ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("tools/sanitize_oracle.py", "main", "compute-sanitizer"): _SANITIZER,
     ("tools/sanitize_oracle.py", "run_one", "compute-sanitizer"): _SANITIZER,
     ("tools/sanitize_oracle.py", "run_absent", "pytest"): _SANITIZER,
-    ("measure/executors.py", "pytest_tier", "pytest"): _MEASURE,
+    ("measure/oracle_tier.py", "tier", "pytest"): _ORACLE_TIER,
+    ("measure/oracle_tier.py", "tier", "temporary directory"): _ORACLE_TIER,
     ("tools/lab.py", "counters_of", "ncu"): _PROFILER,
     ("tools/lab.py", "ncu_counters", "ncu"): _PROFILER,
     ("tools/lab.py", "ledger", "ncu"): _PROFILER,
     ("tools/lab.py", "ledger_dumps", "ncu"): _PROFILER,
     ("tools/overlap_gate.py", "counters", "ncu"): _PROFILER,
-    ("tools/pipe_counters.py", "measure", "ncu"): _PROFILER,
-    ("tools/stall_census.py", "measure", "ncu"): _PROFILER,
-    ("tools/stall_census.py", "measure", "temporary directory"): _PROFILER,
     ("tools/wheels.py", "check", "pip install"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
     ("tools/wheels.py", "check", "temporary directory"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
 }

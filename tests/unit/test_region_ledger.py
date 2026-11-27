@@ -1,6 +1,6 @@
-"""The region ledger's function map (`tools/region_ledger.py`, docs/internals/tools/stall_census.md): every definition
-form the kernel sources use starts a function -- a `__host__ __device__ constexpr` helper missed books its lines to the
-definition before it -- and no statement inside a body does.
+"""The region ledger's function map (`tools/region_ledger.py`, docs/internals/tools/budgets.md#building-a-budget): every
+definition form the kernel sources use starts a function -- a `__host__ __device__ constexpr` helper missed books its
+lines to the definition before it -- and no statement inside a body does.
 """
 from __future__ import annotations
 

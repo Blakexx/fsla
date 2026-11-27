@@ -1,11 +1,18 @@
 """THE GRAPH'S RULES: the generated headers for a build's parameters, and the library
 -- `fsla_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which stay in the graph's output (`.bazel/bin`)
 (docs/build-graph.md#compile); the checks -- over the tree's files, of the commit, and over each unit's own compile
-(docs/build-graph.md#checks); and the timing entries and sessions (docs/measurement.md)."""
+(docs/build-graph.md#checks); and the timing entries and sessions, the instruments and the records' stores
+(docs/measurement.md)."""
 
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-load("@fsla_devtools//bazel:measure.bzl", _interleaved_timing = "interleaved_timing", _timing_entry = "timing_entry")
+load(
+    "@fsla_devtools//bazel:measure.bzl",
+    _instrument = "instrument",
+    _interleaved_timing = "interleaved_timing",
+    _results_store = "results_store",
+    _timing_entry = "timing_entry",
+)
 load(
     "@fsla_devtools//bazel:rules.bzl",
     _checkout_test = "checkout_test",
@@ -689,6 +696,16 @@ def timing_entry(name, **kwargs):
 #: an interleaved session over timing entries, stored by `bazel run` (docs/measurement.md#sessions)
 interleaved_timing = _interleaved_timing
 
+def instrument(name, device = False, **kwargs):
+    """AN INSTRUMENT (docs/measurement.md#instruments): a tool's JSON over the files it reads, on the environment's
+    interpreter; `device`, on the machine's device, keyed on the devices' identity and run by its store target."""
+    _instrument(name = name, venv = VENV, devices = Label("@host_gpu//:identity.txt") if device else None, **kwargs)
+
+def results_store(name, **kwargs):
+    """A BUILD OUTPUT'S RECORD (docs/measurement.md#instruments): `bazel run` stores each of its files unless the store
+    already holds it."""
+    _results_store(name = name, venv = VENV, python = Label("@fsla_env//:python"), **kwargs)
+
 _LAB_RUN = """\
 #!/bin/bash
 # a tool that reads compiled code through warpline or the lab's records, as a run target (bazel/defs.bzl's lab_run): {tool} in the checkout, on the
@@ -710,9 +727,8 @@ export FSLA_DATA="$data"
 def _lab_run_impl(ctx):
     package, files = warpline_root(ctx, ctx.attr.library) if ctx.attr.library else (None, [])
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    what = "-m " + shell.quote(ctx.attr.module) if ctx.attr.module else shell.quote(ctx.attr.tool)
     ctx.actions.write(script, _LAB_RUN.format(
-        tool = what,
+        tool = shell.quote(ctx.attr.tool),
         data = shell.quote(ctx.file.data.short_path),
         package = 'package="$(readlink -f %s)"\n' % shell.quote(package.short_path) if package else "",
         warpline = 'export FSLA_WARPLINE_PYTHON="$(dirname "$(dirname "$package")")"\n' if package else "",
@@ -726,9 +742,8 @@ lab_run = rule(
         "library": attr.label(doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`); none for a tool that reads records only"),
         "data": attr.label(default = "@fsla_data//:root", allow_single_file = True, doc = "the pinned data, by its root's BUILD file (MODULE.bazel's `environment.data`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker, or the lab's records"),
-        "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, the measurements this checkout declares)"),
     },
-    doc = "The lab (`tools/lab.py`, or `tool`: the floor model; or `module`: the measurements) run by `bazel run` in the checkout, handed the " +
+    doc = "The lab (`tools/lab.py`, or `tool`: the floor model) run by `bazel run` in the checkout, handed the " +
           "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
 )
 

@@ -23,7 +23,7 @@ def run(command):
     ("ptxas -arch=sm_90a x.ptx", "//csrc/fsla:<unit>_sass"),
     ("nvdisasm f.cubin", "//:static_manifest"),
     ("ncu --metric m ./x", "//tools:lab -- ncu"),
-    ("nsys profile ./x", "//:measure"),
+    ("nsys profile ./x", "//tools:lab -- run"),
     ("compute-sanitizer ./x", "//tests:sanitizer"),
     ("cmake -B build", "//:library"),
     ("cd build && make -j8", "//:library"),

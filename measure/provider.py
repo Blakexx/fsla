@@ -8,8 +8,7 @@ and returns a builder for every arm this checkout runs on it, or refuses the cel
   other than the built set), or lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): a narrowed binary
   carries a subset of the tree, and its own generated table is that subset, so the record is what refuses it;
 - data that is neither kind.
-`measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
-through `oneshot_argv`.
+`measure/executors.py`'s timing entry calls it on the cell a registration hands it.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
 binary carries at the cell's shape (the carry arm the prefill launch function selects for the cell's call for `prefill`, the decode arm for
 `decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
@@ -28,7 +27,6 @@ was built (docs/measurement.md).
 from __future__ import annotations
 
 import os
-import sys
 from functools import partial
 from pathlib import Path
 
@@ -200,33 +198,3 @@ def _layer_fixture(spec, construction):
     from measure.cells.layer import build
 
     return build(spec, construction)
-
-
-def oneshot_argv(cell: str, arm: str) -> list[str]:
-    """One untimed launch of `arm` on `cell` by this checkout's runner, under this interpreter: what a profiler wraps.
-    The arm is built exactly as a comparison builds it, so what a profile counts is the launch a comparison times."""
-    #: AS A MODULE, from the checkout: a package file run by path has its own directory for a root and cannot import
-    #: its package (the `measure/` rename turned every profiled launch into `No module named 'measure'`)
-    return [sys.executable, "-m", "measure.provider", "--oneshot", cell, arm]
-
-
-def _oneshot(cell: str, arm: str) -> None:
-    import torch
-    from fsla_devtools.cells import central
-
-    from measure.cells import by_name
-
-    if cell not in central().cells:
-        raise SystemExit(f"{cell!r} is not a central cell (fsla_devtools.cells)")
-    offered = arms(by_name(cell))
-    if arm not in offered:
-        raise SystemExit(f"{cell}: this checkout runs no arm {arm}; it runs {sorted(offered)}")
-    offered[arm]().call()
-    torch.cuda.synchronize()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] != "--oneshot":
-        raise SystemExit("usage: provider.py --oneshot CELL ARM")
-    sys.path[:0] = [str(CHECKOUT)]
-    _oneshot(sys.argv[2], sys.argv[3])

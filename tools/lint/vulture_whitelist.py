@@ -40,10 +40,9 @@ class _Whitelist:
 
     # fsla_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
     # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
-    # `run_tool`, `timed`, `read_clock`).
+    # `timed`, `read_clock`).
     compile_kernel = None
     probe_environment = None
-    run_tool = None
     timed = None
     read_clock = None
 
@@ -53,7 +52,6 @@ class _Whitelist:
     # every carry oracle test asks first (docs/build.md, KERNEL_STANDARDS: the extension trap); the tests that call them
     # land with the carry's components, and the guards are kept rather than re-derived then.
     assert_fresh_binary = None
-    pytest_tier = None  # `measure/executors.py`, named by `declare.py`'s oracle-tier target
 
     # torch calls `forward` through `Module.__call__`, never by name: every `nn.Module` in the tree defines one and
     # none of them is called explicitly. 13 sites, measured 2026-09-15 (`fsla/layer.py`, `fsla/routing/`'s decay,
@@ -94,8 +92,8 @@ class _Whitelist:
 _ = _Whitelist()
 _referenced = (_.pytestmark, _.pytest_addoption, _.pytest_configure,
                _.pytest_collection_modifyitems, _.pytest_pyfunc_call, _.pytest_terminal_summary,  # ruff B018: a bare attribute is "useless"
-               _.compile_kernel, _.probe_environment, _.run_tool, _.timed, _.read_clock,
+               _.compile_kernel, _.probe_environment, _.timed, _.read_clock,
                _.forward, _.poison_torch_memory, _._gpu_lock_held, _._host_budget_worker_slot, _._take_gpu_lock,
                _.union_table, _.v_row_bytes, _.y_dtype, _.token_bit, _.Activation, _.state_size, _.sequence_length,
-               _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary, _.pytest_tier,
+               _.external_attr, _.compress_type, _.whitespace_split, _.commenters, _.assert_fresh_binary,
                _.build_wheel, _.build_sdist, _.build_editable, _.dont_write_bytecode)

@@ -16,17 +16,19 @@ libraries fsla is compared against. A cell names nothing fsla runs it with. `mea
   solve or a decode step through the layer. A layer arm's fixture builds each part (the layer, the inputs, the produced
   routes) when the arm first reads it.
 
-**`BUILD.bazel` — THE TIMING ENTRIES AND SESSIONS.** Each `timing_entry` is one executor of `executors.py` on central
-cells (`@fsla_cells//:<cell>`) in this tree's bundle; each `interleaved_timing` is a session over entries, measured and
-stored by `bazel run` (`bazel run //measure:session_entmax`: the entmax solve on the pinned layer cell).
+**`BUILD.bazel` — THE TIMING ENTRIES AND SESSIONS, THE INSTRUMENTS AND THE RECORDS' STORES.** Each `timing_entry` is
+one executor of `executors.py` on central cells (`@fsla_cells//:<cell>`) in this tree's bundle; each
+`interleaved_timing` is a session over entries, measured and stored by `bazel run` (`bazel run //measure:session_entmax`:
+the entmax solve on the pinned layer cell). `oracle_tier` is an instrument on the device (`oracle_tier.py`: the oracle
+battery's counts, failed cases and margins), and each `results_store` records a build output or an instrument:
+`store_static_manifest` the library's static manifests (`//:static_manifest`), `store_oracle_tier` the oracle tier, run
+on the device first (docs/measurement.md#instruments).
 
 **`measure/executors.py` — WHAT FSLA'S TIMING ENTRIES AND DECLARATIONS RUN.** `timed` (an arm by name) and
 `read_clock` are the timing entries' executors. The repository root's `declare.py` declares this checkout's targets for
-fsla-devtools' build system (`fsla_devtools.build`): its build, the machine facts, its instruments (the
-realized support; the SASS gate's static manifest is the library's build output, `//:static_manifest`; the register walk, phase clock, pipe counters, stall census and timeline are tools a kernel with a schedule takes a row of in `tools/kernel_targets.py`), and,
-for fsla-bench's root, which loads it from every checkout it measures, every bench subject as a timing registration on
-the central cells it takes and the clock reader. `bazel run //:measure -- run declare.py:all` runs this checkout's
-instruments and diffs.
+fsla-devtools' build system (`fsla_devtools.build`) for fsla-bench's root, which loads it from every checkout it
+measures: its build, the machine facts, its diff sides, every bench subject as a timing registration on the central
+cells it takes, and the clock reader.
 
 **`measure/lab/` — THE LAB.** Small CUDA experiments on the machine itself (what a pipe costs beside the tensor pipe,
 what ptxas does to a pattern), each a `experiments/<name>.cu` on the kit `lab.cuh`, compiled, SASS-gated, timed and
@@ -52,6 +54,6 @@ ordered samples; whether a stored difference is a regression is `bazel run //:re
 
 ```bash
 bazel run //measure:session_entmax
-bazel run //:measure -- run declare.py:all --only 'fsla/support'
+bazel run //measure:store_oracle_tier
 ```
 

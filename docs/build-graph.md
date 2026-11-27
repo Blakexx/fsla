@@ -12,7 +12,9 @@ test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are
 (`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). A timing session is a run
 target (`bazel run //measure:session_entmax`, [`measurement.md`](measurement.md#sessions)): the graph builds every
 entry's bundle and the session's manifest, and the session program it starts holds the GPU, the host budget and the
-clock as machine-wide locks, which Bazel cannot do for an action; the instruments and diffs are `fsla_devtools.build`'s.
+clock as machine-wide locks, which Bazel cannot do for an action. An instrument's record is a run target too
+(`bazel run //measure:store_oracle_tier`, [`measurement.md`](measurement.md#instruments)): one on the device runs in the
+run, never in a build, which holds the host budget; fsla-bench's diffs are `fsla_devtools.build`'s.
 
 - <a id="stamp"></a>THE BUILD IS STAMPED: `.bazelrc` names `bazel/status.sh` as the workspace status command, which
   writes the commit, the branch, the checkout's directory name and the sha256 of the uncommitted tracked diff (`git diff
@@ -347,7 +349,8 @@ names one).
     bazel run //tools/lint:ratchet -- <lint> --shrink               # a ratchet's baseline, shrunk with its fixes
     bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
     bazel run //measure:session_entmax                              # a timing session, measured and stored
-    bazel run //:measure -- run declare.py:all --only <glob>        # the instruments and diffs (fsla-devtools' build system)
+    bazel run //measure:store_oracle_tier                           # an instrument on the device, run and recorded
+    bazel run //measure:store_static_manifest                       # a build output recorded, unless the store holds it
     bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
     bazel run //:tripwire -- --tree                                 # the content checks over every tracked file of HEAD
 
