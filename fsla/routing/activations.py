@@ -28,7 +28,7 @@ with a ROW, and the row is the only place the properties live.
 
 | column | question it answers | who reads it |
 |---|---|---|
-| `exact_zeros` | does it produce exact structural zeros, not merely small values? | `fsla.routing.types.activation_walks` (which levels a side walks by lists, the producer's walk rule carried by the call's descriptor; and which prefill level-sides get a mask), the solve's support words (`fsla.routing.projection.RouterLayout`), the declaration's refusal (`fsla.routing.producer.Routing`) of an untied read and its write both making zeros on one level |
+| `exact_zeros` | does it produce exact structural zeros, not merely small values? | `fsla.routing.types.activation_walks` (which levels a side walks by lists, the producer's walk rule carried by the call's descriptor; and which prefill level-sides get a mask), the solve's support words (`fsla.routing.projection.RouterLayout`) |
 | `nonnegative` | is every output entry `>= 0`? | `fsla.routing.types.Topology`, which refuses a level-side whose activation is not: v1's routing is nonnegative and its readout normalized (docs/api.md section 2.3) |
 
 A column is kept only while something reads it. Whether a map's output sums to 1 is not

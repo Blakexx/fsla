@@ -173,12 +173,15 @@ def test_mass_decay_accepts_every_ratified_activation():
         LeafMassDecay(dials=(torch.full((1, 4), 0.5),)).validate_against(topology)
 
 
-def test_two_exact_zero_sides_still_require_one_shared_solve():
-    """Stated against the `exact_zeros` column: an untied read that makes zeros over a write that does is refused, and
-    the tie is the one solve that serves both."""
-    with pytest.raises(ValueError, match="exact zeros"):
-        fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((entmax(1.5),),))
-    fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((tied(),),))
+def test_two_exact_zero_sides_of_a_level_are_two_solves_untied_and_one_solve_tied():
+    """Stated against the `exact_zeros` column: an untied read that makes zeros over a write that does is its own solve
+    with its own support words and its own columns of the projection; a tied one has neither."""
+    untied = fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((entmax(1.5),),)).layout(1)
+    assert (untied.write_support_offsets, untied.read_support_offsets) == ((0,), (0,))
+    assert untied.read_columns(0, 0) == slice(4, 8) and untied.packed_router_width == 8
+    shared = fsla.Routing(topology=(4,), write=(entmax(1.5),), read=((tied(),),)).layout(1)
+    assert (shared.write_support_offsets, shared.read_support_offsets) == ((0,), (-1,))
+    assert shared.read_columns(0, 0) is None and shared.packed_router_width == 4
 
 
 # --- no case list may exist outside the registry -----------------------------

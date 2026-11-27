@@ -76,10 +76,11 @@ def test_an_activation_whose_row_is_not_nonnegative_is_refused(monkeypatch):
 
 
 @pytest.mark.parametrize("read_alpha,write_alpha", [(1.5, 1.5), (1.5, 2.0)])
-def test_an_untied_sparse_read_over_a_sparse_write_is_refused(read_alpha, write_alpha):
-    with pytest.raises(ValueError, match="tied"):
-        Routing(topology=(4,), write=(entmax(write_alpha),), read=((entmax(read_alpha),),))
-    Routing(topology=(4,), write=(entmax(write_alpha),), read=((tied(),),))
+def test_an_untied_sparse_read_over_a_sparse_write_is_declared_as_two_solves(read_alpha, write_alpha):
+    untied = Routing(topology=(4,), write=(entmax(write_alpha),), read=((entmax(read_alpha),),))
+    assert untied.columns(1) == 4 + 4 + untied.gain_columns and untied.layout(1).tied_heads(0) == ()
+    one = Routing(topology=(4,), write=(entmax(write_alpha),), read=((tied(),),))
+    assert one.columns(1) == 4 + one.gain_columns and one.layout(1).tied_heads(0) == (0,)
 
 
 def test_the_routing_refuses_its_malformed_declarations_by_name():

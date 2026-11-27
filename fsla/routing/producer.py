@@ -25,12 +25,7 @@ import torch.nn as nn
 
 from fsla.routing.projection import RouterLayout
 from fsla.routing.side_gain import GainConfig
-from fsla.routing.types import (
-    RoutingActivation,
-    Tied,
-    Topology,
-    activation_properties,
-)
+from fsla.routing.types import RoutingActivation, Tied, Topology
 
 __all__ = ["Routing"]
 
@@ -55,8 +50,9 @@ class Routing:
         bias: a learned bias on the routing projection.
 
     Construction validates the whole declaration -- every activation a registry row, nonnegative and one the producer
-    solves, every read tuple the topology's depth, a width of at least 2, and no level whose untied read and whose
-    write both make exact zeros (tie it) -- so an unbuildable model fails here and never inside a forward. The read
+    solves, every read tuple the topology's depth and a width of at least 2 -- so an unbuildable model fails here and
+    never inside a forward. A level whose untied read and whose write both make exact zeros is two solves with two
+    supports, which nothing makes overlap; it is allowed. The read
     count against the layer's group is :meth:`layout`'s.
     """
 
@@ -88,10 +84,6 @@ class Routing:
                 if type(entry) is Tied:
                     continue
                 _solved(entry, f"Routing.read[{head}][{level}]")
-                if activation_properties(entry).exact_zeros and topology.can_zero("write", level):
-                    raise ValueError(
-                        f"Routing.read[{head}][{level}] and Routing.write[{level}] both make exact zeros from two "
-                        "solves: a level whose two sides are sparse is ONE solve -- tie the read entry (`tied()`)")
         if type(self.gain) is not bool:
             raise TypeError(f"gain must be a bool, got {self.gain!r}")
         if type(self.bias) is not bool:

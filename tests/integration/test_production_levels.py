@@ -81,7 +81,7 @@ def _layout(widths, write, read, group=1) -> RouterLayout:
 
 
 #: the shapes every solve gate sweeps
-SHAPES = ("tied", "mixed_per_level", "dense_only", "grouped")
+SHAPES = ("tied", "mixed_per_level", "dense_only", "both_sparse", "grouped")
 
 
 def _routings(alpha: float) -> dict[str, RouterLayout]:
@@ -91,11 +91,13 @@ def _routings(alpha: float) -> dict[str, RouterLayout]:
         "tied": _layout((4, 5), (entmax(alpha), softmax()), ((tied(), softmax()),)),
         "mixed_per_level": _layout((3, 5), (softmax(), entmax(alpha)), ((entmax(alpha), softmax()),)),
         "dense_only": _layout((4,), (softmax(),), ((softmax(),),)),
-        # THREE READ HEADS a write head, each by its own tuple: level 0 tied on heads 0 and 2 (the write solve's second
-        # output, and a copy) and softmax on head 1; level 1 entmax on head 0 (the read support words), softmax on
-        # head 1 and tied on head 2
+        # A level both of whose sides make exact zeros from TWO solves, each with its own support words
+        "both_sparse": _layout((4, 5), (entmax(alpha), softmax()), ((entmax(alpha), softmax()),)),
+        # THREE READ HEADS a write head, each by its own tuple, a level tied by one head at most: level 0 tied on head 0
+        # (the write solve's second output), softmax on head 1 and its own entmax on head 2; level 1 entmax on head 0
+        # (the read support words), softmax on head 1 and tied on head 2
         "grouped": _layout((4, 5), (entmax(alpha), softmax()),
-                           ((tied(), entmax(alpha)), (softmax(), softmax()), (tied(), tied())), group=3),
+                           ((tied(), entmax(alpha)), (softmax(), softmax()), (entmax(alpha), tied())), group=3),
     }
 
 
@@ -344,7 +346,7 @@ def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind, capsys):
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "grouped"])
+@pytest.mark.parametrize("shape", ["tied", "mixed_per_level", "both_sparse", "grouped"])
 def test_the_two_lowerings_agree_on_exact_ties(alpha, shape, capsys):
     """Exact ties, where the oracle cannot arbitrate: the closed forms must still agree.
 
@@ -810,6 +812,23 @@ def test_the_package_imports_no_triton_and_declares_none():
     declared = text.split("dependencies    = ", 1)[1].split("\n", 1)[0]
     assert "triton" not in declared, (
         f"pyproject.toml still declares a triton dependency: {declared}")
+
+
+@_CUDA
+def test_a_level_several_read_heads_tie_runs_forward_and_refuses_its_gradient():
+    """Heads 0 and 2 tie level 0: the forward gives each its write head's rows (the solve's second output, and a copy);
+    a call that requires the gradient is refused by name, because the backward adds two cotangents and this level has
+    three (docs/open-work.md row A-m)."""
+    layout = _layout((4, 5), (entmax(1.5), softmax()), ((tied(), softmax()), (softmax(), softmax()), (tied(), softmax())),
+                     group=3)
+    torch.manual_seed(0)
+    logits = torch.randn(2, 40, layout.packed_router_width, device="cuda").to(torch.bfloat16)
+    reads, writes, _support = production_routing_levels(logits, layout)
+    by_head = reads[0].view(2, 3, 40, 4)
+    assert torch.equal(by_head[:, 0], writes[0]) and torch.equal(by_head[:, 2], writes[0])
+    assert not torch.equal(by_head[:, 1], writes[0])
+    with pytest.raises(NotImplementedError, match="tied by several read heads"):
+        production_routing_levels(logits.clone().requires_grad_(), layout)
 
 
 @_CUDA

@@ -211,8 +211,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
     rows at stream ``(b * H_w + w) * G + g`` -- the public ``[B, T, H, ·]`` as a permute -- and each solve of head ``g``
     writes the strided view of its rows (:func:`_head`), whose streams are the logits' ``b * H_w + w``. A level's write
     solve writes the first tied head's rows as its second output; a further tied head's rows are copied from the write
-    side's, and the backward hands the write solve the write side's and every tied head's incoming gradients, as the
-    two cotangents it adds (their sum's two terms where there are more than two, :func:`_two_terms`).
+    side's. The backward hands the write solve its two cotangents, the tied head's and the write side's; a level several
+    read heads tie has more than two, and its gradient is refused at the call (:func:`production_routing_levels`).
     """
 
     @staticmethod
@@ -312,14 +312,11 @@ class _ProductionLevelsFn(torch.autograd.Function):
             write_target = d_logits[..., layout.write_columns(index)]
             tied = layout.tied_heads(index)
             if tied:
-                #: the tied solve's form: the first tied head's rows; its gradient first and the write side's second,
-                #: or with several tied heads the two terms of every cotangent's sum (`_two_terms`)
+                #: the tied solve's form: the ONE tied head's rows and gradient first, the write side's second (a level
+                #: several heads tie is refused before the forward)
                 first = tied[0]
-                d_first, d_second = _head(d_read, G, first), d_write
-                if len(tied) > 1:
-                    d_first, d_second = _two_terms([d_write, *(_head(d_read, G, g) for g in tied)])
-                backward_into(layout.topology.write[index], _head(read_output, G, first), d_first, d_second,
-                              write_words, write_target)
+                backward_into(layout.topology.write[index], _head(read_output, G, first), _head(d_read, G, first),
+                              d_write, write_words, write_target)
             else:
                 backward_into(layout.topology.write[index], write_output, d_write, None, write_words, write_target)
             read_words = words_of(read_support, layout.read_support_offsets[index], width)
@@ -329,17 +326,6 @@ class _ProductionLevelsFn(torch.autograd.Function):
                     backward_into(entries[index], _head(read_output, G, g), _head(d_read, G, g), None,
                                   None if read_words is None else _head(read_words, G, g), d_logits[..., columns])
         return d_logits, None
-
-
-def _two_terms(cotangents: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-    """The sum of three or more cotangents as the TWO terms the backward kernels add in fp32: the fp32 sum's rounding
-    into the cotangents' type, and the remainder's. A sum formed in that type alone rounds at its 8 bits, and the
-    solve's Jacobian carries the rounding into the logits' gradient (docs/internals/entmax/factor.md#read-heads)."""
-    total = cotangents[0].float()
-    for cotangent in cotangents[1:]:
-        total = total + cotangent.float()
-    high = total.to(cotangents[0].dtype)
-    return high, (total - high.float()).to(cotangents[0].dtype)
 
 
 def _head(plane: torch.Tensor, group: int, head: int) -> torch.Tensor:
@@ -483,6 +469,13 @@ def production_routing_levels(
             "the CUDA routing solve takes bfloat16 logits (the kernels) or float64 logits (the torch "
             f"lowering the oracle-equivalence gate runs), got {logits.dtype}")
     if logits.is_cuda and logits.dtype is torch.bfloat16:
+        if logits.requires_grad and torch.is_grad_enabled():
+            several = [level for level in range(layout.D) if len(layout.tied_heads(level)) > 1]
+            if several:
+                raise NotImplementedError(
+                    f"the solve's backward adds two cotangents a level, and level(s) {several} are tied by several "
+                    "read heads, whose gradients are each one more: the gradient of such a level is not built "
+                    "(docs/open-work.md row A-m). The forward, without a gradient, is.")
         #: NOT `.contiguous()`: every solve entry below reads the logits through an
         #: explicit stride tuple, so the projection's routing slice -- and its head
         #: axis -- are addressable as they stand, and materializing either is a whole
