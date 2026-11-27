@@ -10,7 +10,8 @@ device function (or struct method) each SASS instruction inlines from -- against
         --budget tools/budgets/<kernel>.json --per <cta-windows in the launch>
 
 The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch
-(`docs/internals/tools/budgets.md`). Attribution (`Attribution`): the innermost frame in the kernel's sources (the
+(`docs/internals/tools/budgets.md`), read by warpline (`checked.source_page`: `ncu.source_rows`). Attribution (`Attribution`), which
+is this tree's: the innermost frame in the kernel's sources (the
 kernel's file first, then the files of its components) whose function is a budget component, walked outward no further than the
 kernel's own body (`nvdisasm --print-line-info-inline`); a frame's function is the nearest preceding definition --
 every `__device__` / `__host__` / `constexpr` function whatever its return type, `__global__` kernels, `struct`
@@ -20,14 +21,13 @@ from __future__ import annotations
 
 import argparse
 import collections
-import csv
 import json
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-import sass  # noqa: E402
+import checked  # noqa: E402
 
 #: A DEFINITION's first line, by kind: a function at column 0 (any qualifiers, any return type: a `__host__ __device__
 #: constexpr` helper missed here books its lines to the definition before it), a kernel, a struct at any depth, and a
@@ -126,10 +126,9 @@ def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
 
 def frames_map(so: Path, member: str, arch: str, kernel: str | None) -> dict[int, list[tuple[str, int]]]:
     """SASS offset -> the inline frame chain at that instruction, innermost first, as (file name, line) pairs, over the
-    one function `kernel` names (`tools/sass.py`, the one reader of the disassemblers: offsets restart in every
+    one function `kernel` names (warpline's reader of the inline listing, `checked.frames`: offsets restart in every
     function, so two kernels' maps never merge)."""
-    listing = sass.disassemble(sass.cubin(so, member, arch), "--print-line-info-inline", "-gi")
-    return sass.frames(sass.section(listing, kernel, member))
+    return checked.frames(checked.inline_listing(checked.cubin(so, member, arch)), kernel, member)
 
 
 class Attribution:
@@ -179,25 +178,14 @@ def line_map(so: Path, member: str, arch: str, source_name: str, kernel: str | N
     return out
 
 
-def read_source_counters(csv_path: Path) -> list[tuple[int, int, int, dict]]:
+def counted(csv_path: Path) -> list[tuple[int, int, int, dict]]:
     """(address, instructions executed, stall samples, stall reasons) per SASS line of an
-    `ncu --section SourceCounters --page source --print-source sass --csv` dump."""
-    rows = []
-    hdr = None
-    with csv_path.open() as f:
-        for r in csv.reader(f):
-            if r and r[0] == "Address":
-                hdr = {k: i for i, k in enumerate(r)}
-                continue
-            if hdr and len(r) == len(hdr) and r[0].startswith("0x"):
-                st = {k[6:]: int(r[hdr[k]] or 0) for k in hdr if k.startswith("stall_") and "Not Issued" not in k}
-                rows.append((int(r[0], 16), int(r[hdr["Instructions Executed"]] or 0),
-                             int(r[hdr["Warp Stall Sampling (All Samples)"]] or 0), st))
-    return rows
+    `ncu --section SourceCounters --page source --print-source sass --csv` dump, as warpline reads its source page."""
+    return [(r.address, r.executed, r.samples, r.stalls) for r in checked.source_page(csv_path).rows]
 
 
 #: a shared-memory instruction's kind for the census: a load, a write (a store or an atomic: the pipe twice a 32-bit
-#: wavefront), an asynchronous copy (its column the global lines it touched, `read_source_detail`), the rest
+#: wavefront), an asynchronous copy (its column the global lines it touched, `detailed`), the rest
 def _wave_kind(op: str) -> str:
     if op.startswith(("LDS", "LDSM")):
         return "loads"
@@ -208,30 +196,12 @@ def _wave_kind(op: str) -> str:
     return "other"
 
 
-def _num(x: str) -> int:
-    return int(x.replace(",", "")) if x not in ("", "-") else 0
-
-
-def read_source_detail(csv_path: Path) -> dict[int, tuple[str, int, int]]:
+def detailed(csv_path: Path) -> dict[int, tuple[str, int, int]]:
     """address -> (opcode, shared wavefronts, ideal shared wavefronts) per SASS line of the
     same dump: the opcode classes an instruction (HMMA or not), the wavefronts above the ideal
     are bank conflicts on a shared store or load (KERNEL_STANDARDS §22: a layout's store side is
     gated by this count) and the global lines touched on an asynchronous copy (`LDGSTS`)."""
-    out = {}
-    with csv_path.open() as f:
-        hdr = None
-        for r in csv.reader(f):
-            if r and r[0] == "Address":
-                hdr = {k: i for i, k in enumerate(r)}
-                continue
-            if hdr and len(r) == len(hdr) and r[0].startswith("0x"):
-                text = r[hdr["Source"]].strip()
-                op = text.split()[0] if text else "?"
-                if op.startswith("@"):
-                    op = text.split()[1] if len(text.split()) > 1 else op
-                out[int(r[0], 16)] = (op, _num(r[hdr["L1 Wavefronts Shared"]]),
-                                      _num(r[hdr["L1 Wavefronts Shared Ideal"]]))
-    return out
+    return {r.address: (r.opcode, r.wavefronts, r.ideal) for r in checked.source_page(csv_path).rows}
 
 
 def main() -> int:
@@ -258,9 +228,9 @@ def main() -> int:
                     help="also print one component's instructions by their innermost frame in ANY file (its helpers', "
                          "the headers'): instructions a unit, samples, opcodes, stall reasons")
     a = ap.parse_args()
-    attr = Attribution(a.so, a.member, a.arch or sass.device_arch(), a.source, a.barrier, a.kernel)
+    attr = Attribution(a.so, a.member, a.arch or checked.device_arch(), a.source, a.barrier, a.kernel)
     kernel_source = a.source[0]
-    rows = read_source_counters(a.csv)
+    rows = counted(a.csv)
     base = rows[0][0]
 
     budget_doc = json.loads(a.budget.read_text()) if a.budget else {}
@@ -291,7 +261,7 @@ def main() -> int:
             flag = f"  RED > budget {b}"
             red = True
         print(f"  {fn:22s} {n / a.per:9.0f} ({100 * n / tot:4.1f}%)  samples {100 * sm / max(1, samp):5.1f}%  {top}{flag}")
-    detail = read_source_detail(a.csv)
+    detail = detailed(a.csv)
     if a.lines:
         lo, hi = (int(x) for x in a.lines.split("-"))
         print_lines(rows, attr, detail, kernel_source, lo, hi, a.per)

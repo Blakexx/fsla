@@ -312,7 +312,7 @@ subject of review as the kernel. The timing system's and the store's own non-vac
 fsla-devtools; this repository's is `tests/unit/test_bench_provider.py`, which plants an
 iteration build of a declared arm family and another library's data, and requires each refusal by name, and
 requires that the `prefill` arm, whose carry is not built, is offered on no cell.
-`bazel run //:ratify -- --self-test` is the same discipline on the codegen side ([`ratification.md`](ratification.md)).
+The body hash's tests (`tests/unit/test_sass_bodies.py`) are the same discipline on the codegen side ([`ratification.md`](ratification.md#the-readers-fail-where-they-must)).
 
 ### Triaging a suspected stream-ordering bug
 

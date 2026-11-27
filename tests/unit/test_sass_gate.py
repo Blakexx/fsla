@@ -25,9 +25,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "bazel"))
 
 import checked  # noqa: E402
+import dev_config  # noqa: E402
 import gate_declarations  # noqa: E402
 import kernels  # noqa: E402
-import sass  # noqa: E402
 
 #: the probe, compiled by the graph's CUDA rule (tests/BUILD.bazel's `sass_gate_probe`): its one cubin
 PROBE = ROOT / "tests" / "_objs" / "sass_gate_probe" / "sass_gate_probe.pic.o"
@@ -36,8 +36,8 @@ RULES = json.loads((ROOT / "docs" / "rules.json").read_text())
 
 
 @pytest.fixture(scope="module")
-def cubin():
-    found = sass.cubins(PROBE)
+def cubin(tmp_path_factory):
+    found = checked.checker().runner.cubins(PROBE, tmp_path_factory.mktemp("cubins"), dev_config.cuda_home())
     assert len(found) == 1, found
     return found[0]
 
@@ -49,7 +49,8 @@ def declare(kernel, rule, allow, reason="the cost the probe measures"):
 def written(cubin, *stated, arms=(), source=()):
     """The probe architecture's declarations file as the library rule writes it: the stated entries, the arms (`(family, arm,
     pattern)`) as an arm family's file, the source kernels (none: a library of probes), fsla's notes, strict."""
-    arch = sass.machine(cubin)
+    #: the image's architecture, as `cuobjdump -xelf` names the cubin it writes (`<object>.<n>.sm_90a.cubin`)
+    arch = re.search(r"sm_\d+a?", cubin.name).group()
     files = [{"declarations": [], "arms": [{"arch": arch, "family": f, "arm": i, "kernel": k} for f, i, k in arms]}]
     return gate_declarations.declarations({"architectures": {arch: list(stated)}}, files, RULES, not source, list(source))[arch]
 
@@ -63,7 +64,7 @@ def check(cubin, tmp_path, doc, notices=""):
     decl, manifest, log = tmp_path / "d.json", tmp_path / "m.json", tmp_path / "ptxas.txt"
     decl.write_text(json.dumps(doc))
     log.write_text(notices)
-    argv = ["check", str(cubin), "--toolkit", str(Path(sass.tool("cuobjdump")).parents[1]), "--declare", str(decl),
+    argv = ["check", str(cubin), "--toolkit", dev_config.cuda_home(), "--declare", str(decl),
             "--ledger", str(LEDGER), "--notices", str(log), "--manifest", str(manifest)]
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -109,7 +110,7 @@ def test_the_step_lints_refuse_the_conversion_unit_and_global_memory_in_an_mma_l
 def test_a_slow_path_call_is_not_refused(cubin, tmp_path):
     """The division's slow path is a `CALL` the listing holds and the checker does not count: it is no convergence subroutine."""
     _, text, manifest = check(cubin, tmp_path, written(cubin))
-    assert "slowpath" in sass.disassemble(cubin), "the probe's division has no slow-path call: it no longer has the shape it tests"
+    assert "slowpath" in checked.inline_listing(cubin), "the probe's division has no slow-path call: it no longer has the shape it tests"
     assert counts(manifest, "divide_probe")["convergence_call"] == 0 and not any(k == "divide_probe" for k, _ in refused(text))
 
 

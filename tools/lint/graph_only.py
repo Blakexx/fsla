@@ -19,7 +19,7 @@ graph (`clause`) -- with the words of that rule or clause quoted. An entry that 
 
 A step is read from the syntax, never from the words: a Python call of `subprocess` (or `os.system`, `os.exec*`, `asyncio`'s
 subprocesses, or a runner a tool names `run`, `_run`, `sh`, ...) whose command is a list or a shell string whose first word is
-the tool (a name the file gave it, or a getter like `sass.tool("nvdisasm")`); a shell command word of a script, a
+the tool (a name the file gave it, or a getter like `dev_config.cuda_bin("cuobjdump")`); a shell command word of a script, a
 `genrule`'s `cmd` or an action's `command` in a build file. A tool named in a comment, a docstring or a string that no call
 runs is text and passes.
 
@@ -45,7 +45,7 @@ TOOLS = ("nvcc", "ptxas", "cuobjdump", "nvdisasm", "cu++filt", "ncu", "nsys", "c
 #: a word of source that names a tool as a variable or attribute (`nvcc`, `cuppfilt`), compared as a bare lower-case identifier
 _IDENT = {re.sub(r"\W", "", t): t for t in TOOLS} | {"cufilt": "cu++filt", "cuppfilt": "cu++filt", "computesanitizer": "compute-sanitizer",
                                                                          "sanitizer": "compute-sanitizer"}
-#: the calls that hand a tool's path back (`sass.tool("nvdisasm")`)
+#: the calls that hand a tool's path back (`dev_config.cuda_bin("cuobjdump")`)
 GETTERS = {"tool", "cuda_bin", "_graph_bin", "_tool", "toolkit_tool"}
 PREFIX = {"sudo", "env", "time", "nohup", "exec", "command", "nice", "stdbuf", "setsid", "timeout", "xargs"}
 SUBPROCESS_ATTRS = {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput", "system", "popen",
@@ -397,10 +397,8 @@ def clause(letter: str, quote: str) -> tuple[str, str, str]:
 
 _CUDA_UNIT = rule("bazel/cuda.bzl `cuda_unit`, whose action is this script", "THE GRAPH'S CUDA COMPILE ACTION (`bazel/cuda.bzl`'s `cuda_unit`)")
 _LAB = rule("bazel/lab.bzl `lab_experiment`, whose facts action is this script", "THE LAB'S FACTS, read in the graph (bazel/lab.bzl's `lab_experiment`")
-_READERS = rule("every graph action and run target that reads SASS hands its toolkit's disassemblers to `sass.use_graph`",
-                "Read the graph's disassemblers, and keep scratch in a directory of this process's own, removed when it exits.")
 _SANITIZER = clause("c", "THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own")
-_RATIFY = rule("//:ratify (`ratify_run`) and the census tests (`census_test`), on the graph's ptxas (`ratify.cuda_bin`)", "ONE toolchain location for nvcc and ptxas, the build's own")
+_RATIFY = rule("//:ratify (`ratify_run`) and the census tests (`census_test`), on the graph's ptxas (`ratify.cuda_bin`)", "ONE toolchain location for ptxas and the readers, the build's own")
 _ORACLE_TIER = rule("//measure:oracle_tier (`instrument`), run on the device by its store target `//measure:store_oracle_tier`",
                     "THE ORACLE TIER ON THE DEVICE (`oracle_tier.py`)")
 _PROFILER = clause("a", "THE PROFILER, on the host that grants its counters")
@@ -413,12 +411,7 @@ ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("tools/lab_facts.py", "main", "nvdisasm"): _LAB,
     ("tools/lab_facts.py", "main", "nvcc"): _LAB,
     ("tools/lab_facts.py", "main", "temporary directory"): _LAB,
-    ("tools/sass.py", "use_graph", "temporary directory"): _READERS,
-    ("tools/sass.py", "cubins", "cuobjdump"): _READERS,
-    ("tools/sass.py", "cubins", "temporary directory"): _READERS,
-    ("tools/sass.py", "sass_lines", "cuobjdump"): _READERS,
-    ("tools/sass.py", "_disassemble", "nvdisasm"): _READERS,
-    ("tools/sass_bodies.py", "bodies", "cuobjdump"): rule("//tools:sass_bodies and the census, on the graph's cuobjdump (`ratify.cuda_bin`)", "PER-INSTANTIATION SASS BODY HASHES -- the codegen-equivalence instrument"),
+    ("tools/sass_bodies.py", "bodies", "cuobjdump"): rule("//tools:sass_bodies, on the graph's cuobjdump (`dev_config.cuda_bin`)", "PER-INSTANTIATION SASS BODY HASHES -- the codegen-equivalence instrument"),
     ("tools/lint/primitives_census.py", "disassemble", "cuobjdump"): rule("//tools/lint:primitives_census (`tool_test`) over the object `cuda_unit` compiled, with the graph's cuobjdump", "the census is a test over the object's SASS, read with the graph's cuobjdump"),
     ("tools/ratify.py", "ptxas_version", "ptxas"): _RATIFY,
     ("tools/sanitize_oracle.py", "main", "compute-sanitizer"): _SANITIZER,
@@ -430,7 +423,6 @@ ALLOWLIST: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("tools/lab.py", "ncu_counters", "ncu"): _PROFILER,
     ("tools/lab.py", "ledger", "ncu"): _PROFILER,
     ("tools/lab.py", "ledger_dumps", "ncu"): _PROFILER,
-    ("tools/overlap_gate.py", "counters", "ncu"): _PROFILER,
     ("tools/wheels.py", "check", "pip install"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
     ("tools/wheels.py", "check", "temporary directory"): rule("//:wheels (`fsla_wheels`), whose install check this is (docs/build.md#wheels)", "**The wheels package the graph's library.** `bazel run //:wheels` refuses a tree with changes"),
 }

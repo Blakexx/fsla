@@ -434,32 +434,36 @@ unit_sass = rule(
 )
 
 def _census_impl(ctx):
-    units = ctx.attr.library[CudaUnitInfo].units.to_list()
+    #: the static manifests of the library's SASS gate, `<stem>.<arch>.manifest.json`: the census reads their figures
+    manifests = {f.basename.split(".")[-3]: f for f in ctx.attr.library[OutputGroupInfo].manifest.to_list()}
     tools = {
         "ptxas": ctx.file._ptxas,
         "cuobjdump": ctx.file._cuobjdump,
         "nvdisasm": ctx.file._nvdisasm,
     }
+    package, warpline = warpline_root(ctx, ctx.attr._warpline)
     record = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(record, json.encode_indent({
-        "units": [{"source": u.source, "report": u.report.short_path, "object": u.object.short_path} for u in units],
+        "manifests": {arch: f.short_path for arch, f in manifests.items()},
         "tools": {name: f.short_path for name, f in tools.items()},
+        "warpline": package.short_path.rsplit("/", 2)[0],
         "parameters": {"archs": ",".join(_value(ctx, "_archs")), "contract": _value(ctx, "_contract")},
     }) + "\n")
-    files = [record] + tools.values() + [u.report for u in units] + [u.object for u in units]
+    files = [record] + tools.values() + manifests.values() + warpline
     return [DefaultInfo(files = depset([record]), runfiles = ctx.runfiles(files = files))]
 
 ratify_census = rule(
     implementation = _census_impl,
     attrs = _setting_attrs() | {
-        "library": attr.label(mandatory = True, providers = [CudaUnitInfo], doc = "the library whose units are counted"),
+        "library": attr.label(mandatory = True, providers = [OutputGroupInfo], doc = "the library whose static manifests are read"),
         "_ptxas": attr.label(default = "@cuda_tools//:bin/ptxas", allow_single_file = True),
         "_cuobjdump": attr.label(default = "@cuda_tools//:bin/cuobjdump", allow_single_file = True),
         "_nvdisasm": attr.label(default = "@cuda_tools//:bin/nvdisasm", allow_single_file = True),
+        "_warpline": attr.label(default = "@warpline//:checker"),
     },
-    doc = "The census record (tools/ratify.py's `--graph`): each unit the library links (its source, ptxas's report, " +
-          "its object), the graph's assembler and disassemblers, and the build's " +
-          "parameters; every path relative to the runfiles' root, which holds them all.",
+    doc = "The census record (tools/ratify.py's `--graph`): the static manifest of each architecture the library's SASS gate " +
+          "wrote (warpline's), the graph's assembler and readers, the directory of warpline's package (whose reader of the " +
+          "manifest the census uses) and the build's parameters; every path relative to the runfiles' root, which holds them all.",
 )
 
 _CENSUS_TEST = """\

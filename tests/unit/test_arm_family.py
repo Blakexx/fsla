@@ -16,8 +16,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "bazel"))
 
 import arms  # noqa: E402
-import ratify  # noqa: E402
-import sass  # noqa: E402
+import sass_bodies  # noqa: E402
 
 from hardware import registry  # noqa: E402
 
@@ -55,8 +54,7 @@ def test_a_narrowed_contract_or_an_unbuilt_architecture_makes_an_iteration_build
 @pytest.mark.parametrize("arm", range(len(EXPECTED_ROWS)))
 def test_each_arm_has_a_unit_for_each_built_architecture_defining_its_own_kernel(arch, arm):
     obj = GENERATED.parent / "_objs" / f"fixture_arm_{arm}_sm_{arch}" / f"fixture_arm_{arm}.pic.o"
-    with sass.sass_lines(obj) as lines:
-        found = ratify.sass_scan(lines)
+    found = sass_bodies.bodies(obj)
     wanted = f"arm_kernelILi{arm}E"
     assert [key for key in found if wanted in key] == [key for key in found], sorted(found)
     assert found and all(key.startswith(f"sm_{arch}:") for key in found), sorted(found)

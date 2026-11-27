@@ -256,8 +256,8 @@ The commit gate (`//:graph_only`, `tools/lint/graph_only.py`) refuses the same t
 allowlist is one entry a call site, each citing a graph rule whose action runs the step or one of the clauses below.
 WHAT STAYS OUTSIDE THE GRAPH, and why (the only clauses; a step outside the graph that none of them names moves into a
 graph rule):
-- (a) THE PROFILER, on the host that grants its counters: `ncu` runs from the tool that reads its counters (`tools/lab.py`,
-  `tools/overlap_gate.py`) on the host whose driver grants them, which a sandboxed action
+- (a) THE PROFILER, on the host that grants its counters: `ncu` runs from the tool that reads its counters (`tools/lab.py`)
+  on the host whose driver grants them, which a sandboxed action
   does not choose and a rented host may refuse (Blake, 2026-11-07: "can we not start with vast, and then when we actually need to
   profile etc, we can find the best path forward"; §16 addendum 4 above: a gate that reads profiler counters runs on a host that grants them).
 - (b) MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as
@@ -792,9 +792,12 @@ latency chain, but nothing checked that one phase runs under another's stream.
 3. A LINE IS NEVER LOWERED TO ADMIT A SERIAL PHASE: a time above the line is red, and the design changes.
 4. THE SAME DEFECT AT THE WARP LEVEL: a phase whose warps stall on one dependent chain (low issue, about one eligible
    warp a scheduler) interleaves independent work into it -- the next entry, the next item's loads.
-ENFORCED: `tools/overlap_gate.py` times each kernel's perf rows and reds elapsed / max(floors) above 1.15; every
-kernel names its row, or why it has none, in `tools/coverage.json`'s `overlap` obligation (the §25 ratchet). The
-instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
+ENFORCED: warpline's `bound` checker over each kernel's run manifest reds its time (`launch/ns`) above 1.15x the
+largest of its floors, the bound written from the floor model by a Bazel action (never a hand-copied number); every
+kernel names its row, or why it has none, in `tools/coverage.json`'s `overlap` obligation (the §25 ratchet). No kernel
+has a row yet: the first is owed, and needs the kernel's stamped run manifest on its perf cell (`warpline run
+--stamps`), the Bazel action that runs the floor model on that cell and writes the `bound` declaration, and the
+comparison of the two. The floors' instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
 sustained DRAM peak (1.04x on sm_86, the branch's; the H100's reading is owed), so the DRAM floor is reachable; the tensor floor takes the product's
 calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. Per phase, item 4 is §32's: each
 phase against its predicted cycles (§32.2) and, once a family's model exists, every MMA step loop's pipe cover (§32.4).
@@ -805,9 +808,9 @@ recomputed its token's row address and its pad select (~5 an MMA), every output 
 (F2I) where one FFMA does it, and each digit's bookkeeping recomputed per use. Each was found after the fact by reading
 counts; none was budgeted before the code, and the lessons were relearned after every context compaction. So the
 method is a procedure with a gate, not a memory.
-1. BEFORE CODE, A BUDGET BY OPCODE CLASS: the step's operation count per MMA in `tools/sass.py`'s classes (mma, shared
-   load, shared store, shared atomic, global, shuffle, pack, conversion unit, float, select/compare, integer/address,
-   control), derived from the design at the declared regime: per step, plus each per-digit (per-list) and per-window
+1. BEFORE CODE, A BUDGET BY OPCODE CLASS: the step's operation count per MMA in warpline's opcode table's classes
+   (`warpline.checker.model.INSTRUCTION_CLASSES`: tensor, shared load, shared store, shared atomic, global, shuffle, pack,
+   conversion unit, float, select/compare, integer/address, control), derived from the design at the declared regime: per step, plus each per-digit (per-list) and per-window
    cost divided by the steps it amortizes over there (at alt-k4 a read digit is one step a window, so its bookkeeping
    lands on every step). The lab states it with `Bench::budget`; a production component in `tools/budgets/<kernel>.json` (owed: none exists yet).
 2. HOIST BY FREQUENCY: every value is computed at the outermost level its inputs allow -- once a kernel (a lane's

@@ -2,11 +2,12 @@
 """UNUSED-INSTANTIATION CHECK (gating).
 
 Every `__global__` FUNCTION TEMPLATE declared anywhere under `csrc/fsla/` must be instantiated in at least one unit the
-graph compiled: its mangled name is among the entry functions `ptxas -v` reported for the build's units. The census
-(`bazel/defs.bzl`'s `ratify_census`, read through `tools/ratify.py`) is the source of truth, the build's own compiles --
-a template no unit instantiates is the closed world leaking, and that is the gating finding.
+graph compiled: its mangled name is among the kernels the library's static manifests name (warpline's, one a built
+architecture: the SASS gate's own). The census (`bazel/defs.bzl`'s `ratify_census`, read through `tools/ratify.py`'s
+`compiled_entries`) is the source of truth, the build's own binary -- a template no unit instantiates is the closed world
+leaking, and that is the gating finding.
 
-SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. `ptxas -v` reports ENTRY FUNCTIONS ONLY. A
+SCOPE IS `__global__` ONLY, NOT `__device__` -- MEASURED, not assumed. The manifests' kernels are ENTRY FUNCTIONS ONLY. A
 `__device__` helper (`ops.cuh`'s `stage_run`, ...) is normally `__forceinline__` and
 inlined into every kernel that calls it; it has NO standalone symbol in a report regardless of whether it is used.
 Checking `__device__` templates the same way as `__global__` ones was tried first and produced 65 findings out of 81
@@ -162,7 +163,7 @@ def main() -> int:
 
     device_templates = declared_device_templates(CSRC)
     print(f"unused_instantiations: {len(device_templates)} template __device__ "
-          f"function(s) found -- NOT CHECKED (see module docstring: `ptxas -v` only records __global__ entry "
+          f"function(s) found -- NOT CHECKED (see module docstring: the manifests hold __global__ entry points only "
           f"points; a __device__ helper is normally inlined and has no standalone symbol to look up)")
     return 1 if findings else 0
 

@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import checked  # noqa: E402
 import lab  # noqa: E402
-import sass  # noqa: E402
 
 STEP = "HGMMA.64x16x16.F32.BF16 R24, gdesc[UR24], R24"
 LAST = STEP + ", gsb0"
@@ -19,7 +19,7 @@ WAIT = "WARPGROUP.DEPBAR.LE gsb0, 0x0"
 def body(*instructions):
     """A kernel's (address, opcode, line) as `lab.disassembled` returns them, from instruction texts."""
     lines = [f"        /*{16 * i:04x}*/                   {text} ;      /* 0x0 */" for i, text in enumerate(instructions)]
-    return [(int(m.group(1), 16), m.group(3), line) for line in lines if (m := sass.INSTRUCTION.match(line))]
+    return [(int(m.group(1), 16), m.group(3), line) for line in lines if (m := checked.checker().readers.INSTRUCTION.match(line))]
 
 
 def test_the_report_counts_what_could_precede_a_wait_by_class():

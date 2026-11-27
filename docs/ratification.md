@@ -14,17 +14,18 @@ bazel run //:ratify -- --census              # the per-kernel, per-architecture 
 bazel run //:ratify -- --census --json PATH  # the raw per-instantiation record, for arm-versus-arm diffing
 ```
 
-The census reads the units the graph's CUDA rule compiled (`//:census`, `bazel/defs.bzl`'s `ratify_census`): each unit's
-`ptxas -v` report and its object, with the graph's disassemblers -- one compile, read twice, never a recompile with a
-flag list of its own. Per kernel and architecture it prints the instantiations, their registers, the register-side CTAs
+The census reads the static manifests of the graph's library (`//:census`, `bazel/defs.bzl`'s `ratify_census`): the
+SASS gate's own reading of the binary, warpline's, with the spill bytes of the build's `ptxas -v` reports -- one compile,
+one reading, never a recompile with a flag list of its own. Per kernel and architecture it prints the instantiations, their registers, the register-side CTAs
 an SM, the spill stores and loads, and the local accesses inside a loop; the scope is the build's parameters
 (`--//:archs` and `--//:contract`), so an iteration build's census is the measurement of its subset.
 A spill is admissible when it is priced and worse than every alternative in hand, not when it is absent: the census
 makes it a number to read, and a change that moves one is read in the census before and after.
 
 It exits 1 on one thing, a launch bound the assembler discarded: `ptxas` reported *"Value of threads per SM … is out of
-range"*, so that entry compiled with no launch bound at all and the assembler was free to spend registers as it liked,
-whatever its spill count. Its disassemblers are the toolchain record's, checked before the first read.
+range"* (the checker counts it under `launch_bound_discarded`, which the SASS gate refuses too), so that entry compiled
+with no launch bound at all and the assembler was free to spend registers as it liked, whatever its spill count. The
+manifests' readers are the toolchain record's, checked before the first read.
 
 <a id="arm-switch"></a>
 ## `arm_switch`, and what the arm gate proves about it
@@ -85,16 +86,11 @@ question: whether the loaded binary's struct sizes are the ones this source decl
 
 There is no environment variable that turns any of these off.
 
-## The census's self-test
+## The readers fail where they must
 
-```bash
-bazel run //:ratify -- --self-test
-```
-
-requires the readers to **fail** where they must: the loop parser counts an in-loop `LDL` and clears a cold one, the body
-hash separates changed code and ignores listing padding, and the derivation check rejects each way its record can be
-wrong. The list is `tools/ratify.py`'s, which runs it ([`internals/tools/ratify.md`](internals/tools/ratify.md)). A
-reader whose green run is unfalsifiable says nothing, which is why the self-test is part of the tool.
+A reader whose green run is unfalsifiable says nothing. The census reads warpline's manifest, whose figures (the local
+accesses a loop holds, the spill bytes) and notice rows (the discarded bound) are warpline's tests'; the body hash
+separates changed code and ignores listing padding (`tests/unit/test_sass_bodies.py`, in the CPU tier).
 
 ## Where the record lives after the build
 

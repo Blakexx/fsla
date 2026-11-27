@@ -57,12 +57,12 @@ not automatic:
 
 ```bash
 bazel test //:gate
-bazel run //:ratify -- --self-test
+bazel run //:ratify -- --census
 bazel run //:readme_update                 # the README's generated block (the support summary)
 bazel run //:support_update                # docs/support.md's generated block (the contract, every fact)
 ```
 
-`--self-test` must still fail on every mutant it is required to reject. The
+The census must name the new architecture's instantiations and exit 0. The
 support summary and the contract tables take the new architecture's rows
 on their own — they are derived from the contract, and the gate fails if either is edited by hand.
 

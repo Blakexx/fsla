@@ -1,8 +1,8 @@
 """THE CENSUS TAKES THE BUILD'S PARAMETERS AND NOTHING ELSE.
 
-`tools/ratify.py` reads the units the graph's CUDA rule compiled (docs/internals/tools/ratify.md#graph) and runs one of
-two modes; its scope is the census record's, so it has no flag that names an architecture, a shard or an arm, and it
-holds no launch bound of its own to report.
+`tools/ratify.py` reads the static manifests of the graph's library (docs/internals/tools/ratify.md#graph) and runs one mode,
+the census; its scope is the census record's, so it has no flag that names an architecture, a shard or an arm, and it holds no
+launch bound of its own to report.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ sys.path.insert(0, str(ROOT / "tools"))
 import ratify  # noqa: E402
 
 
-def test_the_modes_are_the_census_and_the_self_test(monkeypatch, capsys):
+def test_the_one_mode_is_the_census(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["ratify.py", "--graph", "census.json", "--runfiles", "."])
     with pytest.raises(SystemExit):
         ratify.main()
-    assert "one of the arguments --census --self-test is required" in capsys.readouterr().err
+    assert "the following arguments are required: --census" in capsys.readouterr().err
 
 
 def test_the_scope_is_the_census_records(monkeypatch, capsys):
@@ -31,9 +31,3 @@ def test_the_scope_is_the_census_records(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             ratify.main()
         assert "unrecognized arguments" in capsys.readouterr().err
-
-
-def test_the_json_record_is_the_censuss(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["ratify.py", "--self-test", "--json", "x", "--graph", "c.json", "--runfiles", "."])
-    with pytest.raises(SystemExit, match="--json is the census's"):
-        ratify.main()

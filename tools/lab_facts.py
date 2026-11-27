@@ -3,7 +3,8 @@
 """THE LAB'S FACTS, read in the graph (bazel/lab.bzl's `lab_experiment`, docs/internals/tools/lab.md#graph): what one
 experiment's binary says of itself to the graph's own disassemblers, written once as the files the lab reads -- the cubin,
 `cuobjdump`'s listing and resource report, `nvdisasm`'s block graph and its listing with the frame chain, the demangled
-names, the toolkit's version line. No lab command runs a toolkit tool: it reads these.
+names, the toolkit's version line. No lab command runs a toolkit tool: it reads these. The listing's grammar is warpline's
+(`readers.FUNCTION`), handed in by the action (`FSLA_WARPLINE_PYTHON`).
 
     lab_facts.py --binary B --ptxas LOG --cuobjdump T --nvdisasm T --cuxxfilt T --nvcc T
                  --cubin O --sass O --usage O --graph O --lines O --names O --toolkit O
@@ -19,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-import sass  # noqa: E402 -- path insert must precede this import
+import checked  # noqa: E402 -- path insert must precede this import
 
 #: a mangled symbol, as the toolkit's notices name a function by it
 _MANGLED = re.compile(r"_Z[0-9A-Za-z_]+")
@@ -52,7 +53,7 @@ def main() -> int:
     a.graph.write_text(run(a.nvdisasm, "-bbcfg", "-poff", str(a.cubin)))
     a.lines.write_text(run(a.nvdisasm, "--print-line-info-inline", "-gi", str(a.cubin)))
     #: every function the listing or the notices name, demangled by the toolkit's own `cu++filt`
-    functions = [m.group(1) for line in listing.splitlines() if (m := sass.FUNCTION.match(line))]
+    functions = [m.group(1) for line in listing.splitlines() if (m := checked.checker().readers.FUNCTION.match(line))]
     named = list(dict.fromkeys([*functions, *_MANGLED.findall(a.ptxas.read_text())]))
     pretty = run(a.cuxxfilt, text="\n".join(named)).splitlines()
     a.names.write_text("".join(f"{m}\t{p}\n" for m, p in zip(named, pretty, strict=True)))

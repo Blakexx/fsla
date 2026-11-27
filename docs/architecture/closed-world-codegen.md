@@ -7,8 +7,8 @@ of time by a pinned assembler: the arms each kernel declares, the architectures
 the registry builds. A device whose architecture the binary does not carry
 is refused at launch. There is no path by which unmeasured code executes.
 
-The mechanics — the declared targets, the gates every build runs, the census, the
-self-test — are documented once, in
+The mechanics — the declared targets, the gates every build runs, the census and its
+readers' tests — are documented once, in
 [`docs/ratification.md`](../ratification.md). This document is the *why*, which
 that file deliberately does not repeat.
 

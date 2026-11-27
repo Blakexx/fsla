@@ -59,11 +59,13 @@ def _lab_experiment_impl(ctx):
     args.add("--nvcc", ctx.file._nvcc)
     for part in _FACTS:
         args.add("--" + part, parts[part])
+    package, warpline = warpline_root(ctx, ctx.attr._warpline)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [args],
-        inputs = [binary, parts["ptxas"], ctx.file._facts, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt, ctx.file._nvcc, ctx.file._sass],
+        inputs = [binary, parts["ptxas"], ctx.file._facts, ctx.file._checked, ctx.file._cuobjdump, ctx.file._nvdisasm, ctx.file._cuxxfilt, ctx.file._nvcc] + warpline,
         outputs = [parts[part] for part in _FACTS],
+        env = {"FSLA_WARPLINE_PYTHON": package.dirname.removesuffix("/warpline")},
         mnemonic = "LabFacts",
         progress_message = "Reading %s's code with the graph's disassemblers" % ctx.label.name,
     )
@@ -77,7 +79,6 @@ def _lab_experiment_impl(ctx):
     check.add("--experiment", ctx.label.name)
     check.add("--arch", _ARCH)
     check.add("--verdict", verdict)
-    package, warpline = warpline_root(ctx, ctx.attr._warpline)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [check],
@@ -100,7 +101,7 @@ _lab_experiment = rule(
         "unit": attr.label(mandatory = True, doc = "the experiment's compile (`cuda_unit`), whose diagnostics the target keeps"),
         "source": attr.label(mandatory = True, allow_single_file = [".cu"], doc = "the experiment's source, which its checks read (its header, its comments)"),
         "_facts": attr.label(default = "//tools:lab_facts.py", allow_single_file = True),
-        "_sass": attr.label(default = "//tools:sass.py", allow_single_file = True),
+        "_checked": attr.label(default = "//tools:checked.py", allow_single_file = True),
         "_check": attr.label(default = "//tools:lab_check.py", allow_single_file = True),
         "_lab_sources": attr.label(default = "//tools:lab_sources"),
         "_ledger": attr.label(default = "//tools:notice_ledger.json", allow_single_file = True),

@@ -217,7 +217,7 @@ the most.
   stores of its region. A shared access between two steps is executed by each of the warpgroup's four warps, so `s` is
   four warps' (`x 4 warps`) while `o` is the warpgroup's, once. Wavefronts are the bytes over 128.
 - `work: n instructions a step (class k, ...)` is the instructions of the region a thread executes for one step, in
-  the classes a budget is stated in (`tools/sass.py`'s `OPCODE_CLASSES`, KERNEL_STANDARDS 29.1).
+  the classes a budget is stated in (warpline's opcode table, `warpline.checker.model.INSTRUCTION_CLASSES`, KERNEL_STANDARDS 29.1).
 - A line that says a step is not read is a listing this does not parse: a defect of the report, never a pass.
   The empty group ptxas issues to hold a wait (`HGMMA ... RZ, gdesc[URZ], RZ`) is no step.
 

@@ -35,7 +35,6 @@ import kernels  # noqa: E402 -- path insert must precede this import
 
 DECLARATION = ROOT / "tools" / "coverage.json"
 SANITIZER = ROOT / "tools" / "sanitize_oracle.py"
-OVERLAP = ROOT / "tools" / "overlap_gate.py"
 REL = DECLARATION.relative_to(ROOT)
 
 
@@ -50,17 +49,6 @@ def sanitizer_rows(path: Path = SANITIZER) -> dict[str, tuple[str, bool]]:
                 rows[ast.literal_eval(key)] = (kw["test"], kw["present"])
             return rows
     raise SystemExit(f"coverage: {path.relative_to(ROOT)} has no `_FAMILIES` table to read")
-
-
-def overlap_rows(path: Path = OVERLAP) -> dict[str, str]:
-    """`{row: kernel}` off the overlap gate's `ROWS`, read by AST so the lint imports nothing of the tool's."""
-    tree = ast.parse(path.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign | ast.Assign) and any(
-                getattr(t, "id", "") == "ROWS" for t in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)):
-            return {ast.literal_eval(key): next(ast.literal_eval(k.value) for k in call.keywords if k.arg == "kernel")
-                    for key, call in zip(node.value.keys, node.value.values)}
-    raise SystemExit(f"coverage: {path.relative_to(ROOT)} has no `ROWS` table to read")
 
 
 def test_node_exists(node: str) -> bool:
@@ -88,7 +76,7 @@ def findings() -> list[str]:
     out = [f"{k.where()}: `{name}` ({k.family}) is not declared in {REL} -- declare how it meets {sorted(obligations)}"
            for name, k in sorted(source.items()) if name not in declared]
 
-    rows = {"sanitizer": sanitizer_rows(), "overlap": overlap_rows()}
+    rows = {"sanitizer": sanitizer_rows()}
     for name, entry in sorted(declared.items()):
         at = f"{REL}:{line_of(text, name)}"
         if name not in source:
@@ -108,9 +96,11 @@ def _check(name: str, obligation: str, value, at: str, rows) -> list[str]:
     if isinstance(value, dict) and ("owed" in value or value.get("exempt")):
         return []
     if obligation == "overlap":
-        if rows["overlap"].get(value) != name:
-            return [f"{at}: `{name}`'s overlap row `{value}` is not a row of tools/overlap_gate.py gating `{name}`"]
-        return []
+        #: THE OVERLAP MECHANISM HAS NO ROW YET (KERNEL_STANDARDS section 28): warpline's `bound` checker over the kernel's run
+        #: manifest, its bound written from the floor model by a Bazel action; until a kernel's first row lands, a pointer names nothing
+        return [f"{at}: `{name}`'s overlap points at {value!r}, but no kernel has an overlap row yet (KERNEL_STANDARDS section 28: "
+                f"warpline's `bound` over the kernel's run manifest, its bound written by the floor model's Bazel action) -- "
+                f"state it owed until the first row lands"]
     if obligation == "sanitizer":
         row = rows["sanitizer"].get(value)
         if row is None:

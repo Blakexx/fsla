@@ -47,9 +47,21 @@ filegroup(
         "lab.py",
         "pipe_counters.py",
         "region_ledger.py",
-        "sass.py",
     ],
 )
+
+#: THE TOOLS THAT READ COMPILED CODE THROUGH WARPLINE (`tools/checked.py`, the seam): each a run target handed the directory of
+#: warpline's package, its readers, model and flow, as the lab is (`FSLA_WARPLINE_PYTHON`): the register life ranges, the region
+#: ledger, the codegen-equivalence hashes
+[lab_run(
+    name = name,
+    library = "@warpline//:checker",
+    tool = "tools/%s.py" % name,
+) for name in [
+    "life_ranges",
+    "region_ledger",
+    "sass_bodies",
+]]
 
 #: THE TREE'S TOOLS, each a run target (bazel/defs.bzl's `tool_run`): `bazel run //tools:<name> -- <its arguments>`, in
 #: the checkout on its own venv (docs/build-graph.md#use)
@@ -60,13 +72,9 @@ filegroup(
     "arith_model",
     "bank_model",
     "kernels",
-    "life_ranges",
     "op_timeline",
-    "overlap_gate",
     "realized_support",
-    "region_ledger",
     "review_gate",
-    "sass_bodies",
     "supported",
     "wheels",
 ]]

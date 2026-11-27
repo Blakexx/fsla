@@ -48,7 +48,6 @@ from pathlib import Path
 import checked
 import pipe_counters
 import region_ledger
-import sass
 
 #: the checkout (or, in a graph action, the sandbox: a link is not followed, so what the action reads is what it declared)
 ROOT = Path(__file__).absolute().parents[1]
@@ -160,7 +159,7 @@ class Built:
 
     def functions(self) -> list[str]:
         """The binary's functions by their mangled names, as the listing spells them."""
-        return [m.group(1) for line in self.text("sass").splitlines() if (m := sass.FUNCTION.match(line))]
+        return [m.group(1) for line in self.text("sass").splitlines() if (m := checked.checker().readers.FUNCTION.match(line))]
 
     def toolkit(self) -> str:
         """The toolkit's version line (`nvcc --version`'s last)."""
@@ -441,11 +440,12 @@ def kernels(built: Built) -> dict[str, dict]:
     """Per kernel (demangled): its opcode counts, registers and local bytes."""
     ops: dict[str, Counter] = {}
     current = None
+    readers = checked.checker().readers
     for line in built.text("sass").splitlines():
-        if m := sass.FUNCTION.match(line):
+        if m := readers.FUNCTION.match(line):
             current = m.group(1)
             ops[current] = Counter()
-        elif current and (m := sass.INSTRUCTION.match(line)):
+        elif current and (m := readers.INSTRUCTION.match(line)):
             ops[current][m.group(3)] += 1
     regs: dict[str, dict] = {}
     name = None
@@ -504,17 +504,20 @@ def disassembled(built: Built) -> dict[str, list[tuple[int, str, str]]]:
     """Per kernel (mangled): its instructions as (address, opcode, line)."""
     code: dict[str, list[tuple[int, str, str]]] = {}
     current = None
+    readers = checked.checker().readers
     for line in built.text("sass").splitlines():
-        if m := sass.FUNCTION.match(line):
+        if m := readers.FUNCTION.match(line):
             current = m.group(1)
             code[current] = []
-        elif current and (m := sass.INSTRUCTION.match(line)):
+        elif current and (m := readers.INSTRUCTION.match(line)):
             code[current].append((int(m.group(1), 16), m.group(3), line))
     return code
 
 
-#: the warpgroup steps among the opcode table's MMAs (`tools/sass.py`): the asynchronous ones, float and integer
-WGMMA = tuple(op for op in sass.OPCODE_CLASSES["mma"] if op.endswith("GMMA"))
+#: THE OPCODE TABLE, warpline's one (`warpline.checker.model.INSTRUCTION_CLASSES`): class -> opcode prefixes
+TABLE = checked.checker().model.INSTRUCTION_CLASSES
+#: the warpgroup steps among the table's tensor steps: the asynchronous ones
+WGMMA = tuple(op for op in TABLE["tensor"] if op.endswith("GMMA"))
 
 #: an instruction's operands
 OPERANDS = re.compile(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?[A-Z0-9_.$]+\s+(.*?)\s*;")
@@ -548,7 +551,7 @@ def tensor_waits(body: list[tuple[int, str, str]]) -> list[tuple[int, int]]:
 
 
 #: a step's shape, accumulator type and first register (`HGMMA.64x16x16.F32.BF16 R24, ...`: the opcode's `x`s are
-#: past the opcode grammar `sass.INSTRUCTION` reads, so the step's operands are read from its line here)
+#: past the opcode warpline's `readers.INSTRUCTION` groups, so the step's operands are read from its line here)
 STEP_SHAPE = re.compile(r"\b[HI]GMMA\.64x(\d+)x\d+\.(F16|F32|S32)\S*\s+R(\d+)")
 
 
@@ -699,7 +702,7 @@ def check(built: Built, table: dict[str, dict]) -> list[str]:
             if count(info["ops"], "|".join(WGMMA)) and any(re.search(b["kernel"], k) for b in budgets(built.binary)):
                 failures.append(f"{k}: a budgeted wgmma kernel -- its per-MMA divisor is read from counters the "
                                 "hopper model does not name yet (owed with that model): state `Bench::exempt`")
-            if count(info["ops"], "|".join(sass.OPCODE_CLASSES["mma"])) and not any(re.search(b["kernel"], k) for b in stated):
+            if count(info["ops"], "|".join(TABLE["tensor"])) and not any(re.search(b["kernel"], k) for b in stated):
                 failures.append(f"{k}: an MMA kernel with no instruction budget (KERNEL_STANDARDS 29: `Bench::budget` "
                                 "-- `HMMA` and `IMMA` kernels -- or `Bench::exempt` with its reason)")
     return failures
@@ -754,7 +757,8 @@ def executed_classes(raw: dict[str, dict], units: dict[str, float] | None = None
         n = per_unit(c, k, units)
         per: dict[str, float] = {}
         for op, v in c["opcodes"].items():
-            per[sass.opcode_class(op)] = per.get(sass.opcode_class(op), 0.0) + v / n
+            kind = checked.checker().model.instruction_class(op)
+            per[kind] = per.get(kind, 0.0) + v / n
         per["_wavefronts"] = c["wavefronts"] / n
         per["_conflicts"] = c["conflicts"] / n
         found[k] = per
@@ -1092,7 +1096,7 @@ def carried(name: str, source: Path, into: Path, opts) -> int:
     """A PACKED EXPERIMENT RUN ON THIS CARD, a box with no toolkit to build it: the pack's binary by its digest, on the
     pack's architecture, through `measure` -- its counters read where the box holds the pinned profiler, the host
     declared where it grants none; its build facts are the pack's."""
-    arch = sass.device_arch()
+    arch = checked.device_arch()
     binary = source / f"{name}.{arch}"
     if not binary.exists():
         print(f"lab: no pack of {name} for this card's {arch} in {source}")
@@ -1110,7 +1114,7 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
     `ledger_<its template numbers>.csv`, and `ledger.json` naming the binary's digest and each kernel's file -- read back
     where the toolkit is by `ledger --packed --dump`. `skip` launches of each kernel pass first (an experiment's checked
     launch is its first: its timed ones follow)."""
-    arch = sass.device_arch()
+    arch = checked.device_arch()
     binary = source / f"{name}.{arch}"
     built = json.loads((source / f"{binary.name}.pack.json").read_text())
     if hashlib.sha256(binary.read_bytes()).hexdigest() != built["sha256"]:
@@ -1138,7 +1142,7 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
                               str(binary), "--reps", "1", *extra], capture_output=True, text=True, timeout=900)
         dump = into / f"ledger_{'_'.join(ids)}.csv"
         dump.write_text(out.stdout)
-        if out.returncode != 0 or not region_ledger.read_source_counters(dump):
+        if out.returncode != 0 or not region_ledger.counted(dump):
             print(f"lab: {k[:80]}: no SourceCounters (exit {out.returncode}): {out.stderr[-400:]}")
             return 1
         files[k] = dump.name
@@ -1150,7 +1154,7 @@ def ledger_dumps(name: str, source: Path, into: Path, patterns: list[str], skip:
 
 
 def run(name: str, opts) -> int:
-    arch = sass.device_arch()
+    arch = checked.device_arch()
     exp = build(name, arch, "run")
     table = kernels(exp)
     failures = check(exp, table)
@@ -1180,7 +1184,7 @@ def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str
 
 def counters(name: str, metrics: list[str], no_store: bool, store_root: Path | None) -> int:
     """THE PROFILER'S COUNTERS per kernel (`ncu_counters`), stored as a record of their own (kind `counters`)."""
-    arch = sass.device_arch()
+    arch = checked.device_arch()
     exp = build(name, arch, "ncu")
     failures = check(exp, kernels(exp))
     if failures:
@@ -1223,7 +1227,7 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
     wavefronts, those over the conflict-free count (bank conflicts) and its stall samples. CARRIED: `dumps` are the
     SourceCounters CSVs a box without the toolkit made of `packed` (`lab pack`'s binary, built here), one a kernel;
     `per` divides every count (a launch's CTA-windows)."""
-    arch = arch or sass.device_arch()
+    arch = arch or checked.device_arch()
     path = experiments()[name]
     manifest = None
     if dumps is not None:
@@ -1277,14 +1281,14 @@ def ledger(name: str, pattern: str | None, dumps: list[Path] | None = None, pack
                                   *extra], capture_output=True, text=True, check=True).stdout
             csv_path = _dev_config().scratch("lab") / f"{name}.ledger.csv"
             csv_path.write_text(out)
-        rows = region_ledger.read_source_counters(csv_path)
-        detail = region_ledger.read_source_detail(csv_path)
+        rows = region_ledger.counted(csv_path)
+        detail = region_ledger.detailed(csv_path)
 
         if not rows:
             print(f"  {k}: no launch profiled")
             continue
         base = min(at for at, *_ in rows)
-        frames = sass.frames(own_section(disassembly, mangled[k]))
+        frames = checked.frames(disassembly, f"^{re.escape(mangled[k])}$", name)
         div, unit = (per, "CTA-window") if per else units.get(k, (1.0, "launch"))
         #: a phase's executed instructions, shared wavefronts, those a conflict-free access would not take, samples
         by: dict[str, list[float]] = {}
@@ -1408,9 +1412,9 @@ def critical_path(name: str, pattern: str | None, selected: dict) -> int:
 
 
 def static_kind(opcode: str) -> str:
-    """An opcode's budget class (`sass.opcode_class`), a global access by what it does: the accesses that hold the
-    warp that issues them are told apart."""
-    kind = sass.opcode_class(opcode)
+    """An opcode's budget class (warpline's `model.instruction_class`), a global access by what it does: the accesses that hold
+    the warp that issues them are told apart."""
+    kind = checked.checker().model.instruction_class(opcode)
     if kind != "global":
         return kind
     return ("global copy" if opcode.startswith(("LDGSTS", "UBLK")) else "global load" if opcode.startswith("LDG")
@@ -1438,12 +1442,12 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
         if pattern and not re.search(pattern, k):
             continue
         text = own_section(disassembly, symbol)
-        frames = sass.frames(text)
+        frames = checked.frames(disassembly, f"^{re.escape(symbol)}$", name)
         kernel = model[symbol]
         at_address = {i.address: i for i in kernel.instructions}
         by: dict[tuple, Counter] = {}
         for line in text.splitlines():
-            if not (m := sass.INSTRUCTION.match(line)):
+            if not (m := checked.checker().readers.INSTRUCTION.match(line)):
                 continue
             at = int(m.group(1), 16)
             #: an instruction inside the model's span that the model lacks is two disassemblies that disagree, never
@@ -1479,8 +1483,8 @@ def static_ledger(name: str, pattern: str | None, arch: str | None) -> int:
 
 
 def own_section(disassembly: str, mangled: str) -> str:
-    """A kernel's own code section of an `nvdisasm` listing: offsets restart in every function, so the frame map of the
-    whole listing would merge them."""
+    """A kernel's own code section of an `nvdisasm` listing: offsets restart in every function, so a count over the whole listing
+    would merge them."""
     lines = disassembly.splitlines()
     start = next(i for i, line in enumerate(lines) if f".section\t.text.{mangled}," in line)
     end = next((i for i in range(start + 1, len(lines)) if "\t.section\t" in lines[i]), len(lines))

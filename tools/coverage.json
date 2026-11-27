@@ -5,7 +5,7 @@
   "sanitizer": "a row of tools/sanitize_oracle.py's family table whose cell launches the kernel",
   "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS \u00a719)",
   "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS \u00a722)",
-  "overlap": "a row of tools/overlap_gate.py timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS \u00a728)"
+  "overlap": "a row timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS \u00a728): warpline's `bound` checker over the kernel's run manifest (`launch/ns`), its bound written from the floor model by a Bazel action; no kernel has one yet"
  },
  "kernels": {
   "csrc_stamp_kernel": {
@@ -46,7 +46,7 @@
    },
    "phases": "tests/integration/test_decode_phase_ledger.py",
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   },
   "factor_backward_kernel": {
@@ -61,7 +61,7 @@
     "owed": "books no phase ledger"
    },
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   },
   "factor_forward_kernel": {
@@ -74,7 +74,7 @@
     "owed": "books no phase ledger"
    },
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   },
   "mask_prepare_kernel": {
@@ -89,7 +89,7 @@
     "owed": "books no phase ledger"
    },
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   },
   "sm_clock_kernel": {
@@ -123,7 +123,7 @@
     "owed": "books no phase ledger"
    },
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   },
   "softmax_forward_kernel": {
@@ -140,7 +140,7 @@
     "owed": "books no phase ledger"
    },
    "overlap": {
-    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
    }
   }
  }

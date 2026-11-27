@@ -276,7 +276,7 @@ LABEL` is one run as a page.
 
 `bazel run //:ratify -- --census` and `bazel run //tools:sass_bodies` are the instruments. Two binaries in a
 comparison may be built at different paths ([`build.md#kernel-identity`](build.md#kernel-identity)); their hash maps
-must agree on `ratify.SASS_HASH_VERSION`, which `bazel run //tools:sass_bodies -- --compare A B` checks and refuses on
+must agree on `sass_bodies.HASH_VERSION`, which `bazel run //tools:sass_bodies -- --compare A B` checks and refuses on
 mismatch.
 
 **Measuring a kernel's register DEMAND at a bound it does not ship at** is a

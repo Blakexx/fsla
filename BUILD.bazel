@@ -115,11 +115,12 @@ dev_run(
     },
 )
 
-#: THE CENSUS: the units' own compiles (docs/ratification.md), reported by `bazel run //:ratify -- --census`
+#: THE CENSUS: the library's static manifests, warpline's, one a built architecture (docs/ratification.md), reported by
+#: `bazel run //:ratify -- --census`
 ratify_census(
     name = "census",
     library = ":library",
-    #: the template lint reads the units the library compiled
+    #: the template lint reads the kernels the manifests name
     visibility = ["//csrc/fsla:__pkg__"],
 )
 

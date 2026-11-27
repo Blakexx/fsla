@@ -138,10 +138,10 @@ def test_the_declarations_a_translation_makes_are_the_checkers_own_to_load():
 DUMP = ('==PROF== Connected to process 1 (/x/k)\n'
         '"Kernel Name","void tile::window<(int)0>(float *)",\n'
         '"Address","Source","Instructions Executed","Address Space","L1 Wavefronts Shared Excessive","L1 Wavefronts Shared",'
-        '"L1 Wavefronts Shared Ideal"\n'
-        '"0x7f0000000100","LDS.128 R4, [R2]","12","shared","0","12","12"\n'
-        '"0x7f0000000110","STS [R0], R4","12","shared","372","384","12"\n'
-        '"0x7f0000000120","EXIT","12","","0","0","0"\n')
+        '"L1 Wavefronts Shared Ideal","Warp Stall Sampling (All Samples)"\n'
+        '"0x7f0000000100","LDS.128 R4, [R2]","12","shared","0","12","12","3"\n'
+        '"0x7f0000000110","STS [R0], R4","12","shared","372","384","12","5"\n'
+        '"0x7f0000000120","EXIT","12","","0","0","0","1"\n')
 
 
 @needs_checker

@@ -40,12 +40,16 @@ hashed is a property of the SCANNER, not of the binary: widening the capture onc
 moved every digest in an unchanged binary. Two maps written by different versions
 therefore disagree on all 1,228 entries while describing identical code -- a false
 verdict with the same shape as the path trap above, and one the P06 review hit.
-`ratify.SASS_HASH_VERSION` is written into every map and `--compare` refuses a pair
+`HASH_VERSION` is written into every map and `--compare` refuses a pair
 that does not agree on it, and refuses an unstamped map outright rather than guessing
-which version wrote it. It is defined beside `ratify.sass_scan`, which is what decides
-which lines reach the digest, and bumping it is that function's obligation -- the
-per-instantiation `sass_sha256` in every manifest is the same digest and is stamped
-with the same version.
+which version wrote it. It is defined beside `scan`, which is what decides which lines
+reach the digest, and bumping it is that function's obligation.
+
+**THE LINES ARE WARPLINE'S GRAMMAR** (`readers.INSTRUCTION`, `ENCODING`, `FUNCTION`, `ARCH`,
+through `tools/checked.py`): the instruction lines are the lines it reads as instructions, so
+this instrument and the SASS gate read one listing one way. On `cuobjdump -sass` the
+instruction grammar selects exactly the address-marked lines version 2 hashed (checked on the
+SASS probes' listings, 2026-11-27), so the digests did not move and the version stands.
 
 Two uses, both binary verdicts:
 
@@ -58,46 +62,75 @@ Usage:
     bazel run //tools:sass_bodies -- build_a/_C.so --json a.json
     bazel run //tools:sass_bodies -- --compare a.json b.json [--drop-builds]
 
-Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
+Both `.so`s must have been built under the SAME `HASH_VERSION` -- see the
 version-stamp note above. They no longer need to have been built at the same path.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
-import ratify  # noqa: E402
+import checked  # noqa: E402
+import dev_config  # noqa: E402
 
 from hardware import registry  # noqa: E402 -- the architectures' own names
 
-#: THE HASHER'S OWN VERSION, and it lives with the hasher: `ratify.sass_scan` is what
-#: decides which lines reach the digest, so the version that describes that decision
-#: cannot be defined here without the two being able to drift. Written into every map
-#: this tool produces AND into the census's `--json` record, so both records say what
-#: hashed them.
-HASH_VERSION = ratify.SASS_HASH_VERSION
+#: THE HASHER'S OWN VERSION, and it lives with the hasher (`scan`, which decides which lines reach the digest). Written into
+#: every map this tool produces, so a map says what hashed it. BUMP IT in the same commit that changes which lines `scan`
+#: feeds the digest. 1 = instruction text only (the pre-2026-08-05 capture, which dropped the encoding words); 2 = every
+#: instruction and encoding line, whitespace-normalised.
+HASH_VERSION = 2
+
+
+def scan(lines: Iterable[str]) -> dict[str, str]:
+    """`{"sm_XX:mangled" -> sha256 of its body}` over a `cuobjdump -sass` listing, one pass: every instruction line and every
+    encoding line of each function (warpline's `readers.INSTRUCTION`, `ENCODING`), whitespace-normalised, under the architecture
+    and the function the listing's headers name (`ARCH`, `FUNCTION`). A function listed twice in one architecture with DIFFERENT
+    bodies is refused rather than resolved last-writer-wins: the kernel is emitted by two objects, and hashing one copy would
+    hide it behind a green comparison."""
+    readers = checked.checker().readers
+    report: dict[str, str] = {}
+    arch = key = digest = None
+
+    def flush():
+        if key is None:
+            return
+        body = digest.hexdigest()
+        if report.get(key, body) != body:
+            raise SystemExit(f"{key} is disassembled twice with DIFFERENT bodies; the same kernel is emitted by two objects")
+        report[key] = body
+
+    for line in lines:
+        if m := readers.ARCH.match(line):
+            flush()
+            arch, key = m.group(1), None
+        elif m := readers.FUNCTION.match(line):
+            flush()
+            key, digest = f"{arch}:{m.group(1)}", hashlib.sha256()
+        elif key is not None and (readers.INSTRUCTION.match(line) or readers.ENCODING.match(line)):
+            digest.update(" ".join(line.split()).encode())
+            digest.update(b"\n")
+    flush()
+    return report
 
 
 def bodies(so: Path) -> dict[str, str]:
-    """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point.
-
-    The scan is :func:`ratify.sass_scan`, not a second implementation of it: what
-    counts as a kernel's BODY has to mean one thing, or the build's per-instantiation
-    ratchet and this whole-binary comparison could disagree about whether the code
-    moved.
-    """
-    proc = subprocess.Popen([ratify.cuda_bin("cuobjdump"), "-sass", str(so)],
-                            stdout=subprocess.PIPE, text=True)
-    out = {k: v["body_sha256"] for k, v in ratify.sass_scan(proc.stdout).items()}
+    """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point of a binary (`scan`, over `cuobjdump -sass`
+    streamed, by the graph's toolkit: the listing is megabytes and never held). A disassembler that fails is fatal: nothing can
+    be said of a binary it could not read."""
+    proc = subprocess.Popen([dev_config.cuda_bin("cuobjdump"), "-sass", str(so)], stdout=subprocess.PIPE, text=True)
+    out = scan(proc.stdout)
     rc = proc.wait()
     if rc != 0:
-        raise SystemExit(f"cuobjdump -sass FAILED (rc={rc})")
+        raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}) on {so}")
     return out
 
 

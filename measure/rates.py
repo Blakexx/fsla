@@ -24,7 +24,7 @@ from measure import data as pinned  # noqa: E402
 
 CONFIG = ROOT / "measure" / "rates.json"
 #: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
-#: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
+#: shared atomics), which the floor model, the pipe model and the budgets' forms read
 PIPE_RATES = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
 SOURCES = ("measured", "documented", "announced")
 #: a measured rate may differ from its record's median by its own rounding and no more
