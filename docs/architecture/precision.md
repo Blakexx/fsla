@@ -40,8 +40,8 @@ WHY NOT 16-BIT FLOAT OPERANDS WITH 5 EXPONENT BITS. The fp16 family (the branch 
 state and a token's unbounded sum inside f16's range by machinery: the state's image at an exponent a digit, list
 exponents, pre-scaled coefficients, a dense row's floor at 2^-13, a pass that bounded each token's sum, and a switch of
 accumulation by card. Its last measurement (2026-11-09, sm_86 (ampere branch, unreproducible here)) closed it: with each (token, digit)'s factor on the
-read rows before the MMA, the rows under f16's normal floor 2^-14 were 32% at carry-alt-k4-256x256-T1024, 71% at alt-k16, 57% at
-cohort-k16 and 100% at carry-dense-256x256-T1024. bf16's 8 exponent bits hold every one of those values with no machinery, at 8
+read rows before the MMA, the rows under f16's normal floor 2^-14 were 32% at carry-alt-k4-256x256-T1024, 71% at carry-alt-k16-256x256-T1024, 57% at
+carry-cohort-k16-c64-256x256-T1024 and 100% at carry-dense-256x256-T1024. bf16's 8 exponent bits hold every one of those values with no machinery, at 8
 significant bits where f16 has 11.
 
 <a id="quality"></a>

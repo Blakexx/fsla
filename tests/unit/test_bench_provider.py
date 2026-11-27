@@ -81,7 +81,6 @@ def test_a_subject_applies_by_the_cells_facts_never_its_name():
 
     decode = by_name(DECODE_CELL)
     assert "decode_step" in subjects.applicable(decode)
-    assert "decode_step" not in subjects.applicable(dataclasses.replace(decode, group=2))
     assert "decode_step" not in subjects.applicable(dataclasses.replace(decode, decode_steps=0))
     assert not subjects.applicable(dataclasses.replace(by_name("carry-alt-k4-256x256-T1024"), backing="paged"))
     #: the intra reads one or two levels of whole 16-digit granules: a depth-three cell takes no prefill

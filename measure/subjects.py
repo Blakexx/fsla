@@ -256,14 +256,13 @@ def _intra_reads(widths) -> bool:
 
 def applicable(spec, calls: int = 1) -> list[str]:
     """Which subjects a cell can carry at a call count, by the cell's own FACTS: its kind, the counts a subject is
-    priced at, the chain's whole windows, its backing, and each subject's own condition (its decode steps and group,
-    its widths)."""
+    priced at, the chain's whole windows, its backing, and each subject's own condition (its decode steps, its
+    widths). A limit of a kernel is the kernel's to refuse, by name, when it is called: none is restated here."""
     out = []
     for name, subject in SUBJECTS.items():
         if subject.kind != spec.kind or calls not in subject.calls or not _splits(spec.tokens, calls):
             continue
-        if name == "decode_step" and (spec.decode_steps == 0 or spec.group != 1):
-            #: decode's step reads one head count today: a grouped bundle is refused (`RouteFactors.refuse_grouped`)
+        if name == "decode_step" and spec.decode_steps == 0:
             continue
         #: the state is the dense state alone (docs/api.md section 1): a paged backing has no constructor
         if spec.backing != "dense":
