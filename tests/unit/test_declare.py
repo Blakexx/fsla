@@ -1,7 +1,8 @@
-"""fsla's declarations (`declare.py`): the root declares this checkout's build, machine facts, instruments, timing
-entries and clock reader, one session and one memory pass over the cells, and a store for each result; every declared
-code digest names files that exist; a layer arm is registered per construction on the cells declared for it, and a
-decode step only on a cell that decodes; loading the file imports neither fsla nor torch. No GPU: nothing is built."""
+"""fsla's declarations (`declare.py`): the root declares this checkout's build, machine facts and instruments, and a
+store for each result, and no timing (fsla times itself with `//measure:session_entmax`); with a timing server, as
+fsla-bench declares it, a layer arm is registered per construction on the cells declared for it, and a decode step only
+on a cell that decodes, beside the clock reader; every declared code digest names files that exist; loading the file
+imports neither fsla nor torch. No GPU: nothing is built."""
 from __future__ import annotations
 
 import json
@@ -20,22 +21,31 @@ def declared() -> dict:
     return {"public": public, "targets": g.targets}
 
 
-def test_the_root_declares_the_checkout_its_session_its_memory_pass_and_their_stores():
+def test_the_root_declares_the_checkout_its_instruments_and_their_stores_and_no_timing():
     out = declared()
     labels = set(out["targets"])
-    assert {"fsla/binary", "fsla/environment", "fsla/sass", "fsla/support",
-            "fsla/clock", "session", "memory", "store/session", "store/memory",
-            "store/sass", "timing-server", "timing-server-stop"} <= labels
-    assert {"fsla/entmax_solve@layer=chunk-sparse-gain8", "fsla/entmax_solve@layer=chunk-decode-w16",
-            "fsla/decode_step@layer=chunk-decode-w16"} <= labels
-    assert "fsla/decode_step@layer=chunk-sparse-gain8" not in labels
+    assert {"fsla/binary", "fsla/environment", "fsla/sass", "fsla/support", "store/sass"} <= labels
+    assert not {"session", "memory", "store/session", "store/memory", "timing-server", "timing-server-stop",
+                "fsla/clock"} & labels
     #: no kernel has a pipe-counter or stall-census row on this line, so neither instrument is declared
     assert not {"fsla/counters", "fsla/census", "fsla/facts_pass"} & labels
-    assert out["targets"]["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {"cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
     #: the graph's front door takes the host budget for the build: a holder never starts a Bazel build
     assert out["targets"]["fsla/binary"].holds == {} and not out["targets"]["fsla/binary"].cache
-    assert out["targets"]["timing-server-stop"].always_run
     assert set(out["public"]) == {"all"}
+
+
+def test_with_a_timing_server_a_layer_arm_is_registered_per_construction_on_its_cells():
+    from fsla_devtools.build.declare import Graph, load
+    from fsla_devtools.timing.declare import start_timing_server
+
+    d = load(ROOT / "declare.py")
+    g = Graph()
+    d["declare"](g.scoped("fsla"), d["checkout"](ROOT, python=sys.executable, label="fsla"), timing=start_timing_server(g))
+    labels = set(g.targets)
+    assert {"fsla/entmax_solve@layer=chunk-sparse-gain8", "fsla/entmax_solve@layer=chunk-decode-w16",
+            "fsla/decode_step@layer=chunk-decode-w16", "fsla/clock"} <= labels
+    assert "fsla/decode_step@layer=chunk-sparse-gain8" not in labels
+    assert g.targets["cells/layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"].params == {"cell": "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"}
 
 
 def test_every_declared_code_digest_names_files_that_exist():

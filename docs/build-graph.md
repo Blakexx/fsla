@@ -9,10 +9,15 @@ The commit gate is `bazel test //:gate` (`tools/git-hooks/pre-commit`, on the co
 test tiers are the graph's targets too (`//:lane`, [below](#checks)), and so are the two wheels (`bazel run //:wheels`,
 [`build.md`](build.md#wheels)); the census reads the graph's compiles and compiles nothing
 ([below](#census)). Nothing builds outside the graph: `pip install .` refuses (`tools/no_source_build.py`). CI runs the commit gate's checks through the graph
-(`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). Measurement is
-`fsla_devtools.build`'s
-([`measurement.md`](measurement.md)), whose timing sessions hold the GPU and the clock as machine-wide counting
-semaphores, which Bazel cannot do for an action.
+(`.github/workflows/lint.yml`, on a fresh runner as `.github/actions/graph` sets one up). A timing session is a run
+target (`bazel run //measure:session_entmax`, [`measurement.md`](measurement.md#sessions)): the graph builds every
+entry's bundle and the session's manifest, and the session program it starts holds the GPU, the host budget and the
+clock as machine-wide locks, which Bazel cannot do for an action; the instruments and diffs are `fsla_devtools.build`'s.
+
+- <a id="stamp"></a>THE BUILD IS STAMPED: `.bazelrc` names `bazel/status.sh` as the workspace status command, which
+  writes the commit, the branch, the checkout's directory name and the sha256 of the uncommitted tracked diff (`git diff
+  HEAD`, none when clean) as stable status keys. A timing entry's bundle manifest is the one action that reads them, so
+  a new stamp rebuilds only the manifests; a git that fails fails the build, so no bundle names code it cannot name.
 
 ## <a id="environment"></a>The environment's layers
 
@@ -332,7 +337,8 @@ names one).
     bazel run //tools:<tool> -- <its arguments>                     # a tree tool, in the checkout on its own venv
     bazel run //tools/lint:ratchet -- <lint> --shrink               # a ratchet's baseline, shrunk with its fixes
     bazel run //:docrefs -- accept <doc>                            # a doc's citations pinned, read against their targets
-    bazel run //:measure -- run declare.py:all --only <glob>        # a measurement session (fsla-devtools' build system)
+    bazel run //measure:session_entmax                              # a timing session, measured and stored
+    bazel run //:measure -- run declare.py:all --only <glob>        # the instruments and diffs (fsla-devtools' build system)
     bazel run //:results -- show|history|latest|verdict|commit      # the measurements store
     bazel run //:tripwire -- --tree                                 # the content checks over every tracked file of HEAD
 

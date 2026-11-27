@@ -1,10 +1,11 @@
 """THE GRAPH'S RULES: the generated headers for a build's parameters, and the library
 -- `fsla_cu13/_C.abi3.so` linked by the pinned mold beside its build record, which stay in the graph's output (`.bazel/bin`)
-(docs/build-graph.md#compile); and the checks -- over the tree's files, of the commit, and over each unit's own compile
-(docs/build-graph.md#checks)."""
+(docs/build-graph.md#compile); the checks -- over the tree's files, of the commit, and over each unit's own compile
+(docs/build-graph.md#checks); and the timing entries and sessions (docs/measurement.md)."""
 
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
+load("@fsla_devtools//bazel:measure.bzl", _interleaved_timing = "interleaved_timing", _timing_entry = "timing_entry")
 load(
     "@fsla_devtools//bazel:rules.bzl",
     _checkout_test = "checkout_test",
@@ -646,6 +647,22 @@ def tool_run(**kwargs):
     """A tree tool run by `bazel run` in the checkout, on its own venv or the environment's interpreter
     (docs/build-graph.md#use): its arguments follow `--`."""
     _tool_run(venv = VENV, **kwargs)
+
+#: A TIMING ENTRY'S BUNDLE (docs/measurement.md#entries): the Python its executor imports (`//measure:bundle`) and the
+#: library with its build record, the arm tables laid out where `measure/provider.py` reads a tree's (`build/generated`),
+#: on the environment's store venv; `fsla` and the extension must load from inside it
+_BUNDLE = [Label("//measure:bundle"), Label("//:library")]
+_ARM_TABLES = {Label("//csrc/fsla:%s_table" % family): "build/generated/%s_arms.py" % family for family in ARM_FAMILIES}
+_BINDS = ["fsla", "fsla_cu13._C"]
+
+def timing_entry(name, **kwargs):
+    """A timing entry of this tree: an executor of `measure/executors.py` on cells (`@fsla_cells//:<cell>`), or the clock
+    reader (`kind = "clock"`), in this tree's bundle."""
+    _timing_entry(name = name, data = _BUNDLE, layout = _ARM_TABLES, binds = _BINDS, venv = VENV,
+                  python = Label("@fsla_env//:python"), **kwargs)
+
+#: an interleaved session over timing entries, stored by `bazel run` (docs/measurement.md#sessions)
+interleaved_timing = _interleaved_timing
 
 _LAB_RUN = """\
 #!/bin/bash

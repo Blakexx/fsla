@@ -7,8 +7,9 @@
 
 `declare(g, env, cells=..., timing=...)` declares one checkout's targets under the graph's scope and returns them (the
 timing registrations by arm name), so a root elsewhere (fsla-bench's) loads this file from each checkout it measures,
-calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is fsla measuring itself: this checkout, its own server,
-one session and one memory pass over the cells, every result stored.
+calls it per checkout with one shared timing server, and composes its own sessions. `root(g, **args)` is fsla checking
+itself: this checkout's instruments and diffs, every result stored. fsla times itself with Bazel's own targets, not
+here: `bazel run //measure:session_entmax` (`measure/BUILD.bazel`, docs/measurement.md).
 
 Per checkout: `binary` (the build graph's library, `bazel run //:library`, every run), `environment` (the
 machine facts, every run), the instruments of `INSTRUMENTS` (the SASS gate and the realized support once, cached; no
@@ -31,14 +32,7 @@ from fsla_devtools.build.declare import Env, load
 from fsla_devtools.cells import central
 from fsla_devtools.cells.declare import cells as cell_nodes
 from fsla_devtools.store import store
-from fsla_devtools.timing.declare import (
-    measure_memory,
-    measure_timing,
-    register_clock_reader,
-    register_timing,
-    start_timing_server,
-    stop_timing_server,
-)
+from fsla_devtools.timing.declare import register_clock_reader, register_timing
 
 HERE = Path(__file__).resolve().parent
 EXECUTORS = "measure.executors:"
@@ -210,21 +204,14 @@ def _kernel_vs_oracle(g, env: Env, sides: dict):
                 params={"per_quantity": per_quantity}, minimum=len(nodes), on_difference="record")
 
 
-def root(g, python: str = sys.executable, label: str = "fsla", rounds: str = "8", reps: str = "11",
-         store_root: str = "") -> dict:
-    """fsla measuring and gating itself: EVERY node this checkout has, and the CLI prunes by label (`--only`, `--skip`)."""
-    server = start_timing_server(g)
+def root(g, python: str = sys.executable, label: str = "fsla", store_root: str = "") -> dict:
+    """fsla checking itself: every instrument and diff this checkout has, each stored, and the CLI prunes by label
+    (`--only`, `--skip`). Its timing is Bazel's (`//measure:session_entmax`)."""
     env = checkout(HERE, python=python, label=label)
-    mine = declare(g.scoped(label), env, timing=server)
+    mine = declare(g.scoped(label), env)
     root_dir = store_root or None
     stores = [store(g, f"store/{name}", source=target, location=f"fsla/{name}", cache=target.cache, root=root_dir)
               for name, target in mine["instruments"].items()]
-    session = measure_timing(g, "session", server=server, entries=list(mine["entries"].values()), clock=mine["clock"],
-                             rounds=int(rounds), reps=int(reps))
-    memory = measure_memory(g, "memory", server=server, entries=list(mine["entries"].values()))
-    stores += [store(g, "store/session", source=session, location="timing/session", root=root_dir),
-               store(g, "store/memory", source=memory, location="timing/memory", root=root_dir),
-               *(store(g, f"store/{name}", source=node, location=f"fsla/{name}", root=root_dir)
-                 for name, node in mine["diffs"].items())]
-    stop = stop_timing_server(g, server=server, after=[session, memory, *stores])
-    return {"all": g.group("all", [*stores, stop])}
+    stores += [store(g, f"store/{name}", source=node, location=f"fsla/{name}", root=root_dir)
+               for name, node in mine["diffs"].items()]
+    return {"all": g.group("all", stores)}

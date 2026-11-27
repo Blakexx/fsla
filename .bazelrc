@@ -9,6 +9,10 @@ startup --max_idle_secs=900
 # `bazel run //:library` still copies the library in
 build --symlink_prefix=.bazel/
 
+# THE BUILD'S STAMP: the commit, branch and uncommitted diff a timing entry's bundle names (docs/build-graph.md#stamp); a
+# failed git fails the build
+build --workspace_status_command=bazel/status.sh
+
 # the C++ toolchain is resolved for the one target platform
 build --platforms=//bazel:linux_x86_64
 

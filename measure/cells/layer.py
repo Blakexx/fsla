@@ -69,36 +69,75 @@ def _levels(construction: Construction):
             for level, w in enumerate(widths)]
 
 
-def build(cell, construction: Construction) -> dict:
-    """The fixture: the layer built by `construction` in the cell's dtype, parameters seeded from the cell's seed, and
-    the cell's inputs and the routes the layer produces for its prefill.
+class Fixture(dict):
+    """A fixture whose parts are each built on first read: an arm builds only what its launch reads, so the solve sets up
+    on a line whose producer is not built, and only the arm that reads the produced routes asks for the producer."""
 
-    IT BUILDS NO CALL PLAN. What a subject times is the launch it names, and the packing a particular op seam does for
-    it is that subject's own business.
-    """
+    def __init__(self, parts: dict, **given) -> None:
+        super().__init__(**given)
+        self._parts = parts
+
+    def __missing__(self, key):
+        if key not in self._parts:
+            raise KeyError(key)
+        value = self[key] = self._parts[key](self)
+        return value
+
+
+def _layer(fx):
+    """The layer built by the construction in the cell's dtype, its parameters seeded from the cell's seed immediately
+    before construction."""
     import torch
-    from fsla_devtools.cells.layer import realize
 
     from fsla import FSLA, Routing
 
-    if cell.name not in construction.cells:
-        raise ValueError(f"{construction.name} is declared for {list(construction.cells)}, not {cell.name}")
+    cell, construction = fx["cell"], fx["construction"]
     torch.manual_seed(cell.seed)
-    routing = Routing(_levels(construction))
-    layer = FSLA(routing, hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
+    layer = FSLA(Routing(_levels(construction)), hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
                  layer_idx=0).to("cuda", cell.torch_dtype).eval()
     if construction.logit_gain != 1.0:
         with torch.no_grad():
             layer.route_W.mul_(construction.logit_gain)
     for param in layer.parameters():
         param.requires_grad_(False)
-    drawn = realize(cell)
-    x, v = drawn.x, drawn.v
+    return layer
+
+
+def _drawn(fx):
+    from fsla_devtools.cells.layer import realize
+
+    return realize(fx["cell"])
+
+
+def _routes(fx):
+    """The routes the layer's producer makes for the prefill."""
+    import torch
+
     with torch.no_grad():
-        routes, _values = layer._produce(x[:, :cell.tokens])
-    return {"cell": cell, "construction": construction, "layer": layer, "x": x, "v": v,
-            "routes": routes, "v_prefill": v[:, :cell.tokens].contiguous(),
-            "v_kernel": v[:, :cell.tokens].to(torch.bfloat16).contiguous()}
+        return fx["layer"]._produce(fx["x"][:, :fx["cell"].tokens])[0]
 
 
-__all__ = ["CONSTRUCTIONS", "Construction", "build"]
+#: each part of a layer fixture, built from the parts it reads; the inputs come from the cell's own generator, so the order
+#: the parts are built in never moves them
+PARTS = {
+    "layer": _layer,
+    "drawn": _drawn,
+    "x": lambda fx: fx["drawn"].x,
+    "v": lambda fx: fx["drawn"].v,
+    "routes": _routes,
+}
+
+
+def build(cell, construction: Construction) -> Fixture:
+    """The fixture: the layer built by `construction` (`layer`), the cell's inputs (`x`, `v`) and the routes the layer
+    produces for its prefill (`routes`), each built when an arm first reads it.
+
+    IT BUILDS NO CALL PLAN. What a subject times is the launch it names, and the packing a particular op seam does for
+    it is that subject's own business.
+    """
+    if cell.name not in construction.cells:
+        raise ValueError(f"{construction.name} is declared for {list(construction.cells)}, not {cell.name}")
+    return Fixture(PARTS, cell=cell, construction=construction)
+
+
+__all__ = ["CONSTRUCTIONS", "PARTS", "Construction", "Fixture", "build"]

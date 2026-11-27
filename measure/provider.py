@@ -27,12 +27,14 @@ was built (docs/measurement.md).
 """
 from __future__ import annotations
 
+import os
 import sys
 from functools import partial
 from pathlib import Path
 
-#: this checkout: `import fsla` must resolve inside it
-CHECKOUT = Path(__file__).resolve().parents[1]
+#: this tree -- a checkout, or a timing entry's bundle -- as it was imported, its links unresolved (a bundle's runfiles
+#: are links into the checkout, and what it reads is the bundle's): `import fsla` must resolve inside it
+CHECKOUT = Path(os.path.abspath(__file__)).parents[1]
 
 
 def arm_name(subject: str, *, calls: int = 1, construction: str | None = None) -> str:
@@ -71,7 +73,8 @@ def arms(data) -> dict:
 
 def _declared(family: str) -> tuple:
     """The arms this tree declares for `family`: the table the graph generated from the declaration
-    (`bazel/arms.bzl`'s `arm_table`), which `bazel run //:library` installs into `build/generated`."""
+    (`bazel/arms.bzl`'s `arm_table`), which `bazel run //:library` installs into a checkout's `build/generated` and a
+    timing entry's bundle lays out at the same path (`bazel/defs.bzl`'s `timing_entry`)."""
     import importlib.util
 
     path = CHECKOUT / "build" / "generated" / f"{family}_arms.py"
@@ -160,7 +163,7 @@ def _build(name: str, kind: str, spec, calls: int, construction):
     stamp = getattr(extension(), subject.stamp, None)
     if stamp is None:
         raise RuntimeError(f"this binary carries no {subject.stamp} entry, so it cannot state that it has {name}'s family")
-    fsla_file = Path(fsla.__file__).resolve()
+    fsla_file = Path(os.path.abspath(fsla.__file__))
     if not fsla_file.is_relative_to(CHECKOUT):
         raise RuntimeError(f"`import fsla` resolved outside this checkout ({CHECKOUT.name}); the arm would time another "
                            "tree's binary under this tree's name")

@@ -1,6 +1,7 @@
 """fsla's runner (measure/provider.py): it reads central cells, names an arm by its subject, its call count
 and a layer arm's construction, offers the arms this binary carries at the cell's shape, and refuses a cell by name --
-an iteration build of a declared arm family, a cell of another kind -- while the unbuilt carry leaves `prefill` unoffered. No GPU: nothing here builds an arm, and the binary's
+an iteration build of a declared arm family, a cell of another kind -- while the unbuilt carry leaves `prefill` unoffered; a
+layer arm's fixture builds only the parts the arm reads. No GPU: nothing here builds an arm, and the binary's
 arm tables are planted (the decode family's, and the declared tables the graph generates)."""
 from __future__ import annotations
 
@@ -104,3 +105,32 @@ def test_the_declared_families_are_the_registry_not_a_directory(tmp_path, monkey
     (tmp_path / "build" / "generated" / "stale_arms.py").write_text("ARMS = ()\n")
     monkeypatch.setattr(provider, "CHECKOUT", tmp_path)
     assert provider._declared_families() == ["decode"]
+
+
+def test_a_layer_fixture_builds_only_the_parts_an_arm_reads_so_the_solve_never_runs_the_producer(monkeypatch):
+    """The solve reads the cell, the construction and the layer's routing; only an arm that reads the produced routes
+    runs the producer, whose kernel this line does not build. The parts are planted: nothing here touches a device."""
+    from measure.cells import layer
+
+    built = []
+
+    def part(name, value):
+        def make(fx):
+            built.append(name)
+            return value(fx)
+        return make
+
+    monkeypatch.setitem(layer.PARTS, "layer", part("layer", lambda fx: SimpleNamespace(routing="R")))
+    monkeypatch.setitem(layer.PARTS, "drawn", part("drawn", lambda fx: SimpleNamespace(x="X", v="V")))
+    monkeypatch.setitem(layer.PARTS, "routes", part("routes", lambda fx: (fx["layer"], fx["x"])))
+    construction = CONSTRUCTIONS["chunk-p73-pinned"]
+    fx = layer.build(by_name(construction.cells[0]), construction)
+    assert built == []
+    assert (fx["construction"], fx["layer"].routing) == (construction, "R")
+    assert built == ["layer"]
+    fx["layer"]
+    assert built == ["layer"], "a part is built once"
+    fx["routes"]
+    assert built == ["layer", "routes", "drawn"]
+    with pytest.raises(KeyError):
+        fx["v_prefill"]

@@ -32,8 +32,9 @@ kernel:
   yet (`docs/internals/tools/review_gate.md#pipelined`).
 
 ## The instruments
-- Perf: `bazel run //:measure -- run declare.py:all` (this checkout's declared measurement: its instruments and one
-  clock-locked interleaved timing session on the cells, `docs/measurement.md`); attribution:
+- Perf: `bazel run //measure:session_entmax` (a clock-locked interleaved timing session over this tree's timing entries,
+  stored; `docs/measurement.md`), `bazel run //:measure -- run declare.py:all` (this checkout's instruments and diffs);
+  attribution:
   `bazel run //tools:region_ledger -- --csv <ncu SourceCounters> --so <.so> --member <cubin member>
   --source <kernel.cuh> --budget tools/budgets/<k>.json` (no kernel has a budget file yet: owed).
 - Correctness: `tests/oracle/` (scoped runs only; never a bare `tests/`).

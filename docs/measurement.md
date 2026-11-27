@@ -7,20 +7,37 @@ stored with its provenance. This document is what that sentence means.
 |---|---|---|
 | cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input, named once for every package, with its draw, seed and proven regime |
 | subjects | `measure/subjects.py`, `measure/provider.py` (fsla's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
-| declarations | `declare.py` (this checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT RUNS: the build, the instruments, the timing registrations and sessions, the stores, as targets of `fsla_devtools.build` |
-| method | fsla-devtools' `fsla_devtools.timing` (`measure_timing`) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
-| preconditions | the targets' requirements (`fsla_devtools.build.resources`), `measure/provider.py` | what the box and the binary must be first |
+| timing targets | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `timing_entry`, `interleaved_timing`) | WHAT IS TIMED: each entry an executor on cells in this tree's bundle, each session a run target over entries |
+| declarations | `declare.py` (this checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT ELSE RUNS: the build, the instruments, the diffs and their stores as targets of `fsla_devtools.build`; fsla-bench's sessions, which register `declare.py`'s timing entries |
+| method | fsla-devtools' `fsla_devtools.timing.session` (`interleave`, the session program) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
+| preconditions | the session program, `measure/provider.py` | what the box and the binary must be first |
 | statistics | fsla-devtools' `fsla_devtools.verdict` | whether a difference is real |
 | record | `fsla_devtools.results` (the measurements store) over the data repository, fsla-results | where a number lives afterwards, and which stored samples are a baseline |
 
-fsla measures itself with `bazel run //:measure -- run declare.py:all`; fsla-bench's root loads this file from each
-checkout it compares, declares every checkout's targets beside its attention reference, and times them in shared
-sessions. Both are one method: a number taken either way is the same measurement.
+fsla times itself with `bazel run //measure:session_entmax` and checks itself (its instruments and diffs) with
+`bazel run //:measure -- run declare.py:all`; fsla-bench's root loads `declare.py` from each checkout it compares,
+registers every checkout's timing entries beside its attention reference, and times them in shared sessions of
+fsla-devtools' build system. Both interleave with one loop (`fsla_devtools.timing.session.interleave`): a number taken
+either way is the same measurement.
 
-## The method
+## <a id="entries"></a>Timing entries and their bundles
 
-A session is a `measure_timing` target (`fsla_devtools.timing`): the timing entries it depends on -- a checkout's arm on
-a central cell, one of fsla's subjects (`entmax_solve`, `layer_prefill`, `layer_op`, `decode_step`) or fsla-bench's `flash` -- are set up in their checkouts' worker processes behind a
+A TIMING ENTRY is a Bazel target (`timing_entry` in `measure/BUILD.bazel`, this tree's wrapper in `bazel/defs.bzl`): an
+executor of `measure/executors.py` (`timed`, one of fsla's arms by name; `read_clock`, the clock reader) on central cells
+named as targets (`@fsla_cells//:<cell>`, each the cell's description -- its record and the digest of the code that draws
+it, never its tensors). Its BUNDLE is everything its worker imports and reads, as the entry's runfiles: the `fsla` and
+`measure` packages, the contract registry, the library with its build record, and the arm tables laid out at
+`build/generated/`, where `measure/provider.py` reads a tree's. Beside it the build writes the bundle's manifest: the
+commit, branch and uncommitted diff the build was stamped with ([`build-graph.md#stamp`](build-graph.md#stamp)), the
+digest of every file the bundle holds, and the environment it runs on.
+
+## <a id="sessions"></a>The method
+
+A session is a run target (`interleaved_timing`): `bazel run //measure:session_entmax` builds every bundle and starts the
+session program (`fsla_devtools.timing.session`), which measures and stores, and nothing outlives the run. Its entries --
+a tree's arm on a central cell, one of fsla's subjects (`entmax_solve`, `layer_prefill`, `layer_op`, `decode_step`) or
+fsla-bench's `flash` -- are set up in worker processes, one a bundle, each on the bundle's interpreter with the bundle as
+its whole import path, behind a
 barrier (nothing is timed until every entry has set up), each warmed past the floor of 10 calls, and then every rep of
 every round calls every entry once, in a fresh random order, one call at a time: the next call is sent only when the
 last has replied. Each sample is one launch on the entry's own stopwatch, taken inside its worker, so the pipe between
@@ -28,8 +45,14 @@ processes is never in a sample; an entry whose launch changes what its next call
 is reset to exactly what its first call saw before every call, untimed, so every call does the same work on the same
 data. Reps are odd, so a round's median is one of its samples. The session keeps every sample in the order taken, with
 its round, rep and position; which entry is the reference is chosen when the samples are read, never when they are
-taken. An entry that cannot set up (a kernel this binary lacks) is recorded in the session and the rest are timed; two
-stopwatches in one session fail it.
+taken. Each rep's order is drawn from a seed of the run's own identity, stored with the session, so two runs never walk
+one order. An entry that cannot set up (a kernel this binary lacks) is recorded in the session and the rest are timed;
+two stopwatches in one session fail it, and so does a session in which nothing set up, naming the first refusal.
+
+The session is stored as ONE sample at `timing/session`: its semantics are what ran -- each entry's executor, parameters,
+cells and bundle digest, the rounds, reps and warm-up, whether the clock was locked, and the card -- and its provenance
+each bundle's stamped commit. `-- --no-store` measures and keeps `session.json` in the scratch directory; a session that
+fails stores nothing and says where its samples were kept.
 
 A NULL GATE (`measure_null_gate`) times one registration's entries against copies of themselves in second workers of the
 same checkout: where the per-rep ratios of the two copies put one outside their interquartile range, a worker's bias is
@@ -39,17 +62,18 @@ Call by call, because drift on this host is the size of the effects measured: it
 apart with a minutes-long time constant (measured here, no record cited). Blocks let a clock change land between arms, and a fixed order charges drift to one arm. A timing only compares
 within the session that interleaved it.
 
-## Preconditions, which the targets acquire
+## Preconditions, which the session acquires
 
-Not a checklist: the requirements a target holds and the runner's setup do each of these, and no flag skips one.
+Not a checklist: the session program and the runner's setup do each of these, and no flag skips one.
 
 | step | what happens |
 |---|---|
-| GPU lock | a session holds `gpu: all`: the GPU lock exclusive through `gpu_lock()`, taken by the build system for the whole session and handed to the entry workers as the lock-held marker, so a self-locking tool a target starts does not wait on it. The lock's rules are [`testing.md#running-it`](testing.md#running-it)'s. |
-| clock lock | a session holds `clock: 1`: the host's own lock (`fsla_devtools.locks.clock`, the dev config's `clock.json`), proven by this binary's clock read (`register_clock_reader`) before the first call and after the last; a session whose read is off the lock fails. A host without one runs unlocked, and the session records its reads. |
+| GPU lock | the GPU lock exclusive through `gpu_lock()`, for the whole session, its marker inherited by the entry workers, so a self-locking tool an entry starts does not wait on it. An exclusive holder never lowers its priority. The lock's rules are [`testing.md#running-it`](testing.md#running-it)'s. |
+| host budget | every slot of the host budget, after the GPU ([`build-graph.md#front-door`](build-graph.md#front-door)): no build runs beside a session. |
+| clock lock | the machine's clock lock (`fsla_devtools.locks.clock`, the dev config's `clock.json`), engaged by its first holder and released by its last, so another process finishing never unlocks it mid-session; proven by this binary's clock read (`//measure:clock`) before the first call and after the last, and a read off the lock fails the session. A host that declares no lock is refused unless the session claims `unlocked` (`//measure:session_entmax` does: the rented card's container declares none); the record says which, and a locked and an unlocked session are never one record. |
 | binary identity | building an arm asks the device for the subject's family stamp and refuses the arm without it: a path or a hash passes against a stale extension, a device-side fact does not. |
-| extension identity | `import fsla` must resolve inside the entry's own checkout, or the arm is refused: a venv that names another checkout (an editable install in a shared venv, or another checkout's own venv) otherwise answers with that tree's kernel while the record carries this tree's commit. |
-| tree identity | every stored sample carries each checkout's commit and the sha256 of its tracked diff; a dirty tree is stamped, not refused. |
+| extension identity | each worker reports the file `fsla` and the plugin's extension module were loaded from (the entry's `binds`), and a file outside the entry's bundle refuses the member: an import path that names another tree (a checkout's venv, another output base) otherwise answers with that tree's kernel while the record carries this tree's commit. `import fsla` must also resolve inside the runner's own tree, or the arm is refused. |
+| tree identity | every stored sample carries each bundle's stamped commit and the sha256 of its tracked diff; a dirty tree is stamped, not refused, and a git that fails fails the build. |
 
 ## The host a measurement runs on
 
@@ -89,8 +113,9 @@ own layer against attention's, because FSLA's number includes the state its capa
 What this line declares today (`measure/subjects.py`): the KERNEL level (`entmax_solve`), the OP level (`prefill`,
 `layer_op`, and `decode_step` through the engine's decode step) and the LAYER level (`layer_prefill`). No prefill kernel is
 built (the carry, intra and producer are designed and measured in the lab, [`open-work.md`](open-work.md)), so every
-subject that reaches the prefill refuses by name and is recorded as that entry's failure; the ones that run are
-`entmax_solve` and `decode_step`. The flash reference is a layer entry, and until a
+subject that reaches the prefill refuses by name and is recorded as that entry's failure; a layer arm's fixture builds
+only what the arm reads (`measure/cells/layer.py`'s `Fixture`), so `entmax_solve` sets up with the producer unbuilt and is
+the entry `//measure:session_entmax` times. The flash reference is a layer entry, and until a
 FSLA layer runs beside it, a session that holds both is two levels measured in one place, not a comparison.
 
 ## The reference
@@ -248,8 +273,8 @@ bound is a tool that can report a number nobody ships.
 
 ## What is deliberately not here
 
-* **A second method.** The declared build system is the one way a subject is timed: two methods are how a harness
-  comes to disagree with itself.
+* **A second method.** One loop times every subject (`fsla_devtools.timing.session.interleave`), whether a Bazel
+  session or fsla-bench's declared one runs it: two methods are how a harness comes to disagree with itself.
 * **A committed SQLite database.** A binary blob has no diff and cannot be reviewed in a landing. Any query artifact is
   derived and ignored — see the record below, which is exactly this design.
 * **A flat percentage threshold.** The IQR-derived line is better than every rule in the surveyed field; replacing it
@@ -300,8 +325,9 @@ data repository, fsla-results, which holds data and no code: `store.root` in the
 the `fsla-results` checkout beside the checkouts), its `records/` the store's backend. A result measured in any
 worktree of a machine lands in that one checkout, visible to every other at once; the devbox container has its own
 clone (`docs/setup.md#the-devbox-image`), whose records reach another machine's by git (`bazel run //:results --
-commit`, then a push and a pull). A record carries no machine path and a timing names the commit of every checkout it
-ran, or the store refuses it (fsla-devtools' README, `The results store`).
+commit`, then a push and a pull). The store refuses a sample whose stored output or provenance holds a home
+directory's path (`/home/<user>`, `/Users/<user>`, `/root`, a Windows user's directory), and a timing sample whose
+provenance does not name, for every checkout it ran, that checkout's commit (`checkouts.<owner>.git_sha`).
 
 <a id="the-data"></a>THE DATA THIS TREE READS AND CITES is the data repository at ONE commit, pinned in `MODULE.bazel`
 (fsla-devtools' `environment.data` tag, `@fsla_data`, by the commit's archive digest), never the live checkout: a doc
@@ -324,7 +350,8 @@ and a timing only compares within the session that interleaved it.
 | location | writer | the semantics | a sample's output |
 |---|---|---|---|
 | `fsla/<instrument>` | a store target of `declare.py` or fsla-bench's root | the instrument target's semantics: its tool and arguments, code digest, the cells, the binary's and environment's outputs | the instrument's JSON per cell, with each cell's failure |
-| `timing/session`, `timing/memory` | a store target over `measure_timing` / `measure_memory` | the session's semantics: every registration's executor, cells, code and binary, the timing parameters | every sample in order with its round, rep and position, each entry's status, the clock reads; each entry's peak memory |
+| `timing/session` | the session program (`bazel run //measure:session_entmax`), or a store target over fsla-bench's `measure_timing` | the session's semantics: every entry's executor, parameters, cells and bundle digest (fsla-bench's: every registration's executor, cells, code and binary), the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
+| `timing/memory` | a store target over fsla-bench's `measure_memory` | its registrations' executors and cells | each entry's peak memory |
 | `timing/null` | a store target over `measure_null_gate` (fsla-bench's root) | the gate's semantics: the registration, its cells, the timing parameters | the session of the two copies and, per cell, whether they agree |
 | `environment` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
 | `fsla/oracle-tier` | a store target over the tier node | the tier's code, the binary, the environment | the counts, the failed cases, the margins |
@@ -339,7 +366,8 @@ terminal print.
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record.
 `bazel run //:results -- sql "..."` queries every location through a derived SQLite index in the machine's cache
-(`history` and `latest` for one location; views flatten the stored outputs, and fsla-devtools' README lists them);
+(`history` and `latest` for one location; views flatten the stored outputs: `cells`, `diff_cells`, `instrument_cells`,
+`instrument_metrics`, `memory_rows`, `null_gates`, `timing_members`, `timing_samples`);
 `bazel run //:results -- verdict` is the regression
 judgement above; `bazel run //:results -- commit -m <message>` commits the records, after the repository's own check
 that every key recomputes from its semantics and every output exists. Pushing is the owner's act.

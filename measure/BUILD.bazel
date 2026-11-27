@@ -1,0 +1,50 @@
+"""THE TIMING ENTRIES AND SESSIONS (docs/measurement.md): each entry one executor of `executors.py` on central cells, in
+this tree's bundle; each session one `bazel run` that measures its entries interleaved and stores the record.
+
+    bazel run //measure:session_entmax                       # measure and store (timing/session)
+    bazel run //measure:session_entmax -- --no-store         # measure, keep session.json, store nothing
+"""
+
+load("//bazel:defs.bzl", "interleaved_timing", "timing_entry", "tree_part")
+
+#: the Python a timing entry's executor imports, beside the library its bundle carries: this package, the `fsla` package,
+#: the contract registry `hardware` and the arm families' one reader with the registry it reads
+filegroup(
+    name = "bundle",
+    srcs = glob([
+        "*.py",
+        "cells/*.py",
+    ]) + [
+        "//:package",
+        "//bazel:arms.bzl",
+        "//hardware:registry",
+        "//tools:arm_families.py",
+    ],
+)
+
+#: THE PRODUCER'S SOLVE on the pinned layer cell under the construction declared for it (`cells/layer.py`'s
+#: `chunk-p73-pinned`): the one layer arm whose kernels this line builds
+timing_entry(
+    name = "entmax_solve_layer-B2-T2048-H8-h512-dv64-bf16-s0",
+    cells = ["@fsla_cells//:layer-B2-T2048-H8-h512-dv64-bf16-s0"],
+    executor = "measure.executors:timed",
+    params = {"arm": "entmax_solve@layer=chunk-p73-pinned"},
+)
+
+#: the SM clock as this binary reads it, which proves a locked host's clock before and after a session
+timing_entry(
+    name = "clock",
+    executor = "measure.executors:read_clock",
+    kind = "clock",
+)
+
+#: `unlocked`: the rented card's container declares no clock lock; a host that declares one still locks and proves it
+interleaved_timing(
+    name = "session_entmax",
+    claim = "unlocked",
+    clock = ":clock",
+    entries = [":entmax_solve_layer-B2-T2048-H8-h512-dv64-bf16-s0"],
+)
+
+#: this package's part of the tree the checks read
+tree_part()

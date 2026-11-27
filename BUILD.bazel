@@ -49,9 +49,10 @@ fsla_extension(
     torch = TORCH,
     torch_cuda = TORCH_CUDA,
     shared_libraries = ["@fsla_env//:torch_libraries"],
-    #: the unit lints read the units it links; the test tiers import it
+    #: the unit lints read the units it links; the test tiers import it; a timing entry's bundle carries it
     visibility = [
         "//csrc/fsla:__pkg__",
+        "//measure:__pkg__",
         "//tests:__pkg__",
     ],
     deps = [
@@ -63,6 +64,17 @@ fsla_extension(
         "//csrc/fsla:stamp_unit",
         "//csrc/fsla:units",
     ],
+)
+
+#: the `fsla` package and the plugin package's source half (`fsla_cu13/__init__.py`; the library is its built half), as
+#: a timing entry's bundle carries them (`//measure:bundle`)
+filegroup(
+    name = "package",
+    srcs = glob(
+        ["fsla/**"],
+        exclude = ["**/.gitkeep"],
+    ) + ["fsla_cu13/__init__.py"],
+    visibility = ["//measure:__pkg__"],
 )
 
 #: THE MACHINE'S SETUP AS RUN TARGETS: each a tools/dev.py command, its arguments after `--` (docs/build-graph.md#use)
