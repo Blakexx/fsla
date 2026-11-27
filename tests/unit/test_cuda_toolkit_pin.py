@@ -13,12 +13,16 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import toolchains  # noqa: E402
 
-PIN = json.loads((Path(os.environ["FSLA_DEVTOOLS"]) / "pins" / "cuda_toolkit_pin.json").read_text())
+
+def pin() -> dict:
+    """The pin, read when a test runs: the CPU tier hands `FSLA_DEVTOOLS`; a tier that only collects this file need not."""
+    return json.loads((Path(os.environ["FSLA_DEVTOOLS"]) / "pins" / "cuda_toolkit_pin.json").read_text())
 
 
 def test_the_manifest_is_the_pins():
-    assert PIN["manifest_url"].endswith(f"/redistrib_{PIN['version']}.json")
+    p = pin()
+    assert p["manifest_url"].endswith(f"/redistrib_{p['version']}.json")
 
 
 def test_the_pinned_compiler_is_a_declared_toolchain():
-    assert any(PIN["version_string"] in toolchain.ptxas for toolchain in toolchains.records().values())
+    assert any(pin()["version_string"] in toolchain.ptxas for toolchain in toolchains.records().values())
