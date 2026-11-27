@@ -90,7 +90,8 @@ session on that card follows; sizing a cell to fit is the same arithmetic there.
 * **A row near the card's cap is discarded, never caveated.** Under WSL2 the driver falls back to host memory over PCIe
   when VRAM is exhausted (Blake: "if we measure above the vram size, it spills into system memory and then it is just
   going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (`timing/memory`) is read
-  beside its times; to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
+  beside its times where a memory pass measured it -- fsla-bench's; fsla's own sessions carry none yet
+  ([open-work M-f](open-work.md#measurement-and-gates)); to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
 * **A foreign consumer of the GPU inflates every number.** Another context time-slices the card and stretches wall
   time and `clock64` cycles alike (the counter runs while ours is preempted); the clock lock proves the SM clock, not
   that our context owns the device, and under WSL the consumer is invisible to `nvidia-smi --query-compute-apps`.

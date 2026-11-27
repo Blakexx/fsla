@@ -27,8 +27,9 @@ constexpr int kAtomLeavesBits = 4;
 static_assert((1 << kAtomLeavesBits) == kAtomLeaves,
               "the page rectangle's bit width and its leaf count are one fact");
 
-//: THE BIT COUNT OF A POWER OF TWO, and -1 otherwise -- a REFUSAL, never a rounding.
-constexpr int geom_ilog2(int x) {
+//: THE BIT COUNT OF A POWER OF TWO, and -1 otherwise -- a REFUSAL, never a rounding. Both sides: the read order
+//: (`geom_read_index`) takes it on the device.
+__host__ __device__ constexpr int geom_ilog2(int x) {
   int b = 0;
   if (x <= 0) return -1;
   while ((1 << b) < x) ++b;
@@ -402,6 +403,8 @@ inline void carve_from_bits(int D, const int* span_bits, int ns_bits, const int*
 //: tile draws from several reader lists. -- see docs/internals/common/geom.md#tall-owner-set
 inline void tall_read_sub_bits(int D, const int* span_bits, int ns_bits, uint32_t dense_mask,
                                int* sub_bits) {
+  //: a geometry has at most kGeomMaxLevels levels (every caller's arrays are that long): stated to the compiler
+  if (D > kGeomMaxLevels) __builtin_unreachable();
   int total = 0;
   for (int l = 0; l < D; ++l) {
     total += span_bits[l];
