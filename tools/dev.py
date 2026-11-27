@@ -50,9 +50,7 @@ DEV_TOOLS = ("hyperfine", "difftastic", "nsight_compute", "nsight_systems")
 TOOLKIT = "cuda_toolkit"
 
 
-def read_pin(name: str) -> dict:
-    """A tool's pin (`dev_config.pin_path`: bazelisk, the toolkit and Nsight Compute are fsla-devtools' shared pins)."""
-    return json.loads(dev_config.pin_path(name).read_text())
+read_pin = dev_config.read_pin
 
 
 #: THE DEVBOX IMAGE (`//:image`, docs/setup.md#the-devbox-image): the name Docker knows it by, and the digest the tree

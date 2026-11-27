@@ -191,17 +191,38 @@ def scratch(name: str) -> Path:
 SHARED_PINS = ("bazelisk", "cuda_toolkit", "nsight_compute")
 
 
-def pin_path(name: str) -> Path:
-    """A pin's file: a shared one in the fsla-devtools checkout (`workspace.devtools`), else this tree's `tools/`."""
-    if name in SHARED_PINS:
-        return Path(get("workspace.devtools")) / "pins" / f"{name}_pin.json"
-    return Path(__file__).resolve().parent / f"{name}_pin.json"
+def devtools_commit() -> str:
+    """The fsla-devtools commit this tree pins (MODULE.bazel's `git_override` of `fsla_devtools`): the one the graph builds with."""
+    import re
+
+    found = re.search(r'git_override\(\s*module_name = "fsla_devtools",\s*commit = "([0-9a-f]{40})"',
+                      (ROOT / "MODULE.bazel").read_text())
+    if not found:
+        raise SystemExit("MODULE.bazel pins no fsla_devtools commit")
+    return found.group(1)
+
+
+def read_pin(name: str) -> dict:
+    """A tool's pin. A shared one (`SHARED_PINS`) is read AT THE PINNED COMMIT from the fsla-devtools checkout
+    (`workspace.devtools`), so the tools here read the very file the graph's `@fsla_devtools//pins:` holds, whatever that
+    checkout has checked out; the rest are this tree's `tools/<name>_pin.json`."""
+    if name not in SHARED_PINS:
+        return json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
+    import subprocess
+
+    checkout, commit = get("workspace.devtools"), devtools_commit()
+    shown = subprocess.run(["git", "-C", str(checkout), "show", f"{commit}:pins/{name}_pin.json"], capture_output=True,
+                           text=True)
+    if shown.returncode:
+        raise SystemExit(f"the fsla-devtools checkout {checkout} does not hold the pinned commit {commit[:10]} "
+                         f"(`git -C {checkout} fetch origin` fetches it): {shown.stderr.strip()}")
+    return json.loads(shown.stdout)
 
 
 def pinned(name: str) -> Path:
-    """Where a pin's binary is installed (`pin_path(name)`): its folder under `host.tools_dir` (`archive_root`,
+    """Where a pin's binary is installed (`read_pin(name)`): its folder under `host.tools_dir` (`archive_root`,
     which carries the version), the binary in it (`binary_path`)."""
-    pin = json.loads(pin_path(name).read_text())
+    pin = read_pin(name)
     return Path(get("host.tools_dir")) / pin["archive_root"] / pin["binary_path"]
 
 

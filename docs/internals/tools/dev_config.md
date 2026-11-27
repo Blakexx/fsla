@@ -28,7 +28,7 @@ under the machine's `python3`, before any venv exists. `tools/bootstrap.py` read
 `workspace.devtools`, from `workspace.json` in the directory the reader's own rule names -- and the front door imports
 the reader and the host budget from that checkout. Run (`python3 tools/bootstrap.py`), it is the machine's one step
 outside the graph: it imports the reader the same way and runs `tools/dev.py`'s `install_bazelisk`, the pinned bazelisk
-and the `bazel` link, since nothing can `bazel run` before `bazel` exists. That bazelisk's pin, like the toolkit's and Nsight Compute's, is fsla-devtools' (`pins/`): `dev_config.pin_path` reads a shared pin (`SHARED_PINS`) from the `workspace.devtools` checkout and any other from `tools/`. The sibling checkouts' location (`SIBLINGS`, the default of
+and the `bazel` link, since nothing can `bazel run` before `bazel` exists. That bazelisk's pin, like the toolkit's and Nsight Compute's, is fsla-devtools' (`pins/`): `dev_config.read_pin` reads a shared pin (`SHARED_PINS`) from the `workspace.devtools` checkout AT THE COMMIT `MODULE.bazel` pins (`git show <commit>:pins/<name>_pin.json`), the very file the graph's `@fsla_devtools//pins:` holds, and any other from `tools/`. The sibling checkouts' location (`SIBLINGS`, the default of
 `store.root`, `workspace.suite` and `workspace.devtools`) is defined there once, for both. Two read-outs serve a
 machine that has nothing yet, CI's runner (`.github/actions/graph`): `--devtools-pin`, the fsla-devtools repository
 and commit `MODULE.bazel` pins, which it clones beside the checkout first, and `--bin-dir`, the directory of
@@ -51,7 +51,7 @@ resolved value and the file it came from ([dev.md](dev.md)).
   the one place the machine's config already puts it (`bazel run //:check` prints this checkout's directory). It holds
   no compile: the lab's experiments are the graph's targets (`docs/internals/tools/lab.md#graph`), whose outputs Bazel keeps.
 - `windows_tool(rel)` returns a Windows tool under WSL.
-- `pinned(name)` returns where a pin's binary is installed (`tools/<name>_pin.json`: its folder under `host.tools_dir`,
+- `pinned(name)` returns where a pin's binary is installed (`read_pin(name)`: its folder under `host.tools_dir`,
   the binary in it), the one lookup dev.py and the measurement tools use; `ncu()` returns the pinned Nsight Compute,
   refusing until init installed it.
 - `detect()` returns what `init` writes.

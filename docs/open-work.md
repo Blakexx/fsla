@@ -42,7 +42,7 @@ sanitizer row, a budget line, a phase ledger, an overlap row — are declared in
 | **M-c** | **Skip-induced wave drift.** Boxes that skip windows race ahead of busy ones and de-phase the CTAs' shared working set in L2; measure on a built carry before designing a fix (a grid-wide window edge, a shared liveness scan, or a skip that keeps its stream position). | [`ARCHITECTURE.md` §6.3](ARCHITECTURE.md#63-the-carry--the-inter-window-term) |
 | **M-d** | **The class-drift check.** No gate asserts that a two-branches-agree class's declared members still cover the code's branches. | [`testing.md`](testing.md) |
 | **M-e** | **Spec requirement IDs.** Every normative clause an immutable `[SPEC-...]` ID, tests citing IDs only, CI checking each cited ID exists once and pinning its clause's content hash. | — |
-| **M-f** | **Peak memory beside fsla's own timing.** A `//measure:session_entmax` run stores times only: fsla's memory pass went with the root's session, so the near-cap discard rule cannot fire for fsla's sessions (fsla-bench's `timing/memory` still measures its entries). It returns as a memory reading over the same timing entries, in the move's instruments stage. | [`measurement.md`](measurement.md) |
+| **M-f** | **Peak memory beside fsla's own timing.** A `//measure:session_entmax` run stores times only, no peak memory, so the near-cap discard rule cannot fire for fsla's sessions (fsla-bench's `timing/memory` measures its entries). Owed: a memory reading over the same timing entries. | [`measurement.md`](measurement.md) |
 
 ## The surface
 
