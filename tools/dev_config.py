@@ -191,32 +191,13 @@ def scratch(name: str) -> Path:
 SHARED_PINS = ("bazelisk", "cuda_toolkit", "nsight_compute")
 
 
-def devtools_commit() -> str:
-    """The fsla-devtools commit this tree pins (MODULE.bazel's `git_override` of `fsla_devtools`): the one the graph builds with."""
-    import re
-
-    found = re.search(r'git_override\(\s*module_name = "fsla_devtools",\s*commit = "([0-9a-f]{40})"',
-                      (ROOT / "MODULE.bazel").read_text())
-    if not found:
-        raise SystemExit("MODULE.bazel pins no fsla_devtools commit")
-    return found.group(1)
-
-
 def read_pin(name: str) -> dict:
-    """A tool's pin. A shared one (`SHARED_PINS`) is read AT THE PINNED COMMIT from the fsla-devtools checkout
-    (`workspace.devtools`), so the tools here read the very file the graph's `@fsla_devtools//pins:` holds, whatever that
-    checkout has checked out; the rest are this tree's `tools/<name>_pin.json`."""
-    if name not in SHARED_PINS:
-        return json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
-    import subprocess
-
-    checkout, commit = get("workspace.devtools"), devtools_commit()
-    shown = subprocess.run(["git", "-C", str(checkout), "show", f"{commit}:pins/{name}_pin.json"], capture_output=True,
-                           text=True)
-    if shown.returncode:
-        raise SystemExit(f"the fsla-devtools checkout {checkout} does not hold the pinned commit {commit[:10]} "
-                         f"(`git -C {checkout} fetch origin` fetches it): {shown.stderr.strip()}")
-    return json.loads(shown.stdout)
+    """A tool's pin: a shared one (`SHARED_PINS`) from the fsla-devtools checkout (`workspace.devtools`), the very
+    checkout the front door hands the graph as `@fsla_devtools` (`docs/build-graph.md#front-door`), so the tools and
+    the graph read one file; the rest from this tree's `tools/<name>_pin.json`."""
+    if name in SHARED_PINS:
+        return json.loads((Path(get("workspace.devtools")) / "pins" / f"{name}_pin.json").read_text())
+    return json.loads((Path(__file__).resolve().parent / f"{name}_pin.json").read_text())
 
 
 def pinned(name: str) -> Path:
