@@ -4,6 +4,7 @@
 // see docs/internals/tools/lab.md
 #pragma once
 
+#include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <map>
 #include <set>
 #include <string>
@@ -217,6 +219,22 @@ __device__ __forceinline__ void cp_wait() {
 }
 
 __device__ __forceinline__ void cp_wait_all() { asm volatile("cp.async.wait_all;" ::: "memory"); }
+
+//: AN OPERAND'S K-STEP STAGED BY ONE WARP into wgmma's unswizzled K-major bricks (`wg_desc(at, 8, 16)` reads a k16
+//: slice of it): `R` rows of 64 bf16 from `src`, `pitch` elements a row; an instruction 16 rows of 32 bytes (two lanes a
+//: row's sector), which land over all 32 banks (4 wavefronts an instruction); a k16 slice R * 32 bytes, a brick of 8
+//: rows 256, the brick's K 8-15 128 on
+template <int R, class T>
+__device__ __forceinline__ void cp_async_bricks(uint32_t dst, const T* src, long long pitch, int lane) {
+  static_assert(sizeof(T) == 2, "the bricks hold 16-bit values");
+  const int row = lane >> 1, half = lane & 1;
+  const uint32_t to = dst + (row >> 3) * 256 + half * 128 + (row & 7) * 16;
+  const T* from = src + row * pitch + half * 8;
+#pragma unroll
+  for (int rb = 0; rb < R / 16; ++rb)
+#pragma unroll
+    for (int kp = 0; kp < 4; ++kp) cp_async16(to + kp * (R * 32) + rb * 512, from + rb * 16 * pitch + kp * 16);
+}
 
 //: THE SHARED-MEMORY BARRIER (`mbarrier`, sm_80+), as `ops.cuh` spells it: `count` arrivals complete a phase, a phase's
 //: parity flips at each completion, a wait polls until the phase of `parity` has completed.
@@ -692,6 +710,21 @@ inline std::string trace_record(const std::string& variant, const std::vector<in
   }
   record.variant(variant);
   return record.json();
+}
+
+//: THE DRIVER'S TENSOR-MAP ENCODER (`cuTensorMapEncodeTiled`), from the running driver's library (no toolkit is
+//: linked for it); an experiment that cannot reach it exits 2, its name in the refusal
+using TensorMapEncode = CUresult (*)(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*,
+                                     const cuuint64_t*, const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave,
+                                     CUtensorMapSwizzle, CUtensorMapL2promotion, CUtensorMapFloatOOBfill);
+inline TensorMapEncode tensor_map_encoder(const char* experiment) {
+  void* const driver = dlopen("libcuda.so.1", RTLD_NOW);
+  const auto encode = driver ? reinterpret_cast<TensorMapEncode>(dlsym(driver, "cuTensorMapEncodeTiled")) : nullptr;
+  if (!encode) {
+    std::fprintf(stderr, "%s: the driver's cuTensorMapEncodeTiled is not reachable\n", experiment);
+    std::exit(2);
+  }
+  return encode;
 }
 
 //: A KERNEL'S DEMANGLED NAME AS AN EXPECTATION'S PATTERN: `kernel("tax", {3, 17})` matches

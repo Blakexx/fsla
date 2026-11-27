@@ -20,8 +20,6 @@
 // trip ahead: the next writer tile lands while this one is computed. Live: two integer accumulators of 32 through
 // the arithmetic, 16 words of A through the value steps' wait, the output's 36 for the CTA.
 // see docs/internals/tools/lab.md#intra-window
-#include <cuda.h>
-#include <dlfcn.h>
 
 #include "lab.cuh"
 
@@ -280,16 +278,8 @@ inline Call call_of(size_t tokens) {
   LAB_CHECK(cudaMalloc(&den, tokens * 4));
   LAB_CHECK(cudaMemset(out, 0, words * 4));
   LAB_CHECK(cudaMemset(den, 0, tokens * 4));
-  //: THE TENSOR MAPS, from the driver (its library is the running one's: no toolkit is linked for it)
-  using Encode = CUresult (*)(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*, const cuuint64_t*,
-                              const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave, CUtensorMapSwizzle,
-                              CUtensorMapL2promotion, CUtensorMapFloatOOBfill);
-  void* const driver = dlopen("libcuda.so.1", RTLD_NOW);
-  const auto encode = driver ? reinterpret_cast<Encode>(dlsym(driver, "cuTensorMapEncodeTiled")) : nullptr;
-  if (!encode) {
-    std::fprintf(stderr, "intra_window: the driver's cuTensorMapEncodeTiled is not reachable\n");
-    std::exit(2);
-  }
+  //: THE TENSOR MAPS, by the driver's encoder (`lab.cuh`)
+  const auto encode = lab::tensor_map_encoder("intra_window");
   CUtensorMap maps[3];
   const cuuint32_t steps[2] = {1, 1};
   for (int m = 0; m < 3; ++m) {

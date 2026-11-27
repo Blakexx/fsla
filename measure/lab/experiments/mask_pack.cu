@@ -1,13 +1,13 @@
 // measure/lab/experiments/mask_pack.cu -- QUESTION: the producer writes a level-side's mask as 32-token words, a bit
-// the u8 digit is nonzero (Blake's ruling of 2026-11-27), from the epilogue's registers: what does the packer cost a
-// 64-token block of 256 digits laid in a `wgmma` m64n256 accumulator (a thread's `d[4 q + 2 j + i]` is row `16 w + g +
-// 8 j`, column `8 q + 2 t + i`)? METHOD: a warpgroup holds its block's quantized values (`255 level / max`, fp32) in
-// that layout, loaded before the clock; a digit is nonzero where its value rounds above 0 (`> 0.5`, the FFMA's
-// rounding). THE PACKER: a ballot a register index (8 tokens x 4 columns a ballot); lane `q` keeps the four ballots of
-// its column group `q` (a select a ballot); each of its 8 columns' 16 token bits are the ballots' every fourth bit,
-// gathered by three shift-and-mask rounds; a warp's 16-bit halves go to shared memory as one 16-byte store a lane, a
-// named barrier joins the warp pair of a 32-token half, and each thread of the pair writes 4 words (16 bytes) of the
-// half's 256 words to global memory. Every word is checked against the host's bits; densities 10%, 50%, 100%.
+// the u8 digit is nonzero, from the epilogue's registers: what does the packer cost a 64-token block of 256 digits laid
+// in a `wgmma` m64n256 accumulator (a thread's `d[4 q + 2 j + i]` is row `16 w + g + 8 j`, column `8 q + 2 t + i`)?
+// METHOD: a warpgroup holds its block's quantized values (`255 level / max`, fp32) in that layout, loaded before the
+// clock; a digit is nonzero where its value rounds above 0 (`> 0.5`, the FFMA's rounding). THE PACKER: a ballot a
+// register index (8 tokens x 4 columns a ballot); lane `q` keeps the four ballots of its column group `q` (a select a
+// ballot); each of its 8 columns' 16 token bits are the ballots' every fourth bit, gathered by three shift-and-mask
+// rounds; a warp's 16-bit halves go to shared memory as one 16-byte store a lane, a named barrier joins the warp pair
+// of a 32-token half, and each thread of the pair writes 4 words (16 bytes) of the half's 256 words to global memory.
+// Every word is checked against the host's bits; densities 10%, 50%, 100%.
 // TIMELINE: no load in the clock. A trip: 128 compares and ballots with their keeps, the gathers, the halves' store,
 // the pair's barrier, the words' load and store. Live: the 128 values, the four kept ballots, 8 halves.
 // see docs/internals/tools/lab.md#mask-pack
