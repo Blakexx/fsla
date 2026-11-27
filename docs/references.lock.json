@@ -1685,6 +1685,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "30ae6266cc3f", "reviewed": true, "sha256": "0139a50bd76cad7f", "target": "tools/lab_trace.py::variant_of"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "29911b27e382", "reviewed": true, "sha256": "", "target": "tools/notice_ledger.json"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "", "target": "tests/unit/test_life_ranges.py"},
+  {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "8f2e3004abec", "reviewed": true, "sha256": "", "target": "tests/unit/test_region_ledger.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "", "target": "tools/checked.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/life_ranges.py"},
   {"doc": "docs/internals/tools/life_ranges.md", "pinned_at": "6382b3ab9253", "reviewed": true, "sha256": "", "target": "tools/region_ledger.py"},

@@ -32,7 +32,7 @@ control flow is wrong for the kernels this tree builds:
 Both drop a value live across the call from the count: read with its own counts, the carry's 128-register state
 vanished at every item boundary (a fill inside the window loop showed ~40 live).
 
-The registers held at each instruction are warpline's `flow.pressure` over the checker's model of the function with the
+The registers held at each instruction are the pinned warpline module's `flow.pressure` over the checker's model of the function with the
 listing's marks (`readers.life_ranges`, `runner.kernels_of(..., life=True)`, through `tools/checked.py`), over the
 function's graph (`nvdisasm -bbcfg`), on these rules:
 
@@ -44,9 +44,8 @@ function's graph (`nvdisasm -bbcfg`), on these rules:
   it -- a register written and read under one predicate does not count from the kernel's entry;
 - the subroutines' bodies are left out of the report.
 
-`tests/unit/test_life_ranges.py` holds the two call shapes: a value held across a division's slow-path call counts before
-the call (a compiled probe), and a value held across a loop's exit through a call to a label counts in the loop (the
-listing as the toolkit prints one).
+`tests/unit/test_life_ranges.py` holds the report's reading of the compiled probe through the seam; the region attribution
+is `tools/region_ledger.py`'s (`tests/unit/test_region_ledger.py`).
 
 The check (2026-10-14, the carry at a 248-register cap): peak 244 live; ptxas fits it in 248 (246 usable, two of the
 count reserved) and spills 24 bytes at 240 (238 usable). nvdisasm's own count gave 226.
