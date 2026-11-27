@@ -298,7 +298,7 @@ FSLA_CARVE_FN constexpr PrefillCarve prefill_carve(int levels, const int* width_
   FSLA_CARVE_UNROLL
   for (int h = 0; h < kCarveMaxReadHeads; ++h) {
     if (h < read_heads) {
-      //: a head's set is raised along the head's OWN densest level; `read_order`, of the heads together, is the schedule's and the leaf groups'
+      //: a head's set is raised along the head's OWN densest level, not `read_order`'s
       int own[kCarveMaxLevels] = {};
       carve_loop_order(c.read_density[h], levels, own);
       carve_least_sets(own, levels, c.carve_bits, c.read_group_bits[h]);
