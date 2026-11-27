@@ -325,7 +325,7 @@ that call is ONE LAUNCH of the fused producer kernel, the bundle's rows and scal
 a kernel not built on this line, so the call raises `fsla.ops._ext.KernelNotBuilt` there
 ([`open-work.md`](open-work.md)). The torch composition behind the same call is the reference: fp64, the host,
 and -- until the native backward -- the path a gradient takes. The CUDA entmax solve behind it takes bf16 logits (the projection's output) and writes the bf16 stored form; fp64 logits take the torch lowering, and CUDA logits of any other dtype are refused by name. Construction validates the whole declaration --
-widths in range, a buildable topology, a gain layout -- so an unbuildable model fails on the line that built it.
+widths in range, a buildable topology, a gain layout -- so a model the declaration cannot state fails on the line that built it (the one declaration it accepts and the solve refuses is named below).
 
 <a id="the-routing"></a>**The routing is declared ONCE: one topology, flat activations, `G` read heads** (the owner, 2026-11-27: "its
 not worth it. just have a flat activation for each pattern"). `topology` is the level widths, outermost first. `write` is one flat
