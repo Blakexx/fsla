@@ -2,7 +2,7 @@
 training, so a cell set that claims to cover the distribution has to show the knob moving it.
 
 The sweep is four central layer cells (`SWEEP`): one entmax layer at four logit gains on one input, the cells alike in
-every field but the gain. Each is built by `measure.cells.layer.build`, and its REALIZED write density -- the
+every field but the gain and their note, which names it. Each is built by `measure.cells.layer.build`, and its REALIZED write density -- the
 exact-nonzero fraction of the write side's amplitudes -- must fall monotonically as the gain rises, across at least a
 factor of four.
 """
