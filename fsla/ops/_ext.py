@@ -6,8 +6,8 @@
 That sentence is the whole point of the extraction. In the fork this file called
 ``torch.utils.cpp_extension.load(...)`` at first use, which meant the binary a user
 ran was compiled by *their* toolchain, from source, at import time — the exact
-thing the closed-world codegen policy exists to forbid. The register and spill
-counts in ``tools/manifests/`` describe a binary that was *measured*; a JIT build
+thing the closed-world codegen policy exists to forbid. The census's register and spill
+counts describe a binary that was *measured*; a JIT build
 produces a different binary every time the environment moves, and no manifest can
 speak for it.
 

@@ -194,7 +194,6 @@ inventory nobody flips.
 | `host_dispatch_is_arm_switch` | 0 |
 | `one_admission_law` | 0 |
 | `one_body_per_family` | 1 |
-| `one_derivation_site` | 1 |
 | `second_arm_table` | 5: test-local arm tables |
 | `single_value_axis` | 0 |
 | `state_float_view` | 3 |

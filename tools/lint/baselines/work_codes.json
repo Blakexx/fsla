@@ -836,60 +836,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2'",
-   "line_sha256": "5de8f34ad63783c6",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2'",
-   "line_sha256": "ac10135c5c140c83",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2b'",
-   "line_sha256": "29287dd408febe36",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2b'",
-   "line_sha256": "ce605792ee6ff60e",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2b'",
-   "line_sha256": "d1c9cb915cc69580",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2b'",
-   "line_sha256": "dd4c933d4c1784b4",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2c'",
-   "line_sha256": "ce605792ee6ff60e",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "04a1bf286ec0ba66",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "0c9e5f199d7e3fb7",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode_lattice.md",
    "message": "names the work code 'K6'",
    "line_sha256": "6beadcaa660feef7",
@@ -1154,48 +1100,6 @@
    "count": 1
   },
   {
-   "path": "tests/unit/test_carry_constants.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "8d277a9f022d4b45",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "02007c4b2ac77540",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "0f929acd423b6295",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "2fc983d73d152819",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'C0'",
-   "line_sha256": "4e97458c35515902",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'G4'",
-   "line_sha256": "0cb01bfe6eea6af9",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "78b4e11560c06e77",
-   "count": 1
-  },
-  {
    "path": "tests/unit/test_definition_constants.py",
    "message": "names the work code 'F6'",
    "line_sha256": "d9e07a468422e9f4",
@@ -1253,24 +1157,6 @@
    "path": "tests/unit/test_entmax_row_sort.py",
    "message": "names the work code 'P74'",
    "line_sha256": "afc4e9d8cb7adc24",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_exchange_law.py",
-   "message": "names the work code 'K35'",
-   "line_sha256": "3c605f1a0be57304",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_exchange_law.py",
-   "message": "names the work code 'K50'",
-   "line_sha256": "a2f895a8f3a8bad0",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_exchange_law.py",
-   "message": "names the work code 'S1b'",
-   "line_sha256": "a0b3ff29a6ae99aa",
    "count": 1
   },
   {

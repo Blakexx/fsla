@@ -1,8 +1,6 @@
 """THE TREE'S TOOLS AS THE GRAPH'S INPUTS: the pins and records the graph's repositories read, and the generators its
 actions run."""
 
-load("@rules_cc//cc:defs.bzl", "cc_binary")
-load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "lab_run", "tool_run", "tree_part")
 
 package(default_visibility = ["//visibility:public"])
@@ -11,7 +9,6 @@ exports_files(glob([
     "*.py",
     "*.json",
     "toolchains/*.json",
-    "manifests/*.json",
 ]))
 
 filegroup(
@@ -26,59 +23,7 @@ filegroup(
 )
 
 #: this package's part of the tree the checks read
-tree_part(parts = {"manifests": "manifests/"})
-
-#: THE DERIVATION'S GOLDEN HARNESS, rendered from the declared cases and built as the extension's units are: the
-#: derivation check runs it (docs/internals/tools/ratify.md#graph). It names the smallest tabulated architecture: the
-#: derivation is the same on every tabulated card
-genrule(
-    name = "derivation_harness_source",
-    srcs = ["manifests/derivation_cases.json"],
-    outs = ["derivation/derivation_harness.cu"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) --out $@",
-    tools = [
-        "derivation.py",
-        "@fsla_env//:python",
-    ],
-)
-
-cuda_unit(
-    name = "derivation_unit",
-    srcs = [":derivation_harness_source"],
-    archs = ["compute_90a:sm_90a"],
-    copts = [
-        "-std=c++20",
-        "-O0",
-    ],
-    host_cc = "@host_cc//:identity.txt",
-    deps = ["//csrc/fsla:headers"],
-)
-
-cc_binary(
-    name = "derivation_harness",
-    deps = [
-        ":derivation_unit",
-        "@cuda_tools//:cuda_runtime_static",
-    ],
-)
-
-#: THE DERIVATION'S RECORD: the harness run over the sources the cases name; `tools/manifests/derivation.json` is its output
-#: (`//:derivation` holds it, `bazel run //:derivation_update` writes it)
-genrule(
-    name = "derivation_record",
-    srcs = [
-        "manifests/derivation_cases.json",
-        ":derivation_harness",
-        "//csrc/fsla:sources",
-    ],
-    outs = ["derivation/derivation.json"],
-    cmd = "$(execpath @fsla_env//:python) $(execpath derivation.py) --cases $(execpath manifests/derivation_cases.json) " +
-          "--src csrc/fsla/src --binary $(execpath :derivation_harness) --record $@",
-    tools = [
-        "derivation.py",
-        "@fsla_env//:python",
-    ],
-)
+tree_part()
 
 #: THE LAB, a run target of its own: it hands the tool the directory of warpline's Python package, which
 #: `tools/lab_trace.py` reads the traced rows with and the lab's checks read the code with (`FSLA_WARPLINE_PYTHON`). The experiments are

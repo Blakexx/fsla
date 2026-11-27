@@ -40,17 +40,6 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 #: hard-codes the key it enforces is a second declaration of it.
 ARM_DECLARATIONS = sorted((CSRC / "src").glob("*/arms.bzl"))
 
-#: THE GEOMETRY BLOCK -- the ONE place the addressing derivation may be instantiated.
-GEOMETRY_BLOCK = ("common/geom.cuh", "common/geom.cu", "common/geom_api.cuh")
-
-#: THE DERIVATION'S OWN NAMES. Instantiating one of these outside the geometry block
-#: is a second derivation site whatever it is called.
-#: THE KEY GOVERNS THE FAMILY THAT DECLARES IT, here as in `arm_axes`. These are the
-#: CARRY addressing derivation's names; decode's own lattice fill is decode's, derived
-#: from its own geometry, and folding the two into one site is an open question in
-#: `docs/open-work.md` rather than a finding here.
-DERIVATION_NAMES = ("derive_carry_geom", "sub_boxes", "ModeOrder", "StreamSpans")
-
 
 def arm_keys() -> dict[str, tuple[str, ...]]:
     """Every family's declared key, by family: `<FAMILY>_KEY` in its Starlark declaration, a literal read by AST (a lint
@@ -207,29 +196,6 @@ def rule_bytes_equal(files=None) -> list[str]:
                     findings.append(f"{_rel(path)}:{i + 1}: a storage identity claim "
                                     f"made with torch.equal: {line.strip()[:90]}")
                     break
-    return findings
-
-
-def rule_one_derivation_site(files=None) -> list[str]:
-    """The addressing derivation is instantiated in the geometry block, and there only.
-
-    Heuristic: a CALL to one of the derivation's names from a file outside the block.
-    Reading the block's OUTPUT is the normal case and is not a call, so a consumer
-    that takes the derived struct by value never fires.
-    """
-    call = re.compile(r"\b(" + "|".join(DERIVATION_NAMES) + r")\s*[<(]")
-    findings = []
-    for path in (cuda_files() if files is None else files):
-        rel = _rel(path)
-        if any(rel.endswith(b) for b in GEOMETRY_BLOCK):
-            continue
-        for i, line in enumerate(path.read_text().splitlines()):
-            if line.lstrip().startswith("//") or "#include" in line:
-                continue
-            m = call.search(line)
-            if m:
-                findings.append(f"{rel}:{i + 1}: '{m.group(1)}' is instantiated "
-                                f"outside the geometry block ({', '.join(GEOMETRY_BLOCK)})")
     return findings
 
 
@@ -449,7 +415,6 @@ RULES = {
     "arm_axes": rule_arm_axes,
     "state_float_view": rule_state_float_view,
     "bytes_equal": rule_bytes_equal,
-    "one_derivation_site": rule_one_derivation_site,
     "one_admission_law": rule_one_admission_law,
     "single_value_axis": rule_single_value_axis,
     "second_arm_table": rule_second_arm_table,
@@ -466,7 +431,6 @@ RULES = {
 FIXTURE_PAIRS = {
     "arm_axes": ("drift_bad.cuh", "drift_ok.cuh"),
     "state_float_view": ("drift_bad.cuh", "drift_ok.cuh"),
-    "one_derivation_site": ("drift_bad.cuh", "drift_ok.cuh"),
     "one_admission_law": ("drift_bad.cuh", "drift_ok.cuh"),
     "one_body_per_family": ("drift_bad.cuh", "drift_ok.cuh"),
     "device_switch_is_uniform": ("drift_bad.cuh", "drift_ok.cuh"),

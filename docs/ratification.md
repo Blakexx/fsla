@@ -48,48 +48,6 @@ produced:
 
 A failure is fatal on every build, iteration builds included.
 
-<a id="the-derivation"></a>
-## The derivation's goldens: code hash and golden outputs
-
-The addressing block is host code: one function, `derive_carry_geom`, run once per
-launch, whose output every kernel of the family then addresses through. An off-by-one
-in a span or a shift is a wrong answer nothing else in this gate would see, because
-the SASS it produces belongs to somebody else's kernel. So its outputs are filed in
-`tools/manifests/derivation.json` with two independent statements:
-
-* a **code hash** per declared source file (`common/geom.cuh` today) — the wholesale
-  trigger, and deliberately *not* `csrc_digest()`: a change to a kernel body is not a
-  change to the derivation, and a record that expires on every unrelated edit is a
-  record people re-write without reading;
-* **golden outputs** — the derived block, byte for byte, on the named cases declared
-  in `tools/manifests/derivation_cases.json`, plus the REFUSAL each declared-illegal
-  case produces.
-
-The refusals are filed beside the outputs because R13 makes the kernel's strict
-shape half a contract whose other half is what it refuses; a derivation that quietly
-began admitting a non-power-of-two width would pass a gate that only checked the
-shapes it admits.
-
-The record reads the two ways the `sass_sha256` ratchet does: with the code hash
-matching, no golden may move; with it moved, the gate names which cases moved and
-which did not. A separate `cases_sha256` covers the declaration itself, so a golden
-cannot stop failing because somebody deleted the case that failed.
-
-Each geometry case names a real `(D, DV, warps_per_cta)` point through the `BC` that
-pair implies — `BC = leaves_per_warp(DV) × warps_per_cta`. The derived block does not
-depend on `DV` directly; `DV` enters through `BC`. Two arms whose `(DV,
-warps_per_cta)` land on the same `BC` therefore derive the same block, and the
-goldens record that rather than hiding it.
-
-The harness compiles the shipped header and links no extension, so this check cannot
-be answered by a stale `.so`: there is no binary in the loop to be stale.
-The record is the graph's output (`//tools:derivation_record`: the harness the graph built, run over the sources the
-cases name): `bazel test //:derivation` fails when the committed `tools/manifests/derivation.json` differs from it, and
-`bazel run //:derivation_update` writes it ([`build-graph.md#committed-files`](build-graph.md#committed-files)). The record
-is the code hash, the cases' digest and the goldens, and no date, so an edit to a derivation source or a case moves the
-record at once and the difference is shown golden by golden; goldens that move with the sources and the cases unchanged are a toolchain
-or platform difference, not an edit: investigate before writing the record.
-
 <a id="the-device-stamp"></a>
 ## The device stamp keys on the csrc content hash
 

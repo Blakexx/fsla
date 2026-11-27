@@ -5,7 +5,6 @@
 
 #include <cstdint>
 
-#include "common/geom.cuh"
 #include "common/hardware.cuh"
 #include "common/select.cuh"
 #include "plan/decode_launch.h"
@@ -13,7 +12,8 @@
 namespace fsla {
 namespace decode {
 
-using fsla::carry::kAtomLeaves;  // page granule from the addressing block; see decode.md#kmaxlevels
+constexpr int kAtomLeaves =
+    plan::kLatticeAtomLeaves;  // the page granule, the plan's; see decode.md#kmaxlevels
 
 constexpr int kMaxLevels = plan::kDecodeMaxLevels;  // 1 <= D <= 4; see decode.md#kmaxlevels-2
 
@@ -63,10 +63,8 @@ struct LeafLanes {
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
 enum DecodePhase : int { kPhFold, kPhFactor, kPhWalk, kPhCombine, kDecodePhases };
 
-constexpr int kAtomShift =
-    fsla::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift
+constexpr int kAtomShift = plan::kLatticeAtomShift;  // shift+mask; decode.md#katomshift
 constexpr int kAtomMask = kAtomLeaves - 1;
-static_assert(1 << kAtomShift == kAtomLeaves, "kAtomShift must be log2(kAtomLeaves)");
 
 struct Span {  // one operand's address, as the producer left it; decode.md#span
   const void* base;

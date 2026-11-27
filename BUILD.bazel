@@ -3,8 +3,7 @@
     bazel build //:library                      # fsla_cu13/_C.abi3.so and its build record, the shipped build, in .bazel/bin
     bazel run //:library                        # the same, with the build's generated headers in build/generated
     bazel run //:library --//:archs=90a --//:contract=decode_d32_l2    # an iteration build
-    bazel test //:derivation                    # tools/manifests/derivation.json is what the graph's harness writes
-    bazel run //:derivation_update              # write it (and //:readme_update, //:devbox_image_update: docs/build-graph.md#committed-files)
+    bazel run //:readme_update                  # write the README's generated block (and //:devbox_image_update: docs/build-graph.md#committed-files)
     bazel run //:ratify -- --census             # every shipped instantiation's registers and spills (docs/ratification.md)
 """
 
@@ -125,15 +124,8 @@ ratify_census(
 )
 
 #: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
-#: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The derivation's goldens, from the harness
-#: the graph built (docs/ratification.md); the README's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
+#: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The README's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
 #: (docs/setup.md#the-devbox-image)
-committed_file(
-    name = "derivation",
-    committed = "//tools:manifests/derivation.json",
-    generated = "//tools:derivation_record",
-)
-
 #: the environment's interpreter by its store path (which carries the environment's key), which the sandbox does not hold
 genrule(
     name = "readme_generated",
@@ -583,7 +575,6 @@ test_suite(
         ":docrefs",
         ":learnings",
         ":ratchet_baselines",
-        ":derivation",
         ":devbox_image",
         ":readme",
     ],

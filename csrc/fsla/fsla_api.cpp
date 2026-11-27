@@ -19,7 +19,6 @@
 #include "common/select.cuh"
 #include "common/torch_seam.cuh"
 #include "plan/prefill_launch.h"
-#include "src/common/geom_api.cuh"
 #include "src/common/plan/plan_api.cuh"
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
@@ -48,11 +47,6 @@ STABLE_TORCH_LIBRARY(fsla, m) {
   m.def("device_card(int device) -> (int, str, int)");
   m.def("csrc_build_stamp() -> int");
   m.def("sm_clock_ghz(int spin_cycles=20000000) -> float");
-
-  // ---- the addressing block ------------------------------------------------
-  m.def(
-      "carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv, int interleave, int atom_floor) -> int[]");
-  m.def("carry_sub_boxes(int depth, int box_leaves, int workers, int atom_floor) -> int[][]");
 
   // ---- the producer's solves -----------------------------------------------
   m.def(
@@ -128,8 +122,6 @@ STABLE_TORCH_LIBRARY_IMPL(fsla, CompositeExplicitAutograd, m) {
 
   m.impl("csrc_build_stamp", TORCH_BOX(&fsla::csrc_build_stamp));
   m.impl("sm_clock_ghz", TORCH_BOX(&fsla::sm_clock_ghz));
-  m.impl("carry_geometry", TORCH_BOX(&fsla::carry::geometry));
-  m.impl("carry_sub_boxes", TORCH_BOX(&fsla::carry::sub_box_set));
   m.impl("entmax_factor_forward", TORCH_BOX(&fsla::entmax::factor_forward));
   m.impl("entmax_factor_backward", TORCH_BOX(&fsla::entmax::factor_backward));
   m.impl("routing_softmax_forward", TORCH_BOX(&fsla::entmax::softmax_forward));

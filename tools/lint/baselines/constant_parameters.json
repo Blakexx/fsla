@@ -111,12 +111,6 @@
   },
   {
    "path": "tools/lint/drift_guards.py",
-   "message": "rule_one_derivation_site(..., files=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "a9b41419eaacdefc",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/drift_guards.py",
    "message": "rule_second_arm_table(..., files=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "69bda20875d43b40",
    "count": 1

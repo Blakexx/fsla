@@ -81,8 +81,6 @@ _LAUNCHLESS = {
     "intra_build_stamp": "returns a compiled-in stamp",
     "fsla_decode_build_stamp": "returns a compiled-in stamp",
     "csrc_build_stamp": "returns a compiled-in stamp",
-    "carry_geometry": "a host derivation over the descriptor; no device work",
-    "carry_sub_boxes": "a host derivation over the descriptor; no device work",
     "fsla_decode_capacity": "a host derivation over the descriptor; no device work",
     "fsla_decode_producer_width_mirror": "returns a compiled-in width",
     "fsla_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",

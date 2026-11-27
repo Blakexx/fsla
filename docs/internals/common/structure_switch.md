@@ -37,7 +37,7 @@ member, with no lambda of its own, and a body large enough to pass the inliner's
 outlined into a call -- its references in memory, and in an outlined body ptxas proves no shuffle or vote converged,
 so each one falls back to a convergence subroutine (the producer's solve: 400-1,000 calls, a 500-byte frame).
 
-`value` must be a launch-derived structural index — a field of the addressing block, an
+`value` must be a launch-derived structural index — a field of the launch's descriptor, an
 arm axis — and never a per-lane or data-dependent quantity. That is R9 itself, and the
 primitive cannot check it; a reviewer reads the call site.
 

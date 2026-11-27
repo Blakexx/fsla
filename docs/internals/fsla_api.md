@@ -18,7 +18,7 @@ writes).
 
 Registration is host-only. Left inside a `.cu` it is recompiled once per `-gencode` target for no benefit, and every
 architecture added to the built set multiplies that cost. Every declaration it names is a host header
-(`src/decode/decode_api.cuh`, `src/common/plan/plan_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/mask_prepare/mask_prepare.cuh`, `src/common/geom_api.cuh`,
+(`src/decode/decode_api.cuh`, `src/common/plan/plan_api.cuh`, `src/entmax/entmax.cuh`, `src/entmax/factor.cuh`, `src/mask_prepare/mask_prepare.cuh`,
 `common/arm_switch.cuh`), so no device body is in scope.
 
 ## <a id="one-library"></a>2. One library, registered here only
@@ -40,7 +40,6 @@ reaches into the module itself.
 | group | operators |
 |---|---|
 | build, card and clock facts | `csrc_build_stamp`, `device_card`, `sm_clock_ghz` |
-| the addressing block | `carry_geometry`, `carry_sub_boxes` |
 | the producer's solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the prefill's mask-preparation pass | `mask_prepare`, `mask_prepare_bytes` (`mask_prepare(Tensor[] masks, int[] slots, int[] widths, int[] heads, int tokens, Tensor density, Tensor(a!) workspace) -> ()`; `mask_prepare_bytes(int[] widths, int[] masked, int[] heads, int tokens, int device) -> int`, `device` the card's index: the op derives the card's window) |
 | the planner's descriptor | `fsla_call_facts`, `fsla_descriptor`, `fsla_owed_kernels` |

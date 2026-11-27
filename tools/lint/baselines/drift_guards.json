@@ -24,12 +24,6 @@
    "message": "a storage identity claim made with torch.equal: assert torch.equal(ref[\"state\"], got[\"state\"]), (",
    "line_sha256": "5fcb693d5638ba48",
    "count": 1
-  },
-  {
-   "path": "tests/unit/test_carry_geometry.py",
-   "message": "'ARM_PARAMS' is a literal arm table outside an `arms.bzl`",
-   "line_sha256": "2ba2d0f50111ab87",
-   "count": 1
   }
  ]
 }

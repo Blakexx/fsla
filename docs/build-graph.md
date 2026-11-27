@@ -258,7 +258,6 @@ date or host, so the same tree writes the same bytes.
 
 | committed file | the graph writes it | the test | the update |
 |---|---|---|---|
-| `tools/manifests/derivation.json` | `//tools:derivation_record`: the derivation harness the graph built, run over the sources the declared cases name | `//:derivation` | `//:derivation_update` |
 | `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract and the device parts (`hardware/`), the toolchain record | `//:readme` | `//:readme_update` |
 | `tools/devbox_image.json` | `//:devbox_image_record`: `//:image`'s content digest (`tools/oci_layout.py --record`) | `//:devbox_image` | `//:devbox_image_update` |
 
