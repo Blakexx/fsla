@@ -4,11 +4,12 @@ A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the CONTRACT, the registry of run-time contexts FSLA accepts (``hardware/``,
 docs/internals/hardware/registry.md), and the toolchain that builds each context's architecture. The build fails if any context of the contract
 reaches no arm (``arms_gen``), so the published support and the guaranteed support are one file. The commit gate fails on drift
-(`//:readme`, which holds the committed README to what the graph writes, docs/build-graph.md#committed-files):
+(`//:readme` and `//:support`, which hold the committed README and docs/support.md to what the graph writes,
+docs/build-graph.md#committed-files):
 
 * THE SUMMARY (the README's block): a row a kernel and architecture, in a reader's terms -- the card, the depth, a level's
   width, the value width, the activations, the toolchain, built or not -- read from the call facts each column names
-  (`SUMMARY`); a kernel whose descriptors are all owed is a row "not built".
+  (`summary`: `_depth`, `_widths`, `_activations`, the `d_v` fact); a kernel whose descriptors are all owed is a row "not built".
 * THE CONTRACT (docs/support.md's block): each kernel's contexts (``hardware/kernels/<kernel>/descriptors``, ``hardware.registry.contexts``), one table a kernel that has a built contract: each descriptor's architecture, the GPUs it covers and, for every fact the kernel's
   call supplies, the values the contract admits.
 * the BUILT architectures (``hardware.registry.built``: the architectures a device part states) and the toolchain that builds them

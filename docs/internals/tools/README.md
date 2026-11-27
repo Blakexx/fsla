@@ -23,7 +23,7 @@ is its target's ([`measurement.md`](../../measurement.md#instruments)).
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built under | `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`wheels.py`](wheels.md) | the graph's library of a clean commit, packaged as the pure-Python wheel and the binary plugin | a person, at a release (`bazel run //:wheels`) | the wheels |
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
-| `supported.py` | the README's supported-configuration table, generated from the contract (`hardware/`) — a REPORT, not a claim | a person, after an arm change | the table |
+| `supported.py` | the README's support summary and docs/support.md's contract tables, generated from the contract (`hardware/`) — a REPORT, not a claim | the graph's `//:readme_generated` and `//:support_generated`; a person, after an arm change | the two blocks |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `ratify.py`, every kernel gate | — |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
 | `git-hooks/pre-push` | THE PUSH'S TRIPWIRE: `bazel run //:tripwire -- --range` over every commit the push sends ([`build-graph.md`](../../build-graph.md#checks)) | git, every push | — |

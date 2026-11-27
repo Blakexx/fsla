@@ -58,12 +58,13 @@ not automatic:
 ```bash
 bazel test //:gate
 bazel run //:ratify -- --self-test
-bazel run //:readme_update                 # the README's generated block (the support table)
+bazel run //:readme_update                 # the README's generated block (the support summary)
+bazel run //:support_update                # docs/support.md's generated block (the contract, every fact)
 ```
 
 `--self-test` must still fail on every mutant it is required to reject. The
-supported-configurations table will move `sm_89` from *not built* to *built*
-on its own — it is derived from the arch table, and CI fails if it is edited by hand.
+support summary and the contract tables take the new architecture's rows
+on their own — they are derived from the contract, and the gate fails if either is edited by hand.
 
 ## 4. Build and test on the device
 
