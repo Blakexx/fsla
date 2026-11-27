@@ -179,12 +179,10 @@ fsla_wheels(
     library = ":library",
 )
 
-#: THE MEASUREMENTS (docs/measurement.md): fsla-devtools' build system running this checkout's declarations, handed warpline's
-#: checker as the SASS gate's own target is (its SASS instrument reads the code with it), and the store's own command line, each
-#: in the checkout on its own venv
+#: THE MEASUREMENTS (docs/measurement.md): fsla-devtools' build system running this checkout's declarations, and the store's
+#: own command line, each in the checkout on its own venv
 lab_run(
     name = "measure",
-    library = "@warpline//:checker",
     module = "fsla_devtools.build",
 )
 

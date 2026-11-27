@@ -22,8 +22,8 @@ stored by `bazel run` (`bazel run //measure:session_entmax`: the entmax solve on
 
 **`measure/executors.py` — WHAT FSLA'S TIMING ENTRIES AND DECLARATIONS RUN.** `timed` (an arm by name) and
 `read_clock` are the timing entries' executors. The repository root's `declare.py` declares this checkout's targets for
-fsla-devtools' build system (`fsla_devtools.build`): its build, the machine facts, its instruments (the SASS gate and the
-realized support; the register walk, phase clock, pipe counters, stall census and timeline are tools a kernel with a schedule takes a row of in `tools/kernel_targets.py`), and,
+fsla-devtools' build system (`fsla_devtools.build`): its build, the machine facts, its instruments (the
+realized support; the SASS gate's static manifest is the library's build output, `//:static_manifest`; the register walk, phase clock, pipe counters, stall census and timeline are tools a kernel with a schedule takes a row of in `tools/kernel_targets.py`), and,
 for fsla-bench's root, which loads it from every checkout it measures, every bench subject as a timing registration on
 the central cells it takes and the clock reader. `bazel run //:measure -- run declare.py:all` runs this checkout's
 instruments and diffs.

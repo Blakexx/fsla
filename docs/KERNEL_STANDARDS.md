@@ -442,7 +442,7 @@ line's `wgmma` steps (owed).
   13) emits the inline collective for a converged warp and reaches the subroutine only through a
   `BRA.DIV` into a fallback block or past a `BRA.CONV` (probed: a branch on a loaded value and a loop
   whose bound it cannot prove uniform compile to inline shuffles or to guarded fallbacks, never to an
-  unguarded call). A guarded call is cold code, not a cost a collective: the gate counts it (`guarded`)
+  unguarded call). A guarded call is cold code, not a cost a collective: the gate does not count it
   and reds only an UNGUARDED call, a converged warp's. The rule's reason is now code size: control a
   branch around collectives reads belongs in the uniform datapath (kernel parameters indexed by block
   index, constants), which keeps the fallbacks out; a data-dependent loop exits on a vote.
