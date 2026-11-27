@@ -94,7 +94,7 @@
   },
   "sm_clock_kernel": {
    "oracle": {
-    "owed": "no test reads it; measure/executors.py records it with every measurement"
+    "owed": "no test reads it; measure/provider.py's read_clock proves every session's clock with it"
    },
    "sanitizer": {
     "exempt": "a dependent spin on each SM and one timer read; no shared memory, no data between threads"

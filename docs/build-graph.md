@@ -14,7 +14,8 @@ target (`bazel run //measure:session_entmax`, [`measurement.md`](measurement.md#
 entry's bundle and the session's manifest, and the session program it starts holds the GPU, the host budget and the
 clock as machine-wide locks, which Bazel cannot do for an action. An instrument's record is a run target too
 (`bazel run //measure:store_oracle_tier`, [`measurement.md`](measurement.md#instruments)): one on the device runs in the
-run, never in a build, which holds the host budget; fsla-bench's diffs are `fsla_devtools.build`'s.
+run, never in a build, which holds the host budget, and so does a diff over a side on the device
+([`measurement.md#the-diffs`](measurement.md#the-diffs)).
 
 - <a id="stamp"></a>THE BUILD IS STAMPED: `.bazelrc` names `bazel/status.sh` as the workspace status command, which
   writes the commit, the branch, the checkout's directory name and the sha256 of the uncommitted tracked diff (`git diff

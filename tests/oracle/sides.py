@@ -5,14 +5,14 @@
 The oracle pair -- `fsla/ops/naive.py` and the routing references it composes with -- is what every Tier 1 gate is
 anchored to, and a change to it cannot be reviewed by reading the diff: the question is never "is the new code
 reasonable" but "does it compute the same function". So both versions are RUN, over the central cells, and compared
-(`fsla_devtools.diff`, declared in `declare.py`).
+(`fsla_devtools.diff`; each surface a `diff_side` of `measure/entries.bzl`).
 
 Each function here is a SIDE: it takes one cell's record and returns the quantities that side has to show. Nothing
 here compares anything or states a tolerance -- the rule is the diff node's (`bit-identical` for the oracle,
 `support-equal` for the producer) and the two checkouts' functions are the only things that differ.
 
-THE OLD SIDE IS A SECOND CHECKOUT, not an import alias: the build system runs each side in its own environment, and
-the side declares the library it must be running (`binds="fsla"`), which the node proves rather than arranges for.
+THE OLD SIDE IS A SECOND COMMIT, not an import alias: each side runs in its own commit's bundle, and the side declares
+the library it must be running (`binds`: `fsla`), which the side proves rather than arranges for.
 The oracle pair's sides are CPU and fp64 -- pure torch, no build and no device. The carry's pair is fsla's own
 kernel-vs-oracle diff: the kernel's ``num`` in the recurrence's units against the fp64 inter term and its envelope.
 
@@ -23,7 +23,7 @@ kernel-vs-oracle diff: the kernel's ``num`` in the recurrence's units against th
                 sides run fp64 on identical inputs, so a rewrite that only nearly reproduces the old one has changed
                 the definition.
     carry-kernel the carry over a whole call against the fp64 inter term, per slot under the output kind's clauses
-                (`declare.py`'s `KERNEL_VS_ORACLE`); across checkouts, per slot at twice the reassociation measured.
+                (once its clauses are measured); across commits, per slot at twice the reassociation measured.
 
 THE BACKWARD HALF IS NOT OPTIONAL. A seeded VJP per cell over every operand, with "no gradient" recorded as an EMPTY
 tensor rather than a zero one: the oracle's `.detach()` at the clock is its literal spec, and the difference between

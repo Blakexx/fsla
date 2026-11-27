@@ -1,7 +1,7 @@
 # The SM's effective clock, read off the device
 
 Mirrors `csrc/fsla/src/common/sm_clock.cu` (`sm_clock_ghz`) and its use in
-`measure/executors.py` (`read_clock`) and `measure/provider.py`.
+`measure/provider.py` (`read_clock`, and the arms that read the clock when built).
 
 ## Why it exists
 
@@ -32,7 +32,7 @@ for `spin_cycles` of its own cycles; CTA 0 reports its cycles against the global
 The ratio is the effective clock during the spin, in GHz.
 
 A timing session of fsla-devtools' timing system (`fsla_devtools.timing`) reads the clock through this binary's clock
-reader (`measure/executors.py`'s `read_clock`) before the first timed call and after the last, and fails a session
+reader (`measure/provider.py`'s `read_clock`, the entry `//measure:clock`) before the first timed call and after the last, and fails a session
 whose read is off the lock; fsla's runner records the read taken when each arm was built
 (`sm_ghz_at_build`).
 

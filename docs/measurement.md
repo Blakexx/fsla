@@ -7,31 +7,34 @@ stored with its provenance. This document is what that sentence means.
 |---|---|---|
 | cells | fsla-devtools' central registry `fsla_devtools.cells` (fsla's reading: `measure/cells/`) | WHAT is measured: an input in one form, named once for every package by its own fields, with its draw, seed and proven regime |
 | subjects | `measure/subjects.py`, `measure/provider.py` (fsla's runner) | WHICH launch is timed on a cell, at which LEVEL, each arm's dials, its untimed reset, and which cells this binary cannot run |
-| timing targets | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `timing_entry`, `interleaved_timing`) | WHAT IS TIMED: each entry an executor on cells in this tree's bundle, each session a run target over entries |
+| timing targets | `measure/BUILD.bazel`, `measure/entries.bzl` (fsla-devtools' `bazel/measure.bzl`: `timing_bundle`, `timing_entry`, `interleaved_timing`, `measure_memory`, `diff_side`) | WHAT IS TIMED: each entry an arm on a cell in this tree's bundle, each session (or null gate, or memory pass) a run target over entries; each diff side a surface on its cells |
 | instruments and stores | `measure/BUILD.bazel` (fsla-devtools' `bazel/measure.bzl`: `instrument`, `results_store`) | WHAT IS RECORDED of a build: a build output (the static manifests) or an instrument's JSON (the oracle tier on the device), each a run target that stores it unless the store holds it |
-| declarations | `declare.py` (a checkout's targets), fsla-bench's `declare.py` (checkouts composed) | WHAT fsla-bench RUNS: each checkout's build, machine facts, diff sides and timing registrations as targets of `fsla_devtools.build`, in fsla-bench's sessions and diffs |
+| bundles | fsla-devtools' `bundle` tag and `exported_entry`, fsla-bench's `measure/` | WHAT fsla-bench RUNS: this package's entries and sides of two commits, each built in its own workspace by its own pins, in the bench's sessions and diffs |
 | method | fsla-devtools' `fsla_devtools.timing.session` (`interleave`, the session program) | HOW: interleaved call by call, one call at a time, in a fresh random order each rep |
 | preconditions | the session program, `measure/provider.py` | what the box and the binary must be first |
-| statistics | fsla-devtools' `fsla_devtools.verdict` | whether a difference is real |
+| statistics | fsla-devtools' `fsla_devtools.results.verdict` | whether a difference is real |
 | record | `fsla_devtools.results` (the measurements store) over the data repository, fsla-results | where a number lives afterwards, and which stored samples are a baseline |
 
 fsla times itself with `bazel run //measure:session_entmax` and records its instruments with their store targets
-(`bazel run //measure:store_oracle_tier`, `bazel run //measure:store_static_manifest`); fsla-bench's root loads
-`declare.py` from each checkout it compares,
-registers every checkout's timing entries beside its attention reference, and times them in shared sessions of
-fsla-devtools' build system. Both interleave with one loop (`fsla_devtools.timing.session.interleave`): a number taken
-either way is the same measurement.
+(`bazel run //measure:store_oracle_tier`, `bazel run //measure:store_static_manifest`); fsla-bench consumes this
+package's entries of two commits as BUNDLES -- each commit built in its own workspace by its own pins -- and times them
+beside its attention reference in sessions of the same rules. Every session runs one program
+(`fsla_devtools.timing.session`): a number taken either way is the same measurement.
 
 ## <a id="entries"></a>Timing entries and their bundles
 
-A TIMING ENTRY is a Bazel target (`timing_entry` in `measure/BUILD.bazel`, this tree's wrapper in `bazel/defs.bzl`): an
-executor of `measure/executors.py` (`timed`, one of fsla's arms by name; `read_clock`, the clock reader) on central cells
-named as targets (`@fsla_cells//:<cell>`, each the cell's description -- its record and the digest of the code that draws
-it, never its tensors). Its BUNDLE is everything its worker imports and reads, as the entry's runfiles: the `fsla` and
-`measure` packages, the contract registry, the library with its build record, and the arm tables laid out at
-`build/generated/`, where `measure/provider.py` reads a tree's. Beside it the build writes the bundle's manifest: the
-commit, branch and uncommitted diff the build was stamped with ([`build-graph.md#stamp`](build-graph.md#stamp)), the
-digest of every file the bundle holds, and the environment it runs on.
+A TIMING ENTRY is a Bazel target (`timing_entry`, this tree's wrapper in `bazel/defs.bzl`): an executor of
+`measure/provider.py` (`timed`, one of fsla's arms by name; `read_clock`, the clock reader) on central cells named as
+targets (`@fsla_cells//:<cell>`, each the cell's description -- its record and the digest of the code that draws it,
+never its tensors). `measure/entries.bzl` declares one entry an arm and a cell, `<arm>_<cell>`: every subject of
+`measure/subjects.py` on every central cell of its kind, a decode step on the cells that take steps, selected by the
+cells' own fields (`@fsla_cells//:cells.bzl`), never by a name's spelling; an arm this line does not build records its
+refusal when a session sets it up. The entries share ONE BUNDLE (`//measure:bundle`, `timing_bundle`): everything a
+worker imports and reads, as runfiles -- the `fsla` and `measure` packages, the contract registry, the library with its
+build record, and the arm tables laid out at `build/generated/`, where `measure/provider.py` reads a tree's -- and its
+manifest: the commit, branch and uncommitted diff the build was stamped with
+([`build-graph.md#stamp`](build-graph.md#stamp)), the digest of every file the bundle holds, and the environment it runs
+on. `fsla` and the extension must load from inside the bundle (its `binds`), which the session checks of every member.
 
 ## <a id="sessions"></a>The method
 
@@ -56,9 +59,11 @@ cells and bundle digest, the rounds, reps and warm-up, whether the clock was loc
 each bundle's stamped commit. `-- --no-store` measures and keeps `session.json` in the scratch directory; a session that
 fails stores nothing and says where its samples were kept.
 
-A NULL GATE (`measure_null_gate`) times one registration's entries against copies of themselves in second workers of the
-same checkout: where the per-rep ratios of the two copies put one outside their interquartile range, a worker's bias is
-found, and a ratio between two checkouts' workers on that cell is read beside it.
+A NULL GATE (`interleaved_timing(null_gate = True)`) times a session's entries against copies of themselves in second
+workers of the same bundle, stored at its own label: where the per-rep ratios of the two copies put one outside their
+interquartile range, a worker's bias is found, and the verdict does not judge a pair across workers whose gate found
+one. A MEMORY PASS (`measure_memory`, `bazel run //measure:memory`) takes each entry alone: the caching allocator's peak
+over its calls and what it holds outside it, stored at its own label (`@fsla//measure:memory`).
 
 Call by call, because drift on this host is the size of the effects measured: its sustained clock has two states ~17 %
 apart with a minutes-long time constant (measured here, no record cited). Blocks let a clock change land between arms, and a fixed order charges drift to one arm. A timing only compares
@@ -92,8 +97,8 @@ session on that card follows; sizing a cell to fit is the same arithmetic there.
 * **A row near the card's cap is discarded, never caveated.** Under WSL2 the driver falls back to host memory over PCIe
   when VRAM is exhausted (Blake: "if we measure above the vram size, it spills into system memory and then it is just
   going to be slower"), so such a row times PCIe, not the kernel. Each entry's peak memory (a memory pass's sample) is read
-  beside its times where a memory pass measured it -- fsla-bench's; fsla's own sessions carry none yet
-  ([open-work M-f](open-work.md#measurement-and-gates)); to fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
+  beside its times where a memory pass measured it (`bazel run //measure:memory`, fsla-bench's `memory_<group>`); to
+  fill a grid, raise the CTA count without raising memory (more heads or batch at a shorter `L`).
 * **A foreign consumer of the GPU inflates every number.** Another context time-slices the card and stretches wall
   time and `clock64` cycles alike (the counter runs while ours is preempted); the clock lock proves the SM clock, not
   that our context owns the device, and under WSL the consumer is invisible to `nvidia-smi --query-compute-apps`.
@@ -202,17 +207,16 @@ entries that name two.
 <a id="comparing-two-builds"></a>
 ## Comparing two builds
 
-A change is judged against its baseline in ONE session: the baseline checkout (a worktree at the old commit, built,
-with its venv) is a reference of fsla-bench's suite, and the run is pruned to the timing sessions and their stores:
+A change is judged against its baseline in ONE session: fsla-bench's `reference` bundle is the baseline commit (its
+MODULE.bazel names it, built by its own pins), its `candidate` the checkout the run names, and each group's session
+holds both bundles' entries:
 
 ```bash
-python -m fsla_devtools.build run declare.py:suite \
-    --arg target=worktree:<new checkout>,venv:<its venv> --arg references='worktree:<baseline>,venv:<its venv>' \
-    --only 'store/session/*'
+bazel run //measure:session_<group>_<arms> --repo_env=FSLA_CANDIDATE=<this checkout>    # in fsla-bench
 ```
 
-Each session interleaves both checkouts' entries call by call at the locked clock (above), so the ratio between them
-is read from one session's samples (`bazel run //:results -- verdict`). Times from two separate runs are never
+Each session interleaves both commits' entries call by call at the locked clock (above), so the ratio between them is
+read from one session's samples (`bazel run //:results -- verdict --reference @reference`). Times from two separate runs are never
 compared, and an unlocked clock's are never read at all (KERNEL_STANDARDS §32.7): this host's sustained clock has two
 states ~17% apart (the method, above), larger than the effects a change is judged on. One launch's cycles each under `ncu`
 (`sm__cycles_elapsed.max`) compare two builds without a session where the question is one kernel's cycles.
@@ -276,31 +280,39 @@ bound is a tool that can report a number nobody ships.
 
 ## What is deliberately not here
 
-* **A second method.** One loop times every subject (`fsla_devtools.timing.session.interleave`), whether a Bazel
-  session or fsla-bench's declared one runs it: two methods are how a harness comes to disagree with itself.
+* **A second method.** One program times every subject (`fsla_devtools.timing.session`), whether this tree's session or
+  fsla-bench's over two commits runs it: two methods are how a harness comes to disagree with itself.
 * **A committed SQLite database.** A binary blob has no diff and cannot be reviewed in a landing. Any query artifact is
   derived and ignored — see the record below, which is exactly this design.
 * **A flat percentage threshold.** The IQR-derived line is better than every rule in the surveyed field; replacing it
   would reintroduce the invented number the derivation exists to avoid.
 
-## fsla-bench's declarations: a checkout's targets, a run pruned by label
+## <a id="bundles"></a>Two commits in one session: bundles
 
-A checkout's `declare.py` declares, for fsla-bench's root, every target the bench composes of it -- its build (the
-build graph's `bazel run //:library`, run every build: Bazel's cache is its key, and the library's digest, its output,
-keys every target that reads the binary), its machine facts, its timing arms, its diff sides and its own
-kernel-vs-oracle diff -- and takes no selector. Which of it a build runs is pruned at the CLI by LABEL, which knows
-nothing of cells or groups (`--only`, `--skip`). A node whose code, binary and inputs have not changed is a cache hit and
-does not run.
+A timing compares only inside the session that interleaved it, so two commits are entries of ONE run. fsla-bench names
+two BUNDLES (fsla-devtools' `bundle` tag): `reference`, a commit of this repository, and `candidate`, the checkout a run
+names (`--repo_env=FSLA_CANDIDATE=PATH`). Each is built in ITS OWN workspace -- a commit checked out under the machine's
+store and built by its own pins, the machine's fsla-devtools override dropped; a checkout in place, with it -- and
+what `//measure:all` holds of `_timing_entry` targets (entries, the clock reader, diff sides) is copied into a
+repository of the bench: `@reference//:entmax_solve_<cell>` is this tree's entry of that commit, its bundle the
+commit's own. A record names each member by that label and by its bundle's digest and stamped commit. A commit older
+than the `timing_entry` rule is no bundle, and a commit predating an arm contributes none of it to a session; the
+candidate must have every arm the bench's groups name, or the bench's analysis fails.
 
-<a id="the-diffs"></a>THE DIFFS. A SIDE is an executor run over cell nodes in the environment it names, its tensors kept in the build cache;
-a DIFF is two sides under one named rule -- `bit-identical`, the per-slot clause rule mirroring the oracle's, or
-`support-equal` -- with a claim (`expect` same or different) and a consequence (a build failure or a recorded verdict).
-A side proves which checkout's library it imported; a comparison that compared fewer quantities than it declared, or a
-cell only one side could produce, refuses rather than passes; a cell both sides refuse is listed and not counted. Inside
-Across checkouts fsla-bench pairs each surface a checkout exposes (`SURFACES` in `declare.py`: the fp64 oracle and the
-producer reference) under ITS rule for the surface (`RULES`) -- the oracle bit-identical, the producer support-equal --
-stored at `diff/<surface>`. Verdicts are stored, tensors never. The carry kernel has no diff surface and no
-kernel-vs-oracle diff: its oracle obligation is owed (`tools/coverage.json`).
+<a id="the-diffs"></a>THE DIFFS. A SIDE (`diff_side`, `measure/entries.bzl`'s `SURFACES`) is an executor of
+`tests/oracle/sides.py` over its cells in the sides' bundle (`//measure:side_bundle`: this tree's bundle and the
+oracle's sides): `side_oracle` (the fp64 oracle forward and backward, on the oracle-tier carry cells whose retained
+state is under `RETAINED_STATE_BUDGET`), `side_producer` (the routing reference), `side_carry-kernel` (on the device). A
+DIFF (`diff_verdict`) is two sides under one named rule -- `bit-identical`, the per-slot clause rule mirroring the
+oracle's, or `support-equal` -- with a claim (`expect` same or different); its tool produces each side on its own
+bundle's interpreter and compares them, and its gate (`diff_test`) fails a claim not held. A side proves its library
+loaded from inside its bundle; two sides of one bundle and one executor are refused; a comparison that compared fewer
+quantities than it declared, or a cell only one side could produce, does not hold; a cell both sides refuse is listed
+and not counted. Across commits fsla-bench pairs each surface both bundles export under ITS rule for it (`RULES`) --
+the oracle bit-identical, the producer support-equal -- each stored at its store's label (`@fsla_bench//measure:store_diff_<surface>`). Verdicts are stored, tensors
+never. The carry kernel is compared across commits once a commit states its reassociation, and against its fp64 inter
+term inside this tree once its clauses are measured (`tests/oracle/tolerances.py`'s `CARRY_NUM` is `Owed`): neither is
+declared before.
 
 ## <a id="instruments"></a>The instruments
 
@@ -366,9 +378,12 @@ and a timing only compares within the session that interleaved it.
 | label | writer | the semantics | a sample's output |
 |---|---|---|---|
 | `@fsla//measure:store_static_manifest` | `bazel run //measure:store_static_manifest` | the source, the manifest's name (its architecture) and the content digests of the library and warpline's checker | the manifest |
-| `@fsla//measure:session_entmax` (a session's own) | the session program (`bazel run //measure:session_entmax`) | the session's semantics: every entry's executor, parameters, cells and bundle digest (fsla-bench's: every registration's executor, cells, code and binary), the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
+| `@fsla//measure:session_entmax`, `@fsla_bench//measure:session_<group>_<arms>` (a session's own) | the session program (`bazel run //measure:session_entmax`, fsla-bench's sessions) | the session's semantics: every entry's label, executor, parameters, cells and bundle digest, the timing parameters, the clock's state, the card | every sample in order with its round, rep and position, each entry's status, the seed, the clock reads |
+| `@fsla//measure:memory`, `@fsla_bench//measure:memory_<group>` | the session program's memory pass | every entry's label, executor, parameters, cells and bundle digest, the calls, the card | each entry's peak memory |
+| `@fsla_bench//measure:null_<group>_<arms>` | the session program's null gate | the session's semantics, a null gate | the session of the two copies and, per entry and cell, whether they agree |
 | `@fsla//:container_check` | `bazel run //:container_check` | the devbox image's digest | the steps, each timed, and the cold start |
 | `@fsla//measure:store_oracle_tier` | `bazel run //measure:store_oracle_tier` | the instrument, its arguments and the content digests of its tool, the library, the tree and the devices' identity | the counts, the failed cases, the margins; or the refusal, as a failed sample |
+| `@fsla_bench//measure:store_diff_<surface>` | fsla-bench's `store_diff_<surface>` over a `diff_verdict` | the content digests of both sides' bundles, the rule and its environment | the verdict per cell and quantity, never a tensor |
 | `@fsla//measure/lab:<experiment>.run` | `bazel run //measure/lab:<experiment>.run` (`run`, and `-- ncu`) | the experiment, the architecture, the kind, the grid (`blocks`), a variant (`lab_semantics`); the commit, the binary's digest, the toolkit and the device are each sample's provenance | the run's record (the results with their samples and checks, the kernels, the counters) and its traced rows as parts |
 
 Reading across runs is a join, never a parser: `instrument_metrics` is every number every instrument recorded in

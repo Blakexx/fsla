@@ -175,9 +175,13 @@ def decode_step(fx) -> Launch:
 
     The state is MUTATED by the call, which is what a decode step is, so the launch's reset
     seeds a fresh state before every call: each timed call is the same step, at the same
-    context position, over the same plane.
+    context position, over the same plane. What the step is HANDED is built once, here: the
+    token's operands produced by the layer's producer (the subject prices the op, `op`, and the
+    producer is the layer's), and in every reset the fresh state's per-sequence scratch, which
+    its first step would otherwise allocate and zero inside the timed call.
     """
     import fsla
+    from fsla.engine.decode_step import decode_call, descriptor_of, scratch
     from fsla.engine.facts import planes
     from fsla.ops.produce import produce_decode
     from fsla.routing.quant import VALUES
@@ -189,6 +193,12 @@ def decode_step(fx) -> Launch:
     #: cost is a function of the routing, not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
     routes = fx["routes"]
+    token = fx["x"][:, spec.tokens:spec.tokens + 1]
+    with torch.no_grad():
+        step_routes, _values, step_masks = produce_decode(token, layer.routing, layer._weights(token), group=layer.group)
+        values = fsla.ScaledBlock.quantize(fx["v"][:, spec.tokens:spec.tokens + 1].contiguous(), VALUES)
+    BH, device = decode_call(step_routes)
+    descriptor = descriptor_of(step_routes, values, None, BH, device)
     seeded: dict = {}
 
     def reset():
@@ -196,17 +206,14 @@ def decode_step(fx) -> Launch:
         state = fsla.dense_state()
         state._kernel_entry(routes, d_v=spec.dv)
         state._kernel_commit(planes.state_plane(routes, d_v=spec.dv, zeros=True))
+        scratch(state, descriptor, BH, device)
         seeded.update(state=state)
 
     reset()
-    token = fx["x"][:, spec.tokens:spec.tokens + 1]
-    v_token = fx["v"][:, spec.tokens:spec.tokens + 1].contiguous()
 
     def run():
         with torch.no_grad():
-            routes, _values, masks = produce_decode(token, layer.routing, layer._weights(token), group=layer.group)
-            values = fsla.ScaledBlock.quantize(v_token, VALUES)
-            y, _state = fsla.decode_step_gated(routes, values, masks, seeded["state"])
+            y, _state = fsla.decode_step_gated(step_routes, values, step_masks, seeded["state"])
         return y
 
     return Launch(name=f"decode_step|{spec.name}", call=run, reset=reset)

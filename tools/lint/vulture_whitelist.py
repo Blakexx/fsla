@@ -38,16 +38,13 @@ class _Whitelist:
     pytest_pyfunc_call = None
     pytest_terminal_summary = None
 
-    # fsla_devtools.build EXECUTORS: a declared target's worker calls its executor functions from their
-    # `module:function` strings in `declare.py` (`measure/executors.py`'s `compile_kernel`, `probe_environment`,
-    # `timed`, `read_clock`).
-    compile_kernel = None
-    probe_environment = None
+    # THE TIMING ENTRIES' EXECUTORS: an entry's worker calls them from their `module:function` strings in
+    # `measure/BUILD.bazel` and `measure/entries.bzl` (`measure/provider.py`'s `timed`, `read_clock`).
     timed = None
     read_clock = None
 
-    # THE DIFF SIDES (`tests/oracle/sides.py`) are executors a declaration names by `module:function` string
-    # (`declare.py`'s SURFACES), called by the build's side worker and never by name in code.
+    # THE DIFF SIDES (`tests/oracle/sides.py`) are executors a `diff_side` names by `module:function` string
+    # (`measure/entries.bzl`'s SURFACES), called by the side's program and never by name in code.
     # THE CARRY ORACLE'S GUARDS (`tests/oracle/fixtures.py`): the device-side freshness stamp
     # every carry oracle test asks first (docs/build.md, KERNEL_STANDARDS: the extension trap); the tests that call them
     # land with the carry's components, and the guards are kept rather than re-derived then.

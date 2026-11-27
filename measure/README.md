@@ -1,4 +1,4 @@
-# `measure/` — fsla's reading of the central cells, the benches over them, and the executors of its declarations
+# `measure/` — fsla's reading of the central cells, the benches over them, and the timing entries and diff sides over them
 
 The methodology, the instruments and the record are `docs/measurement.md`; the lock rule
 is `docs/testing.md`. This file is the map.
@@ -18,19 +18,18 @@ tuple a read head. A cell names nothing fsla runs it with. `measure/cells/` is f
   producer's own solve or a decode step through the layer. A layer arm's fixture builds each part (the layer, the
   inputs, the produced routes) when the arm first reads it.
 
-**`BUILD.bazel` — THE TIMING ENTRIES AND SESSIONS, THE INSTRUMENTS AND THE RECORDS' STORES.** Each `timing_entry` is
-one executor of `executors.py` on central cells (`@fsla_cells//:<cell>`) in this tree's bundle; each
-`interleaved_timing` is a session over entries, measured and stored by `bazel run` (`bazel run //measure:session_entmax`:
-the entmax solve on the pinned layer cell). `oracle_tier` is an instrument on the device (`oracle_tier.py`: the oracle
-battery's counts, failed cases and margins), and each `results_store` records a build output or an instrument:
+**`BUILD.bazel`, `entries.bzl` — THE TIMING ENTRIES AND SESSIONS, THE DIFF SIDES, THE INSTRUMENTS AND THE RECORDS'
+STORES.** `entries.bzl` declares one `timing_entry` an arm and a cell (`<arm>_<cell>`): every subject of `subjects.py`
+on every central cell of its kind it takes (`@fsla_cells//:cells.bzl`), each an arm of `provider.py`'s `timed` in this
+tree's bundle (`bundle`: the Python below, the library, the arm tables laid out where `provider.py` reads them), and one
+`diff_side` a surface of `tests/oracle/sides.py` (`side_oracle`, `side_producer`, `side_carry-kernel`) in the sides'
+bundle. `clock` is the clock reader (`provider.py`'s `read_clock`). Each `interleaved_timing` is a session over entries,
+measured and stored by `bazel run` (`bazel run //measure:session_entmax`: the entmax solve on the pinned layer cell),
+and `memory` is every entry's memory pass. fsla-bench consumes these entries and sides of two commits as bundles
+(docs/measurement.md#bundles). `oracle_tier` is an instrument on the device (`oracle_tier.py`: the oracle battery's
+counts, failed cases and margins), and each `results_store` records a build output or an instrument:
 `store_static_manifest` the library's static manifests (`//:static_manifest`), `store_oracle_tier` the oracle tier, run
 on the device first (docs/measurement.md#instruments).
-
-**`measure/executors.py` — WHAT FSLA'S TIMING ENTRIES AND DECLARATIONS RUN.** `timed` (an arm by name) and
-`read_clock` are the timing entries' executors. The repository root's `declare.py` declares this checkout's targets for
-fsla-devtools' build system (`fsla_devtools.build`) for fsla-bench's root, which loads it from every checkout it
-measures: its build, the machine facts, its diff sides, every bench subject as a timing registration on the central
-cells it takes, and the clock reader.
 
 **`measure/lab/` — THE LAB.** Small CUDA experiments on the machine itself (what a pipe costs beside the tensor pipe,
 what ptxas does to a pattern), each a `experiments/<name>.cu` on the kit `lab.cuh`, compiled, SASS-gated, timed and

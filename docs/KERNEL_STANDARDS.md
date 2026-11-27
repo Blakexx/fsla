@@ -263,8 +263,8 @@ graph rule):
 - (b) MEASUREMENT'S OWN WORKERS AND LOCKS: a measurement session runs its workers and takes the GPU and the clock as
   machine-wide locks, which Bazel cannot give an action: the timing session's program (fsla-devtools'
   `fsla_devtools.timing.session`, which the run target `bazel run //measure:session_entmax` starts), an instrument on the
-  device (`fsla_devtools.instrument`, which its store target's run starts: `bazel run //measure:store_oracle_tier`), and the
-  declared build system's workers (`fsla_devtools.build`'s, which fsla-bench's root runs) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
+  device (`fsla_devtools.instrument`, which its store target's run starts: `bazel run //measure:store_oracle_tier`), and a
+  diff over a side on the device (`fsla_devtools.diff.verdict`, which its store or test target runs) (Blake, 2026-11-07: "as long as it makes sense for the internal build system to be outside bazel, which i
   believe we made it that way for specific reaosn and gaps in bazel").
 - (c) THE SANITIZER LANE'S PAIR: the lane is the graph's target (`//tests:sanitizer`, which hands the tool the toolkit's own
   compute-sanitizer), and `tools/sanitize_oracle.py` runs each (family, tool) pair as its own compute-sanitizer-wrapped pytest process under the GPU

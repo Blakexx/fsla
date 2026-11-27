@@ -1,20 +1,33 @@
-"""THE TIMING ENTRIES AND SESSIONS, THE INSTRUMENTS AND THE RECORDS' STORES (docs/measurement.md): each entry one
-executor of `executors.py` on central cells, in this tree's bundle; each session one `bazel run` that measures its
-entries interleaved and stores the record; each store one `bazel run` that records a build output, or an instrument on
-the device it runs first.
+"""THE TIMING ENTRIES AND SESSIONS, THE DIFF SIDES, THE INSTRUMENTS AND THE RECORDS' STORES (docs/measurement.md): each
+entry one arm of `provider.py` on a central cell, in this tree's bundle (`entries.bzl`: every subject on every cell of
+its kind it takes); each diff side one surface of `tests/oracle/sides.py` on its cells; each session one `bazel run`
+that measures its entries interleaved and stores the record; each store one `bazel run` that records a build output,
+or an instrument on the device it runs first. Another workspace (fsla-bench) consumes this package's entries and sides
+as a bundle of this commit (fsla-devtools' `bundle` tag), so two commits time in one session.
 
     bazel run //measure:session_entmax                       # measure and store (at @fsla//measure:session_entmax)
     bazel run //measure:session_entmax -- --no-store         # measure, keep session.json, store nothing
+    bazel run //measure:memory                               # every entry alone, its peak (at @fsla//measure:memory)
     bazel run //measure:store_static_manifest                # the static manifests, recorded at their store's label
     bazel run //measure:store_oracle_tier                    # the oracle tier on the device, recorded at its store's label
 """
 
-load("//bazel:defs.bzl", "instrument", "interleaved_timing", "results_store", "timing_entry", "tree_part")
+load(
+    "//bazel:defs.bzl",
+    "instrument",
+    "interleaved_timing",
+    "measure_memory",
+    "results_store",
+    "timing_bundle",
+    "timing_entry",
+    "tree_part",
+)
+load(":entries.bzl", "diff_sides", "entry_name", "timing_entries")
 
 #: the Python a timing entry's executor imports, beside the library its bundle carries: this package, the `fsla` package,
 #: the contract registry `hardware` and the arm families' one reader with the registry it reads
 filegroup(
-    name = "bundle",
+    name = "bundle_code",
     srcs = glob([
         "*.py",
         "cells/*.py",
@@ -26,19 +39,39 @@ filegroup(
     ],
 )
 
-#: THE PRODUCER'S SOLVE on the pinned layer cell (the mid-size entmax layer at B 2, H 8, hidden 512): the one layer arm
-#: whose kernels this line builds
-timing_entry(
-    name = "entmax_solve_layer-alt-entmax1.5-64x64-T2048",
-    cells = ["@fsla_cells//:layer-alt-entmax1.5-64x64-T2048"],
-    executor = "measure.executors:timed",
-    params = {"arm": "entmax_solve"},
+#: THIS TREE'S BUNDLE: the code above and the library with its build record; `fsla` and the extension load from inside it
+timing_bundle(
+    name = "bundle",
+    binds = [
+        "fsla",
+        "fsla_cu13._C",
+    ],
+    data = [
+        ":bundle_code",
+        "//:library",
+    ],
 )
+
+#: THE SIDES' BUNDLE: the same, and the oracle's sides with what they import (`tests/oracle/`); a side proves `fsla` is
+#: the bundle's
+timing_bundle(
+    name = "side_bundle",
+    binds = ["fsla"],
+    data = [
+        ":bundle_code",
+        "//:library",
+        "//tests:oracle_sides",
+    ],
+)
+
+#: EVERY ARM ON EVERY CELL IT TAKES (`entries.bzl`): `entmax_solve_<cell>`, `decode_step_<cell>`, ...; an arm whose kernel
+#: this line does not build records its refusal when a session sets it up
+ENTRIES = timing_entries()
 
 #: the SM clock as this binary reads it, which proves a locked host's clock before and after a session
 timing_entry(
     name = "clock",
-    executor = "measure.executors:read_clock",
+    executor = "measure.provider:read_clock",
     kind = "clock",
 )
 
@@ -47,8 +80,20 @@ interleaved_timing(
     name = "session_entmax",
     claim = "unlocked",
     clock = ":clock",
-    entries = [":entmax_solve_layer-alt-entmax1.5-64x64-T2048"],
+    entries = [":" + entry_name("entmax_solve", "layer-alt-entmax1.5-64x64-T2048")],
 )
+
+#: EVERY ENTRY ALONE: the caching allocator's peak over its calls and what it holds outside it
+measure_memory(
+    name = "memory",
+    entries = [":" + name for name in ENTRIES],
+)
+
+#: THE DIFF SIDES (`entries.bzl`'s `SURFACES`): `side_oracle`, `side_producer`, `side_carry-kernel`, each over the cells its
+#: surface runs on. fsla-bench pairs each across commits under the rule it owns for the surface. The carry against its
+#: fp64 inter term inside this tree is declared once its clauses are measured (`tests/oracle/tolerances.py`'s `CARRY_NUM`
+#: is `Owed`), never before
+diff_sides()
 
 #: THE STATIC MANIFESTS' RECORD: each built architecture's (`//:static_manifest`), keyed by the library it reads and the
 #: checker that read it

@@ -17,7 +17,7 @@ bazel_dep(name = "tar.bzl", version = "0.7.0")
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "5fbc02109e5f9fd53bc8950e7e1882af0485606c",
+    commit = "79a11878980f25bcf06b1c0b5ec00a1746b7a655",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 

@@ -97,9 +97,9 @@ def test_a_cell_is_refused_by_its_facts(binary):
         provider.arms(by_name("carry-alt-k4-256x256-T1024"))
 
 
-def test_the_declared_arms_are_the_graphs_generated_table_and_its_absence_names_the_build(tmp_path, monkeypatch):
+def test_the_declared_arms_are_the_graphs_generated_table_and_its_absence_names_the_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "CHECKOUT", tmp_path)
-    with pytest.raises(RuntimeError, match="bazel run //:library"):
+    with pytest.raises(RuntimeError, match="a timing bundle lays out"):
         provider._declared("decode")
     generated = tmp_path / "build" / "generated"
     generated.mkdir(parents=True)

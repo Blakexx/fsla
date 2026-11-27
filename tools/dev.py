@@ -428,9 +428,9 @@ def cmd_check(a) -> int:
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")
     suite = Path(dev_config.get("workspace.suite"))
-    row((suite / "declare.py").is_file() and (suite / "fsla_bench").is_dir(),
-        f"workspace.suite holds the measurement suite's root: {suite}",
-        "point workspace.suite at a fsla-bench checkout carrying its root declare.py")
+    row((suite / "measure" / "BUILD.bazel").is_file() and (suite / "fsla_bench").is_dir(),
+        f"workspace.suite holds the measurement suite: {suite}",
+        "point workspace.suite at a fsla-bench checkout carrying its measure/ package")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     store = dev_config.get("store.root")
     row(store is not None and (Path(store) / "records").is_dir(),

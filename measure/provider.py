@@ -1,6 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""FSLA'S RUNNER: this checkout's bench subjects as timed arms, built on central cells for the timing system.
+"""FSLA'S RUNNER: this tree's bench subjects as timed arms, built on central cells for the timing system, and the
+executors its timing entries name (`timed`, `read_clock`; `measure/BUILD.bazel`).
 
 `arms(cell)` takes a central carry cell (a routing, a draw and the state it binds) or a central layer cell (an input,
 and the routing and gain its layer is built with) and returns a builder for every arm this checkout runs on it, or
@@ -9,14 +10,14 @@ refuses the cell by raising, always by a FACT of the cell or the binary and neve
   other than the built set), or lacks an arm its tree declares (`arms.bzl`, as the graph generated its table): a narrowed binary
   carries a subset of the tree, and its own generated table is that subset, so the record is what refuses it;
 - a cell of another kind.
-`measure/executors.py`'s timing entry calls it on the cell a registration hands it.
+`timed`, the timing entries' executor, calls it on the cell an entry names, and builds the arm its `params` name.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
 binary carries at the cell's shape (the carry arm the prefill launch function selects for the cell's call for `prefill`, the decode arm for
 `decode_step`), with its call count: its name is the subject, then `@calls=N` for a call count other than one
 (`Subject.calls`). Only the arm asked for is built.
-Building one proves two things before anything is timed, and refuses the arm by name when either fails: from a fact the
-device produces, that this binary carries the subject's family (its stamp entry; a path or a hash cannot catch a stale
-binary), and that `import fsla` resolved inside this checkout.
+Building one proves, before anything is timed, from a fact the device produces, that this binary carries the subject's
+family (its stamp entry; a path or a hash cannot catch a stale binary), and refuses the arm by name when it does not.
+That `fsla` and the extension loaded from inside the entry's bundle is the session's check (the bundle's `binds`).
 
 A built arm is a `fsla_devtools.timing.Timed`: its call times one launch between two CUDA events (the canonical
 instrument, `cuda_events`) and returns milliseconds; its reset is the launch's (a carried state restored, a decode state
@@ -30,14 +31,31 @@ import os
 from functools import partial
 from pathlib import Path
 
-#: this tree -- a checkout, or a timing entry's bundle -- as it was imported, its links unresolved (a bundle's runfiles
-#: are links into the checkout, and what it reads is the bundle's): `import fsla` must resolve inside it
+#: this tree -- a timing entry's bundle -- as it was imported, its links unresolved (a bundle's runfiles are links into
+#: the tree that built them, and what it reads is the bundle's)
 CHECKOUT = Path(os.path.abspath(__file__)).parents[1]
 
 
 def arm_name(subject: str, *, calls: int = 1) -> str:
     """An arm's name: the subject, then a call count other than one."""
     return subject + (f"@calls={calls}" if calls != 1 else "")
+
+
+def timed(cell, params):
+    """A TIMING ENTRY'S EXECUTOR: the arm `params["arm"]` names, on the cell; a cell this tree runs no such arm on is
+    refused, naming the arms it runs there."""
+    offered = arms(cell)
+    if params["arm"] not in offered:
+        raise LookupError(f"{cell.name}: this tree runs no arm {params['arm']} there; it runs {sorted(offered)}")
+    return offered[params["arm"]]()
+
+
+def read_clock() -> float | None:
+    """THE CLOCK READER'S EXECUTOR: the SM clock as this binary reads it, which proves a locked host's clock before and
+    after a session."""
+    from fsla.ops import carry
+
+    return carry.sm_clock_ghz()
 
 
 def arms(data) -> dict:
@@ -58,14 +76,14 @@ def arms(data) -> dict:
 
 def _declared(family: str) -> tuple:
     """The arms this tree declares for `family`: the table the graph generated from the declaration
-    (`bazel/arms.bzl`'s `arm_table`), which `bazel run //:library` installs into a checkout's `build/generated` and a
-    timing entry's bundle lays out at the same path (`bazel/defs.bzl`'s `timing_entry`)."""
+    (`bazel/arms.bzl`'s `arm_table`), which a timing entry's bundle lays out at `build/generated` (`bazel/defs.bzl`'s
+    `timing_bundle`)."""
     import importlib.util
 
     path = CHECKOUT / "build" / "generated" / f"{family}_arms.py"
     if not path.is_file():
         raise RuntimeError(f"{path.relative_to(CHECKOUT)} is missing: the {family} family's declared arms are the graph's "
-                           "table; build the library (`bazel run //:library`)")
+                           "table, which a timing bundle lays out (`bazel/defs.bzl`'s `timing_bundle`)")
     spec = importlib.util.spec_from_file_location(f"_{family}_arms", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -138,7 +156,6 @@ def _build(name: str, spec, calls: int):
     import torch
     from fsla_devtools.timing import Timed
 
-    import fsla
     from fsla.ops import carry as carry_ops
     from fsla.ops._ext import extension
     from hardware import registry
@@ -148,10 +165,6 @@ def _build(name: str, spec, calls: int):
     stamp = getattr(extension(), subject.stamp, None)
     if stamp is None:
         raise RuntimeError(f"this binary carries no {subject.stamp} entry, so it cannot state that it has {name}'s family")
-    fsla_file = Path(os.path.abspath(fsla.__file__))
-    if not fsla_file.is_relative_to(CHECKOUT):
-        raise RuntimeError(f"`import fsla` resolved outside this checkout ({CHECKOUT.name}); the arm would time another "
-                           "tree's binary under this tree's name")
     fx = {"cell": spec} if spec.kind == "carry" else _layer_fixture(spec)
     fx.update(calls=calls)
     launch = subject.build(fx)
@@ -173,8 +186,7 @@ def _build(name: str, spec, calls: int):
             "ptxas": BUILD_CONFIG.get("ptxas"),
             "family_stamp": int(stamp()), "device": torch.cuda.get_device_name(0),
             "sm": registry.device_arch(props.major, props.minor),
-            "torch": torch.__version__, "fsla_file": fsla_file.relative_to(CHECKOUT).as_posix(),
-            "sm_ghz_at_build": carry_ops.sm_clock_ghz()}
+            "torch": torch.__version__, "sm_ghz_at_build": carry_ops.sm_clock_ghz()}
     return Timed(call=call, built=cell, instrument="cuda_events", reset=launch.reset,
                  outside_allocator=launch.outside_allocator)
 

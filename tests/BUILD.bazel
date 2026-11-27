@@ -9,12 +9,22 @@ load("//bazel:cuda.bzl", "cuda_unit")
 load("//bazel:defs.bzl", "device_lane", "pytest_tier", "tree_part")
 load(":unit/fixtures/fixture_arms.bzl", "FIXTURE_ROWS")
 
-#: THE LAB'S UNIT TESTS: the lab's, the dev config's and the measurement declaration's (`declare.py`), which `:lab` runs and `:cpu` leaves out
+#: THE LAB'S UNIT TESTS: the lab's and the dev config's, which `:lab` runs and `:cpu` leaves out
 LAB_TESTS = [
     "unit/test_dev_config*.py",
-    "unit/test_declare.py",
     "unit/test_lab_*.py",
 ]
+
+#: THE ORACLE'S DIFF SIDES and what they import, which the sides' bundle carries (`//measure:side_bundle`)
+filegroup(
+    name = "oracle_sides",
+    srcs = [
+        "oracle/fixtures.py",
+        "oracle/sides.py",
+        "oracle/tolerances.py",
+    ],
+    visibility = ["//measure:__pkg__"],
+)
 
 #: THE PROBES THE UNIT TESTS READ, compiled by the graph (docs/testing.md#probes): each test takes what it needs as data and
 #: runs no compiler. The device probes are built for the build's architectures (`BUILT_ARCHS`), the CUDA rule's flags

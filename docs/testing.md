@@ -96,20 +96,20 @@ linear-attention loop is held by review of the lines it is written in and by the
 diff -- the question is never "is this code reasonable" but "does it compute the same function". Both versions are RUN:
 
 ```bash
-# in fsla-bench: this checkout against another, every surface, as targets
-python -m fsla_devtools.build run declare.py:diffs --arg target=worktree:PATH --arg references=worktree:OLD
+# in fsla-bench: this checkout (the candidate bundle) against its reference commit, every surface both export
+bazel test //measure:diffs --repo_env=FSLA_CANDIDATE=PATH
 ```
 
-Both sides are DIFF SIDES (`tests/oracle/sides.py`) run by the build system in each checkout's own environment over the
-same central cells: this checkout exposes its surfaces (`declare.py`'s `SURFACES`), and a diff target
-(`fsla_devtools.diff`) compares each under the rule fsla-bench owns for it: the oracle under BIT-IDENTITY, forward
-and backward, with "no gradient" an empty
-tensor and never a zero one; the producer reference under support equality. A side proves which tree it imported, a
-comparison that compared fewer quantities than declared refuses, and the raw tensors never leave the build cache.
+Both sides are DIFF SIDES (`tests/oracle/sides.py`, each surface a `diff_side` of `measure/entries.bzl`), each run in
+its own commit's bundle over the same central cells, and a verdict (fsla-devtools' `diff_verdict`) compares each under
+the rule fsla-bench owns for it: the oracle under BIT-IDENTITY, forward and backward, with "no gradient" an empty
+tensor and never a zero one; the producer reference under support equality. A side proves its library loaded from
+inside its bundle, a comparison that compared fewer quantities than declared does not hold, and the raw tensors never
+leave the verdict's run ([`measurement.md#the-diffs`](measurement.md#the-diffs)).
 
 **The backward's retained state is a declared BUDGET.** The oracle side runs `naive_fsla` forward and backward in
 fp64, and autograd retains the recurrence's state at every token (measured: a peak above nine times the retained-state
-byte count). `RETAINED_STATE_BUDGET` (512 MiB) is checked per cell (`retained_state_bytes`), and only
+byte count). `RETAINED_STATE_BUDGET` (512 MiB, `measure/entries.bzl`) is checked per cell, and only
 `BACKWARD_SURFACES` runs the backward at all; a cell over budget is excluded from that surface, a consequence a reader
 can compute from the declaration rather than a run that died.
 
@@ -127,7 +127,7 @@ demonstrate its claimed regime fails rather than passes vacuously. The oracle ti
 along the sequence grows as `sqrt(T)`, so a short fixture under-charges it, and the multi-window cells carry it.
 
 <a id="whole-call-gates"></a>
-THE WHOLE-CALL GATES run on those cells and are OWED until the kernel under them is built: a test that needs a kernel not built on this line carries `@pytest.mark.requires_kernel("carry")` (or `"intra"`, `"prefill"`, `"produce"`) and `tests/conftest.py` makes it a STRICT XFAIL on `fsla.ops._ext.KernelNotBuilt`, the reason naming the kernel. It always runs: the refusal is the expected failure (reported xfailed, counted by kernel in the run's `owed (carry: a, ...)` summary line, never a pass); a pass is a strict XPASS, a failure, so the markers come off in the commit that builds the kernel; any other exception, a refusal naming another kernel included, is a failure. The carry's inter numerator against the fp64 inter term in the recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement `test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla` (`tests/oracle/test_prefill_vs_oracle.py`) are owed this way. Operands for a kernel under test come from the reference producer (`tests/conftest.py`'s `reference_produce`, the torch composition), never the producer kernel. THE TOLERANCES OF THOSE KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by name (`fsla.ops._ext.KernelNotBuilt`). `declare.py`'s `carry-vs-oracle` diff, the carry's verdict per cell that fsla-bench's root stores, is declared once its clauses are measured and not before.
+THE WHOLE-CALL GATES run on those cells and are OWED until the kernel under them is built: a test that needs a kernel not built on this line carries `@pytest.mark.requires_kernel("carry")` (or `"intra"`, `"prefill"`, `"produce"`) and `tests/conftest.py` makes it a STRICT XFAIL on `fsla.ops._ext.KernelNotBuilt`, the reason naming the kernel. It always runs: the refusal is the expected failure (reported xfailed, counted by kernel in the run's `owed (carry: a, ...)` summary line, never a pass); a pass is a strict XPASS, a failure, so the markers come off in the commit that builds the kernel; any other exception, a refusal naming another kernel included, is a failure. The carry's inter numerator against the fp64 inter term in the recurrence's units (`tests/oracle/test_carry_vs_oracle.py`, its drawn-cell supplement `test_carry_hypothesis_cells.py`), the op's readout and handed-back state against `naive_fsla` (`tests/oracle/test_prefill_vs_oracle.py`) are owed this way. Operands for a kernel under test come from the reference producer (`tests/conftest.py`'s `reference_produce`, the torch composition), never the producer kernel. THE TOLERANCES OF THOSE KERNELS ARE OWED (`tests/oracle/tolerances.py`'s `Owed`: `CARRY_NUM`, `CARRY_DEN`, `PREFILL_READOUT`, `PREFILL_STATE`) by each kernel's own measurement on the hardware it lands on, and none is stated before; grading against one refuses by name (`fsla.ops._ext.KernelNotBuilt`). The carry's verdict per cell against the fp64 inter term (a `diff_verdict` in `measure/BUILD.bazel`) is declared once its clauses are measured and not before.
 
 Decode is its own family (`tests/oracle/test_decode_family.py`): the prefill-to-decode hand-off, a 32-step horizon with
 checkpoints ALONG it (a per-step check cannot see cross-call compounding), and frozen density declarations proven

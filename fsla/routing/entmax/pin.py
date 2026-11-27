@@ -7,7 +7,7 @@ and `tools/lint/lint_standards.py::check_vendored_pin`). `entmax` is the same cl
 different route -- not vendored, because a pure-python test dependency has nothing to
 vendor, but pip-installed at the version `requirements.in` pins.
 
-WHY THE PIN IS THE ONLY GUARD. The cross-checkout diff (`declare.py`'s `SURFACES`, run by
+WHY THE PIN IS THE ONLY GUARD. The cross-commit diff (`measure/entries.bzl`'s `SURFACES`, compared by
 fsla-bench) runs the OLD side as a real prior checkout of THIS repository and the NEW side as the tip -- but both
 sides import the SAME installed `entmax`. A dependency bump that changes `entmax15`'s
 tie-breaking or `entmax_bisect`'s semantics re-anchors every Tier 1 routing gate and

@@ -131,7 +131,7 @@ A host refactor that claims neutrality is answerable to what the extension RETUR
 `y`, the state plane and the facts themselves — off a fixed cell set, compared across
 two checkouts. Comparing the returned objects rather than re-deriving them is what
 makes the comparison independent of whatever host structure produced the launch
-arguments. The mechanism is the diff node
+arguments. The mechanism is the diff
 ([`docs/measurement.md`](../../measurement.md#the-diffs)):
 two sides, the cells, a rule and an expectation, so "against `HEAD~1`" is a second
-checkout the suite's root already composes rather than a second tool.
+commit's bundle the bench already consumes rather than a second tool.

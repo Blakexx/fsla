@@ -59,5 +59,5 @@ text verbatim and `NOTICE` points at it.
 | `Blakexx/fsla-zoology` | Synthetic-task (MQAR and relatives) evaluation harness. |
 | `Blakexx/fsla-bench` | The benchmarks and the local measurement suite. |
 | `Blakexx/fsla-results` | The measurement records every reported number is read from. |
-| `Blakexx/fsla-devtools` | The development tools every FSLA repository shares: the dev config reader, the machine's locks, the commit and push content checks, the central cells, the declared build system and its timing system, and the build graph's shared machinery (a Bazel module). Pinned in `MODULE.bazel`. |
+| `Blakexx/fsla-devtools` | The development tools every FSLA repository shares: the dev config reader, the machine's locks, the commit and push content checks, the central cells, the timing system, the diff, the results store's code, and the build graph's shared machinery with the measurement rules (a Bazel module). Pinned in `MODULE.bazel`. |
 | `Blakexx/fsla-paper` | The paper, the canonical **claims** document; the engineering contract is this repository's docs. They cite each other; neither subsumes the other. |

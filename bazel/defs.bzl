@@ -8,9 +8,12 @@ load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load(
     "@fsla_devtools//bazel:measure.bzl",
+    _diff_side = "diff_side",
     _instrument = "instrument",
     _interleaved_timing = "interleaved_timing",
+    _measure_memory = "measure_memory",
     _results_store = "results_store",
+    _timing_bundle = "timing_bundle",
     _timing_entry = "timing_entry",
     _workspace_stamp = "workspace_stamp",
 )
@@ -681,22 +684,33 @@ def tool_run(**kwargs):
     (docs/build-graph.md#use): its arguments follow `--`."""
     _tool_run(venv = VENV, **kwargs)
 
-#: A TIMING ENTRY'S BUNDLE (docs/measurement.md#entries): the Python its executor imports (`//measure:bundle`) and the
-#: library with its build record, the arm tables laid out where `measure/provider.py` reads a tree's (`build/generated`),
-#: on the environment's store venv; `fsla` and the extension must load from inside it
-_BUNDLE = [Label("//measure:bundle"), Label("//:library")]
+#: THIS TREE'S BUNDLE LAYOUT (docs/measurement.md#entries): the arm tables laid out where `measure/provider.py` reads a
+#: tree's (`build/generated`); `fsla` and the extension must load from inside the bundle
 _ARM_TABLES = {Label("//csrc/fsla:%s_table" % family): "build/generated/%s_arms.py" % family for family in ARM_FAMILIES}
-_BINDS = ["fsla", "fsla_cu13._C"]
+
+def timing_bundle(name, **kwargs):
+    """A BUNDLE of this tree (docs/measurement.md#entries): the Python its executors import and the library with its
+    build record, the arm tables laid out where `measure/provider.py` reads them, on the environment's store venv."""
+    _timing_bundle(name = name, layout = _ARM_TABLES, venv = VENV, python = Label("@fsla_env//:python"), **kwargs)
 
 def timing_entry(name, **kwargs):
-    """A timing entry of this tree: an executor of `measure/executors.py` on cells (`@fsla_cells//:<cell>`), or the clock
-    reader (`kind = "clock"`), in this tree's bundle."""
-    _timing_entry(name = name, data = _BUNDLE, layout = _ARM_TABLES, binds = _BINDS, venv = VENV,
-                  python = Label("@fsla_env//:python"), **kwargs)
+    """A timing entry of this tree: an executor of `measure/provider.py` on cells (`@fsla_cells//:<cell>`), or the clock
+    reader (`kind = "clock"`), in this tree's bundle (`//measure:bundle`)."""
+    _timing_entry(name = name, bundle = Label("//measure:bundle"), **kwargs)
+
+def diff_side(name, **kwargs):
+    """A DIFF SIDE of this tree (docs/measurement.md#the-diffs): an executor of `tests/oracle/sides.py` on cells, in the
+    sides' bundle (`//measure:side_bundle`)."""
+    _diff_side(name = name, bundle = Label("//measure:side_bundle"), **kwargs)
 
 def interleaved_timing(name, **kwargs):
-    """An interleaved session over timing entries, stored by `bazel run` at its own label (docs/measurement.md#sessions)."""
-    _interleaved_timing(name = name, workspace = native.module_name(), **kwargs)
+    """An interleaved session over timing entries, or their null gate, stored by `bazel run` at its own label
+    (docs/measurement.md#sessions)."""
+    _interleaved_timing(name = name, workspace = native.module_name(), venv = VENV, **kwargs)
+
+def measure_memory(name, **kwargs):
+    """A memory pass over timing entries, stored by `bazel run` at its own label (docs/measurement.md#sessions)."""
+    _measure_memory(name = name, workspace = native.module_name(), venv = VENV, **kwargs)
 
 def instrument(name, device = False, **kwargs):
     """AN INSTRUMENT (docs/measurement.md#instruments): a tool's JSON over the files it reads, on the environment's
