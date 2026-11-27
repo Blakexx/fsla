@@ -726,7 +726,7 @@ lab_run = rule(
         "library": attr.label(doc = "warpline's modules the tool reads (`@warpline//:recorder`, `@warpline//:checker`, or both: `@warpline//:warpline`); none for a tool that reads records only"),
         "data": attr.label(default = "@fsla_data//:root", allow_single_file = True, doc = "the pinned data, by its root's BUILD file (MODULE.bazel's `environment.data`)"),
         "tool": attr.string(default = "tools/lab.py", doc = "the tree's tool that reads compiled code through the checker, or the lab's records"),
-        "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, whose instruments read compiled code)"),
+        "module": attr.string(doc = "or a module run in its place (`fsla_devtools.build`, the measurements this checkout declares)"),
     },
     doc = "The lab (`tools/lab.py`, or `tool`: the floor model; or `module`: the measurements) run by `bazel run` in the checkout, handed the " +
           "pinned data's root as `FSLA_DATA` and the directory of warpline's `warpline` package as `FSLA_WARPLINE_PYTHON`: its arguments follow `--`.",
