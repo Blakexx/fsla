@@ -15,6 +15,7 @@ truth; what was removed, and why it was safe, is [`internals/DELETIONS.md`](inte
 | [`build.md`](build.md) | building: what the build checks, iteration subsets, the arm lists, a kernel's identity, fatbin compression, the stable ABI, the wheels |
 | [`build-graph.md`](build-graph.md) | the build graph: Bazel through its front door (the machine's caches, the host budget), the environment's layers, the graph's rules |
 | [`ratification.md`](ratification.md) | the closed world (the declared targets and the per-build gates), the census, the closed-world rules |
+| [`support.md`](support.md) | the contract, kernel by kernel: every run-time context each kernel accepts, a fact a column (generated; the README's table is its summary) |
 | [`testing.md`](testing.md) | the test tiers, the oracle and its dual run, per-slot tolerance, the gates, running the suite, the GPU lock, the sanitizer lane |
 | [`measurement.md`](measurement.md) | the measurement method, its preconditions, the levels, the stopwatch, the verdict, the record, the declared build |
 | [`setup.md`](setup.md) | setting up a machine and a worktree |

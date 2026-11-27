@@ -124,7 +124,7 @@ ratify_census(
 )
 
 #: THE COMMITTED FILES THE GRAPH WRITES (docs/build-graph.md#committed-files): each a test that the committed file is what
-#: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The README's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
+#: the graph's action writes, and a `bazel run //:<name>_update` that writes it. The README's and docs/support.md's generated blocks (`tools/supported.py`, from the contract in `hardware/`); the devbox image's digest
 #: (docs/setup.md#the-devbox-image)
 #: the environment's interpreter by its store path (which carries the environment's key), which the sandbox does not hold
 genrule(
@@ -145,6 +145,27 @@ committed_file(
     name = "readme",
     committed = "README.md",
     generated = ":readme_generated",
+)
+
+#: docs/support.md's block: the contract, a kernel a table, every fact
+genrule(
+    name = "support_generated",
+    srcs = [
+        "docs/support.md",
+        "//hardware:registry",
+        "//tools:toolchain_records",
+        "//tools:toolchains.py",
+    ],
+    outs = ["support/support.md"],
+    cmd = VENV + "/bin/python3 $(execpath //tools:supported.py) --readme $(execpath docs/support.md) --out $@",
+    tags = ["no-sandbox"],
+    tools = ["//tools:supported.py"],
+)
+
+committed_file(
+    name = "support",
+    committed = "docs/support.md",
+    generated = ":support_generated",
 )
 
 genrule(
@@ -577,6 +598,7 @@ test_suite(
         ":ratchet_baselines",
         ":devbox_image",
         ":readme",
+        ":support",
     ],
 )
 

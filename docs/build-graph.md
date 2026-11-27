@@ -258,7 +258,8 @@ date or host, so the same tree writes the same bytes.
 
 | committed file | the graph writes it | the test | the update |
 |---|---|---|---|
-| `README.md`'s generated block (the support table) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract and the device parts (`hardware/`), the toolchain record | `//:readme` | `//:readme_update` |
+| `README.md`'s generated block (the support summary) | `//:readme_generated`: `tools/supported.py --readme` over the README, the contract and the device parts (`hardware/`), the toolchain record | `//:readme` | `//:readme_update` |
+| `docs/support.md`'s generated block (the contract, every fact) | `//:support_generated`: `tools/supported.py --readme` over the page, the contract and the device parts (`hardware/`), the toolchain record | `//:support` | `//:support_update` |
 | `tools/devbox_image.json` | `//:devbox_image_record`: `//:image`'s content digest (`tools/oci_layout.py --record`) | `//:devbox_image` | `//:devbox_image_update` |
 
 `common/hardware.cuh` is not a committed file: it is a graph output the units include, and nothing checks a copy in. A change to the

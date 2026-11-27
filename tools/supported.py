@@ -1,4 +1,4 @@
-"""Generate the README's generated blocks: the "Supported configurations" table. **A REPORT, NOT A CLAIM.**
+"""Generate the support tables: the README's summary and the contract's page (docs/support.md). **A REPORT, NOT A CLAIM.**
 
 A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the CONTRACT, the registry of run-time contexts FSLA accepts (``hardware/``,
@@ -6,14 +6,18 @@ docs/internals/hardware/registry.md), and the toolchain that builds each context
 reaches no arm (``arms_gen``), so the published support and the guaranteed support are one file. The commit gate fails on drift
 (`//:readme`, which holds the committed README to what the graph writes, docs/build-graph.md#committed-files):
 
-* each kernel's contexts (``hardware/kernels/<kernel>/descriptors``, ``hardware.registry.contexts``), one table a kernel that has a built contract: each descriptor's architecture, the GPUs it covers and, for every fact the kernel's
+* THE SUMMARY (the README's block): a row a kernel and architecture, in a reader's terms -- the card, the depth, a level's
+  width, the value width, the activations, the toolchain, built or not -- read from the call facts each column names
+  (`SUMMARY`); a kernel whose descriptors are all owed is a row "not built".
+* THE CONTRACT (docs/support.md's block): each kernel's contexts (``hardware/kernels/<kernel>/descriptors``, ``hardware.registry.contexts``), one table a kernel that has a built contract: each descriptor's architecture, the GPUs it covers and, for every fact the kernel's
   call supplies, the values the contract admits.
 * the BUILT architectures (``hardware.registry.built``: the architectures a device part states) and the toolchain that builds them
   (``tools/toolchains.py``). A contract architecture the build does not build is refused here: the contract is what is built.
 
     bazel run //tools:supported              # print the tables
-    bazel run //:readme_update               # write README.md's generated blocks (the graph's action runs
+    bazel run //:readme_update               # write README.md's block (the graph's action runs
                                              # `supported.py --readme README.md --out <file>`)
+    bazel run //:support_update              # write docs/support.md's block, the same way
 """
 from __future__ import annotations
 
@@ -30,10 +34,16 @@ import toolchains  # noqa: E402
 
 from hardware import registry  # noqa: E402 -- the contract
 
-#: The README's generated regions: `marker -> producer`. One today: the support table, which no hand edit may touch.
+#: The generated regions: `marker -> producer`. A file holds the markers of the blocks it shows (the README the summary,
+#: docs/support.md the contract), and no hand edit may touch one.
 BLOCKS = {
-    "tools/supported.py": lambda: table(),
+    "tools/supported.py": lambda: summary(),
+    "tools/supported.py --contract": lambda: table(),
 }
+
+#: A `levels` call fact is the hierarchy's depth when its unit says so; a launch's levels (the routing solve's) are not.
+DEPTH_UNITS = ("hierarchy levels", "levels of the density")
+LAUNCH_UNITS = ("levels of one launch",)
 
 
 def markers(marker: str) -> tuple[str, str]:
@@ -94,17 +104,83 @@ def kernel_table(kernel: str) -> str:
     return "\n".join(rows)
 
 
+def _span(values: set) -> str:
+    """A fact's admitted values for a reader: `lo to hi` where they make one unbroken run, else as `_spell` lists them."""
+    lo, hi = min(v[0] for v in values), max(v[1] for v in values)
+    covered = set()
+    for a, b in values:
+        covered.update(range(a, b + 1))
+    return f"{lo} to {hi}" if covered == set(range(lo, hi + 1)) and lo != hi else _spell(values)
+
+
+def _cuda(ptxas: str) -> str:
+    m = re.search(r"V(\d+)\.(\d+)", ptxas)
+    return f"CUDA {m.group(1)}.{m.group(2)}" if m else ptxas
+
+
+def _widths(admitted: dict[str, set]) -> str:
+    """A level's widths: the `width` fact as it is, or the `width_bits_<l>` facts as powers of two (0, no such level, left out)."""
+    if "width" in admitted:
+        return _span(admitted["width"])
+    bits = [v for name, values in admitted.items() if name.startswith("width_bits_") for v in values]
+    lo = min(max(v[0], 1) for v in bits if v[1] > 0)
+    hi = max(v[1] for v in bits)
+    return f"{2 ** lo} to {2 ** hi}"
+
+
+def _depth(kernel: str, admitted: dict[str, set]) -> str:
+    if "levels" not in admitted:
+        return "--"
+    unit = registry.kernel_schema(kernel)["levels"].unit
+    if unit in DEPTH_UNITS:
+        return _span(admitted["levels"])
+    if unit in LAUNCH_UNITS:
+        return "--"
+    raise SystemExit(f"{kernel}'s `levels` fact has the unit {unit!r}, which the summary does not read: name it in "
+                     "DEPTH_UNITS or LAUNCH_UNITS")
+
+
+def _activations(admitted: dict[str, set]) -> str:
+    if "alpha_tenths" not in admitted:
+        return "--"
+    return ", ".join(f"entmax {v[0] / 10:g}" for v in sorted(admitted["alpha_tenths"]))
+
+
+def summary() -> str:
+    """THE README'S TABLE: a row a kernel and architecture, its columns the facts a reader asks for; a kernel with no built
+    contract a row "not built"."""
+    built_rows = built()
+    rows = ["| Kernel | Card | Depth | Level width | Value width (d_v) | Activations | Toolchain | Status |",
+            "|---" * 8 + "|"]
+    for kernel in registry.kernels():
+        held = contract(kernel)
+        if not held:
+            rows.append(f"| `{kernel}` | -- | -- | -- | -- | -- | -- | not built |")
+            continue
+        for (arch, gpus), admitted in sorted(held.items()):
+            if arch not in built_rows:
+                raise SystemExit(f"the {kernel} contract holds {arch}, which the build does not build: the contract is what is built")
+            dv = _span(admitted["d_v"]) if "d_v" in admitted else "--"
+            for r in built_rows[arch]:
+                rows.append(f"| `{kernel}` | {gpus} (`{arch}`) | {_depth(kernel, admitted)} | {_widths(admitted)} | {dv} | "
+                            f"{_activations(admitted)} | {_cuda(r['ptxas'])} | built |")
+    return "\n".join(rows)
+
+
 def table() -> str:
     """The support table: a table for each kernel that has a built contract (a kernel whose descriptors are all owed has none), under its name."""
     return "\n\n".join(f"**`{kernel}`**\n\n{kernel_table(kernel)}" for kernel in registry.kernels() if registry.contexts(kernel))
 
 
 def render(readme: str) -> str:
-    """The README's text with each generated block written: the one writer of the blocks."""
+    """A file's text with each generated block it holds written: the one writer of the blocks. A file holding none is
+    refused."""
     new = readme
-    for marker, produce in BLOCKS.items():
-        if block(new, marker) is None:
-            raise SystemExit(f"README.md has no generated block for {marker}")
+    held = [marker for marker in BLOCKS if block(new, marker) is not None]
+    if not held:
+        raise SystemExit(f"the file holds no generated block (the markers: {sorted(BLOCKS)})")
+    for marker in held:
+        produce = BLOCKS[marker]
         begin, end = markers(marker)
         head, rest = new.split(begin, 1)
         _, tail = rest.split(end, 1)
@@ -114,8 +190,8 @@ def render(readme: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--readme", type=Path, help="the README to write the generated blocks into")
-    ap.add_argument("--out", type=Path, help="where to write the README's text with its generated blocks")
+    ap.add_argument("--readme", type=Path, help="the file (the README, docs/support.md) to write its generated blocks into")
+    ap.add_argument("--out", type=Path, help="where to write the file's text with its generated blocks")
     a = ap.parse_args()
 
     if bool(a.readme) != bool(a.out):
