@@ -295,10 +295,11 @@ class FSLA(nn.Module):
         """The output projection, bf16 operands, in the caller's dtype."""
         return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
-    def _produce(self, x: torch.Tensor):
-        """One stretch of tokens of every head into the format: ``(routes, values, masks, density)``, from one producer call,
-        the masks in the prefill's layout and the density of those masks."""
-        return produce_prefill(x, self.routing, self._weights(x))
+    def _produce(self, x: torch.Tensor, weights: ProducerWeights | None = None):
+        """One stretch of tokens into the format: ``(routes, values, masks, density)``, from one producer call over the heads
+        ``weights`` hold (every head's, the layer's own, where left out), the masks in the prefill's layout and their density.
+        The forward's one producer path: each step calls it with its head block's weights."""
+        return produce_prefill(x, self.routing, self._weights(x) if weights is None else weights)
 
     def _weights(self, x: torch.Tensor) -> ProducerWeights:
         """The layer's weights as the producer reads them: the reused copies when no gradient flows."""
@@ -343,7 +344,7 @@ class FSLA(nn.Module):
 
     def _prefill_step(self, x: torch.Tensor, weights: ProducerWeights, state, decay):
         """One step: one stretch of tokens through the producer, over the heads ``weights`` hold, and the op."""
-        routes, values, masks, density = produce_prefill(x, self.routing, weights)
+        routes, values, masks, density = self._produce(x, weights)
         refuse_backward(routes, values, decay)  #: the gradient clause speaks before the descriptor's, so a training call is told why
         return prefill(routes, values, masks, density, state=state, decay=decay)
 
