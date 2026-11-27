@@ -83,7 +83,7 @@ read and write the SAME amplitudes, never a second solve; `values_second` absent
 write head (`b * H_w + w`), and every solve reads its own column span of it (`fsla.routing.projection.RouterLayout`). The read plane is
 `[B * H_w * G, T, ·]`, query head `w * G + g` at row `(b * H_w + w) * G + g`, so the public `[B, T, H, ·]` levels are a permute of it; read head
 `g`'s solves write the strided view of its rows, whose streams are the logits'. A level's write solve writes the first tied head's rows as its
-`values_second`; a further tied head's rows are copied from the write side's after the launches. Each solve writes its own support words: the
+`values_second`; a further tied head's rows are copied from the write side's after the launches. THE BACKWARD of a level several heads tie has more than two cotangents -- the write side's and each tied head's -- and the kernels add two, in fp32. Their sum is formed in fp32 on the host and handed over as TWO terms of the cotangents' type, the sum's rounding and the remainder's (`_two_terms`), because a sum rounded once into bf16 is off at its 8 bits and the solve's Jacobian carries that into the logits' gradient (measured on an H100, 2026-11-27: with the sum formed in bf16, 16 of the grouped rows of `tests/integration/test_production_levels.py` were off the fp64 oracle, the worst 0.00038 against an allowance of 0.00002). A level one head ties hands the kernel its two cotangents as they arrive. The passes this costs a level several heads tie, and a backward kernel that reads each tied head's cotangent itself, are open work ([`../../open-work.md`](../../open-work.md), row A-m). Each solve writes its own support words: the
 write side's plane at `[B * H_w, ·, ·]` and the read side's at `[B * H, ·, ·]`, a read head's columns its view of the read plane's.
 
 ### <a id="candidates"></a>2.1 The candidates are the row's width
@@ -124,7 +124,7 @@ Two facts make this a five-line kernel rather than a Jacobian:
 
 <a id="factorbackward"></a>Both backward entries STORE into `d_logits`; a TIED level's second cotangent (`d_values_second`)
 is summed into `dp` inside the one launch, so no launch adds into a gradient another wrote. Where more than one read head ties a level, the
-further heads' cotangents are summed into the second one before the launch (in the stored dtype); at one tied head the launch is the tie's
+cotangents' sum reaches the launch as two terms ([the read heads](#read-heads)); at one tied head the launch is the tie's
 alone.
 
 <a id="backward-stages"></a>**The operands are STAGED a token ahead and read from memory once.** A trip issues the next token's loads before it reduces and stores its own, so a load's latency passes under the reduction and not in front of it; the reduction's terms stay in registers for the stores, and the entmax backward reads its support words once a block (a word holds the block's 32 tokens). MEASURED on an H100 at 65,536 tokens, 8 streams, two levels: the backward takes 0.39 to 0.47 of the time of a form that read each load in the trip that issued it and every value twice (widths 48, 64 and 256; alpha 1.5, alpha 2 and softmax; tied and untied). Three things the form rests on:

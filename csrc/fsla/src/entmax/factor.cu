@@ -121,7 +121,7 @@ factor_forward_kernel(const LogitT* __restrict__ logits, OutT* __restrict__ valu
       const float p = ALPHA15 ? base * base : base;
       const int64_t off = addr(sv, stream, token, value_base + col);
       store_value(values, off, p);
-      //: The second output is the SAME solve, never a second one: a `shares_solve` level -- see docs/internals/entmax/factor.md#near-line-200
+      //: The second output is the SAME solve, never a second one: a level a read head ties -- see docs/internals/entmax/factor.md#near-line-200
       if (values_second != nullptr)
         store_value(values_second, addr(sv2, stream, token, value_base + col), p);
       //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary -- see docs/internals/entmax/factor.md#near-line-204

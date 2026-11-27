@@ -26,17 +26,13 @@ import torch.nn as nn
 from fsla.routing.projection import RouterLayout
 from fsla.routing.side_gain import GainConfig
 from fsla.routing.types import (
-    EntmaxActivation,
-    SoftmaxActivation,
+    RoutingActivation,
     Tied,
     Topology,
     activation_properties,
 )
 
 __all__ = ["Routing"]
-
-#: the activations the shipped producer solves (`fsla.routing.entmax.production`)
-_SOLVED = (SoftmaxActivation, EntmaxActivation)
 
 
 @dataclass(frozen=True)
@@ -132,7 +128,7 @@ def _layout(topology: Topology, group: int) -> RouterLayout:
 
 
 def _solved(activation, owner: str) -> None:
-    if not isinstance(activation, _SOLVED):
+    if not isinstance(activation, RoutingActivation):
         raise TypeError(f"{owner} is an activation the producer solves (softmax(), entmax(alpha)) or, on the read side, "
                         f"tied(); got {activation!r}")
 

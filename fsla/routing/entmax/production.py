@@ -314,11 +314,11 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 #: the tied solve's form: the first tied head's rows and gradient first, the write side's second -- the
                 #: further tied heads' gradients summed into the second
                 first = tied[0]
-                d_second = d_write
-                for g in tied[1:]:
-                    d_second = d_second + _head(d_read, G, g)
-                backward_into(layout.topology.write[index], _head(read_output, G, first), _head(d_read, G, first),
-                              d_second, write_words, write_target)
+                d_first, d_second = _head(d_read, G, first), d_write
+                if len(tied) > 1:
+                    d_first, d_second = _two_terms([d_write, *(_head(d_read, G, g) for g in tied)])
+                backward_into(layout.topology.write[index], _head(read_output, G, first), d_first, d_second,
+                              write_words, write_target)
             else:
                 backward_into(layout.topology.write[index], write_output, d_write, None, write_words, write_target)
             read_words = words_of(read_support, layout.read_support_offsets[index], width)
@@ -328,6 +328,17 @@ class _ProductionLevelsFn(torch.autograd.Function):
                     backward_into(entries[index], _head(read_output, G, g), _head(d_read, G, g), None,
                                   None if read_words is None else _head(read_words, G, g), d_logits[..., columns])
         return d_logits, None
+
+
+def _two_terms(cotangents: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    """The sum of three or more cotangents as the TWO terms the backward kernels add in fp32: the fp32 sum's rounding
+    into the cotangents' type, and the remainder's. A sum formed in that type alone rounds at its 8 bits, and the
+    solve's Jacobian carries the rounding into the logits' gradient (docs/internals/entmax/factor.md#read-heads)."""
+    total = cotangents[0].float()
+    for cotangent in cotangents[1:]:
+        total = total + cotangent.float()
+    high = total.to(cotangents[0].dtype)
+    return high, (total - high.float()).to(cotangents[0].dtype)
 
 
 def _head(plane: torch.Tensor, group: int, head: int) -> torch.Tensor:
