@@ -728,6 +728,18 @@ void run(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, 
           float stored = 0;
           std::memcpy(&stored, page.data() + Page::kMass + 4 * r, 4);
           bytes_wrong += stored != m;
+          //: WRITE_SECTORS stores the page's whole exponent sector and the leaf's whole mass sector: every other
+          //: leaf's exponents and masses (those sectors' and the page's rest) are the plane's as filled, byte for byte
+          if constexpr (PAT == kWriteSectors) {
+            for (int o = 0; o < 16; ++o) {
+              if (o == r) continue;
+              for (int x = 0; x < Gm::kExpLeaf; ++x)
+                bytes_wrong += static_cast<int8_t>(page[Page::kExp + o * Gm::kExpLeaf + x]) != -8;
+              float kept = 0;
+              std::memcpy(&kept, page.data() + Page::kMass + 4 * o, 4);
+              bytes_wrong += kept != mass_of(at, o);
+            }
+          }
         }
       }
   }
