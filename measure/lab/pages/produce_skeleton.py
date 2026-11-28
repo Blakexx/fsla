@@ -14,6 +14,7 @@ CELL = "the empty pipeline at the cell"
 NO_STAGES = CELL + ", hidden 0"
 TWO = CELL + ", two CTAs an SM"
 LO = CELL + ", the lo plane"
+STORES = CELL + ", the stores alone, three CTAs an SM"
 
 #: THE FLOOR (measure/floors/produce.work.json at measure/floors/h100.rates.json, warpline's floor): the cell's
 #: outputs at HBM's write rate, without and with the lo plane
@@ -72,7 +73,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T121503Z-274366-44f4c87b",
         "2026-11-28",
         "the store component's run held its coverage and MISSED every band (plain 204.4 us, hidden 0 195.7, two CTAs an "
         "SM 185.5, the lo plane 290.6): its stores' instructions fell ~25K to ~14.1K a CTA (ncu) and the launch did not "
@@ -91,6 +92,27 @@ RUNS = (
             Claim(NO_STAGES, lambda R: R[NO_STAGES], 102.0, 128.0, "us"),
             Claim(TWO, lambda R: R[TWO], 102.0, 128.0, "us"),
             Claim(LO, lambda R: R[LO], 188.0, 225.0, "us"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "four stores in flight and coalesced token runs moved every row ~17% (plain 170.1 us, hidden 0 163.8, two CTAs "
+        "an SM 161.9, the lo plane 261.6) and missed every band: ncu on the traced launch -- DRAM 58% of its peak, lts "
+        "55%, l1tex 25%, long scoreboard 4 a issue (9 at two CTAs an SM), warps active 11% -- still latency with ~9 warps "
+        "an SM. The move from one store a trip to four (a row tile's 8 trips to 2) bought 17%, so a trip's latency is "
+        "~a third of a CTA's time and the rest is the stall a instruction (~7 a issue) of the rest of its stream. THIS "
+        "FORM: eight stores in flight a thread, a share's row tile in one trip (2 -> 1): the trips' third shrinks by "
+        "about half, ~6% of the launch; the rest stays. THE OCCUPANCY ROW tests the claim that what remains is the CTA's ~9 "
+        "warps an SM: the stores alone (the epilogues and tickets, no ring, no reserved shared memory) at three CTAs "
+        "an SM, ~27 warps (four would spill at 56 registers a thread): if occupancy is the gap they reach the floor's write rate, 102-122 us; at two CTAs an SM the "
+        "launch closed only 5% (170.1 -> 161.9), so a row near 155-165 would refute it and name the SM's store path",
+        (
+            Claim(CELL, lambda R: R[CELL], 150.0, 168.0, "us"),
+            Claim(NO_STAGES, lambda R: R[NO_STAGES], 144.0, 162.0, "us"),
+            Claim(TWO, lambda R: R[TWO], 143.0, 161.0, "us"),
+            Claim(LO, lambda R: R[LO], 235.0, 259.0, "us"),
+            Claim(STORES, lambda R: R[STORES], 102.0, 122.0, "us"),
         ),
     ),
 )

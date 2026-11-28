@@ -73,8 +73,8 @@ a scheduler, each store's address reused by the next trip of a rolled loop -- wi
 keeps several independent 16-byte stores in flight, each with its own address, and walks a run with no division; a
 contiguous run (a row tile, a lo tile, a share's mask words) is the warpgroup's in 16-byte chunks, and a share's token
 runs (scales, values) are each walked by consecutive threads so a store instruction covers whole runs, not one token a
-lane. The token runs' stores are 4-byte words at the least: a plan's `d_v` is even and at most 1,024 (the host refuses
-others).
+lane. The token runs' stores are 4-byte words at the least: a plan's `d_v` is even (the host refuses an odd one), and a run
+wider than the warpgroup's threads is walked in a lane loop.
 
 <a id="density"></a>
 ## The tickets

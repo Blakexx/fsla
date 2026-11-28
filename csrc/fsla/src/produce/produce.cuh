@@ -112,9 +112,10 @@ enum Site : int { kSiteEntry = 0, kSiteSetup, kSiteWindow, kSiteEpilogue, kSiteT
 //: a ring barrier's number, as its tracer names it: a stage's FULL `slot`, its EMPTY `kMaxStages + slot`
 constexpr int kEmptyId = kMaxStages;
 
-//: FIXED by the stores' latency: the 16-byte stores a thread keeps in flight, each its own address -- see
+//: FIXED by the stores' latency: the 16-byte stores a thread keeps in flight, each its own address (a 16 KB row tile is
+//: 8 a thread: a share's tile in one trip) -- see
 //: docs/internals/produce/produce.md#stores
-constexpr int kStoresInFlight = 4;
+constexpr int kStoresInFlight = 8;
 
 //: A CONTIGUOUS RUN'S ZEROS by a warpgroup (`mine` its thread): `bytes` and the start a multiple of 4; words to a 16-byte
 //: boundary, 16 bytes a store, then the tail's words -- see docs/internals/produce/produce.md#stores
@@ -135,25 +136,29 @@ __device__ __forceinline__ void zero_run(uint8_t* at, int bytes, int mine) {
 }
 
 //: A SHARE'S TOKENS' ZEROS by a warpgroup: `tokens` runs of `bytes`, `stride` apart, each a multiple of 4: a token's
-//: run by consecutive threads (`lanes` a token, the call's one quotient), 16 bytes a store where the runs allow, else a
+//: run by consecutive threads (`lanes` a token, the call's one quotient; a run wider than the warpgroup a lane loop),
+//: 16 bytes a store where the runs allow, else a
 //: word -- see docs/internals/produce/produce.md#stores
 __device__ __forceinline__ void zero_tokens(uint8_t* at, int tokens, int bytes, long long stride,
                                             int mine) {
   const long long where = static_cast<long long>(reinterpret_cast<uintptr_t>(at));
   const int shift = ((bytes | stride | where) & 15) == 0 ? 4 : 2;
-  const int lanes = bytes >> shift, per = kGroupThreads / lanes, token = mine / lanes;
+  const int lanes = bytes >> shift, per = max(1, kGroupThreads / lanes), token = mine / lanes;
   if (token >= per) return;
-  const int lane = mine - token * lanes;
+  const int first = mine - token * lanes;
 #pragma unroll 1
   for (int t = token; t < tokens; t += per * kStoresInFlight) {
 #pragma unroll
     for (int u = 0; u < kStoresInFlight; ++u) {
       uint8_t* const run = at + (t + u * per) * stride;
       if (t + u * per >= tokens) continue;
-      if (shift == 4) {
-        reinterpret_cast<uint4*>(run)[lane] = make_uint4(0u, 0u, 0u, 0u);
-      } else {
-        reinterpret_cast<uint32_t*>(run)[lane] = 0u;
+#pragma unroll 1
+      for (int lane = first; lane < lanes; lane += kGroupThreads) {
+        if (shift == 4) {
+          reinterpret_cast<uint4*>(run)[lane] = make_uint4(0u, 0u, 0u, 0u);
+        } else {
+          reinterpret_cast<uint32_t*>(run)[lane] = 0u;
+        }
       }
     }
   }

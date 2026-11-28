@@ -54,6 +54,26 @@ __global__ void __launch_bounds__(pk::kThreads, CTAS) skeleton(const __grid_cons
   tr.row.close(0);
 }
 
+//: THE STORES ALONE, `CTAS` an SM: the library's epilogues and tickets over a CTA's shares with no ring and no reserved
+//: shared memory, so the SM holds as many CTAs as their registers allow -- occupancy's own row
+template <int CTAS>
+__global__ void __launch_bounds__(pk::kThreads, CTAS) stores_only(const __grid_constant__ pk::Plan p) {
+  __shared__ unsigned live[pk::kMaxRows * pk::kMaxLevels];
+  const int tid = static_cast<int>(threadIdx.x);
+  if (tid < pk::kMaxRows * pk::kMaxLevels) live[tid] = 0u;
+  __syncthreads();
+  const int tiles = (p.tokens + pk::kTileTokens - 1) / pk::kTileTokens;
+  const int item = static_cast<int>(blockIdx.x), sequences = p.batch * tiles;
+  const int b = item % sequences / tiles, tile = item % tiles, w = item / sequences;
+  if (tid < pk::kMathThreads) {
+    const int group = tid / pk::kGroupThreads, t0 = tile * pk::kTileTokens + group * pk::kGroupTokens;
+    const pk::Share s{b, 2 * tile + group, min(t0, p.tokens), min(t0 + pk::kGroupTokens, p.tokens), w};
+    for (int j = 0; j < p.jobs; ++j) pk::epilogue<false>(p, p.job[j], s, tid % pk::kGroupThreads);
+  }
+  __syncthreads();
+  if (tid == 0) pk::tickets(p, live, b, w, tiles);
+}
+
 //: a read entry: tied to the write side's level, or its own activation
 constexpr int kTied = -1;
 
@@ -175,11 +195,11 @@ void refuse_unsized(const Outputs& o, bool lo) {
   }
   want.push_back(streams * p.tokens * p.d_v * 2);
   want.push_back(streams * p.d_v * 4);
-  //: the token runs' stores are 4-byte words at least and a run a warpgroup's threads at most: d_v even, at most 1,024
-  bool same = want.size() == o.planes.size() && p.d_v % 2 == 0 && p.d_v <= 1024;
+  //: the token runs' stores are 4-byte words at least: d_v even
+  bool same = want.size() == o.planes.size() && p.d_v % 2 == 0;
   for (size_t i = 0; same && i < want.size(); ++i) same = want[i] == o.planes[i].bytes && want[i] > 0;
   if (!same) {
-    std::fprintf(stderr, "produce_skeleton: the plan's extents (the kernel's view) are not its outputs' allocations, or its d_v is odd or over 1,024\n");
+    std::fprintf(stderr, "produce_skeleton: the plan's extents (the kernel's view) are not its outputs' allocations, or its d_v is odd\n");
     std::exit(2);
   }
 }
@@ -263,6 +283,19 @@ long long covered(Outputs& o) {
   return n;
 }
 
+//: THE STORES ALONE'S CHECK of one plan: two launches, each from the sentinels
+template <int CTAS>
+long long covered_stores(Outputs& o) {
+  long long n = 0;
+  for (int rep = 0; rep < 2; ++rep) {
+    o.fill();
+    stores_only<CTAS><<<grid_of(o.plan), pk::kThreads>>>(o.plan);
+    LAB_CHECK(cudaDeviceSynchronize());
+    n += o.wrong();
+  }
+  return n;
+}
+
 }  // namespace produce_skeleton
 
 //: A ROW: the variant's check over the test matrix and the cell, its launch timed, and (TRACE) two CTAs' timelines
@@ -325,12 +358,47 @@ void run(lab::Bench& b, const std::string& name, int hidden, unsigned long long*
   LAB_CHECK(cudaEventDestroy(e1));
 }
 
+//: THE STORES ALONE'S ROW: its check over the test matrix and the cell, and its launch timed at the cell
+template <int CTAS>
+void run_stores(lab::Bench& b, const std::string& name) {
+  using namespace produce_skeleton;
+  long long wrong = 0, plans = 0;
+  for (int e : {static_cast<int>(pk::kEntmax15), static_cast<int>(pk::kEntmax2)})
+    for (const Routing& r : routings(e))
+      for (const Shape& sh : {Shape{3, 40, 2, 96, 16}, Shape{2, 300, 3, 64, 24}}) {
+        Outputs o;
+        plan_of(r, sh, false, o);
+        wrong += covered_stores<CTAS>(o);
+        ++plans;
+      }
+  Outputs o;
+  plan_of(kCell, kCellShape, false, o);
+  wrong += covered_stores<CTAS>(o);
+  b.check(name, wrong == 0, std::to_string(wrong) + " wrong bytes over " + std::to_string(plans + 1) + " plans");
+  cudaEvent_t e0, e1;
+  LAB_CHECK(cudaEventCreate(&e0));
+  LAB_CHECK(cudaEventCreate(&e1));
+  const auto go = [&] { stores_only<CTAS><<<grid_of(o.plan), pk::kThreads>>>(o.plan); };
+  b.record(name, "microseconds a launch", b.variant(go, [&] {
+             LAB_CHECK(cudaEventRecord(e0));
+             go();
+             LAB_CHECK(cudaEventRecord(e1));
+             LAB_CHECK(cudaEventSynchronize(e1));
+             float ms = 0;
+             LAB_CHECK(cudaEventElapsedTime(&ms, e0, e1));
+             return 1000.0 * ms;
+           }));
+  LAB_CHECK(cudaEventDestroy(e0));
+  LAB_CHECK(cudaEventDestroy(e1));
+}
+
 int main(int argc, char** argv) {
   using namespace produce_skeleton;
   lab::Bench b(argc, argv);
   std::vector<std::string> names;
   for (const auto& v : std::vector<std::vector<long long>>{{0, 1, 0}, {0, 1, 1}, {1, 1, 0}, {0, 2, 0}, {0, 2, 1}})
     names.push_back(lab::kernel("skeleton", {v[0], v[1], v[2]}));
+  names.push_back(lab::kernel("stores_only", {3}));
   for (const std::string& k : names) {
     b.expect(k, "HGMMA", "==", 0);
     //: the stubs' zero stores are loops of lane-dependent trips (a share's chunks over its 128 threads, a ragged chunk's
@@ -354,5 +422,6 @@ int main(int argc, char** argv) {
   run<0, 1, 1>(b, cell + ", hidden 0", 0, rows);
   run<0, 2, 1>(b, cell + ", two CTAs an SM", kCellShape.hidden, rows);
   run<1, 1, 0>(b, cell + ", the lo plane", kCellShape.hidden, rows);
+  run_stores<3>(b, cell + ", the stores alone, three CTAs an SM");
   return 0;
 }

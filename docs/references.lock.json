@@ -2142,7 +2142,7 @@
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "3699007c9ab2", "reviewed": true, "sha256": "", "target": "docs/lab/load_rate.md"},
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "9a2fefb32364", "reviewed": true, "sha256": "", "target": "docs/lab/value_gather.md"},
   {"doc": "docs/lab/pool_fill.md", "pinned_at": "9a2fefb32364", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/pool_fill.cu"},
-  {"doc": "docs/lab/produce_skeleton.md", "pinned_at": "bcd48e72e371", "reviewed": true, "sha256": "", "target": "data:records/fsla/measure/lab/produce_skeleton.run/20261128T095100Z-086748-f002e06d/output.json"},
+  {"doc": "docs/lab/produce_skeleton.md", "pinned_at": "7ef8a4d0a328", "reviewed": true, "sha256": "", "target": "data:records/fsla/measure/lab/produce_skeleton.run/20261128T121503Z-274366-44f4c87b/output.json"},
   {"doc": "docs/lab/produce_skeleton.md", "pinned_at": "6d498861f3fb", "reviewed": true, "sha256": "", "target": "docs/internals/produce/produce.md"},
   {"doc": "docs/lab/produce_skeleton.md", "pinned_at": "6d498861f3fb", "reviewed": true, "sha256": "47f54c360b6228d1", "target": "docs/internals/produce/produce.md#floor"},
   {"doc": "docs/lab/produce_skeleton.md", "pinned_at": "6d498861f3fb", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
