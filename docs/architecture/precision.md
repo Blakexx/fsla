@@ -52,8 +52,7 @@ Per token, `|dy| / |y|` against fp64 on continuous values (`docs/testing.md`).
 MEASURED on kernels (2026-10-03 and 2026-10-12, sm_86 (ampere branch, unreproducible here), the carry's own output, median a token): a bf16 family 0.16-0.20% on the flagship cells; the fp16 family 0.018-0.029%. The class is accepted on every
 card (Blake, 2026-11-09): it is the bf16 output store's own.
 
-MODELLED for this family before any kernel of it exists (recorded 2026-11-09 by a tool since deleted, `docs/internals/DELETIONS.md`:
-the fp64 recurrence on the formatted operands, rounded only where a kernel of the family rounds; the
+MODELLED for this family before any kernel of it exists (recorded 2026-11-09: the fp64 recurrence on the formatted operands, rounded only where a kernel of the family rounds; the
 median / the 99th percentile a token): carry-alt-k4-256x256-T1024 0.134 / 0.202%, carry-dense-256x256-T1024 0.132 / 0.191%, carry-alt-k4-256x256-T65536
 0.115 / 0.174%, carry-dense-256x256-T65536 0.021 / 0.167%. The intra's weight, rounded once a token pair, carries the worst tokens
 everywhere; the fold's coefficient, the state as an operand and the read coefficient average over the leaves a token

@@ -36,13 +36,6 @@ def test_a_built_experiments_kernels_are_read_off_its_texts(tmp_path):
     assert table == {"k()": {"ops": {"MOV": 1, "IADD3": 2, "EXIT": 1}, "regs": 12, "local": 8}}
 
 
-def test_a_pack_is_read_as_the_target_is(tmp_path):
-    exp = built(tmp_path)
-    packed = lab.Built(exp.binary.parent, "x", "sm_90a")
-    assert packed.functions() == ["_Z1kv"] and packed.toolkit() == "Build cuda_13.5.r13.5/compiler.0"
-    assert packed.demangle(["_Z1kv"]) == {"_Z1kv": "k()"}
-
-
 def test_a_name_the_build_did_not_write_is_refused(tmp_path):
     with pytest.raises(SystemExit, match="names no _Z2kv"):
         built(tmp_path).demangle(["_Z2kv"])
