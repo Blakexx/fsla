@@ -46,8 +46,8 @@ readout is the only normalization the family has.
 
 **The operands are the bundle's internal format** ([`api.md`
  §2.1](api.md#21-the-bundle-is-the-contract-and-it-is-the-internal-format)): every routing level's rows, dense or
-sparse, are u8 digits unit-max against the row's fp32 maximum, a zero a zero, and each token's values are bf16 against
-its largest channel with an fp32 scale (CONSTITUTION §R17, §R23). Nothing floating but those values is stored between
+sparse, are u8 digits unit-max against the row's fp32 maximum, a zero a zero, and each token's values are raw bf16,
+`v_proj`'s output with no scale (CONSTITUTION §R17, §R23; NOT BUILT: the `VALUES` form still scales them). Nothing floating but those values is stored between
 the producer and the kernels. THE ORDER OF A PLANE'S BYTES FOLLOWS ITS READERS' MEASURED ACCESS (Blake, 2026-11-13):
 the producer writes each plane in the layout its readers' cheapest access wants. On hopper a level's rows are
 TILE-MAJOR -- a tile of 64 tokens its 16-digit blocks one after another, each block a token's 16 bytes a line, the
@@ -58,8 +58,8 @@ most of a window to them tile-major (12,201 cycles a window against 6,590, and 4
 [`carry_window`](lab/carry_window.md)), where the intra's window moves 5% with their order.
 
 **Declared arithmetic, per kernel.** Every kernel's arithmetic is declared and mirrored by its gate's reference: every
-accumulation fp32 or an exact integer -- but the output's sum across CTAs, fp32 or f16 as the plan states
-(R17) -- the operands one family on every card
+accumulation fp32 or an exact integer -- but the output's sum across CTAs, fp32 or f16 as the device chooses a call
+at a time (R17) -- the operands one family on every card
 ([`architecture/precision.md`](architecture/precision.md#components)).
 
 **The window decomposition.** A call's token axis is cut into fixed windows of `W` tokens, global to every box. The
