@@ -29,7 +29,7 @@ OWN = "L2 read, a CTA its own 128 KB slice 64 times"
 SHARED = "L2 read, every CTA one 4 MB table 4 times"
 OWN_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times"
 SHARED_CG = "L2 read past L1 (ld.global.cg), every CTA one 4 MB table 4 times"
-HALF_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, 66 CTAs"
+HALF_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, half the SMs"
 SPREAD_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB interleaved over the table 64 times"
 SMALL_CG = "L2 read past L1 (ld.global.cg), every CTA one 128 KB slice 64 times"
 
@@ -72,13 +72,13 @@ RUNS = (
     (
         PENDING,
         "2026-11-28",
-        "the second run's own slice past L1 missed under its band (30.96 bytes a cycle an SM, 0.73 of the shared table's "
+        "the second run's own slice past L1 missed under its band (30.95 bytes a cycle an SM, 0.73 of the shared table's "
         "42.38): its price took the far L2 partition to cost at most a fifth. Three walks separate the explanations. IF a "
         "CTA's distinct lines are served from the one partition that holds them (half the SMs' far) while a table every "
-        "SM reads is served near from both, as predicted here: the own slice on 66 SMs reads as on 132 (a path an SM, "
+        "SM reads is served near from both, as predicted here: the own slice on half the SMs reads as on all (a path an SM, "
         "no aggregate cap), interleaving its units over the table moves nothing (placement by address is already spread), "
         "and every CTA reading one shared 128 KB slice reads as fast as the shared 4 MB table (sharing is what lifts it). "
-        "An aggregate cap on distinct lines would lift the 66-SM walk instead; a placement effect, the interleaved one; "
+        "An aggregate cap on distinct lines would lift the half-the-SMs walk instead; a placement effect, the interleaved one; "
         "and the shared small slice under 34 would say sharing is not the cause. Every walk of the second run repeats "
         "within 5% (HBM's within 3%)",
         {
@@ -98,8 +98,9 @@ RUNS = (
 
 
 def _band(which: str, lo: float, hi: float) -> str:
-    return f"{lo:,.1f}-{hi:,.1f} {'GB/s the device' if which == DEVICE else 'bytes a cycle an SM'}" if which == CTA else (
-        f"{lo:,.0f}-{hi:,.0f} GB/s the device")
+    if which == DEVICE:
+        return f"{lo:,.0f}-{hi:,.0f} GB/s the device"
+    return f"{lo:,.1f}-{hi:,.1f} bytes a cycle an SM"
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:

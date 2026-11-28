@@ -6,8 +6,10 @@
 // stored. WRITE: 16 stores a trip of a word formed from its index. COPY: the read's ring, each unit stored where it was
 // read (another table). The source: HBM, each CTA its own slice of a 1 GiB table once (the copy 512 MB into 512 MB); L2
 // DISTINCT, each CTA its own 128 KB slice of a 16.5 MB table 64 times; L2 SHARED, every CTA the whole of one 4 MB table
-// 4 times from its own offset; the two L2 walks again PAST L1 (`ld.global.cg`, L2 only). Every chain, every written
-// word and every copied word is checked exactly on a short launch.
+// 4 times from its own offset; the two L2 walks again PAST L1 (`ld.global.cg`, L2 only), and three more past L1 that
+// separate why a CTA's own slice reads slower than a shared table: the own slice on half the SMs, its 16 units
+// interleaved over the table, and every CTA one shared 128 KB slice. Every chain, every written word and every copied
+// word is checked exactly on a short launch.
 // TIMELINE: a thread's trip is the ring's two halves, each at its own registers: a half's units folded (or stored),
 // then that half's loads for the trip after. Live: the ring's 64 words and the chain.
 // see docs/internals/tools/lab.md#stream-rate
@@ -200,8 +202,8 @@ int main(int argc, char** argv) {
       //: WHY A CTA'S OWN SLICE PAST L1 READS SLOWER THAN A SHARED TABLE: the own slice on half the SMs (an aggregate
       //: cap on distinct lines would lift it; a path an SM would not); its 16 units interleaved over the table (an
       //: address placement would move it); and every CTA one shared 128 KB slice (sharing alone would lift it)
-      {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, 66 CTAs", kReadL2, {16, 15, 4096}, 16 * 64,
-       32, 66},
+      {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, half the SMs", kReadL2, {16, 15, 4096},
+       16 * 64, 32, b.sms / 2},
       {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB interleaved over the table 64 times", kReadL2,
        {1, 15, 4096, 256}, 16 * 64, 32},
       {"L2 read past L1 (ld.global.cg), every CTA one 128 KB slice 64 times", kReadL2, {0, 15, 4096}, 16 * 64, 32},
