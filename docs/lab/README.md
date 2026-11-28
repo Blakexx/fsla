@@ -67,6 +67,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`tma_box`](tma_box.md) | experiment |
 | [`l2_policy`](l2_policy.md) | experiment |
 | [`dependent_launch`](dependent_launch.md) | experiment |
+| [`produce_skeleton`](produce_skeleton.md) | experiment |
 
 ## The toolkit's move to 13.5: records that carry the 13.0 build
 

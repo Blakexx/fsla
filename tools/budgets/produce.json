@@ -1,0 +1,50 @@
+{
+  "about": "THE PRODUCER'S FUSED FORWARD (csrc/fsla/src/produce/produce.cuh), its SKELETON's budget, stated before its code (KERNEL_STANDARDS s19, s29): each component's warp instructions a CTA (a 128-token tile of one write head), its peak live registers, and each phase's cycles a CTA, at the design's cell. A component that lands replaces its stub's line, with its own basis. Docs: docs/internals/produce/produce.md#budget",
+  "unit": "warp instructions a CTA",
+  "components": {
+    "glue": "produce_cta",
+    "load_role": "load_role",
+    "math_role": "math_role",
+    "epilogue": "epilogue",
+    "store_level": "store_level",
+    "zero_runs": "zero_runs",
+    "density_ticket": "density_ticket"
+  },
+  "cells": {
+    "nl64k-alt-h4": {
+      "glue": 1350,
+      "load_role": 2000,
+      "math_role": 2400,
+      "epilogue": 800,
+      "store_level": 1280,
+      "zero_runs": 10050,
+      "density_ticket": 40
+    }
+  },
+  "basis": {
+    "cell": "B 1, T 65,536, H_w 4, G 1, hidden 256 (4 K-steps), widths 256 and 256, d_v 64, every level-side entmax 1.5 and untied: 5 jobs a write head (two write levels, two read levels, the values), 20 ring stages a CTA, no lo plane",
+    "glue": "9 warps x ~150: the shares, the barriers' init, two CTA barriers, the counters' clear",
+    "load_role": "20 stages x ~15 (an EMPTY wait from the fourth on, a FULL arrival) = 300, and the EMPTY waits' polls behind the epilogues, priced at most ~1,700: the polled wait's trips are owed to the first ledger",
+    "math_role": "8 warps x 20 stages x ~10 (a FULL wait, the warp's sync, lane 0's EMPTY arrival) = 1,600, and 8 x 5 jobs x 20 the job loop = 800",
+    "epilogue": "8 warps x 5 jobs x ~20 (the job's kind, its heads)",
+    "store_level": "8 warps x 4 level jobs x ~40 (a level-side's addresses, its mask's words)",
+    "zero_runs": "a warp, a level job: rows 64 tokens x 256 bytes in 16-byte chunks, 8 a thread x ~25 + 12; scales and mask words one chunk a thread, 2 x 37; = 286; four level jobs and the values (4 chunks a thread, 112): 1,256 a warp, x 8 warps",
+    "density_ticket": "one thread: 4 counts' adds, two fences, the ticket"
+  },
+  "registers": {
+    "glue": 40,
+    "load_role": 32,
+    "math_role": 40,
+    "epilogue": 40,
+    "store_level": 40,
+    "zero_runs": 32,
+    "density_ticket": 32
+  },
+  "phase_cycles": {
+    "nl64k-alt-h4": {
+      "math_role": 2000,
+      "epilogue": 12800
+    }
+  },
+  "phase_basis": "a CTA's cycles: its 20 ring stages' two edges at ~100 cycles each; its outputs, 128 tokens x 1,296 bytes (rows 1,024, scales 16, mask words 128, values 128) = 165,888 bytes at HBM's write rate an SM (3,170 GB/s, stream_rate: 12.96 bytes a cycle an SM at 132 SMs) = 12,800"
+}

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import Claim, write_banded
+from _banded import PENDING, Claim, write_banded
 
 
 def _floor(hidden: int, loader: str = "") -> str:
@@ -16,6 +16,7 @@ def _floor(hidden: int, loader: str = "") -> str:
 
 
 TENSOR = ", the tensor copy"
+SPREAD = TENSOR + ", a tile's four jobs at once"
 
 
 #: each run's predictions, in the order they ran
@@ -49,6 +50,25 @@ RUNS = (
             Claim("hidden 256: the tensor-copy job over its floor", lambda R: R[_floor(256, TENSOR)], 1.12, 1.40, "times"),
             Claim("hidden 512: the tensor-copy job over its floor", lambda R: R[_floor(512, TENSOR)], 1.05, 1.30, "times"),
             Claim("hidden 2,048: the tensor-copy job over its floor", lambda R: R[_floor(2048, TENSOR)], 1.15, 1.40,
+                  "times"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the second run's jobs at hidden 256 and 512 (5,591 and 10,191 cycles, x and the weights both from L2) fit a job "
+        "= K-steps x 1,150 + 991: a K-step's 48 KB through L2 at 42.7 bytes a cycle an SM, stream_rate's shared-table "
+        "rate (42.6-43.5); at 2,048 a K-step is (50,772 - 991) / 32 = 1,556, x's 16 KB re-read from HBM each job "
+        "(12.95 bytes a cycle an SM: 1,265) with 0.38 of the weights' 767 L2 cycles exposed past it (between the max, "
+        "1,265, and the sum, 2,032). SPREAD, a tile's four jobs on four SMs at once (a CTA job blockIdx % 4, tiles "
+        "blockIdx / 4 + 33 j), reads each tile from HBM once for four SMs (4 KB a K-step an SM: 316 cycles), so a "
+        "K-step falls back to the L2-bound 1,150: a job 32 x 1,150 + 991 = 37,791, 1.153 of its floor; at 256 and 512 "
+        "x is already L2-resident and spread moves nothing (within 5%)",
+        (
+            Claim("hidden 256: the spread job over its floor", lambda R: R[_floor(256, SPREAD)], 1.30, 1.43, "times"),
+            Claim("hidden 512: the spread job over its floor", lambda R: R[_floor(512, SPREAD)], 1.18, 1.31, "times"),
+            Claim("hidden 2,048: the spread job over its floor", lambda R: R[_floor(2048, SPREAD)], 1.10, 1.22, "times"),
+            Claim("hidden 2,048: the tile-major job over its floor", lambda R: R[_floor(2048, TENSOR)], 1.47, 1.63,
                   "times"),
         ),
     ),
