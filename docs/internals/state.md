@@ -13,9 +13,11 @@ which is the page granule.
 ## <a id="interface"></a>The interface and its one implementation
 
 The state is an INTERFACE, `fsla.FSLAState` (an abstract base in `fsla/_state.py`), and v1 has ONE implementation,
-the dense state, `DenseState`, built by the public constructor `fsla.dense_state()` (the owner's ruling, recorded in
+the dense state, `DenseState`, built by the public constructor `fsla.dense_state(...)` from the routing and the call's
+shape ([§2](#binding); the owner's ruling, recorded in
 [`DELETIONS.md`](DELETIONS.md): v1 targets the dense state only, and the state is an interface with one
-implementation per form, which each takes whatever parameters it needs). The interface is:
+implementation per form, which each takes whatever parameters it needs). The interface below is the one built, a
+state that binds at its first call; construction from the routing replaces `bound` and the binding seams. The interface is:
 
 | a caller may ask | |
 |---|---|
@@ -32,15 +34,15 @@ binds the state from a call's shape facts alone and holds a zeroed plane where i
 over a range of batch-heads sharing its plane. Everything that handles a state holds the interface; the dense state is the one thing that is
 constructed. `tests/unit/test_state_interface.py` pins the interface and that the dense state takes no argument.
 
-The dense state takes no argument because each of the three was paging's, or had one built value: `pool_slack` and
+The dense state takes no storage parameter -- only the routing and the shape -- because each of the three it had was paging's, or had one built value: `pool_slack` and
 `backing` belong to a page arena, and `strategy` named a copy-on-write form that is future work with it
 ([§9](#future-work)).
 
 ## <a id="one-object"></a>1. A tensor, and one predicate
 
 ```python
-s = fsla.dense_state()                  # unbound
-y, s = fsla.prefill(routes, values, masks, density, state=s) # bound to this call's shape; s is mutated
+s = layer.new_state(B, device)          # the layer's routing, write heads and value width; its plane zeroed
+y, s = fsla.prefill(routes, values, masks, density, state=s) # checked against the state's format; s is mutated
 y, _ = fsla.prefill(routes, values, masks, density)  # stateless: (y, None)
 ```
 
@@ -70,25 +72,44 @@ at RUNTIME by a CTA-uniform `!= nullptr` check on the plane pointers. AN INSTANT
 ALWAYS read at entry and updated at exit. NULL
 means no state object at that end -- nothing is read, written, or allocated there.
 
-## <a id="binding"></a>2. Binding is SHAPE ACQUISITION, and there is no interview
+## <a id="binding"></a>2. The format is fixed at construction, and there is no interview
 
-A fresh state is unbound and holds nothing. The FIRST call that receives it takes
-`[B, H, N, cols]` and the device from the call itself. `cols` needs
-`d_v`, which is NOT on the routing — the value width is the value stream's own fact —
-so `fsla.prefill` sources it from `v.shape[-1]`.
+A state is CONSTRUCTED FROM THE `fsla.Routing` AND THE CALL'S SHAPE -- the batch, the write heads, the value width --
+and its device ([`../api.md`](../api.md#the-state)): `[B, H, N, cols]` and the format are taken there, the plane is
+allocated and zeroed there, and nothing about the format is learned from a call. `cols` needs `d_v`, which is NOT on
+the routing -- the value width is the value stream's own fact -- so it is the constructor's argument, and the layer's
+`layer.new_state(batch, device)` supplies its own. A layer or op whose routing or shape differs from the state's
+refuses it. The plane's contents advance in place each call; the format never changes. NOT BUILT: `fsla/_state.py`
+still builds an unbound state that binds `[B, H, N, cols]`, its format and its device at the first call that receives
+it (`_kernel_entry`, `_bind_plane`), taking `d_v` from `v.shape[-1]`.
 
-<a id="format"></a>**THE STATE OWNS ITS FORMAT**. What binds at that
-first call is a FORMAT DESCRIPTOR (`state.format`, a frozen `StateFormat`), and it is
-what every kernel derives its addressing from:
+<a id="format"></a>**THE STATE OWNS ITS FORMAT**. What its construction fixes is a FORMAT DESCRIPTOR (`state.format`, a
+frozen `StateFormat`), and it is what every kernel derives its addressing from:
 
 | field | what it is |
 |---|---|
 | `D`, `B` | the routing depth and the PER-LEVEL widths `B_l`, each a power of two at or above 16 (the axis law: the floor is `K_max`, which keeps every span inside one level's run and the atom inside one level) |
-| `order` | the canonical leaf order — MSB-first mixed radix, and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
-| `page_bits` | the page rectangle: the trailing `log2(16)` canonical bits. The page IS that rectangle |
-| `DV` | the value width, a multiple of 32 (one exponent a 32-channel group); `cols = DV + 1` is the page's LOGICAL width, not its layout |
+| `order` | the leaf order, MSB-first mixed radix over the levels in the STATE'S LEVEL ORDER ([below](#level-order)), and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
+| `page_bits` | the page rectangle: the trailing `log2(16)` bits of that order, 16 digits of the storage-innermost level. The page IS that rectangle |
+| `DV` | the STORED value width: `d_v` rounded up to the format's 32-channel group (one exponent a group) and no further; `cols = DV + 1` is the page's LOGICAL width, not its layout ([below](#stored-width)) |
 | `dtype` | `"s24 hi/lo planes at an s8 group exponent, fp32 mass"` — the int8 state format ([section 3](#int8-state)); no carry kernel is built |
 | `ids` | the page id space, `BH * N / 16` |
+
+<a id="level-order"></a>**THE STATE'S LEVEL ORDER IS SET FROM THE ROUTING'S STATIC FACTS, BEST EFFORT, UNDER ONE HARD
+RULE.** The hard rule: the carve gives every CTA at least 16 digits of the storage-innermost level, so a CTA's leaves
+are whole pages. Every level is at least 16 wide and every side's leaf group at least 16 leaves. The best effort: the
+levels are ordered by how many parties -- the write side and the `G` read heads -- read them dense, the fewest
+outermost and ties in the declared order, so the innermost level is the one the carve keeps wide anyway: the carve
+splits sparse write levels first, so a dense innermost level is rarely cut and the 16-digit floor rarely binds, and a
+token's live leaves lie in long contiguous runs. The order is recorded in the format. THE ORACLE AND `materialize()`
+REPORT LEAVES IN THE DECLARED LEVEL ORDER: the permutation the storage order applies is undone in those two places
+only, and nowhere else. NOT BUILT: the order today is the declared one.
+
+<a id="stored-width"></a>**THE STORED WIDTH IS DECOUPLED FROM EXECUTION.** The state stores `d_v` rounded up to the
+format's 32-channel group and no further. A kernel whose tile is wider -- the prefill's 64 channels on the MMA's M
+axis -- pads in registers or shared memory at load and stores back only the stored channels, so one stored width
+serves the prefill and decode and a prefill's state hands to decode and back; the padding costs the wide kernel some
+idle MMA rows at a small `d_v`, never a stored byte.
 
 **PREFILL AND DECODE SHARE ONE ADMISSION LAW: THE DESCRIPTOR** (Blake, 2026-08-29).
 Decode accepts exactly what prefill accepts — the same `D`, the same per-level `B_l`
@@ -131,9 +152,9 @@ limit is stated, not hidden, in `docs/internals/padding.md`.
 ## <a id="dense-state"></a>3. The dense state
 
 One `[BH, N/16, page_bytes]` plane: the page sequence in canonical leaf order with every page resident, addressed by the
-atom index. The state's storage is that plane and nothing else; it takes no argument and it is not a per-call flag. A FRESH
-bind is ZEROED: the exit sweep stores the atoms a call WRITES and no others, so the atoms it skips must already hold the
-zero state.
+atom index. The state's storage is that plane and nothing else, and it is not a per-call flag. The plane is ZEROED
+where it is made: the exit sweep stores the atoms a call WRITES and no others, so the atoms it skips must already hold
+the zero state.
 
 <a id="int8-state"></a>**THE PAGE IS THE INT8 STATE FORMAT** (ruled 2026-09-28), A page — one
 atom, 16 leaves — holds
@@ -156,7 +177,8 @@ ARRAY any more, though — a 32-bit word of a stored page is two neighbouring el
 halves — so a byte claim about pages is asserted on the integer view
 (`fsla.ops.paging.bytes_equal`), never with `torch.equal`, which is a float comparison
 and would call a byte-identical pair unequal the moment a word happened to read as
-NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`, which is what the
+NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`, its leaves in the declared level
+order ([the level order](#level-order)), which is what the
 oracle, a cross-arm hand-off and a test read, never a measured path, because it rejoins every page on the host.
 
 **There is no activity fold.** Every atom of the plane is resident, so the prefill is to load and store every page of a
@@ -226,10 +248,11 @@ rows are not one run, or a state that carries nothing, is refused. A call on the
 `_kernel_entry` checks the block's routing against the view's format and hands back the slice, the launch advances it in place, and the caller's
 plane holds the update. The views of a call's blocks partition the rows, so no two blocks touch one row.
 
-The caller's state is bound to the whole call FIRST, from the shape facts alone (`_bind_plane`: the batch, the write heads, the levels' widths, the
-value width and the device), never from a whole-call produce, which is the bundle segmentation exists to avoid: a state that carries nothing
-gets a ZEROED plane, and a block's first step then continues from the zero state, which is the fresh sequence, its skipped atoms already
-holding zero ([the continuation](#the-dense-continuation)). A bound state is checked against the call, and a carried plane is kept.
+The caller's state already covers the whole call: it was constructed from the routing and the call's shape facts alone (the batch, the
+write heads, the value width and the device, [§2](#binding)), never from a whole-call produce, which is the bundle segmentation exists to
+avoid. Its plane was zeroed at construction, so a block's first step on a state that carries nothing continues from the zero state, which is
+the fresh sequence, its skipped atoms already holding zero ([the continuation](#the-dense-continuation)). The state is checked against the
+call, and a carried plane is kept. NOT BUILT: the layer binds an unbound state to the whole call first (`_bind_plane`).
 `tests/unit/test_state_view.py` pins the view on the host: its rows, shape and format, that a write through it lands in the plane, its
 refusals, and the bind.
 
