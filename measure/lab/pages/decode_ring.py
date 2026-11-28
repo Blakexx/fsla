@@ -40,10 +40,13 @@ BAND = 0.10
 BLOCK = 64
 
 
-def forms(pat: int, g: int) -> tuple[int, ...]:
+def forms(pat: int, g: int, stamped: int = 0) -> tuple[int, ...]:
+    """The forms a pattern's rows run in: RECORD in REG and PIECES; the ALL patterns without REG past G 1; PRODUCER's
+    rows unstamped alone (its one warp's stamps overflow its timeline row)."""
     if pat == 4:
         return (0, 2)
-    return (1, 2, 3) if pat <= 1 and g != 1 else (0, 1, 2, 3)
+    every = (1, 2, 3) if pat <= 1 and g != 1 else (0, 1, 2, 3)
+    return tuple(f for f in every if not (stamped and f == 3))
 
 
 def declared(pat: int, dv: int) -> tuple[int, int, int]:
@@ -73,7 +76,7 @@ def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib
     rows = []
     for dv, g, stamped in CONFIGS:
         for pat in range(5):
-            for form in forms(pat, g):
+            for form in forms(pat, g, stamped):
                 m = K[f"void walk<{form}, {pat}, {dv}, {g}, {stamped}>(Args)"]
                 rd, wr, leaves = declared(pat, dv)
                 n = SMS * POSITIONS[pat]

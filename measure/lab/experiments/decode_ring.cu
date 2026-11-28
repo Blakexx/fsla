@@ -787,30 +787,32 @@ void run(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, 
 //: at `d_v` 64 WRITE_SECTORS by REG. REG holds a whole atom's pieces in registers, which beside G = 8 heads'
 //: accumulators the 128 registers of a thread do not hold (ptxas spills both ALL patterns at both widths:
 //: docs/lab/decode_ring.md), so REG walks them at G = 1 alone. Under the 32-byte fetch granularity (`kGrain32`) the
-//: scattered patterns alone, in REG and PIECES: the whole atoms read whole sectors at any granularity
+//: scattered patterns alone, in REG and PIECES: the whole atoms read whole sectors at any granularity. PRODUCER is not
+//: stamped: its one warp stamps every position's wait and copies, which at READ_ONE's 3,072 positions a CTA overflow
+//: the warp's timeline row (the launch's end is lost), and the form is dropped by its unstamped rows (2 to 10x slower)
 template <int DV, int G, int TRACE>
 void rows_of(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, const char* what) {
   using namespace decode_ring;
-  constexpr bool kAll = TRACE != kGrain32;
+  constexpr bool kAll = TRACE != kGrain32, kProducerRows = TRACE == kPlain;
   if constexpr (kAll) {
     if constexpr (G == 1) run<kReg, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
     run<kBulk, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
     run<kPieces, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-    run<kProducer, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    if constexpr (kProducerRows) run<kProducer, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
     if constexpr (G == 1) run<kReg, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
     run<kBulk, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
     run<kPieces, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-    run<kProducer, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    if constexpr (kProducerRows) run<kProducer, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
   }
   run<kReg, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   if constexpr (kAll) run<kBulk, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  if constexpr (kAll) run<kProducer, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kProducerRows) run<kProducer, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   if constexpr (DV == 64) run<kReg, kWriteSectors, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kReg, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   if constexpr (kAll) run<kBulk, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  if constexpr (kAll) run<kProducer, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kProducerRows) run<kProducer, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kReg, kRecord, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kRecord, DV, G, TRACE>(b, plane, sinks, rows, what);
 }

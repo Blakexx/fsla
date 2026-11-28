@@ -101,8 +101,10 @@ decode prediction after it rests on.
 
 PREDICTION (written 2026-11-28, before the second run). The first run's timed rows were not stored: lab refused its
 stamped PRODUCER rows, whose producer stamped its first `K` waits on a fresh empty barrier, a phase no arrival releases
-(warpline's `wait_before_release`). The producer now stamps only the waits after a consumer's arrival (`n >= K`), and
-the checker finds nothing on the stamped rows. Every other row runs as it ran, with the bands above; the bands of the
+(warpline's `wait_before_release`). The producer now stamps only the waits after a consumer's arrival (`n >= K`). The
+second run's first try was refused too: the producer's one warp stamps every position, and READ_ONE's 3,072 positions
+a CTA overflow its timeline row, so its launch's end is lost (`launch_edge_missing`). PRODUCER is no longer stamped: the
+form is dropped by its unstamped rows, and the checker finds nothing on the stamped rows of the other forms. Every other row runs as it ran, with the bands above; the bands of the
 ONE patterns and RECORD rest on the 32-byte sector, which the sectors' record below refutes, and are re-based on the
 bytes measured there (a leaf's read bytes from the counters). Three questions the first run left, each a row:
 

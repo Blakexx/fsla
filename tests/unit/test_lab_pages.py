@@ -173,7 +173,7 @@ def ring_kernels(gen, scale=1.0):
     out = {}
     for dv, g, stamped in gen.CONFIGS:
         for pat in range(5):
-            for form in gen.forms(pat, g):
+            for form in gen.forms(pat, g, stamped):
                 rd, wr, leaves = gen.declared(pat, dv)
                 n = gen.SMS * gen.POSITIONS[pat]
                 read = n * leaves * gen.blocks(pat, dv) if pat >= 3 else n * rd * scale
