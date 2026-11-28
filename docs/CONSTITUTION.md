@@ -182,8 +182,19 @@ the tenant's capacity at the seam, as a refusal; no runtime trip count sits in a
 <a id="r13"></a>
 ## R13. The state owns its format
 
-A descriptor (D, per-level widths that are powers of two from 16, the canonical order, the page rectangle as the
-trailing four canonical bits, d_v) is bound at the first call and checked after. Pages hold each leaf-channel as an s24
+A descriptor (D, per-level widths that are powers of two from 16, the leaf order over the state's level order, the
+page rectangle as that order's trailing four bits -- 16 digits of the storage-innermost level -- and DV, d_v rounded up
+to the format's 32-channel group and no further) is FIXED WHEN THE STATE IS CONSTRUCTED, from `fsla.Routing` and the
+call's shape (the batch, the write heads, the value width) and its device, its plane allocated and zeroed there; a
+layer or op whose routing or shape differs refuses it, and every call is checked against it (Blake, 2026-11-28, of
+`layer.new_state(batch, device)` as only a convenience: "makes sense, yeah its cool"). THE LEVEL ORDER is set from the routing's static facts, best
+effort: the levels ordered by how many parties -- the write side and the G read heads -- read them dense, the fewest
+outermost and ties in the declared order, so the innermost is the level the carve keeps wide (R20); the order is
+recorded in the format (Blake, 2026-11-28: "the state is laid out in memory from the topology in a best effort way such
+that that inner level tends to be what we want to carve anyway"). The oracle and `materialize()` report leaves in the
+declared level order, the permutation undone there and nowhere else. THE STORED WIDTH IS DECOUPLED FROM EXECUTION: a
+kernel whose tile is wider than DV pads in its registers or shared memory at load and stores back only the stored
+channels, so one state serves the prefill and decode. Pages hold each leaf-channel as an s24
 at its (leaf, 32-channel group)'s power-of-two exponent and the mass in fp32; a kernel converts at its own boundary
 (the fold to fp32 in registers, which the readout reads as its bf16 operand). The warp sub-box's spans are compile-time
 from the plan; prefill and decode share one admission law; N is a multiple of 16, and a ragged N is refused, never
@@ -256,7 +267,9 @@ card; the milestone carries the drift guards (lints, docs).
 A CTA OWNS ITS CARVE, on hopper 512 leaves, a power-of-two extent a level (Blake, 2026-11-24: "The cta actually owns 512
 leaves, not 256, with the exception of scaling down, and we are just partioning them during fold due to register limits.
 During readout we don't partition, it's just one by one warpgroup"). THE CARVE IS APPORTIONED across the levels
-("like the US Congress apportionment ... each one gets at least one assignment"): every level starts at one digit, and EACH
+("like the US Congress apportionment ... each one gets at least one assignment"): every level starts at one digit but the
+state's STORAGE-INNERMOST level (R13), which starts at 16 -- THE CARVE GIVES EVERY CTA AT LEAST 16 DIGITS OF IT, so a CTA's
+leaves are whole pages (Blake, 2026-11-28: "the inner level must always get at least 16 carve") -- and EACH
 DOUBLING GOES TO THE LEVEL THAT SAVES THE MOST FETCHES (Blake, 2026-11-26: "it failed because it was overly biasing one side's
 carve evne though it hadnt saturated the other one"; "so you just pick the double the one that has the highest left at each
 step"). A side's left is the product of its size over the share on the levels where the size is still the larger; a level's

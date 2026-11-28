@@ -7,7 +7,7 @@ now is owed.
 
 Vocabulary, defined here and used unqualified below: `N` = leaf count;
 `cols` = `d_v` plus one mass column (the ratio readout's denominator);
-`BH` = `batch * heads`; **atom** = 16 consecutive leaves in canonical leaf order,
+`BH` = `batch * heads`; **atom** = 16 consecutive leaves in the state's leaf order ([§2](#level-order)),
 which is the page granule.
 
 ## <a id="interface"></a>The interface and its one implementation
@@ -32,7 +32,8 @@ decode step on a state with nothing to continue from, `_decode_entry(routes)` re
 updates in place, and the layer's segmentation takes the last two ([the view](#view)): `_bind_plane(*, batch, heads, widths, d_v, device)`
 binds the state from a call's shape facts alone and holds a zeroed plane where it carries nothing, and `_view(batch, heads)` is a state
 over a range of batch-heads sharing its plane. Everything that handles a state holds the interface; the dense state is the one thing that is
-constructed. `tests/unit/test_state_interface.py` pins the interface and that the dense state takes no argument.
+constructed. `tests/unit/test_state_interface.py` pins the interface as built, a dense state constructed with no argument; NOT
+BUILT: the constructor's routing and shape ([§2](#binding)).
 
 The dense state takes no storage parameter -- only the routing and the shape -- because each of the three it had was paging's, or had one built value: `pool_slack` and
 `backing` belong to a page arena, and `strategy` named a copy-on-write form that is future work with it
@@ -100,7 +101,8 @@ RULE.** The hard rule: the carve gives every CTA at least 16 digits of the stora
 are whole pages. Every level is at least 16 wide and every side's leaf group at least 16 leaves. The best effort: the
 levels are ordered by how many parties -- the write side and the `G` read heads -- read them dense, the fewest
 outermost and ties in the declared order, so the innermost level is the one the carve keeps wide anyway: the carve
-splits sparse write levels first, so a dense innermost level is rarely cut and the 16-digit floor rarely binds, and a
+apportions its doublings by the fetches each saves, and a level read dense saves few, so a dense innermost level is
+rarely cut and the 16-digit floor rarely binds, and a
 token's live leaves lie in long contiguous runs. The order is recorded in the format. THE ORACLE AND `materialize()`
 REPORT LEAVES IN THE DECLARED LEVEL ORDER: the permutation the storage order applies is undone in those two places
 only, and nowhere else. NOT BUILT: the order today is the declared one.
@@ -151,7 +153,7 @@ limit is stated, not hidden, in `docs/internals/padding.md`.
 
 ## <a id="dense-state"></a>3. The dense state
 
-One `[BH, N/16, page_bytes]` plane: the page sequence in canonical leaf order with every page resident, addressed by the
+One `[BH, N/16, page_bytes]` plane: the page sequence in the state's leaf order with every page resident, addressed by the
 atom index. The state's storage is that plane and nothing else, and it is not a per-call flag. The plane is ZEROED
 where it is made: the exit sweep stores the atoms a call WRITES and no others, so the atoms it skips must already hold
 the zero state.
@@ -191,9 +193,10 @@ atom a sweep skips must already hold what it carried in, so a continuation's exi
 
 The ORDER of a stateful call is the prefill call's and is stated there
 ([`engine/prefill_call.md`](engine/prefill_call.md)). What is the STATE's own
-is this: `_kernel_entry` binds the call's shape, device and format and hands back the plane it carries (`None` for a state
-that carries nothing yet), and `_kernel_commit` takes the final plane for a state that just BOUND — a continuation was
-launched into its own plane.
+is this: the call's entry checks the call's routing and shape against the state's format and hands back the plane, zeroed
+at construction for a state that carries nothing yet, and the launch advances it in place. NOT BUILT: today's
+`_kernel_entry` binds an unbound state's shape, device and format at the call and hands back `None` for a state that
+carries nothing, and `_kernel_commit` takes the final plane for a state that just bound.
 
 ### <a id="four-shapes"></a>The kernel's four shapes, and no plane the caller did not make
 
@@ -204,7 +207,7 @@ nothing comes in, nothing goes out, no sweep runs. `state_in` alone is READ-ONLY
 readout against a frozen state, the folds accumulate in registers and are never stored.
 `state_out` alone is a FRESH sequence: a zero state, no entry sweep, the box stored whole
 at exit. Both, the SAME tensor, ADVANCE the plane in place. The plane is the whole state,
-`[BH, N / 16, page_bytes]` in canonical leaf order, and its extent is derived from the call, never chosen by it. The state lives in the
+`[BH, N / 16, page_bytes]` in the state's leaf order, and its extent is the state's format, checked against the call. The state lives in the
 register file between the two sweeps -- the exit sweep is a whole store of the box's
 written atoms, never a read-modify-write of bytes -- which is why the out plane needs no
 prior contents and why in and out may be one tensor. A plane comes from
@@ -234,8 +237,8 @@ paying for the second plane deliberately rather than on every call.
 
 Two consequences follow and are stated where they belong: a continuation can SKIP
 blocks, because a skipped block leaves its own atoms carrying what they held
-([`engine/rules.md#run-table`](engine/rules.md#run-table)), and a FRESH bind cannot —
-its plane is uninitialized and is written whole.
+([`engine/rules.md#run-table`](engine/rules.md#run-table)), and a fresh sequence can too, since its plane was zeroed at
+construction and a skipped atom already holds the zero state.
 
 ### <a id="view"></a>A view over a range of batch-heads
 
@@ -263,7 +266,7 @@ The fp64 oracle is the executable SPEC, not an arm of the op
 it calls `naive_fsla` and passes raw tensors. So no state ever crosses to it through
 the facade, and the dense-contents bridge that existed to carry it (`_dense_entry`,
 `adopt_dense_contents`) is GONE
-(`DELETIONS.md`). What is left is one kernel arm reading the plane its state bound.
+(`DELETIONS.md`). What is left is one kernel arm reading the state's plane.
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
@@ -277,7 +280,7 @@ behind that seam:
   ([`engine/decode_step.md` §4](engine/decode_step.md#the-scratch)); what the state owes
   them is only its identity, which is what the scratch table is keyed on.
 * **The plane.** `_decode_entry` returns the state's own plane, not a copy, which is what makes the kernel's in-place
-  update the state's update, after checking the step's routing against the bound format
+  update the state's update, after checking the step's routing against the state's format
   ([`decode/decode.md#determinism`](decode/decode.md#determinism)).
 
 A decode step CONTINUES, so `_require_carrying` refuses a state that carries nothing —

@@ -73,7 +73,7 @@ Call by call, because the effects measured are the size of this host's clock dri
 the same clock, where blocks let a clock change land between arms and a fixed order charges drift to one arm. A timing
 only compares within the session that interleaved it.
 
-## Preconditions, which the session acquires
+## <a id="preconditions"></a>Preconditions, which the session acquires
 
 Not a checklist: the session program and the runner's setup do each of these, and no flag skips one.
 
@@ -265,8 +265,8 @@ resolution (each member's calls all on one value), the gap between the two membe
 reads the stored timing sessions (the `timing_members` and `timing_samples` views). A member's label is its entry's
 repository or package (`@reference`, `@candidate`, `//measure`) and its arm the entry's name. In every session that timed
 the reference label's arm on a cell, each other label's member of that arm on that cell is paired with it and judged
-inside the session. A unit is the arm, the cell, the two labels, the level, the device and the code each ran (commit
-and tracked diff); its sessions, oldest first, are the runs, and the newest is judged. A member whose provenance names
+inside the session. A unit is the arm, the cell, the two labels, the level, the device and the code each ran (its
+commit, the tree clean: [a stored number names a commit](#a-commit)); its sessions, oldest first, are the runs, and the newest is judged. A member whose provenance names
 no commit is not read; a pair of two levels is a refused row of its own; a pair whose null gate found a worker's bias is
 `untrusted`, and every other row says what its gate found (`trusted`, or `none`). Nothing is stored: a verdict is a
 reading of the records, taken again whenever it is asked for. `bazel run //:results -- dashboard --out FILE --reference
@@ -373,12 +373,13 @@ stores a new sample into the store's checkout (at its own label), never this tre
 of the data repository holding it is pushed and the pin moves to it. A sample marked `backfilled` holds a file the data
 repository kept as written, its bytes the output unchanged, with the file's path in its mark.
 
-<a id="a-commit"></a>A STORED NUMBER NAMES A COMMIT ([the tree identity](#sessions)): a tree with uncommitted tracked
+<a id="a-commit"></a>A STORED NUMBER NAMES A COMMIT ([the tree identity](#preconditions)): a tree with uncommitted tracked
 changes is never stored, and no diff is ever stored as a part of a sample, so a measured variant is a commit of its
 own (Blake, 2026-11-27: "I don't think it's wise to store actual diffs"). Those commits are kept without letting the
 repositories' branches or size grow without bound: a commit a stored record cites lives under the repository's hidden
 `refs/measured/*`, kept; work in progress lives under `refs/dev/*`, pruned once it lands; a merged branch is deleted
-and an unmerged one is listed for the owner.
+and an unmerged one is listed for the owner. NOT BUILT: no tool of this tree or of fsla-devtools pushes, keeps or prunes
+these refs or cleans the branches; the store's refusal of a dirty tree is built ([the tree identity](#preconditions)).
 
 A tool opens a store at the LABEL of the target that produced what it stores (`@<workspace>//<package>:<target>`,
 a folder of the data's `records/`: the store is a durable index of what Bazel's targets produced) and hands it the

@@ -74,26 +74,30 @@ equals the oracle, which is the identity that licenses two kernels.
 **Levels and widths.** The address space is a `D`-level mixed radix. Level `l` has width `B_l`, a power of two;
 `N = Π_l B_l`. The widths are per level and are a property of the state, not of the binary (§5).
 
-**The canonical order is MSB-first mixed radix**: leaf `n` decomposes as `d_l(n) = (n / stride_l) mod B_l` with
-`stride_l = Π_{l' > l} B_{l'}`, so level `0` is the most significant digit and level `D-1` varies fastest. Every
-derivation in the repository — the oracle's own strides, the atom keying, the kernels' addressing —
-is this one order, and it is carried as a FIELD of the state's descriptor rather than assumed, so a second order
-would be a refusal and never a silent reinterpretation of somebody's bytes (`docs/internals/state.md`).
+**The leaf order is MSB-first mixed radix over the STATE'S LEVEL ORDER**: with the levels taken in that order, leaf
+`n` decomposes as `d_l(n) = (n / stride_l) mod B_l` with `stride_l` the product of the widths of the levels after `l`,
+so the first level is the most significant digit and the last, the STORAGE-INNERMOST, varies fastest. The level order
+is set from the routing's static facts, best effort: levels ordered by how many parties -- the write side and the `G`
+read heads -- read them dense, the fewest outermost and ties in the declared order, so the innermost level is the one
+the carve keeps wide; it is recorded in the format. Every derivation in the repository -- the atom keying, the
+kernels' addressing -- is this one order, carried as a FIELD of the state's descriptor rather than assumed, so a second
+order would be a refusal and never a silent reinterpretation of somebody's bytes. The oracle and `materialize()` report
+leaves in the DECLARED level order: the permutation the storage order applies is undone there and nowhere else
+([`internals/state.md#level-order`](internals/state.md#level-order)). NOT BUILT: the order is the declared one today.
 
-**The page rectangle.** The storage granule is the **atom**: 16 consecutive leaves in canonical order, aligned to 16.
-In digit terms it is the rectangle formed by the trailing four canonical bits — the innermost levels taken whole plus,
-where the four bits fall inside a level, an aligned contiguous sub-run of that level's digits, with every level above
-fixed. That the atom is a digit rectangle at every admissible span vector is a theorem of the order, not a constraint
-on the carve.
+**The page rectangle.** The storage granule is the **atom**: 16 consecutive leaves in that order, aligned to 16. Every
+level is at least 16 wide, so in digit terms the atom is an aligned run of 16 digits of the storage-innermost level with
+every other level fixed, and THE CARVE GIVES EVERY CTA AT LEAST 16 DIGITS OF THAT LEVEL (R20), so a CTA's leaves are
+whole pages.
 
 **Boxes.** A box (§4; a hopper CTA owns two, R20) holds a rectangle of digits a level — an extent at level `l` dividing `B_l` — and a
 channel extent. Decode's own lattice is the `(k, m)` box: an owner's span `s(l)` at level `l`, grid `g(l) = B_l / s(l)`,
-`BC = Π_l s(l)` leaves, and the map from the canonical index to the lattice index a fixed BIT PERMUTATION, so the
+`BC = Π_l s(l)` leaves, and the map from the leaf index to the lattice index a fixed BIT PERMUTATION, so the
 owner index is a bit-field extract and never a division chain
 ([`decode/decode_lattice.md`](internals/decode/decode_lattice.md)).
 
-**Widths have a floor.** Every level is at least 16 wide (`B_l` a power of two ≥ 16), so no narrow-level case exists
-in any kernel's addressing.
+**Widths have a floor.** Every level is at least 16 wide (`B_l` a power of two ≥ 16), and every side's leaf group at
+least 16 leaves, so no narrow-level case exists in any kernel's addressing.
 
 **Routing is per head, and its shapes are one family.** Every routing weight, kernel and reference carries the head
 axis (the user, 2026-06-24: "there is no form of FSLA without per-head routing -- the whole point is it's a per-head
@@ -123,21 +127,23 @@ encodes.
 
 ### 3.1 The format descriptor, and one admission law
 
-**The state owns its format** (CONSTITUTION §R13). A `StateFormat` binds at the state's first call, from the call
-itself, and carries:
+**The state owns its format** (CONSTITUTION §R13). A state is CONSTRUCTED FROM THE `fsla.Routing` AND THE CALL'S
+SHAPE -- the batch, the write heads, the value width -- and its device; its `StateFormat` is fixed there and its plane
+allocated and zeroed there ([`api.md`](api.md#the-state)). It carries:
 
 | field | what it is |
 |---|---|
 | `D`, `B` | the depth and the per-level widths, each a power of two |
-| `order` | the canonical order of §2, as a field rather than an assumption |
-| `page_bits` | the page rectangle: the trailing four canonical bits, which may span levels |
-| `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
+| `order` | the leaf order of §2 over the state's level order, as a field rather than an assumption |
+| `page_bits` | the page rectangle: the trailing four bits of that order, 16 digits of the storage-innermost level |
+| `DV` | the STORED value width, `d_v` rounded up to the format's 32-channel group and no further: a kernel whose tile is wider pads at load in registers or shared memory and stores back only the stored channels, so one state serves the prefill and decode; `cols = DV + 1` is the page's LOGICAL width, not its layout |
 | `dtype` | the stored form, `fsla._state.STATE_DTYPE` (§3.2) |
 | `ids` | the page id space, `BH · N / 16` |
 
-**Later calls are CHECKED against it, and a mismatch is a refusal at the seam naming the field that differs.** The
-descriptor is fixed for the state's life — a re-layout is an explicit state operation, never something a call does —
-and it travels with the layer's continuation.
+**Every call is CHECKED against it, and a layer or op whose routing or shape differs is refused at the seam naming
+the field.** The descriptor is fixed for the state's life — a re-layout is an explicit state operation, never something
+a call does — and it travels with the layer's continuation. NOT BUILT: `fsla/_state.py` still binds an unbound state's
+format at its first call.
 
 **Prefill and decode share ONE admission law: the descriptor.** Decode accepts exactly what prefill accepts — the
 same depth, the same widths, the same `N`, the same value width, the same operand format, therefore the same
@@ -169,14 +175,16 @@ is fp32. Three properties are the architecture:
 
 The state is an INTERFACE, `fsla.FSLAState`: what a caller may ask (format, bound shape, device, dtype, whether it carries
 anything, `materialize`, `clone`) and the seam the ops take the plane in and hand it back through. It has ONE
-implementation, the **dense state**, built by `fsla.dense_state()`: one `[BH, N/16, page_bytes]` plane of the §3.2 page
-sequence with every page resident, addressed by the atom index, taking no argument. The kernel reads the plane as it
+implementation, the **dense state**, built by `fsla.dense_state(...)` from the routing and the call's shape (§3.1;
+`layer.new_state(batch, device)` the layer's convenience): one `[BH, N/16, page_bytes]` plane of the §3.2 page
+sequence with every page resident, addressed by the atom index, taking no storage parameter. The kernel reads the plane as it
 is; a decode step updates it in place. v1 is dense only (the ruling is recorded in [`internals/DELETIONS.md`](internals/DELETIONS.md)): an implementation whose storage is not
 the whole plane takes whatever parameters it needs, is built by its own constructor and is matched on its type where
 a call builds its descriptor, and that is future work ([`internals/state.md#interface`](internals/state.md#interface),
 [`open-work.md`](open-work.md)).
 
-`materialize()` decodes the pages back to the logical `[B, H, N, cols]` tensor. It is for the oracle and a test —
+`materialize()` decodes the pages back to the logical `[B, H, N, cols]` tensor, its leaves in the declared level
+order. It is for the oracle and a test —
 never on a measured path.
 
 ### 3.4 Activity
@@ -209,7 +217,7 @@ every kernel still working for whatever it returns.
 
 | grain | what it is | who owns it |
 |---|---|---|
-| **page** | 16 canonical leaves = one atom = one slot | the state's format |
+| **page** | 16 leaves of the state's order = one atom = one slot | the state's format |
 | **box** | a CTA's leaves × channels: the carry's state, in registers for the whole call | the carve |
 | **warp tile** | a side's lists × operand rows: a warp's share of the box | the carve's plan |
 | **decode unit** | an owner and every run offset but the innermost: a contiguous run, one atom at the flagship | the decode step |
