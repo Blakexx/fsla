@@ -659,6 +659,8 @@ test_suite(
         "//measure/lab:checked",
         "//tests:host_abi",
         "//tests:lab",
+        #: THE FLOOR GATES (KERNEL_STANDARDS section 28, bazel/floor.bzl): every kernel's `kernel_floor`
+        "//measure/floors:floor",
         "//tools/lint:lint_fixtures",
     ],
 )

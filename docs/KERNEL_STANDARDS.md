@@ -792,12 +792,17 @@ latency chain, but nothing checked that one phase runs under another's stream.
 3. A LINE IS NEVER LOWERED TO ADMIT A SERIAL PHASE: a time above the line is red, and the design changes.
 4. THE SAME DEFECT AT THE WARP LEVEL: a phase whose warps stall on one dependent chain (low issue, about one eligible
    warp a scheduler) interleaves independent work into it -- the next entry, the next item's loads.
-ENFORCED: warpline's `bound` checker over each kernel's run manifest reds its time (`launch/ns`) above 1.15x the
-largest of its floors, the bound written from the floor model by a Bazel action (never a hand-copied number); every
-kernel names its row, or why it has none, in `tools/coverage.json`'s `overlap` obligation (the §25 ratchet). No kernel
-has a row yet: the first is owed, and needs the kernel's stamped run manifest on its perf cell (`warpline run
---stamps`), the Bazel action that runs the floor model on that cell and writes the `bound` declaration, and the
-comparison of the two. The floors' instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
+ENFORCED: THE FLOOR GATE (`bazel/floor.bzl`'s `kernel_floor`, every one in `//measure/floors`, a member of `//:gate`;
+[`internals/tools/floor.md`](internals/tools/floor.md)): a kernel's work declaration on its perf cell is priced by
+warpline's floor at the card's probed rates (Blake, 2026-11-28: "warpline.floor seems fine as the first step of our simple
+lower bound"), the bound is written by a build action (never a hand-copied number), and warpline's checker over the
+kernel's stamped run manifest reds its time (`launch/grid_ns`, every CTA's launch at once) above 1.15x the launch floor
+or under the floor, and (item 2) a measured phase in which the binding stream's family has no declared work and no
+declared overlap with a phase that has some, unless declared serial with its reason. Every kernel names its gate, or why
+it has none, in `tools/coverage.json`'s `floor` obligation (the §25 ratchet). No kernel declares its work yet: each row is
+owed, and needs the kernel's work declaration, the H100's rates table (warpline's probes, recorded on the card) and its
+stamped run manifest on the cell (`warpline run --stamps`). Whether two roles' phases declared to overlap ran at once is
+not measured: a run manifest's phases carry no start on one frame. The floors' instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
 sustained DRAM peak (1.04x on sm_86, the branch's; the H100's reading is owed), so the DRAM floor is reachable; the tensor floor takes the product's
 calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. Per phase, item 4 is §32's: each
 phase against its predicted cycles (§32.2) and, once a family's model exists, every MMA step loop's pipe cover (§32.4).

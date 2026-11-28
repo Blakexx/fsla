@@ -1,0 +1,4 @@
+{"format": "warpline-work/1", "kernel": "^fsla::floor_wiring\\(",
+ "about": "the floor gate's own test (bazel/floor.bzl's kernel_floor, tests/unit/test_floor_gate.py): a kernel of one role that reads 1 MiB from HBM a token of its cell, no kernel of the tree's",
+ "parameters": ["tokens"],
+ "phases": [{"role": "reader", "phase": "phase.read", "work": {"hbm": {"read": "tokens * 1048576"}}}]}

@@ -64,5 +64,11 @@ is its target's ([`measurement.md`](../../measurement.md#instruments)).
 |---|---|---|---|
 | `sanitize_oracle.py` | the compute-sanitizer gate on the facts, decode and entmax oracle cells | the sanitizer lane, `//tests:sanitizer`, which passes it the toolkit's own compute-sanitizer | — |
 
+## The kernels' floors
+
+| tool | what it is | called by | writes |
+|---|---|---|---|
+| [`bazel/floor.bzl`](floor.md) | the floor gate (§28): a kernel's declared work on its perf cell priced by warpline's floor at the card's rates, the bound written by a build action and judged over its stamped run manifest | `kernel_floor` in `measure/floors/BUILD.bazel`, a kernel each; `//measure/floors:floor` in `//:gate` | `<name>_bound.json` |
+
 `tools/lint/` is its own family with its own page ([`lint.md`](lint.md)): the ratchets, the standards lint and their
 baselines, and the coverage declaration `tools/coverage.json` ([`coverage.md`](coverage.md)).

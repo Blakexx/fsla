@@ -1,0 +1,25 @@
+"""THE FLOOR GATES (KERNEL_STANDARDS section 28, bazel/floor.bzl, docs/internals/tools/floor.md): every kernel's `kernel_floor` on its
+perf cell lives here, and `:floor`, every test of this package, is a member of `//:gate`; `tools/coverage.json`'s `floor` obligation
+points at a kernel's `//measure/floors:<name>_floor`, or says why it has none (no kernel declares its work yet: each is owed).
+
+`wiring` is the gate's own test: a declared kernel of the test's (`wiring.work.json`, 1 MiB from HBM a token of its cell) at a test
+card's rates, its bound written by the build action and judged over a run inside the line; `tests/unit/test_floor_gate.py` holds the
+macro's arguments and that a run over the line, or under the floor, is refused."""
+
+load("//bazel:defs.bzl", "tree_part")
+load("//bazel:floor.bzl", "kernel_floor")
+
+#: this package's part of the tree (`git ls-files`, @fsla_tree)
+tree_part()
+
+#: every floor gate of this package: the gate's (`//:gate`)
+test_suite(name = "floor")
+
+kernel_floor(
+    name = "wiring",
+    size = "small",
+    cell = "carry-alt-k4-16x16-T64",
+    rates = "wiring.rates.json",
+    runs = ["wiring.run.manifest.json"],
+    work = "wiring.work.json",
+)

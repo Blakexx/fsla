@@ -16,9 +16,11 @@ met:
 | `sanitizer` | a row of `tools/sanitize_oracle.py`'s family table, present, whose test launches the kernel |
 | `budget` | a budget line in the kernel's budget file (KERNEL_STANDARDS §19) |
 | `phases` | a phase ledger the kernel books, and the test or tool that reads it (§22) |
+| `floor` | the kernel's floor gate on its perf cell, `//measure/floors:<name>_floor`: a `kernel_floor` of `measure/floors/BUILD.bazel` (§28, [`floor.md`](floor.md)) |
 
-A value is a POINTER (a file, or `file::test`, whose `def` must exist; a sanitizer row name), `{"exempt": reason}` --
-a stamp kernel has no budget -- or `{"owed": reason}`.
+A value is a POINTER (a file, or `file::test`, whose `def` must exist; a sanitizer row name; for `floor`, the gate's test,
+whose `kernel_floor(name = "<name>"` call must be in `measure/floors/BUILD.bazel`), `{"exempt": reason}` -- a stamp kernel has
+no budget -- or `{"owed": reason}`.
 
 ## <a id="findings"></a>The findings, and the ratchet
 

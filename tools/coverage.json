@@ -5,7 +5,7 @@
   "sanitizer": "a row of tools/sanitize_oracle.py's family table whose cell launches the kernel",
   "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS \u00a719)",
   "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS \u00a722)",
-  "overlap": "a row timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS \u00a728): warpline's `bound` checker over the kernel's run manifest (`launch/ns`), its bound written from the floor model by a Bazel action; no kernel has one yet"
+  "floor": "the kernel's floor gate on its perf cell (KERNEL_STANDARDS \u00a728, CONSTITUTION's performance targets): bazel/floor.bzl's `kernel_floor`, its work declaration priced by warpline's floor at the card's probed rates, the bound written by the build action (the grid's span at most 1.15x the launch floor and at least it, the kernel present, no phase idling the binding stream) and judged over the kernel's stamped run manifest; a pointer is the gate's test, `//measure/floors:<name>_floor`"
  },
  "kernels": {
   "csrc_stamp_kernel": {
@@ -19,8 +19,8 @@
    "phases": {
     "exempt": "a freshness stamp, not a workload"
    },
-   "overlap": {
-    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   "floor": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to bound"
    }
   },
   "decode_stamp_kernel": {
@@ -34,8 +34,8 @@
    "phases": {
     "exempt": "a footprint stamp, not a workload"
    },
-   "overlap": {
-    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   "floor": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to bound"
    }
   },
   "decode_step_kernel": {
@@ -45,8 +45,8 @@
     "owed": "no tools/budgets/decode.json: the decode step's budget lines are written on its plan card, not as a gated file"
    },
    "phases": "tests/integration/test_decode_phase_ledger.py",
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   },
   "factor_backward_kernel": {
@@ -60,8 +60,8 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   },
   "factor_forward_kernel": {
@@ -73,8 +73,8 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   },
   "mask_prepare_kernel": {
@@ -88,8 +88,8 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   },
   "sm_clock_kernel": {
@@ -105,8 +105,8 @@
    "phases": {
     "exempt": "an instrument, not a workload"
    },
-   "overlap": {
-    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   "floor": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to bound"
    }
   },
   "softmax_backward_kernel": {
@@ -122,8 +122,8 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   },
   "softmax_forward_kernel": {
@@ -139,8 +139,8 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "overlap": {
-    "owed": "no perf-cell row yet: the kernel's stamped run manifest on its perf cell, judged by warpline's `bound` on `launch/ns` against the floor model's bound (KERNEL_STANDARDS \u00a728)"
+   "floor": {
+    "owed": "no work declared yet: the kernel's `warpline-work/1` declaration on its perf cell, the H100's rates table (warpline's probes, recorded on the card), the kernel's stamped run manifest on the cell (`warpline run --stamps`, the launch's tied edges in every CTA), then its `kernel_floor` (bazel/floor.bzl)"
    }
   }
  }

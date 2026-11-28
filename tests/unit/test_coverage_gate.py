@@ -30,6 +30,15 @@ def test_a_test_node_that_is_gone_does_not_resolve():
     assert not coverage.test_node_exists("tests/unit/no_such_file.py")
 
 
+def test_a_floor_pointer_is_a_kernel_floor_test():
+    assert coverage.floor_test_exists("//measure/floors:wiring_floor")          # the gate's own test (measure/floors/BUILD.bazel)
+    assert not coverage.floor_test_exists("//measure/floors:renamed_floor")
+    assert not coverage.floor_test_exists("//measure/floors:wiring_bound")
+    assert not coverage.floor_test_exists("//tests:wiring_floor")            # a floor gate outside the gates' package
+    assert coverage._check("k", "floor", "//measure/floors:renamed_floor", "at", {}) != []
+    assert coverage._check("k", "floor", "//measure/floors:wiring_floor", "at", {}) == []
+
+
 def test_every_sanitizer_row_the_declaration_names_launches_a_real_test():
     rows = coverage.sanitizer_rows()
     assert rows["decode"][1] and coverage.test_node_exists(rows["decode"][0])

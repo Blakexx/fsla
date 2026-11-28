@@ -61,6 +61,18 @@ def test_node_exists(node: str) -> bool:
                                  re.M) is not None
 
 
+#: THE FLOOR GATES' PACKAGE: every `kernel_floor` is here, where `//measure/floors:floor` (a member of `//:gate`) runs each
+FLOORS = "measure/floors"
+
+
+def floor_test_exists(label: str) -> bool:
+    """`//measure/floors:<name>_floor` names the test of a `kernel_floor(name = "<name>"` call in the floor gates' BUILD.bazel."""
+    found = re.fullmatch(rf"//{FLOORS}:([\w.-]+)_floor", label)
+    build = ROOT / FLOORS / "BUILD.bazel"
+    return bool(found) and build.is_file() and \
+        re.search(rf'kernel_floor\(\s*name = "{re.escape(found.group(1))}"', build.read_text()) is not None
+
+
 def line_of(text: str, kernel: str) -> int:
     for i, line in enumerate(text.splitlines(), 1):
         if line.strip().startswith(f'"{kernel}"'):
@@ -95,10 +107,13 @@ def _check(name: str, obligation: str, value, at: str, rows) -> list[str]:
         return [f"{at}: `{name}` declares nothing for `{obligation}`"]
     if isinstance(value, dict) and ("owed" in value or value.get("exempt")):
         return []
-    if obligation == "overlap":
-        #: THE OVERLAP OBLIGATION ADMITS ONLY `owed` OR `exempt` (KERNEL_STANDARDS section 28): a pointer names no row of anything
-        return [f"{at}: `{name}`'s overlap points at {value!r}; the overlap obligation admits only `owed` or `exempt` (KERNEL_STANDARDS "
-                f"section 28: warpline's `bound` over the kernel's run manifest, its bound written by the floor model's Bazel action)"]
+    if obligation == "floor":
+        #: THE FLOOR OBLIGATION'S POINTER IS THE GATE'S TEST (KERNEL_STANDARDS section 28): `//measure/floors:<name>_floor`, the test
+        #: a `kernel_floor(name = "<name>", ...)` call of bazel/floor.bzl in the floor gates' package declares
+        if isinstance(value, str) and floor_test_exists(value):
+            return []
+        return [f"{at}: `{name}`'s floor points at {value!r}, which is no `kernel_floor` test (`//{FLOORS}:<name>_floor`, a "
+                f"`kernel_floor(name = \"<name>\"` call in {FLOORS}/BUILD.bazel: bazel/floor.bzl)"]
     if obligation == "sanitizer":
         row = rows["sanitizer"].get(value)
         if row is None:

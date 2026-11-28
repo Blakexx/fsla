@@ -2,7 +2,7 @@
 
 What is knowingly unfinished, one row an item, each pointing at the page that carries its contract. A row leaves this
 list when its work lands; git keeps what it said. The per-kernel obligations a kernel still owes — an oracle test, a
-sanitizer row, a budget line, a phase ledger, an overlap row — are declared in
+sanitizer row, a budget line, a phase ledger, a floor gate — are declared in
 `tools/coverage.json` with the reason each is owed, and are not repeated here
 ([`internals/tools/coverage.md`](internals/tools/coverage.md)).
 

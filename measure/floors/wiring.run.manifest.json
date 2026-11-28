@@ -1,0 +1,53 @@
+{
+ "format": "warpline-run-manifest/1",
+ "said": [
+  "note: profile rules not run (no --profile)"
+ ],
+ "places": [
+  {
+   "place": "fsla::floor_wiring()",
+   "kernel": true,
+   "rules": {},
+   "figures": {
+    "health": {
+     "lanes": 1,
+     "roles": 1,
+     "stamps": 40,
+     "dropped": 0,
+     "findings": {},
+     "open_at_end": {
+      "lanes": 0,
+      "regions": 0
+     }
+    },
+    "launch": {
+     "cycles": 7000000,
+     "ns": 7000000,
+     "grid_ns": 7000000,
+     "scopes": 1
+    },
+    "window": {
+     "anchor": "phase.read",
+     "period": 100000.0,
+     "period_std": 0.0,
+     "period_se": 0.0,
+     "windows": 13
+    },
+    "roles": {
+     "reader": {
+      "period": 100000.0,
+      "phases": {
+       "phase.read": {
+        "cycles": 100000.0,
+        "cycles_se": 0.0,
+        "share": 1.0,
+        "jitter": 0.0,
+        "held": 1.0
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}
