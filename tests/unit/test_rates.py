@@ -20,8 +20,8 @@ def test_a_measured_rate_off_its_record_is_a_finding():
 
 
 def test_a_product_resolves_its_architectures_rates_and_a_device_name_its_product():
-    assert rates.resolve("sm_90a")["mma.hmma_bf16_f32"].cycles == 4
-    assert rates.resolve(product="h10080gbhbm3")["atomic"].cycles == rates.resolve("sm_90a")["atomic"].cycles
+    assert rates.resolve("sm_90a")["mma.hmma_bf16_f32"].value == 4
+    assert rates.resolve(product="h10080gbhbm3")["atomic"].value == rates.resolve("sm_90a")["atomic"].value
     assert rates.product_of("NVIDIA H100 80GB HBM3") == "h10080gbhbm3"
     assert json.loads(rates.CONFIG.read_text()) == rates.load()
 
