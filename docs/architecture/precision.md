@@ -21,7 +21,7 @@ nothing bounds what accumulation embeds.
 | component | storage and operands | accumulation |
 |---|---|---|
 | the route bundle | every level, either side, dense or sparse: u8 at its row max (255), a zero a zero and no floor under it; an fp32 scale a (token, level). A dense level differs from a sparse one only in having no list | -- |
-| <a id="values"></a>the values | raw bf16, `v_proj`'s output as it is: no scale and no normalization, the precision class FlashAttention's values have | -- |
+| <a id="values"></a>the values | raw bf16, `v_proj`'s output as it is: no scale and no normalization, the precision class FlashAttention's values have (NOT BUILT: `fsla/routing/quant.py`'s `VALUES` form still scales them) | -- |
 | the stored state | s24 a leaf-channel (an s16 hi plane and a u8 lo plane) at an s8 power-of-two exponent a (leaf, 32-channel group); the mass fp32 | -- |
 | the fold | the coefficient of a (token, leaf) -- its levels' bytes with the token's row scales, multiplied in fp32 where the bytes are expanded -- rounded to bf16 once; the values bf16 as stored | fp32 |
 | the readout | the state as a bf16 operand; the read coefficient bf16 | fp32 |

@@ -217,8 +217,9 @@ block per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, startin
 row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the words the masks are prepared into). The bundle carries NO liveness: which
 digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
-NOT BUILT: a level's public form is its TILE-MAJOR layout, the layout its readers load cheapest, documented here once
-its shape is defined; the rows above are token-major today.
+NOT BUILT: a level's public form is its TILE-MAJOR layout, the layout its readers load cheapest -- a tile of 64 tokens,
+its 16-digit blocks one after another ([`ARCHITECTURE.md` §1](ARCHITECTURE.md#1-what-the-kernel-computes)); the public
+shape is stated here with the producer that writes it, and the rows above are token-major today.
 <a id="grouped-queries"></a>
 GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides

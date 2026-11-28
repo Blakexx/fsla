@@ -29,7 +29,8 @@ THE FOLD'S TENSOR TIME is its steps': a token in a list of a box is a sixteenth 
 list's leaves in the box, a step's own time MEASURED at 8, 16, 32 and 64 columns and whole 64-column steps past
 that ([`wgmma_width`](../../lab/wgmma_width.md)); the readout's leaves run whole steps of sixteen.
 
-THE PAIR (`--pair f16 | fp32`) is the carry's form for the output's sum, its line's width the plan's
+THE PAIR (`--pair f16 | fp32`) is the carry's form for the output's sum, its line's width the device's choice a call
+at a time, which the model takes as a parameter
 ([`CONSTITUTION.md`](../../CONSTITUTION.md#r17-one-family-one-form-a-component)). A CTA holds two boxes
 neighbouring along a level the read side is dense on, so a token that reads one reads both; one readout warpgroup
 runs each read digit's step on both boxes' images into ONE accumulator, and drain warps add one line a token.

@@ -129,7 +129,10 @@ declared never detected was cause I couldn't think of a good way to do it. This 
 should be outside the masks ... They need not be coupled, and are independent variables really"; "just density is fine
 initially"). It chooses a LAYOUT among forms that are all exact, through `uniform_switch`, once a call ("switching
 uniformly to precomputed things defined for those patterns"). It changes no result while the masks keep their
-guarantee (R24), and nothing else measured keys a path. A BYTE OF 255 IS THE DENSE FLAG: that level-side is computed with
+guarantee (R24), and nothing else measured keys a path but THE OUTPUT LINE'S WIDTH: the piece count of the carve
+and the call's live digits picks f16 or fp32 for the sum across CTAs (R17; Blake, 2026-11-28: "b seems fine"), a
+deterministic count rather than a tuned cutoff on a statistic, both forms inside the family's accepted error class and
+each gated by forcing it. A BYTE OF 255 IS THE DENSE FLAG: that level-side is computed with
 every digit live and its mask is never read (Blake, 2026-11-24: "a flag that says \"this is all dense\" that we can read
 to skip loading those masks for the OR, and also to skip producing those masks"; "It's fine if we mark something as
 dense when it's possible it's like 99.99 due to rounding"). Where a level-side's declared activation cannot make exact
@@ -229,16 +232,32 @@ A Python-package user never registers an arm. The shipped set is the arms each f
 ## R17. One family, one form a component
 
 Operands are the bf16 family (Blake, 2026-11-09). Every level's rows, either side, dense or sparse, are u8 unit-max
-with the row's fp32 scale; the values are bf16 unit-max with an fp32 scale a token. An MMA's operands are bf16 (a u8
+with the row's fp32 scale; THE VALUES ARE RAW BF16, `v_proj`'s output as it is, with no scale a token and no unit-max
+normalization (Blake, 2026-11-28: "lets just be simple and use raw bf16"). An MMA's operands are bf16 (a u8
 byte is exact in it) and its accumulation fp32 -- the fold, the readout and the den alike -- but for a window's pair
-products of rows, which are integer MMAs of the bytes, exact (the data model locked 2026-11-09 has the intra so);
-the output's sum is
-fp32 inside a CTA, and ACROSS CTAS ITS WIDTH IS THE PLAN'S (R24; Blake, 2026-11-11): fp32, or f16 -- a CTA adds its
-own partials in fp32 and issues ONE f16 line a token, scaled by a power of two from one coarse bound that is
-re-based each segment and stored with the state so a continuation keeps it. No scale pass, no panel a group and no
-pass that merges them, no switch of precision by card. The width is a field the caller states, a bound it declares
-(R9), each width a form gated by forcing it; the producer's planner chooses it from the declaration's structure --
-the levels' widths and walks -- and the op counts nothing. MODELLED on one cell (carry-alt-k4-256x256-T65536; a dense read side and
+products of rows, which are exact: THE COMPUTE IS NOT TIED TO INTEGER MMAS (Blake, 2026-11-28: "sure, conversion is
+cheap"). The u8 digits are the storage on every card, and a kernel's MMA form for them -- an integer MMA, or a bf16 MMA
+on the digits widened exactly at staging with fp32 accumulation -- is chosen per card from the device's facts in its
+descriptor, by measurement, and selected where the primitive is defined, never by a run-time branch; hopper and B200
+build the intra's integer u8 Grams at the full INT8 rate, and a card whose INT8 rate is cut has no form until it is a
+target (Blake, 2026-11-28: "defer o1"), its form then widening on chip inside the intra's Gram step only. WITH A
+GRADIENT ON, THE PRODUCER'S FORWARD ALSO WRITES A LO PLANE: beside each digit `hi = round(255 p / max)`, the u8 every
+reader takes, its shifted unsigned residual `lo = round(255 (r + 0.5))` with `r = 255 p / max - hi`, a u8 that always
+fits, saved privately by the producer's autograd node, from which the backward rebuilds
+`p = (hi + lo / 255 - 0.5) max / 255`; the op's operands are unchanged (Blake, 2026-11-27: "it can save its lo for the
+backward when gradient is on right?"; 2026-11-28: "ok"). The output's sum is
+fp32 inside a CTA, and ACROSS CTAS fp32, or f16 -- a CTA adds its own partials in fp32 and issues ONE f16 line a
+token, scaled by a power of two from a PER-CHANNEL BOUND, `max|S_entry, ch| + growth[ch]` (Blake, 2026-11-28: "the
+form is just max|s| + growth as the bound then?"): `max|S|` carried with the state a (batch, head, channel), kept by
+each CTA's per-channel atomic max at write-back, and `growth[ch]` the sum over the segment's tokens of `|v[t, ch]|`
+times the token's largest write coefficient, an fp32 `[B, H_w, d_v]` input the producer emits a segment. THE WIDTH IS
+CHOSEN ON THE DEVICE A CALL AT A TIME (Blake, 2026-11-28: "b seems fine"): every CTA computes the same piece count
+`K_max = prod_l B_l / min(g_l, e_l)` from its carve and the call's live digits and takes f16 where it is at most about
+150, fp32 above; the carve writes the choice where the finish reads it, and the host allocates the sum's buffer at fp32
+size, so no launch or graph capture depends on a device value. No scale pass, no panel a group and no pass that merges
+them, no switch of precision by card; each width a form gated by forcing it. A finish step divides `num` by `den` once
+and the op returns `y` in bf16, as FlashAttention does (Blake, 2026-11-28: "it needs to compute that anyway, and hand
+back bf16 i guess"). MODELLED on one cell (carry-alt-k4-256x256-T65536; a dense read side and
 wider levels are not): one f16 line a CTA of 512 leaves costs 0.083% a token at the median, 0.40% at most,
 against the family's own 0.115% (recorded 2026-11-09 and 2026-11-11: the fp64 recurrence on the formatted operands, rounded only where the family's kernels round, the median and the 99th percentile a token). The state reaches the readout through its
 IMAGE in shared memory, stored once a window, WHETHER THE TWO SIDES' CARVES DIFFER OR ARE EQUAL (Blake, 2026-11-11;
@@ -335,12 +354,16 @@ coefficients and a shared scale too ... and just use them? ... our producers jus
 doesnt use them, they use our factory which transofrms their input into the form the standard way you do any scaling";
 "the gain is a thing the producer is aware of, not something that our formaat knows about ... ultaimtely qkv are stord
 in the same scale format, and thats what the op uses".
-1. q, k and v are each SCALED BLOCKS: a level's rows (or the values') unit-max in its storage FORM, and the row's max
-   its fp32 scale. The forms are R17's, one a kind: a level's rows u8 -- every level, dense or sparse, a zero a zero
-   and no floor under it -- and the values bf16. A routing entry is never negative (the den, the liveness words and
+1. q and k are each SCALED BLOCKS: a level's rows unit-max in its storage FORM, and the row's max its fp32 scale. The
+   form is R17's: a level's rows u8 -- every level, dense or sparse, a zero a zero and no floor under it. The values v
+   are raw bf16 with no scale (R17). A routing entry is never negative (the den, the liveness words and
    the decay's shares need it); the factory refuses an entry its form does not hold.
-2. The op is defined on the blocks' products alone, the same for every consumer and the fp64 oracle: no level is
-   required to sum to 1, and nothing in the format says whether one does.
+2. The op is defined on the blocks' products alone, the same for every consumer and the fp64 oracle. FSLA IS
+   NORMALIZED ATTENTION ONLY (Blake, 2026-11-28: "read side can reject non simplex, and we are locked into only
+   normalized form"): every activation declares, beside whether it makes exact zeros, whether it is a SIMPLEX, and the
+   read side refuses one that is not, so a read row's true values sum to one and a readout is a weighted average of
+   state entries. No write level is required to sum to 1, and nothing in the format says whether a level does: the
+   declaration is the activation's registry row.
 3. A producer's own quantities -- a learned gain, an activation that lands on the simplex -- are folded into the
    blocks by the producer, each block's scale formed inside the one job that holds its row, and are invisible to every
    kernel and to the oracle. A caller's own levels reach the format through the factory, which quantizes each against
@@ -352,7 +375,8 @@ in the same scale format, and thats what the op uses".
 
 The op and every kernel under it execute a PLAN their caller supplies (Blake, 2026-11-11): the carve, each side's
 walk of each level -- by its lists, or every digit -- the list groups, the window and the segment, the drain's width
-and its scale's form. A plan field names an ACTION. It never names a property of the data -- dense, sparse, an
+and its scale's form, but the output line's width, which the device chooses a call at a time (R17). A plan field names
+an ACTION. It never names a property of the data -- dense, sparse, an
 activation, a count of live digits -- and the op's inputs carry none but the
 prefill's `density` (R9), which is no plan field and chooses a layout among exact forms: they carry shapes, dtypes,
 scales and counts.
@@ -374,7 +398,8 @@ walked by its lists), and everything derived from the facts -- the window, the g
 by the family's one launch function right before the launch and stored nowhere. The plan's device half is what a
 kernel decides during the call from the call's own data -- on the prefill the groups, the CTA's carve and the fold's
 split, from the call's densities (R20) -- which never changes the result: forcing any of it on the same data matches the
-oracle. Each call builds
+oracle. The one device choice that changes rounding is the output line's width (R17), a count of the carve and the
+call's live digits whose two forms both hold the family's accepted error class, each gated by forcing it. Each call builds
 its workspace itself, beside its descriptor, and its caller is trusted with the inputs it hands, the masks among them;
 the layer takes only model inputs.
 NOT YET SO: decode is on this surface, and so is the prefill's op; what a prefill launches is owed -- its launch function

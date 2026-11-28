@@ -98,7 +98,8 @@ frozen `StateFormat`), and it is what every kernel derives its addressing from:
 
 <a id="level-order"></a>**THE STATE'S LEVEL ORDER IS SET FROM THE ROUTING'S STATIC FACTS, BEST EFFORT, UNDER ONE HARD
 RULE.** The hard rule: the carve gives every CTA at least 16 digits of the storage-innermost level, so a CTA's leaves
-are whole pages. Every level is at least 16 wide and every side's leaf group at least 16 leaves. The best effort: the
+are whole pages. Every level is at least 16 wide and every side's leaf group at least 16 leaves where its box holds as
+many (R10), a group raised after the carve and never past a share (R20). The best effort: the
 levels are ordered by how many parties -- the write side and the `G` read heads -- read them dense, the fewest
 outermost and ties in the declared order, so the innermost level is the one the carve keeps wide anyway: under R20 a
 doubling on a level saves a fetch for each side whose size there still exceeds its share, so a level many parties read
