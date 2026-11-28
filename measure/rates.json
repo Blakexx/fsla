@@ -49,19 +49,19 @@
         },
         "stream": {
           "hbm_read": {
-            "bytes_a_cycle": 12.989,
+            "bytes_a_cycle": 12.953,
             "measured": "stream_rate",
             "row": "HBM read, a CTA its own slice of a 1 GiB table: a CTA",
             "on": "h10080gbhbm3"
           },
           "hbm_write": {
-            "bytes_a_cycle": 13.216,
+            "bytes_a_cycle": 13.214,
             "measured": "stream_rate",
             "row": "HBM write, a CTA its own slice of a 1 GiB table: a CTA",
             "on": "h10080gbhbm3"
           },
           "hbm_copy": {
-            "bytes_a_cycle": 12.573,
+            "bytes_a_cycle": 12.748,
             "measured": "stream_rate",
             "row": "HBM copy, a CTA its own slice of 512 MB into 512 MB: a CTA",
             "on": "h10080gbhbm3"
