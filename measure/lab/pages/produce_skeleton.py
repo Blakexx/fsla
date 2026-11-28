@@ -45,7 +45,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T095100Z-086748-f002e06d",
         "2026-11-28",
         "the first run held at one CTA an SM (202.8 us, 1.99x the floor), at hidden 0 (186.2) and with the lo plane (267.1, "
         "1.43x) and MISSED at two CTAs an SM (164.0 against 104-128): its traced twins name why. A lone CTA's 25-27K "
@@ -69,6 +69,28 @@ RUNS = (
             Claim(NO_STAGES, lambda R: R[NO_STAGES], 100.0, 120.0, "us"),
             Claim(TWO, lambda R: R[TWO], 100.0, 125.0, "us"),
             Claim(LO, lambda R: R[LO], 190.0, 250.0, "us"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the store component's run held its coverage and MISSED every band (plain 204.4 us, hidden 0 195.7, two CTAs an "
+        "SM 185.5, the lo plane 290.6): its stores' instructions fell ~25K to ~14.1K a CTA (ncu) and the launch did not "
+        "move, so the instruction stream was not the price. ncu on the traced launch: DRAM 49% of its peak (321.5 MB "
+        "written, the declared bytes), 28.8M warp instructions (~28 us of issue), no drain, store-queue or MIO stall, "
+        "LONG SCOREBOARD 5 a issue, warps active 12% of peak: latency with ~2 warps a scheduler to hide it -- each "
+        "16-byte store's address reused by the next trip of a rolled loop, each ring edge a polled wait. THIS FORM: four "
+        "16-byte stores in flight a thread (each its own address), a token's run by consecutive threads (coalesced), "
+        "the stub's ring one stage a job. A CTA's ~25K cycles were ~2,900 a job's epilogue (~10 latency-bound trips of "
+        "~290) and ~1,350 its ring edges; now ~4 trips a job (~1,200) and one round trip (~340): ~9.7K a CTA, under its "
+        "157.7 KB at HBM's write share (13.2 bytes a cycle an SM: 11.9K), so the launch meets the floor's write rate: "
+        "101.9 us and the tail's wave; hidden 0 and two CTAs an SM the same; the lo plane at its 186.6 us floor",
+        (
+            Claim(CELL, lambda R: R[CELL], 104.0, 130.0, "us"),
+            Claim(CELL + ": over its floor", lambda R: R[CELL] / FLOOR_US, 1.02, 1.28, "times"),
+            Claim(NO_STAGES, lambda R: R[NO_STAGES], 102.0, 128.0, "us"),
+            Claim(TWO, lambda R: R[TWO], 102.0, 128.0, "us"),
+            Claim(LO, lambda R: R[LO], 188.0, 225.0, "us"),
         ),
     ),
 )

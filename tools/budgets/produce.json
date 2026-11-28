@@ -17,12 +17,12 @@
       "store_level": 960,
       "store_values": 120,
       "epilogue": 600,
-      "load_role": 480,
-      "math_role": 5120,
+      "load_role": 120,
+      "math_role": 1880,
       "tickets": 150,
       "glue": 2001,
-      "zero_run": 4030,
-      "zero_tokens": 760
+      "zero_run": 3776,
+      "zero_tokens": 3120
     }
   },
   "classes": {
@@ -45,19 +45,24 @@
         "uniform": 25
       },
       "load_role": {
-        "integer": 233,
-        "uniform": 102,
-        "control": 87,
-        "special": 29,
-        "barrier": 29
+        "integer": 48,
+        "uniform": 24,
+        "control": 20,
+        "special": 8,
+        "barrier": 8,
+        "const": 4,
+        "VIADD": 4,
+        "YIELD": 4
       },
       "math_role": {
-        "integer": 4069,
-        "control": 411,
-        "uniform": 366,
-        "const": 137,
-        "barrier": 91,
-        "special": 46
+        "integer": 1218,
+        "VIADD": 349,
+        "control": 99,
+        "uniform": 99,
+        "const": 33,
+        "barrier": 33,
+        "YIELD": 33,
+        "special": 16
       },
       "tickets": {
         "integer": 87,
@@ -85,16 +90,14 @@
         "shared": 9
       },
       "zero_run": {
-        "integer": 3267,
-        "control": 450,
-        "store": 272,
-        "const": 20
+        "integer": 2960,
+        "store": 416,
+        "control": 400
       },
       "zero_tokens": {
-        "integer": 480,
-        "control": 210,
-        "store": 64,
-        "const": 20
+        "integer": 2440,
+        "control": 520,
+        "store": 160
       }
     }
   },
@@ -103,12 +106,12 @@
     "store_level": "~30 a call a warp (its 116 instructions: the stream, tile, scale and word addresses), 4 calls x 8 warps",
     "store_values": "the growth's part: a channel a thread, 64 of 128 (~12), and its address, x 8 warps",
     "epilogue": "~15 a job a warp (the job's kind, its tied bits), 5 jobs x 8 warps",
-    "load_role": "a stage ~24 (the index 3, the EMPTY wait's try_wait trip 11 from the fourth on, the FULL arrival 6, the loop 4), 20 stages, one warp; the polled wait's further trips (its YIELD loop) are the trace's to count",
-    "math_role": "a K-step ~27 a warp (the FULL wait's trip 11, the warp's sync 2, lane 0's arrival 1, the loop and the slot 13), 20 x 8 warps = 4,320; the job loop's ~20 a job a warp (its 69 instructions of share and bound), 5 x 8 = 800",
+    "load_role": "the stub's ring one stage a job: 5 stages x ~24 (an EMPTY wait from the fourth on, a FULL arrival), one warp",
+    "math_role": "the stub's ring one stage a job: 8 warps x 5 stages x ~27 (a FULL wait's trip, the warp's sync, lane 0's arrival, the loop) and 5 jobs x 20, = 1,880",
     "tickets": "one thread: the masked rows' counts (2 adds), three fences, the two tickets; the growth's copy by one CTA in 512 and the density by the last: ~150",
     "glue": "~220 a warp (the item's three divisions, 63 instructions; the shares; the barriers' init; two CTA barriers), x 9 warps",
-    "zero_run": "the store component's contiguous runs, NO DIVISION: a row tile (16 KB at the cell) in 16-byte stores a thread a 128-chunk stride, words to a 16-byte boundary and after the last chunk. A trip ~6 (the store, the address, the bound's compare and branch, the step), a call ~50 of setup and lead and tail words (its 206 instructions over 5 inlined sites). A warp: four level jobs' row tiles, 8 trips each, 4 x 98 = 392; two masked rows' 2 KB of words, one trip each, 2 x 56 = 112; x 8 warps = 4,030",
-    "zero_tokens": "the store component's token runs, NO DIVISION: two threads a token (the share's 64 tokens are a power of two: token = thread & 63, half = thread >> 6), 16-byte stores where the runs are 16-byte runs, else words. A warp: four level-sides' scales, one word each, 4 x 15; the values' 128 bytes a token, 4 trips of a 16-byte store, 35; = 95, x 8 warps = 760"
+    "zero_run": "the store component's contiguous runs (built SASS): a trip is four independent 16-byte stores and their addresses and bounds, ~34 instructions (store 4, integer 26, control 4); a call's lead and tail words and bounds ~22 (integer 18, control 2, store 2). A warp: four level jobs' row tiles at 2 trips each, two masked rows' words at 1 trip: 10 trips and 6 calls, 472; x 8 warps = 3,776",
+    "zero_tokens": "the store component's token runs (built SASS): a trip is four tokens' stores by consecutive threads (lanes a token), ~65 instructions (store 4, integer 50, control 11); a call's one quotient (lanes, the tokens a pass) ~13 (integer 11, control 2). A warp: four level-sides' scales and the values, a trip each: 5 trips and 5 calls, 390; x 8 warps = 3,120"
   },
   "registers": {
     "glue": 40,
@@ -123,9 +126,9 @@
   },
   "phase_cycles": {
     "layer-alt-entmax1.5-256x256-T65536-h4": {
-      "math_role": 2000,
+      "math_role": 1700,
       "epilogue": 11900
     }
   },
-  "phase_basis": "a CTA's cycles: its 20 ring stages' two edges at ~100 cycles each (a hypothesis the traced rows price); its outputs, 157.7 KB (the cell's 323.0 MB over its 2,048 CTAs) at HBM's write rate an SM (measure/rates.json's hbm_write, 13.21 bytes a cycle an SM) = 11,900"
+  "phase_basis": "a CTA's cycles: its 5 ring stages' two edges at ~340 cycles a round trip (hold 8's traces); its outputs, 157.7 KB (the cell's 323.0 MB over its 2,048 CTAs) at HBM's write rate an SM (measure/rates.json's hbm_write, 13.21 bytes a cycle an SM) = 11,900"
 }

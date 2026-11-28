@@ -175,10 +175,11 @@ void refuse_unsized(const Outputs& o, bool lo) {
   }
   want.push_back(streams * p.tokens * p.d_v * 2);
   want.push_back(streams * p.d_v * 4);
-  bool same = want.size() == o.planes.size();
+  //: the token runs' stores are 4-byte words at least and a run a warpgroup's threads at most: d_v even, at most 1,024
+  bool same = want.size() == o.planes.size() && p.d_v % 2 == 0 && p.d_v <= 1024;
   for (size_t i = 0; same && i < want.size(); ++i) same = want[i] == o.planes[i].bytes && want[i] > 0;
   if (!same) {
-    std::fprintf(stderr, "produce_skeleton: the plan's extents (the kernel's view) are not its outputs' allocations\n");
+    std::fprintf(stderr, "produce_skeleton: the plan's extents (the kernel's view) are not its outputs' allocations, or its d_v is odd or over 1,024\n");
     std::exit(2);
   }
 }

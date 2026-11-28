@@ -112,38 +112,50 @@ enum Site : int { kSiteEntry = 0, kSiteSetup, kSiteWindow, kSiteEpilogue, kSiteT
 //: a ring barrier's number, as its tracer names it: a stage's FULL `slot`, its EMPTY `kMaxStages + slot`
 constexpr int kEmptyId = kMaxStages;
 
+//: FIXED by the stores' latency: the 16-byte stores a thread keeps in flight, each its own address -- see
+//: docs/internals/produce/produce.md#stores
+constexpr int kStoresInFlight = 4;
+
 //: A CONTIGUOUS RUN'S ZEROS by a warpgroup (`mine` its thread): `bytes` and the start a multiple of 4; words to a 16-byte
-//: boundary, 16 bytes a store, then the tail's words -- no division -- see docs/internals/produce/produce.md#stores
+//: boundary, 16 bytes a store, then the tail's words -- see docs/internals/produce/produce.md#stores
 __device__ __forceinline__ void zero_run(uint8_t* at, int bytes, int mine) {
   const uintptr_t off = reinterpret_cast<uintptr_t>(at) & 15u;
   const int lead = min(bytes, static_cast<int>((16u - off) & 15u));
   if (mine < (lead >> 2)) reinterpret_cast<uint32_t*>(at)[mine] = 0u;
-  uint8_t* const body = at + lead;
+  uint4* const body = reinterpret_cast<uint4*>(at + lead);
   const int chunks = (bytes - lead) >> 4;
 #pragma unroll 1
-  for (int c = mine; c < chunks; c += kGroupThreads)
-    reinterpret_cast<uint4*>(body)[c] = make_uint4(0u, 0u, 0u, 0u);
+  for (int c = mine; c < chunks; c += kGroupThreads * kStoresInFlight) {
+#pragma unroll
+    for (int u = 0; u < kStoresInFlight; ++u)
+      if (c + u * kGroupThreads < chunks) body[c + u * kGroupThreads] = make_uint4(0u, 0u, 0u, 0u);
+  }
   const int tail = (bytes - lead - (chunks << 4)) >> 2;
-  if (mine < tail) reinterpret_cast<uint32_t*>(body + (chunks << 4))[mine] = 0u;
+  if (mine < tail) reinterpret_cast<uint32_t*>(at + lead + (chunks << 4))[mine] = 0u;
 }
 
-//: A SHARE'S TOKENS' ZEROS by a warpgroup: `tokens` (at most a row tile's 64) runs of `bytes`, `stride` apart, each a
-//: multiple of 4: two threads a token, 16 bytes a store where the runs allow it, else a word -- no division -- see
-//: docs/internals/produce/produce.md#stores
+//: A SHARE'S TOKENS' ZEROS by a warpgroup: `tokens` runs of `bytes`, `stride` apart, each a multiple of 4: a token's
+//: run by consecutive threads (`lanes` a token, the call's one quotient), 16 bytes a store where the runs allow, else a
+//: word -- see docs/internals/produce/produce.md#stores
 __device__ __forceinline__ void zero_tokens(uint8_t* at, int tokens, int bytes, long long stride,
                                             int mine) {
-  const int token = mine & (kGroupTokens - 1), half = mine >> 6;
-  if (token >= tokens) return;
-  uint8_t* const run = at + token * stride;
   const long long where = static_cast<long long>(reinterpret_cast<uintptr_t>(at));
-  const bool wide = ((bytes | stride | where) & 15) == 0;
-  if (wide) {
+  const int shift = ((bytes | stride | where) & 15) == 0 ? 4 : 2;
+  const int lanes = bytes >> shift, per = kGroupThreads / lanes, token = mine / lanes;
+  if (token >= per) return;
+  const int lane = mine - token * lanes;
 #pragma unroll 1
-    for (int c = half; c < (bytes >> 4); c += 2)
-      reinterpret_cast<uint4*>(run)[c] = make_uint4(0u, 0u, 0u, 0u);
-  } else {
-#pragma unroll 1
-    for (int w = half; w < (bytes >> 2); w += 2) reinterpret_cast<uint32_t*>(run)[w] = 0u;
+  for (int t = token; t < tokens; t += per * kStoresInFlight) {
+#pragma unroll
+    for (int u = 0; u < kStoresInFlight; ++u) {
+      uint8_t* const run = at + (t + u * per) * stride;
+      if (t + u * per >= tokens) continue;
+      if (shift == 4) {
+        reinterpret_cast<uint4*>(run)[lane] = make_uint4(0u, 0u, 0u, 0u);
+      } else {
+        reinterpret_cast<uint32_t*>(run)[lane] = 0u;
+      }
+    }
   }
 }
 
@@ -210,12 +222,16 @@ __device__ __forceinline__ void epilogue(const Plan& p, const Job& job, const Sh
   }
 }
 
+//: THE STUB'S STAGES A JOB: one, where the job has a hidden axis to step (the stub stages no bytes; the projection's
+//: component stages a K-step) -- see docs/internals/produce/produce.md#ring
+__device__ __forceinline__ int stub_steps(const Plan& p) { return p.hidden > 0 ? 1 : 0; }
+
 //: THE LOADER: a stage a K-step of each job (the stub stages no bytes) -- see
 //: docs/internals/produce/produce.md#ring
 template <int STAGES, class Tr>
 __device__ __forceinline__ void load_role(const Plan& p, ops::SmemAddr full, ops::SmemAddr empty,
                                           int lane, Tr& tr) {
-  const int stages = p.jobs * ((p.hidden + kKStep - 1) / kKStep);
+  const int stages = p.jobs * stub_steps(p);
   if (lane != 0) return;
 #pragma unroll 1
   for (int i = 0; i < stages; ++i) {
@@ -235,7 +251,7 @@ __device__ __forceinline__ void load_role(const Plan& p, ops::SmemAddr full, ops
 template <int STAGES, bool LO, class Tr>
 __device__ __forceinline__ void math_role(const Plan& p, const Share& s, ops::SmemAddr full,
                                           ops::SmemAddr empty, int mine, Tr& tr) {
-  const int steps = (p.hidden + kKStep - 1) / kKStep;
+  const int steps = stub_steps(p);
 #pragma unroll 1
   for (int j = 0; j < p.jobs; ++j) {
     tr.phase(kSiteWindow);
