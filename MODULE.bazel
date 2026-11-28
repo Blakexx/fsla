@@ -83,9 +83,9 @@ environment.cuda_toolkit(
 #: reads (the lab's pages, the floor model, the rates) is the file at this pin, fixed content by the archive's digest
 environment.data(
     name = "fsla_data",
-    commit = "a889deedd6b6b1c6f1081a92af66ae8f79ac0882",
+    commit = "dd1a17b38fe8ed1a3ec448b2480592fb73971db3",
     remote = "https://github.com/Blakexx/fsla-results",
-    sha256 = "b8c239b7fb4dac1a62c680686d0d3004158811293ccf6eba228a300fba700532",
+    sha256 = "5ec478c7978c0ab88e0d17d11ea2f5d7f739aa6e77926cd00645d36ba5188f75",
 )
 #: every central cell's description as a target (`@fsla_cells//:<cell>`), which a timing entry takes (docs/measurement.md)
 environment.cells(

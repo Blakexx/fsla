@@ -16,10 +16,10 @@ from measure.data import LabSample, lab_record  # noqa: E402 -- the path insert 
 ARCH = "sm_90a"
 
 
-def read(data: pathlib.Path, experiment: str, blocks: int = 0, variant: str | None = None) -> LabSample:
-    """The newest sample of `experiment`'s record in the pinned data `data` (the grid `blocks`, the condition `variant`),
-    refused by name where none is stored."""
-    return lab_record(experiment, ARCH, blocks=blocks, variant=variant, data=data)
+def read(data: pathlib.Path, experiment: str, blocks: int = 0, variant: str | None = None, kind: str = "run") -> LabSample:
+    """The newest sample of `experiment`'s record of `kind` (a timed run, or the profiler's counters) in the pinned data
+    `data` (the grid `blocks`, the condition `variant`), refused by name where none is stored."""
+    return lab_record(experiment, ARCH, kind=kind, blocks=blocks, variant=variant, data=data)
 
 
 class Record(dict):

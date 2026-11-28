@@ -68,12 +68,12 @@ class LabSample:
         return f"{PREFIX}records/{label_path(self.store.label).as_posix()}/{self.sample['output']}"
 
 
-def lab_record(experiment: str, arch: str, *, blocks: int = 0, variant: str | None = None,
+def lab_record(experiment: str, arch: str, *, kind: str = "run", blocks: int = 0, variant: str | None = None,
                data: Path | None = None) -> LabSample:
-    """THE NEWEST SAMPLE of `experiment`'s run on `arch` (`lab_semantics`, the kind `run`) at its run target's label, in
-    the pinned data or in `data` (a data repository's root: a store's checkout, a run's scratch store); refused by name
-    where none is stored."""
-    semantics = lab_semantics(experiment, arch, blocks=blocks, variant=variant)
+    """THE NEWEST SAMPLE of `experiment`'s record of `kind` on `arch` (`lab_semantics`: a timed run, or the profiler's
+    counters) at its run target's label, in the pinned data or in `data` (a data repository's root: a store's checkout,
+    a run's scratch store); refused by name where none is stored."""
+    semantics = lab_semantics(experiment, arch, kind=kind, blocks=blocks, variant=variant)
     store = Store(f"@fsla//measure/lab:{experiment}.run", (data or root()) / "records")
     ok = [s for s in store.samples(key(semantics)) if s["ok"]]
     if not ok:

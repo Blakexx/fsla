@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The lab's page generators for `gather_rate`, `gather_group` and `step_rolled` (measure/lab/pages/): each rewrites its page's
+"""The lab's page generators for `gather_rate`, `gather_group`, `step_rolled` and `decode_ring` (measure/lab/pages/): each rewrites its page's
 measured section from a record of the experiment's rows, and refuses, by name, an absent record, a row the record
 lacks and a failed check. The records here are SYNTHETIC -- the shape the lab writes, stored as the lab stores them
 (`fsla_devtools.results` at the run target's label, keyed by measure/data.py's `lab_semantics`), figures chosen only to be
@@ -164,4 +164,52 @@ def test_step_rolled_refuses_an_absent_record_a_missing_row_and_a_failed_check(t
         gen.write(tmp_path, tmp_path, "nbabc")
     rolled_record(tmp_path, results + [lost], [(lost["name"], False)])
     with pytest.raises(SystemExit, match="failed checks"):
+        gen.write(tmp_path, tmp_path, "nbabc")
+
+
+def ring_kernels(gen, scale=1.0):
+    """`decode_ring`'s counters, a kernel a row: each row's DRAM bytes its declared ones times `scale`, a scattered
+    leaf's at the 64-byte block's grain."""
+    out = {}
+    for dv, g, stamped in gen.CONFIGS:
+        for pat in range(5):
+            for form in gen.forms(pat, g):
+                rd, wr, leaves = gen.declared(pat, dv)
+                n = gen.SMS * gen.POSITIONS[pat]
+                read = n * leaves * gen.blocks(pat, dv) if pat >= 3 else n * rd * scale
+                out[f"void walk<{form}, {pat}, {dv}, {g}, {stamped}>(Args)"] = {
+                    "dram__bytes_read.sum": read, "dram__bytes_write.sum": n * wr * scale if wr else 1e6}
+    return out
+
+
+def ring_record(root, kernels):
+    body_file = root / "decode_ring.counters.json"
+    body_file.write_text(json.dumps({"experiment": "decode_ring", "arch": "sm_90a", "date": "2026-01-01T00:00:00",
+                                     "git": {"sha": "0123456789abcdef"}, "kernels": kernels}))
+    Store("@fsla//measure/lab:decode_ring.run", root / "records").put(
+        lab_semantics("decode_ring", "sm_90a", kind="counters"), output_file=body_file)
+
+
+def test_decode_ring_page_is_written_from_its_counters_and_rewritten_alike(tmp_path):
+    gen = generator("decode_ring")
+    p = tree(tmp_path, "decode_ring")
+    ring_record(tmp_path, ring_kernels(gen))
+    assert gen.write(tmp_path, tmp_path, "nbabc") == [p]
+    once = p.read_text()
+    assert "MEASURED, THE SECTORS (sm_90a, Nebius preemptible VM abc; 2026-01-01, the experiment at 01234567;" in once
+    assert "`d_v` 64: every row within 0.0% of its declared bytes" in once and ": HELD." in once
+    assert "RECORD, `d_v` 64: 192 bytes read a leaf against the 160 declared, 1.20x: MISSED" in once
+    gen.write(tmp_path, tmp_path, "nbabc")
+    assert p.read_text() == once
+
+
+def test_decode_ring_refuses_an_absent_record_and_a_kernel_the_record_lacks(tmp_path):
+    gen = generator("decode_ring")
+    tree(tmp_path, "decode_ring")
+    with pytest.raises(SystemExit, match="no lab record"):
+        gen.write(tmp_path, tmp_path, "nbabc")
+    kernels = ring_kernels(gen)
+    kernels.pop(next(iter(kernels)))
+    ring_record(tmp_path, kernels)
+    with pytest.raises(SystemExit, match="holds no row"):
         gen.write(tmp_path, tmp_path, "nbabc")

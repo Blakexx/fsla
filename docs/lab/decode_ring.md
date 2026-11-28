@@ -18,7 +18,7 @@ The patterns: WRITE_ALL (an atom written whole: its page read, every leaf deposi
 and stored, then read by every head); READ_ALL (an atom's sixteen leaves read only: its hi plane, exponents and masses);
 WRITE_ONE and READ_ONE (one leaf an atom, scattered, written or read only; a position is one atom a lane group); and
 RECORD (READ_ONE on a page laid out with a leaf's exponents and mass beside its hi line, a 160-byte record a leaf at
-`d_v` 64 and 96 at 32: the layout a scattered read would want, the design's decision 6, measured and not adopted). Each
+`d_v` 64 and 96 at 32: the layout a scattered read would want, measured and not adopted: the state's page is the owner's format). Each
 at G = 1 and 8 read heads (`G x 9` accumulators a lane) and `d_v` 64, and at G = 8 and `d_v` 32; the `d_v` 64, G = 8
 rows again with every warp's timeline stamped.
 
@@ -40,7 +40,7 @@ and masses) over the launch's time by events.
 | P1 HBM read | warpline's H100 rates, its floor fixture of the H100 80GB HBM3 (the row `hbm.read`) | 12.415 bytes a cycle an SM at 1.963 GHz: 3,218 GB/s |
 | P2 HBM copy | the same, `hbm` (the bytes read and written) | 11.097 at 1.979 GHz: 2,899 GB/s |
 | P3 a scattered row | [`gather_rate`](gather_rate.md), a 2 GB table, 512 rows in flight a CTA | 9.71 cycles a 128-byte row a CTA: a scattered line at the stream's rate when 64 KB a CTA are in flight |
-| P4 the copy engine's requests | `tma_box`, the producer's experiment, its run 20261128T034956Z-802475-98afad64 (recorded, not yet in this tree's pinned data) | a 16-byte-line box 5.55x the 128-byte box: about 0.57 requests a cycle an SM |
+| P4 the copy engine's requests | `tma_box`'s record in the pinned data, `data:records/fsla/measure/lab/tma_box.run/20261128T034956Z-802475-98afad64/output.json` (a 48 KB stage by tensor copies, its rows `a tensor copy, 16-byte lines` and `a tensor copy, 128-byte lines swizzled`) | a 16-byte-line box 5.55x the 128-byte box (5,360 against 966 cycles a stage): about 0.57 requests a cycle an SM |
 | P5 a dependent DRAM load | [`clock_time`](clock_time.md), four chained scattered loads of a 64 MB table | 2,069 ns: about 517 ns, 1,015 cycles at 1.963 GHz, unloaded |
 | P6 issue | warpline's H100 rates, `issue` | 3.18 warp instructions a cycle an SM |
 
@@ -93,6 +93,99 @@ Across the bands: the ring a warp by PIECES holds 0.75 of its floor or more in e
 scattered read only; the producer falls on the scattered patterns, its one warp's issue the bound. G = 8 against G = 1
 costs nothing but where the issue binds (READ_ALL, READ_ONE). The stamped rows' windows lie within 5% of their twins'.
 
-WHAT IT WILL DECIDE: the walk's form (the design's decision 5, a free choice by measurement); whether a page laid out by
-leaf records would pay on a scattered read (decision 6, the owner's: the row is its evidence); and `L`, the price every
+WHAT IT WILL DECIDE: the walk's form (a free choice, made by measurement); whether a page laid out by leaf records
+would pay on a scattered read (the page's format is the owner's: the row is his evidence); and `L`, the price every
 decode prediction after it rests on.
+
+MEASURED, THE SECTORS (sm_90a, Nebius preemptible VM bench-20261128-084912; 2026-11-28, the experiment at 3db2b445;
+`-- ncu --metric dram__bytes_read.sum --metric dram__bytes_write.sum`, each kernel's median over its launches in one
+repetition, a launch 132 CTAs). A row's DRAM bytes against the bytes its pattern declares (its 32-byte sectors); a
+read-only row's written bytes, which it declares none of, in MB (the sums, and a stamped row's timeline):
+
+| pattern | form | `d_v`, G | read, of declared | written, of declared | read a leaf, bytes (declared) |
+|---|---|---|---:|---:|---:|
+| WRITE_ALL | REG | 64, 1 | 1.01 | 0.95 | 200 (198) |
+| WRITE_ALL | BULK | 64, 1 | 1.01 | 0.95 | 200 (198) |
+| WRITE_ALL | PIECES | 64, 1 | 1.01 | 0.95 | 200 (198) |
+| WRITE_ALL | PRODUCER | 64, 1 | 1.01 | 0.95 | 200 (198) |
+| READ_ALL | REG | 64, 1 | 1.03 | (0 MB) | 138 (134) |
+| READ_ALL | BULK | 64, 1 | 1.03 | (0 MB) | 138 (134) |
+| READ_ALL | PIECES | 64, 1 | 1.03 | (0 MB) | 138 (134) |
+| READ_ALL | PRODUCER | 64, 1 | 1.03 | (0 MB) | 138 (134) |
+| WRITE_ONE | REG | 64, 1 | 1.43 | 0.96 | 366 (256) |
+| WRITE_ONE | BULK | 64, 1 | 1.67 | 0.96 | 427 (256) |
+| WRITE_ONE | PIECES | 64, 1 | 1.67 | 0.96 | 427 (256) |
+| WRITE_ONE | PRODUCER | 64, 1 | 1.43 | 0.96 | 366 (256) |
+| READ_ONE | REG | 64, 1 | 1.42 | (0 MB) | 272 (192) |
+| READ_ONE | BULK | 64, 1 | 1.42 | (0 MB) | 272 (192) |
+| READ_ONE | PIECES | 64, 1 | 1.42 | (0 MB) | 272 (192) |
+| READ_ONE | PRODUCER | 64, 1 | 1.42 | (0 MB) | 272 (192) |
+| RECORD | REG | 64, 1 | 1.20 | (0 MB) | 192 (160) |
+| RECORD | PIECES | 64, 1 | 1.20 | (0 MB) | 192 (160) |
+| WRITE_ALL | BULK | 64, 8 | 1.01 | 0.99 | 200 (198) |
+| WRITE_ALL | PIECES | 64, 8 | 1.01 | 0.99 | 200 (198) |
+| WRITE_ALL | PRODUCER | 64, 8 | 1.01 | 0.99 | 200 (198) |
+| READ_ALL | BULK | 64, 8 | 1.03 | (1 MB) | 138 (134) |
+| READ_ALL | PIECES | 64, 8 | 1.03 | (1 MB) | 138 (134) |
+| READ_ALL | PRODUCER | 64, 8 | 1.04 | (5 MB) | 139 (134) |
+| WRITE_ONE | REG | 64, 8 | 1.43 | 1.01 | 367 (256) |
+| WRITE_ONE | BULK | 64, 8 | 1.68 | 1.00 | 429 (256) |
+| WRITE_ONE | PIECES | 64, 8 | 1.67 | 1.01 | 428 (256) |
+| WRITE_ONE | PRODUCER | 64, 8 | 1.44 | 1.01 | 369 (256) |
+| READ_ONE | REG | 64, 8 | 1.42 | (3 MB) | 273 (192) |
+| READ_ONE | BULK | 64, 8 | 1.42 | (1 MB) | 273 (192) |
+| READ_ONE | PIECES | 64, 8 | 1.42 | (2 MB) | 273 (192) |
+| READ_ONE | PRODUCER | 64, 8 | 1.43 | (5 MB) | 275 (192) |
+| RECORD | REG | 64, 8 | 1.21 | (2 MB) | 193 (160) |
+| RECORD | PIECES | 64, 8 | 1.20 | (1 MB) | 193 (160) |
+| WRITE_ALL | BULK | 32, 8 | 1.05 | 1.00 | 106 (101) |
+| WRITE_ALL | PIECES | 32, 8 | 1.05 | 1.00 | 106 (101) |
+| WRITE_ALL | PRODUCER | 32, 8 | 1.04 | 1.01 | 105 (101) |
+| READ_ALL | BULK | 32, 8 | 1.09 | (1 MB) | 75 (69) |
+| READ_ALL | PIECES | 32, 8 | 1.09 | (1 MB) | 75 (69) |
+| READ_ALL | PRODUCER | 32, 8 | 1.10 | (5 MB) | 76 (69) |
+| WRITE_ONE | REG | 32, 8 | 1.86 | 1.18 | 298 (160) |
+| WRITE_ONE | BULK | 32, 8 | 2.59 | 1.18 | 415 (160) |
+| WRITE_ONE | PIECES | 32, 8 | 2.59 | 1.18 | 414 (160) |
+| WRITE_ONE | PRODUCER | 32, 8 | 1.83 | 1.18 | 293 (160) |
+| READ_ONE | REG | 32, 8 | 1.69 | (3 MB) | 216 (128) |
+| READ_ONE | BULK | 32, 8 | 1.69 | (1 MB) | 216 (128) |
+| READ_ONE | PIECES | 32, 8 | 1.69 | (2 MB) | 216 (128) |
+| READ_ONE | PRODUCER | 32, 8 | 1.70 | (4 MB) | 217 (128) |
+| RECORD | REG | 32, 8 | 1.34 | (2 MB) | 129 (96) |
+| RECORD | PIECES | 32, 8 | 1.34 | (2 MB) | 128 (96) |
+| WRITE_ALL | BULK | 64, 8, stamped | 1.01 | 1.01 | 201 (198) |
+| WRITE_ALL | PIECES | 64, 8, stamped | 1.01 | 1.01 | 201 (198) |
+| WRITE_ALL | PRODUCER | 64, 8, stamped | 1.01 | 1.02 | 201 (198) |
+| READ_ALL | BULK | 64, 8, stamped | 1.03 | (11 MB) | 138 (134) |
+| READ_ALL | PIECES | 64, 8, stamped | 1.03 | (12 MB) | 138 (134) |
+| READ_ALL | PRODUCER | 64, 8, stamped | 1.03 | (19 MB) | 138 (134) |
+| WRITE_ONE | REG | 64, 8, stamped | 1.43 | 1.04 | 367 (256) |
+| WRITE_ONE | BULK | 64, 8, stamped | 1.68 | 1.05 | 431 (256) |
+| WRITE_ONE | PIECES | 64, 8, stamped | 1.68 | 1.05 | 430 (256) |
+| WRITE_ONE | PRODUCER | 64, 8, stamped | 1.44 | 1.06 | 367 (256) |
+| READ_ONE | REG | 64, 8, stamped | 1.42 | (15 MB) | 273 (192) |
+| READ_ONE | BULK | 64, 8, stamped | 1.42 | (17 MB) | 273 (192) |
+| READ_ONE | PIECES | 64, 8, stamped | 1.42 | (18 MB) | 272 (192) |
+| READ_ONE | PRODUCER | 64, 8, stamped | 1.42 | (26 MB) | 273 (192) |
+| RECORD | REG | 64, 8, stamped | 1.20 | (14 MB) | 193 (160) |
+| RECORD | PIECES | 64, 8, stamped | 1.20 | (17 MB) | 192 (160) |
+
+WHAT IT SHOWS.
+- THE WHOLE ATOMS (WRITE_ALL, READ_ALL), `d_v` 64: every row within 4.9% of its declared bytes, read and written (the widest WRITE_ALL by BULK, G 1): HELD.
+- THE WHOLE ATOMS (WRITE_ALL, READ_ALL), `d_v` 32: every row within 10.4% of its declared bytes, read and written (the widest READ_ALL by PRODUCER, G 8): MISSED.
+- READ_ONE, `d_v` 64: 272 bytes read a leaf against the 192 declared, 1.42x to 1.43x: MISSED. At the 64-byte block's grain a leaf reads 256, the measured 16 to 19 bytes over it.
+- RECORD, `d_v` 64: 192 bytes read a leaf against the 160 declared, 1.20x to 1.21x: MISSED. At the 64-byte block's grain a leaf reads 192, the measured within 1 of it.
+- READ_ONE, `d_v` 32: 216 bytes read a leaf against the 128 declared, 1.69x to 1.70x: MISSED. At the 64-byte block's grain a leaf reads 192, the measured 24 to 25 bytes over it.
+- RECORD, `d_v` 32: 128 bytes read a leaf against the 96 declared, 1.34x: MISSED. At the 64-byte block's grain a leaf reads 128, the measured within 1 of it.
+- WRITE_ONE reads more than it declares in every form, and the rings more than REG: 427 bytes a leaf by
+  PIECES against REG's 366 at `d_v` 64, G 1 (414 against 298 at `d_v` 32, G 8); its written
+  bytes are its declared ones within 6% at `d_v` 64.
+- A stamped row reads within 1.0% of its twin's bytes.
+
+THE PREDICTION'S PRICE NAMED. The L2 does not fetch a scattered miss at the sector's 32 bytes: the record's leaves read
+the 64-byte blocks their records span, within 1.3 bytes, and the ruled page's scattered leaf reads its blocks and a residual
+beside them. Every scattered pattern's floor is priced on 64-byte blocks from here; the timed rows' bands that rest on
+the 32-byte grain (every ONE pattern and RECORD) are re-based on it with the next recorded run.
+
+Record: `data:records/fsla/measure/lab/decode_ring.run/20261128T085609Z-468416-ebc1cbff/output.json`.
