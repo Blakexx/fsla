@@ -8,10 +8,11 @@
 // is the K-loop and an epilogue that folds the accumulators; the next job's K-loop re-stages its tile (a write head's
 // jobs, each re-reading its tile). Operands are small integers in bf16, so every sum is exact: the last job's
 // accumulators of two CTAs are checked against the host's products.
-// TIMELINE: the loader's trip is a stage: its slot's EMPTY edge, 96 copies a lane, the FULL edge (each lane's copies
-// landed). A warpgroup's trip is a stage: the FULL edge, the async-proxy fence, 4 steps, the commit, a wait leaving one
-// group in flight, then the previous stage's EMPTY edge; a job's end waits for all, releases, folds and clears. Live:
-// the 128 accumulators a thread, two descriptors, the ring's parities.
+// TIMELINE: the loader's trip is a stage: its slot's EMPTY edge, then 96 copies a lane and the FULL edge their landed
+// arrivals (cp.async), or one thread's stated bytes and two tensor copies completing FULL (the tensor copy). A
+// warpgroup's trip is a stage: the FULL edge, the async-proxy fence (cp.async only), 4 steps, the commit, a wait
+// leaving one group in flight, then the previous stage's EMPTY edge; a job's end waits for all, releases, folds and
+// clears. Live: the 128 accumulators a thread, two descriptors, the ring's parities.
 // see docs/internals/tools/lab.md#projection-tile
 #include <cuda_bf16.h>
 

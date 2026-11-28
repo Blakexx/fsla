@@ -67,7 +67,7 @@ def write_banded(root: pathlib.Path, data: pathlib.Path, instance: str, experime
         verdict = "held" if c.lo <= f <= c.hi else "MISSED"
         rows.append(f"| {c.label} | {f:,.2f} {c.unit} | {_band(c)} | {verdict} |")
     table = "\n".join(["| the figure | measured | the prediction | held |", "|---|---:|---|---|"] + rows)
-    spread = max((r["max"] - r["min"]) / r["median"] for r in d["results"])
+    spread = max((r["max"] - r["min"]) / r["median"] for r in d["results"] if r["median"])
     checked = sum(1 for c in d["checks"] if c["lab"] == "check" and c["ok"])
     figures = "\n".join(f"- {r['name']}: {r['median']:,.2f} {r['unit']}." for r in d["results"])
     text = "\n".join(paragraphs) + f"""

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 
 def _floor(hidden: int, loader: str = "") -> str:
@@ -37,7 +37,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T045918Z-121596-2eacf67b",
         "2026-11-28",
         "the first run's 5.3x at every hidden was the one loader warp's cp.async (~9 bytes a cycle an SM, lg_throttle); "
         "tma_box's 128-byte swizzled tensor copy staged the same 48 KB in 966 cycles (50.9 bytes a cycle an SM), under the "

@@ -29,3 +29,10 @@ value every lane holds picks whether a word is read with no branch on it (the ca
 
 - <a id="store-bf16"></a>`store_bf16`: one fp32 to one bf16, rounded as `pack_bf16x2` rounds each half, for a
   transposed accumulator whose adjacent pair is adjacent in TOKEN and so in different rows of a [token][d_v] buffer.
+
+- <a id="l2-policy"></a>`l2_evict_first()`, `l2_evict_last()`, `load_global_v4_hinted(p, policy)`: an L2 policy over a
+  whole access (`createpolicy.fractional`, fraction 1) and a 16-byte load under it. MEASURED
+  ([`l2_policy`](../../../lab/l2_policy.md)): a read-once 1 GiB stream evict-first beside a 16 MB table evict-last
+  takes a trip 1.27x faster than plain loads (the table's L2 hit rate ~48% to ~78%), at 40 MB 1.14x (~18% to ~40%):
+  every SM's shared table holds about 25 MB of the 50 MB L2. BLACKWELL (sm_100): the same instructions; their measure
+  there owed with blackwell's first schedule.

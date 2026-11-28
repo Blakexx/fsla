@@ -169,5 +169,28 @@ __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __f
 //: One fp32 element, stored where it will later be read as a summand rather than -- see docs/internals/common/atoms/memory.md#storef32
 __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 
+//: THE L2 POLICIES (`createpolicy`, sm_80+): a whole access's lines evicted first (a stream read once) or last (a table
+//: every CTA rereads) -- see docs/internals/common/atoms/memory.md#l2-policy
+__device__ __forceinline__ uint64_t l2_evict_first() {
+  uint64_t p;
+  asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(p));
+  return p;
+}
+
+__device__ __forceinline__ uint64_t l2_evict_last() {
+  uint64_t p;
+  asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(p));
+  return p;
+}
+
+//: A 16-BYTE GLOBAL LOAD UNDER AN L2 POLICY (`ld.global.L2::cache_hint`)
+__device__ __forceinline__ uint4 load_global_v4_hinted(const uint4* p, uint64_t policy) {
+  uint4 v;
+  asm volatile("ld.global.L2::cache_hint.v4.u32 {%0, %1, %2, %3}, [%4], %5;"
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+               : "l"(p), "l"(policy));
+  return v;
+}
+
 }  // namespace ops
 }  // namespace denseref
