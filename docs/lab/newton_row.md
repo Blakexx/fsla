@@ -5,7 +5,7 @@ Mirrors `measure/lab/experiments/newton_row.cu`, an experiment of the lab
 
 The producer's entmax threshold is solved on the projection's accumulators by Newton from the left. On a `wgmma` m64n256 accumulator's rows: how many steps does a row take, and a warp (its 16 rows' vote); what does a 64-token block cost; is the support EXACT against the fp64 sorted closed form?
 
-THE FORM. A warpgroup holds a 64-token block of 256 logits a token in the m64n256 accumulator's layout ([`wgmma_regs`](wgmma_regs.md)), loaded before the clock; one or two warpgroups a CTA, a CTA an SM. THE MATHEMATICS. With a row shifted by its max (`x = z - max`), alpha 1.5's level is `((x - tau) / 2)_+^2` and alpha 2's `(x - tau)_+`; `f(tau) = sum level - 1` is convex and decreasing, and `f(-2) >= 0` at alpha 1.5 (`f(-1) >= 0` at 2: the max alone), so Newton from there never passes the root. At a bound `lo`, with `n`, `P` and `Q` the count, sum and sum of squares of the support `{x > lo}`: alpha 1.5's `f(lo) = (Q - 2 P lo + n lo^2) / 4 - 1` and `f'(lo) = -(P - n lo) / 2`, so its step is `lo + (Q - 2 P lo + n lo^2 - 4) / (2 (P - n lo))`; the closed form on that support is alpha 1.5's smaller root of `n tau^2 - 2 P tau + Q - 4`, alpha 2's `(P - 1) / n` (the step itself); it is the root exactly when no member of the support lies below it, the count of `x >= tau` equal to `n`. Each step is a pass over a thread's 128 values -- one compare and three predicated adds a value (no select), then the settled count's compare and predicated add -- and two shuffles a sum; the warp's vote over its 16 rows ends the loop, cap 16. Two forms of the step: SERIAL, each row's pass, sums, closed form and count in turn; INTERLEAVED, both rows' passes in one loop with every sum split into two chains (twelve chains of 32), the six sums' shuffles issued together, both counts in one loop. A row's steps are its 4 lanes' most (it settles when every lane holding it does). The check is the support against fp64, a row that differs passing only where every disagreeing logit lies within 2 units of fp32's last place at the threshold (the sorted closed form in fp32 differs from fp64 on such rows too). The inputs are `tests/integration/test_production_levels.py`'s stress kinds at 256 columns (random, near the boundary, a collapsed support, five times the scale); the oracle the entmax package's sorted closed form (`entmax15`, `sparsemax`) in fp64. Every row's support, threshold and steps are written and checked.
+THE FORM. A warpgroup holds a 64-token block of 256 logits a token in the m64n256 accumulator's layout ([`wgmma_regs`](wgmma_regs.md)), loaded before the clock; one or two warpgroups a CTA, a CTA an SM. THE MATHEMATICS. With a row shifted by its max (`x = z - max`), alpha 1.5's level is `((x - tau) / 2)_+^2` and alpha 2's `(x - tau)_+`; `f(tau) = sum level - 1` is convex and decreasing, and `f(-2) >= 0` at alpha 1.5 (`f(-1) >= 0` at 2: the max alone), so Newton from there never passes the root. At a bound `lo`, with `n`, `P` and `Q` the count, sum and sum of squares of the support `{x > lo}`: alpha 1.5's `f(lo) = (Q - 2 P lo + n lo^2) / 4 - 1` and `f'(lo) = -(P - n lo) / 2`, so its step is `lo + (Q - 2 P lo + n lo^2 - 4) / (2 (P - n lo))`; the closed form on that support is alpha 1.5's smaller root of `n tau^2 - 2 P tau + Q - 4`, alpha 2's `(P - 1) / n` (the step itself); it is the root exactly when no member of the support lies below it, the count of `x >= tau` equal to `n`. Each step is a pass over a thread's 128 values -- one compare and three predicated adds a value (no select), then the settled count's compare and predicated add -- and two shuffles a sum; the warp's vote over its 16 rows ends the loop, cap 16. Three forms of the step: SERIAL, each row's pass, sums, closed form and count in turn; INTERLEAVED, both rows' passes in one loop with every sum split into two chains (twelve chains of 32), the six sums' shuffles issued together, both counts in one loop; and INTERLEAVED with its closed form in IEEE arithmetic (the rounded root and divide). A row's steps are its 4 lanes' most (it settles when every lane holding it does). THE CHECK is what the producer outputs against fp64's: every level within the stored entmax values' clause (max(2e-5 |p|, 2e-6), `tests/oracle/tolerances.py`'s ENTMAX_VALUES), every u8 digit (`rint(255 p / max)`) equal to fp64's or one off within that allowance of its half-point, the mask bits (a digit nonzero) and the density (their count) the digits' own; each row also records the digits and mask bits that differ from fp64's.
 
 PREDICTION, run unrecorded 2026-11-28T03:46 (its check failed on one near-boundary row past the 2-ulp clause) (written 2026-11-28, before it ran; its basis: the first run's blocks fit cycles = 420 + S c within 4% at one warpgroup (c 1,157 alpha 1.5, 1,100 alpha 2, the steps S a block's from the host's float32 iteration: 6.0 and 4.8 random); a step issues 861 (alpha 1.5) or 685 (alpha 2) instructions, so ~300-400 cycles of latency are exposed; the interleaved form issues 872 and 690 with twelve chains of 32 (the chains' latency under the issue) and the phases' own latency (the shuffles, the root and divide, the vote: ~150-180) left, so c ~1,050 and ~840 at one warpgroup and issue-bound at two (872, 690 a block); the steps a row are now the row's (its 4 lanes' most), as the host's iteration counts them):
 
@@ -21,7 +21,7 @@ PREDICTION, run unrecorded 2026-11-28T03:46 (its check failed on one near-bounda
 - alpha 2, random: steps a row, the mean: 2.53-3.09 steps.
 - alpha 1.5, near the boundary, 1 WG: supports differing within fp32's resolution: 0.00-12.00 rows.
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the fourth run held every timing and step band; its interleaved blocks give a step of (6,766 - 420) / 6.0 = 1,058 cycles (alpha 1.5) and (4,622 - 473) / 4.39 = 944 (alpha 2) at one warpgroup. The IEEE closed form (`__fsqrt_rn`, `__fdiv_rn`) adds 36 instructions a step at alpha 1.5 (908 against 872) and 19 at alpha 2 (709 against 690), and puts the rounded root's and divide's refinements on the step's critical path (~30-60 cycles); its threshold within fp32's rounding of the sums. The check is the producer's outputs against fp64's (levels under the stored values' clause, digits, mask bits, density); a digit flips where its value lies within the level's error of a half-point: ~20 live digits a row, the approximate threshold ~3e-7 off fp64 (255 x 0.5 x 3e-7 ~ 4e-5 of a digit) gives a flip in ~1e-4 of them, ~15 in 8,448 rows; the IEEE one ~5e-8 off, a few. The other forms repeat within 3%):
+PREDICTION, run 20261128T045839Z-149866-f2c33cba (written 2026-11-28, before it ran; its basis: the fourth run held every timing and step band; its interleaved blocks give a step of (6,766 - 420) / 6.0 = 1,058 cycles (alpha 1.5) and (4,622 - 473) / 4.39 = 944 (alpha 2) at one warpgroup. The IEEE closed form (`__fsqrt_rn`, `__fdiv_rn`) adds 36 instructions a step at alpha 1.5 (908 against 872) and 19 at alpha 2 (709 against 690), and puts the rounded root's and divide's refinements on the step's critical path (~30-60 cycles); its threshold within fp32's rounding of the sums. The check is the producer's outputs against fp64's (levels under the stored values' clause, digits, mask bits, density); a digit flips where its value lies within the level's error of a half-point: ~20 live digits a row, the approximate threshold ~3e-7 off fp64 (255 x 0.5 x 3e-7 ~ 4e-5 of a digit) gives a flip in ~1e-4 of them, ~15 in 8,448 rows; the IEEE one ~5e-8 off, a few. The other forms repeat within 3%):
 
 - alpha 1.5, random, 1 WG, serial: a block: 7,130.00-7,570.00 cycles.
 - alpha 1.5, random, 1 WG: the interleaved block over the serial: 0.89-0.95 times.
@@ -34,3 +34,361 @@ PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the f
 - alpha 1.5, random, 1 WG IEEE: digits that differ from fp64's: 0.00-30.00 digits.
 - alpha 1.5, near the boundary, 1 WG: digits that differ from fp64's: 1.00-200.00 digits.
 - alpha 1.5, near the boundary, 1 WG IEEE: digits that differ from fp64's: 0.00-40.00 digits.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00gnjr2w7t9bny2p4, driver 580.196.07; 2026-11-28, the experiment at
+0aac2c88, run 20261128T045839Z-149866-f2c33cba; 7 repetitions, the 48 checked variants exact; the median, the widest
+spread of a row 0.4%; the clock as the card left it):
+
+| the figure | measured | the prediction | held |
+|---|---:|---|---|
+| alpha 1.5, random, 1 WG, serial: a block | 7,316.71 cycles | 7,130.00-7,570.00 cycles | held |
+| alpha 1.5, random, 1 WG: the interleaved block over the serial | 0.94 times | 0.89-0.95 times | held |
+| alpha 2, random, 1 WG: the interleaved block over the serial | 0.81 times | 0.78-0.84 times | held |
+| alpha 1.5, random, 1 WG: the IEEE closed form's block over the approximate one's | 1.27 times | 1.02-1.09 times | MISSED |
+| alpha 1.5, near the boundary, 1 WG: the IEEE closed form's block over the approximate one's | 1.27 times | 1.02-1.09 times | MISSED |
+| alpha 2, random, 1 WG: the IEEE closed form's block over the approximate one's | 1.09 times | 1.01-1.07 times | MISSED |
+| alpha 1.5, random, 2 WG: the IEEE closed form's block over the approximate one's | 1.11 times | 1.01-1.09 times | MISSED |
+| alpha 1.5, random, 1 WG: digits that differ from fp64's | 0.00 digits | 1.00-150.00 digits | MISSED |
+| alpha 1.5, random, 1 WG IEEE: digits that differ from fp64's | 0.00 digits | 0.00-30.00 digits | held |
+| alpha 1.5, near the boundary, 1 WG: digits that differ from fp64's | 1.00 digits | 1.00-200.00 digits | held |
+| alpha 1.5, near the boundary, 1 WG IEEE: digits that differ from fp64's | 1.00 digits | 0.00-40.00 digits | held |
+
+The record's rows:
+- alpha 1.5, random, 1 warpgroup a CTA: a 64-token block: 7,316.71 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 1 warpgroup a CTA: steps a row, the mean: 4.29 steps.
+- alpha 1.5, random, 1 warpgroup a CTA: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 5.59 steps.
+- alpha 1.5, random, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 5.99 steps.
+- alpha 1.5, random, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, random, 2 warpgroups a CTA: a 64-token block: 6,334.27 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 2 warpgroups a CTA: steps a row, the mean: 4.30 steps.
+- alpha 1.5, random, 2 warpgroups a CTA: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 5.61 steps.
+- alpha 1.5, random, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 6.01 steps.
+- alpha 1.5, random, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 1 warpgroup a CTA: a 64-token block: 5,637.31 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 1 warpgroup a CTA: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 1 warpgroup a CTA: steps a row, the most: 6.00 steps.
+- alpha 2, random, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 4.04 steps.
+- alpha 2, random, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 4.39 steps.
+- alpha 2, random, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 2 warpgroups a CTA: a 64-token block: 4,044.78 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 2 warpgroups a CTA: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 2 warpgroups a CTA: steps a row, the most: 6.00 steps.
+- alpha 2, random, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 4.03 steps.
+- alpha 2, random, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 4.38 steps.
+- alpha 2, random, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 6,844.09 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 4.29 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 5.59 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 5.99 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 6,039.23 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 4.30 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 5.61 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 6.01 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 4,585.60 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 6.00 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 4.04 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 4.39 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 3,966.20 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 6.00 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 4.03 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 4.38 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 8,712.20 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 4.29 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 5.59 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 5.99 steps.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 6,690.90 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 4.30 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 7.00 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 5.61 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 6.01 steps.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 4,975.83 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 6.00 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 4.04 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 4.39 steps.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 4,117.35 cycles a block (the CTA's span over its blocks).
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 2.60 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 6.00 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 4.03 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 4.38 steps.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, random, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: a 64-token block: 8,056.84 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 5.55 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 6.66 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: a 64-token block: 6,714.23 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 5.51 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 6.59 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 1 warpgroup a CTA: a 64-token block: 5,457.93 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 1 warpgroup a CTA: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 3.58 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 4.21 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 2 warpgroups a CTA: a 64-token block: 3,941.19 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 2 warpgroups a CTA: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 3.57 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 4.16 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 7,543.64 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 5.55 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 6.67 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 6,380.62 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 5.51 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 6.59 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 4,449.78 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 3.58 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 4.21 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 3,824.12 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 3.57 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 4.16 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 9,604.36 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 5.55 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 6.67 steps.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 7,189.55 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 3.34 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 7.00 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 5.51 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 6.59 steps.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 1.00 digits.
+- alpha 1.5, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 4,831.51 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 3.58 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 4.21 steps.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 3,977.53 cycles a block (the CTA's span over its blocks).
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 2.20 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 5.00 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 3.57 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 4.16 steps.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, near the boundary, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: a 64-token block: 1,566.42 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: a 64-token block: 1,366.04 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: a 64-token block: 1,562.41 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 1 warpgroup a CTA: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: a 64-token block: 1,185.35 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 2 warpgroups a CTA: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 1,529.83 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 1,371.34 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 1,344.53 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 1,187.81 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 1,770.22 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 1,447.13 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 1,428.21 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 1,213.18 cycles a block (the CTA's span over its blocks).
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 1.00 steps.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, a collapsed support, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: a 64-token block: 4,167.56 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: steps a row, the mean: 1.32 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 2.79 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 3.41 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: a 64-token block: 3,467.58 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: steps a row, the mean: 1.33 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 2.80 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 3.39 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 1 warpgroup a CTA: a 64-token block: 3,269.20 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 1 warpgroup a CTA: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA: steps a block (its 4 warps' most), the mean: 2.22 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 1 warpgroup a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 2 warpgroups a CTA: a 64-token block: 2,385.48 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 2 warpgroups a CTA: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA: steps a block (its 4 warps' most), the mean: 2.23 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 2 warpgroups a CTA: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 4,044.67 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 1.32 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 2.79 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 3.41 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 3,469.68 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 1.33 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 2.80 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 3.39 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: a 64-token block: 2,705.30 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 2.22 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: a 64-token block: 2,331.82 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: steps a block (its 4 warps' most), the mean: 2.23 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 4,919.03 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.32 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 2.79 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 3.41 steps.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 3,839.02 cycles a block (the CTA's span over its blocks).
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.33 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 5.00 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 2.80 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 3.39 steps.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 1.5, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 2,914.10 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 2.22 steps.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 1 warpgroup a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: a 64-token block: 2,406.10 cycles a block (the CTA's span over its blocks).
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the mean: 1.12 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a row, the most: 3.00 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a warp (its 16 rows' vote), the mean: 1.93 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: steps a block (its 4 warps' most), the mean: 2.23 steps.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: digits that differ from fp64's: 0.00 digits.
+- alpha 2, five times the scale, 2 warpgroups a CTA, both rows interleaved, the closed form IEEE: mask bits that differ from fp64's: 0.00 bits.
+
+Record: `data:records/fsla/measure/lab/newton_row.run/20261128T045839Z-149866-f2c33cba/output.json`.

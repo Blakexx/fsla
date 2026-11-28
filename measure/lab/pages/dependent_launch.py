@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 PLAIN = "two plain launches: a pair"
 DEPENDENT = "the second launched dependent (griddepcontrol): a pair"
@@ -27,7 +27,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T050218Z-236870-abd0066c",
         "2026-11-28",
         "the first run's dependent pair (the trigger at the first's top) was 0.94 us slower than plain: the dependent's "
         "CTAs launched at once and shared the SMs and HBM with the first's writes; with the trigger after its writes they "

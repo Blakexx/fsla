@@ -10,6 +10,7 @@
 // TIMELINE: a thread's trip is the ring's two halves at their own registers (the stream's 8 units, the table's 8): a
 // half folded, then its loads for the trip after. Live: the ring's 64 words, the chain, the two policies.
 // see docs/internals/tools/lab.md#l2-policy
+#include "common/atoms/memory.cuh"
 #include "lab.cuh"
 
 namespace l2_policy {
@@ -25,28 +26,12 @@ __global__ void __launch_bounds__(kThreads, 1) fill(uint4* table, long long coun
     table[i] = make_uint4(word_of(4 * i), word_of(4 * i + 1), word_of(4 * i + 2), word_of(4 * i + 3));
 }
 
-//: THE POLICIES: a fraction 1.0 of the lines a load touches, evicted first or last
-__device__ __forceinline__ uint64_t evict_first() {
-  uint64_t p;
-  asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(p));
-  return p;
-}
-__device__ __forceinline__ uint64_t evict_last() {
-  uint64_t p;
-  asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(p));
-  return p;
-}
-
-//: a 16-byte load under a policy, or plain
+//: a 16-byte load under a policy (the production atom), or plain
 template <bool HINT>
 __device__ __forceinline__ uint4 load(const uint4* p, uint64_t policy) {
+  if constexpr (HINT) return ::denseref::ops::load_global_v4_hinted(p, policy);
   uint4 v;
-  if constexpr (HINT)
-    asm volatile("ld.global.L2::cache_hint.v4.u32 {%0, %1, %2, %3}, [%4], %5;"
-                 : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
-                 : "l"(p), "l"(policy));
-  else
-    asm volatile("ld.global.v4.u32 {%0, %1, %2, %3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "l"(p));
+  asm volatile("ld.global.v4.u32 {%0, %1, %2, %3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "l"(p));
   return v;
 }
 
@@ -62,7 +47,7 @@ __global__ void __launch_bounds__(kThreads, 1)
     kept(long long* times, const uint4* stream, const uint4* table, uint32_t* sums, long long per, int trips) {
   constexpr long long units = MB * (1LL << 20) / kUnitBytes;
   const int tid = threadIdx.x, block = blockIdx.x;
-  const uint64_t first = evict_first(), last = evict_last();
+  const uint64_t first = ::denseref::ops::l2_evict_first(), last = ::denseref::ops::l2_evict_last();
   uint32_t sum = 0;
   uint4 held[2][kHalf];
   //: the table's position walked by adds, `table_unit` without a division a load

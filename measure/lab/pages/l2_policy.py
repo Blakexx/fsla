@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 
 def _trip(mb: int, hint: bool) -> str:
@@ -31,7 +31,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T050251Z-715035-6e09bfc4",
         "2026-11-28",
         "the first run's trips, a kernel now a table size (the profiler's hit rate then each table's): the 16 MB plain "
         "trip 1.31x the hinted and the 40 MB 1.10x, repeating within 5%",

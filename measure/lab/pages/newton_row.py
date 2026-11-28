@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 BLOCK = "a 64-token block"
 
@@ -77,7 +77,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T045839Z-149866-f2c33cba",
         "2026-11-28",
         "the fourth run held every timing and step band; its interleaved blocks give a step of (6,766 - 420) / 6.0 = 1,058 "
         "cycles (alpha 1.5) and (4,622 - 473) / 4.39 = 944 (alpha 2) at one warpgroup. The IEEE closed form (`__fsqrt_rn`, "

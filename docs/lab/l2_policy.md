@@ -12,28 +12,28 @@ PREDICTION, run 20261128T014645Z-403597-16c6d19e (written 2026-11-27, before it 
 - 16 MB: the plain trip over the hinted: 0.90-1.10 times.
 - 40 MB: the plain trip over the hinted: 1.30-2.00 times.
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's trips, a kernel now a table size (the profiler's hit rate then each table's): the 16 MB plain trip 1.31x the hinted and the 40 MB 1.10x, repeating within 5%):
+PREDICTION, run 20261128T050251Z-715035-6e09bfc4 (written 2026-11-28, before it ran; its basis: the first run's trips, a kernel now a table size (the profiler's hit rate then each table's): the 16 MB plain trip 1.31x the hinted and the 40 MB 1.10x, repeating within 5%):
 
 - 16 MB: the plain trip over the hinted: 1.24-1.38 times.
 - 40 MB: the plain trip over the hinted: 1.05-1.16 times.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
-00123881, run 20261128T014645Z-403597-16c6d19e; 7 repetitions, the 4 checked variants exact; the median, the widest
-spread of a row 1.4%; the clock as the card left it):
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00gnjr2w7t9bny2p4, driver 580.196.07; 2026-11-28, the experiment at
+0aac2c88, run 20261128T050251Z-715035-6e09bfc4; 7 repetitions, the 4 checked variants exact; the median, the widest
+spread of a row 1.7%; the clock as the card left it):
 
 | the figure | measured | the prediction | held |
 |---|---:|---|---|
-| 16 MB: the plain trip over the hinted | 1.31 times | 0.90-1.10 times | MISSED |
-| 40 MB: the plain trip over the hinted | 1.10 times | 1.30-2.00 times | MISSED |
+| 16 MB: the plain trip over the hinted | 1.27 times | 1.24-1.38 times | held |
+| 40 MB: the plain trip over the hinted | 1.13 times | 1.05-1.16 times | held |
 
 The record's rows:
-- 16 MB table beside a 1 GiB stream, no hint: a trip: 6,780.56 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
-- 16 MB table beside a 1 GiB stream, no hint: the launch: 449.82 microseconds.
-- 16 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: a trip: 5,185.12 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
-- 16 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: the launch: 344.80 microseconds.
-- 40 MB table beside a 1 GiB stream, no hint: a trip: 8,020.30 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
-- 40 MB table beside a 1 GiB stream, no hint: the launch: 534.72 microseconds.
-- 40 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: a trip: 7,278.05 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
-- 40 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: the launch: 484.96 microseconds.
+- 16 MB table beside a 1 GiB stream, no hint: a trip: 6,528.78 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
+- 16 MB table beside a 1 GiB stream, no hint: the launch: 435.42 microseconds.
+- 16 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: a trip: 5,147.07 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
+- 16 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: the launch: 343.46 microseconds.
+- 40 MB table beside a 1 GiB stream, no hint: a trip: 8,092.23 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
+- 40 MB table beside a 1 GiB stream, no hint: the launch: 538.85 microseconds.
+- 40 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: a trip: 7,131.56 cycles a trip a CTA (64 KB of the stream, 64 KB of the table).
+- 40 MB table beside a 1 GiB stream, the stream evict-first and the table evict-last: the launch: 473.44 microseconds.
 
-Record: `data:records/fsla/measure/lab/l2_policy.run/20261128T014645Z-403597-16c6d19e/output.json`.
+Record: `data:records/fsla/measure/lab/l2_policy.run/20261128T050251Z-715035-6e09bfc4/output.json`.

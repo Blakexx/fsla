@@ -3,7 +3,7 @@
 Mirrors `measure/lab/experiments/projection_tile.cu`, an experiment of the lab
 ([`docs/internals/tools/lab.md`](../internals/tools/lab.md)).
 
-The producer's projection tile alone: a job is 128 tokens x 256 columns over the hidden axis, two math warpgroups of 64 tokens each issuing `wgmma` m64n256k16 from shared memory, one loader warp staging a K-step (64 hidden) of `x` [128 x 64] and the job's weights [256 x 64] by `cp.async` into a ring of three stages. What does a job cost at hidden 256, 512 and 2,048, against its tensor floor (16 x hidden cycles: two warpgroups' steps on one pipe, 128 cycles a step)?
+The producer's projection tile alone: a job is 128 tokens x 256 columns over the hidden axis, two math warpgroups of 64 tokens each issuing `wgmma` m64n256k16 from shared memory, a loader staging a K-step (64 hidden) of `x` [128 x 64] and the job's weights [256 x 64] into a ring of three stages, in two forms: one warp's `cp.async` into unswizzled bricks, its edges a stage's EMPTY wait, 96 copies a lane and their landed arrivals on FULL; or one thread's two tensor copies of 128-byte lines, 128-byte swizzled (`stage_box_2d`), its edges the EMPTY wait, the stated bytes (`mbar_expect_bytes`) and the copies completing FULL, the steps reading them through the swizzled K-major descriptor (`step_operand_k128`, no proxy fence: the copy writes through the async proxy). What does a job cost at hidden 256, 512 and 2,048, against its tensor floor (16 x hidden cycles: two warpgroups' steps on one pipe, 128 cycles a step)?
 
 THE FORM. A CTA an SM, each its own 128-token tile of `x`, every CTA the same four jobs' weights (a write head's, from L2); a job's K-loop then an epilogue folding the accumulators; the next job re-stages the tile (a write head's jobs, each re-reading its tile). The operands are small integers in bf16, so every sum is exact: the last job's accumulators of two CTAs are checked against the host's products.
 
@@ -13,29 +13,36 @@ PREDICTION, run 20261128T034916Z-771677-038e8f02 (written 2026-11-28, before it 
 - hidden 512: a job over its tensor floor: 1.08-1.28 times.
 - hidden 2,048: a job over its tensor floor: 1.18-1.36 times.
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's 5.3x at every hidden was the one loader warp's cp.async (~9 bytes a cycle an SM, lg_throttle); tma_box's 128-byte swizzled tensor copy staged the same 48 KB in 966 cycles (50.9 bytes a cycle an SM), under the tensor floor's 1,024; so a K-step is the floor's 1,024 plus what the ring fails to hide (~0-100) at hidden 256 and 512, and at 2,048 x's 16 KB from HBM (12.95 bytes a cycle an SM: 1,265) binds; a job its K-steps plus ~900 (the ring's first fill's share, its end's wait, fold and clear); the cp.async form repeats within 5%):
+PREDICTION, run 20261128T045918Z-121596-2eacf67b (written 2026-11-28, before it ran; its basis: the first run's 5.3x at every hidden was the one loader warp's cp.async (~9 bytes a cycle an SM, lg_throttle); tma_box's 128-byte swizzled tensor copy staged the same 48 KB in 966 cycles (50.9 bytes a cycle an SM), under the tensor floor's 1,024; so a K-step is the floor's 1,024 plus what the ring fails to hide (~0-100) at hidden 256 and 512, and at 2,048 x's 16 KB from HBM (12.95 bytes a cycle an SM: 1,265) binds; a job its K-steps plus ~900 (the ring's first fill's share, its end's wait, fold and clear); the cp.async form repeats within 5%):
 
 - hidden 256: the cp.async job over its floor: 5.00-5.60 times.
 - hidden 256: the tensor-copy job over its floor: 1.12-1.40 times.
 - hidden 512: the tensor-copy job over its floor: 1.05-1.30 times.
 - hidden 2,048: the tensor-copy job over its floor: 1.15-1.40 times.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
-b7215a57, run 20261128T034916Z-771677-038e8f02; 7 repetitions, the 3 checked variants exact; the median, the widest
-spread of a row 1.4%; the clock as the card left it):
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00gnjr2w7t9bny2p4, driver 580.196.07; 2026-11-28, the experiment at
+0aac2c88, run 20261128T045918Z-121596-2eacf67b; 7 repetitions, the 6 checked variants exact; the median, the widest
+spread of a row 4.2%; the clock as the card left it):
 
 | the figure | measured | the prediction | held |
 |---|---:|---|---|
-| hidden 256: a job over its tensor floor | 5.34 times | 1.18-1.36 times | MISSED |
-| hidden 512: a job over its tensor floor | 5.27 times | 1.08-1.28 times | MISSED |
-| hidden 2,048: a job over its tensor floor | 5.33 times | 1.18-1.36 times | MISSED |
+| hidden 256: the cp.async job over its floor | 5.41 times | 5.00-5.60 times | held |
+| hidden 256: the tensor-copy job over its floor | 1.37 times | 1.12-1.40 times | held |
+| hidden 512: the tensor-copy job over its floor | 1.24 times | 1.05-1.30 times | held |
+| hidden 2,048: the tensor-copy job over its floor | 1.55 times | 1.15-1.40 times | MISSED |
 
 The record's rows:
-- hidden 256, a job 128 tokens x 256 columns, three stages: a job: 21,859.78 cycles a job a CTA.
-- hidden 256, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.34 the job's cycles over 16 x hidden.
-- hidden 512, a job 128 tokens x 256 columns, three stages: a job: 43,210.79 cycles a job a CTA.
-- hidden 512, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.27 the job's cycles over 16 x hidden.
-- hidden 2048, a job 128 tokens x 256 columns, three stages: a job: 174,622.74 cycles a job a CTA.
-- hidden 2048, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.33 the job's cycles over 16 x hidden.
+- hidden 256, a job 128 tokens x 256 columns, three stages: a job: 22,165.00 cycles a job a CTA.
+- hidden 256, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.41 the job's cycles over 16 x hidden.
+- hidden 256, a job 128 tokens x 256 columns, three stages, the tensor copy: a job: 5,592.43 cycles a job a CTA.
+- hidden 256, a job 128 tokens x 256 columns, three stages, the tensor copy: against the tensor floor: 1.37 the job's cycles over 16 x hidden.
+- hidden 512, a job 128 tokens x 256 columns, three stages: a job: 43,727.18 cycles a job a CTA.
+- hidden 512, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.34 the job's cycles over 16 x hidden.
+- hidden 512, a job 128 tokens x 256 columns, three stages, the tensor copy: a job: 10,192.98 cycles a job a CTA.
+- hidden 512, a job 128 tokens x 256 columns, three stages, the tensor copy: against the tensor floor: 1.24 the job's cycles over 16 x hidden.
+- hidden 2048, a job 128 tokens x 256 columns, three stages: a job: 177,223.07 cycles a job a CTA.
+- hidden 2048, a job 128 tokens x 256 columns, three stages: against the tensor floor: 5.41 the job's cycles over 16 x hidden.
+- hidden 2048, a job 128 tokens x 256 columns, three stages, the tensor copy: a job: 50,771.55 cycles a job a CTA.
+- hidden 2048, a job 128 tokens x 256 columns, three stages, the tensor copy: against the tensor floor: 1.55 the job's cycles over 16 x hidden.
 
-Record: `data:records/fsla/measure/lab/projection_tile.run/20261128T034916Z-771677-038e8f02/output.json`.
+Record: `data:records/fsla/measure/lab/projection_tile.run/20261128T045918Z-121596-2eacf67b/output.json`.
