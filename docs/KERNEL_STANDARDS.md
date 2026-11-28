@@ -902,8 +902,8 @@ method is a procedure with a gate, not a memory.
    no group in flight (the commit is no instruction, the `gsb0` flag on a group's last `HGMMA`) whose nearest `HGMMA`
    in straight-line code is followed by no WORK OF SUBSTANCE -- a load or store, an asynchronous issue (`LDGSTS`,
    `UBLKCP`, `UTMA*`) or a barrier arrival (`SYNCS.ARRIVE`, `BAR.ARV`); register moves, address and predicate
-   arithmetic, `LDC` and `WARPGROUP.ARRIVE` are not -- counts one. The pack prints, beside it and never as a
-   refusal, each wait's candidates to precede it (`tools/lab.py waits`).
+   arithmetic, `LDC` and `WARPGROUP.ARRIVE` are not -- counts one. `tools/lab.py waits` prints, beside it and
+   never as a refusal, each wait's candidates to precede it.
 ENFORCED: `tools/lab.py run` reads each budgeted kernel's executed instructions by class (ncu's per-opcode counts),
 prints them against the budget, and refuses to record a variant over it (`--force` to record a known-over variant on
 purpose). The SASS gate (§20) refuses, on every function of every build, conversion-unit instructions and global
