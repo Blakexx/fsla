@@ -35,6 +35,7 @@ _DEPS = {
     "carry_list": ["//csrc/fsla:headers"],
     "carry_skeleton": ["//csrc/fsla:headers"],
     "carry_supply": ["//csrc/fsla:headers"],
+    "decode_ring": ["//csrc/fsla:headers"],
     "mask_prepare_time": ["//csrc/fsla:headers"],
 }
 

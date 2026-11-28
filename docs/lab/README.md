@@ -58,6 +58,7 @@ about the machine cites the experiment it rests on ([`docs/KERNEL_STANDARDS.md#s
 | [`step_queue`](step_queue.md) | experiment |
 | [`fold_forms`](fold_forms.md) | experiment |
 | [`gather_rate`](gather_rate.md) | experiment |
+| [`decode_ring`](decode_ring.md) | experiment |
 | [`gather_group`](gather_group.md) | experiment |
 | [`step_rolled`](step_rolled.md) | experiment |
 
