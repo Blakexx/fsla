@@ -17,6 +17,6 @@ record. `sms` is the launch's SM count (elapsed cycles summed over their average
 
 The lab prints what the profiler measured: each pipe's busy share of the elapsed cycles (issue, integer, FMA), L2
 sectors read and written a unit, and the three largest stall reasons. The counters are priced against no rate here: a count
-times a rate bounds perfect overlap and full use (the overlap gate's floors, `docs/KERNEL_STANDARDS.md` §28 and §29
-item 14), and what a composed kernel reaches is read from its timeline (`docs/KERNEL_STANDARDS.md#stepped`). The profiler's tensor-pipe ratio is never read as utilization (§22). A `wgmma` is
+times a rate bounds perfect overlap and full use (the floor gate's floors, [`floor.md`](floor.md):
+`docs/KERNEL_STANDARDS.md` §28 and §29 item 14), and what a composed kernel reaches is read from its timeline (`docs/KERNEL_STANDARDS.md#stepped`). The profiler's tensor-pipe ratio is never read as utilization (§22). A `wgmma` is
 counted by a counter of its own (`sm__inst_executed_pipe_tensor_op_gmma`), which the `hmma` counters do not include.

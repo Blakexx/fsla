@@ -2,11 +2,24 @@
 
 KERNEL_STANDARDS [§28](../../KERNEL_STANDARDS.md#s28) prices a kernel at the largest of its floors and reds a time above 1.15x
 of it, and a phase that idles the binding stream; the CONSTITUTION's performance targets price every kernel against floors.
-The floor is warpline's (its own page, the floor, in warpline's docs): a
-kernel's declared WORK, by phase, over the RATES its card's probes measured, the stream that binds, and the bound written from
-it, judged by warpline's checkers over a run manifest. It is a lower bound and predicts nothing (Blake, 2026-11-28:
-"warpline.floor seems fine as the first step of our simple lower bound, and then we can build the predictive timeline model
-as its own thing later"). This tree's part is the wiring: which cell, which card, which run, and the line.
+The floor is a lower bound and predicts nothing (Blake, 2026-11-28: "warpline.floor seems fine as the first step of our simple
+lower bound, and then we can build the predictive timeline model as its own thing later"). This tree's part is the wiring:
+which cell, which card, which run, and the line. The implementation is warpline's module warpline.floor (its file
+warpline/floor.py, at the commit MODULE.bazel pins).
+
+## How work over rates becomes a floor
+
+- A kernel's WORK is declared by phase, each phase the whole launch's work on each stream: HBM bytes read and written, L2
+  bytes (each SM's own lines, or a table every CTA shares, by its footprint), shared-memory bytes, MMAs of a shape and dtype,
+  and warp instructions by class.
+- The card's RATES are each stream's work a cycle an SM, measured by warpline's probes on the card. A stream's time is its
+  work over its rate times the launch's SMs: an SM's own streams (shared memory, the tensor pipe, issue) in cycles at the
+  card's highest probed clock, a device stream (HBM, L2) at the bytes a nanosecond its probe measured.
+- A PHASE'S FLOOR is the largest of its streams' times, and that stream BINDS it. Phases declared to run at once (an overlap
+  set) take the largest of their summed work on each stream.
+- THE LAUNCH'S FLOOR is the larger of two: the SMs' own streams' phase floors summed in sequence, and each device stream's
+  work over the whole launch (the CTAs need not pass a phase together, so HBM one SM leaves idle another may use). The
+  stream of the larger term binds the launch, and the idle check reads its family.
 
 ## A kernel's gate
 
