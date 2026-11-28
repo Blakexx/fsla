@@ -373,9 +373,16 @@ stores a new sample into the store's checkout (at its own label), never this tre
 of the data repository holding it is pushed and the pin moves to it. A sample marked `backfilled` holds a file the data
 repository kept as written, its bytes the output unchanged, with the file's path in its mark.
 
+<a id="a-commit"></a>A STORED NUMBER NAMES A COMMIT ([the tree identity](#sessions)): a tree with uncommitted tracked
+changes is never stored, and no diff is ever stored as a part of a sample, so a measured variant is a commit of its
+own (Blake, 2026-11-27: "I don't think it's wise to store actual diffs"). Those commits are kept without letting the
+repositories' branches or size grow without bound: a commit a stored record cites lives under the repository's hidden
+`refs/measured/*`, kept; work in progress lives under `refs/dev/*`, pruned once it lands; a merged branch is deleted
+and an unmerged one is listed for the owner.
+
 A tool opens a store at the LABEL of the target that produced what it stores (`@<workspace>//<package>:<target>`,
 a folder of the data's `records/`: the store is a durable index of what Bazel's targets produced) and hands it the
-SEMANTICS of what it measured -- the inputs its numbers depend on, reduced to identities (a commit and its tracked diff,
+SEMANTICS of what it measured -- the inputs its numbers depend on, reduced to identities (a commit, its tree clean,
 a binary's manifest or file digest, the cells, the counts, the device's software, the clock lock). A SAMPLE is one file,
 named by its run and written once; the KEY is sha256 over its semantics, so the same measurement taken again is another
 sample of the same key and a changed input is another key. A sample is the raw output or the
