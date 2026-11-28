@@ -89,5 +89,14 @@ __device__ __forceinline__ void async_fence() {
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
 }
 
+//: AN ARRIVAL THAT STATES THE BYTES an asynchronous copy will complete the barrier's phase with (`expect_tx`), the
+//: arrival a tensor copy's barrier takes -- see docs/internals/common/atoms/barrier.md#expect-bytes
+__device__ __forceinline__ void mbar_expect_bytes(SmemAddr a, uint32_t bytes) {
+  asm volatile(
+      "{\n.reg .b64 st;\nmbarrier.arrive.expect_tx.shared::cta.b64 st, [%0], %1;\n}\n" ::"r"(a),
+      "r"(bytes)
+      : "memory");
+}
+
 }  // namespace ops
 }  // namespace denseref

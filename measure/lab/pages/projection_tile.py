@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 
 def _floor(hidden: int) -> str:
@@ -18,7 +18,7 @@ def _floor(hidden: int) -> str:
 #: each run's predictions, in the order they ran
 RUNS = (
     (
-        PENDING,
+        "20261128T034916Z-771677-038e8f02",
         "2026-11-28",
         "a K-step's tensor floor 1,024 cycles (8 steps x 128, two warpgroups on one pipe); its x, 16 KB of the CTA's own "
         "lines, through L2 at stream_rate's distinct-line rate (30.8 bytes a cycle an SM, an aggregate limit at 132 SMs), "

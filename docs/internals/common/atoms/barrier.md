@@ -34,3 +34,7 @@ Mirrors `csrc/fsla/src/common/atoms/barrier.cuh`, a concern of the baseline oper
 - <a id="async-fence"></a>`async_fence()`: `fence.proxy.async.shared::cta`, the order between threads' shared-memory
   writes and an asynchronous operation's read of them (a tensor step's operand tile, a bulk copy's source): issued
   after the stores and before the barrier that hands the tile on (no shipped caller; the carry is designed, not built).
+
+- <a id="expect-bytes"></a>`mbar_expect_bytes(a, bytes)`: an arrival on `a` that states the bytes an asynchronous copy
+  (a tensor copy, [`copy.md`](copy.md#stage-box)) completes the phase with; the phase completes once its arrivals are in
+  and the stated bytes have landed.

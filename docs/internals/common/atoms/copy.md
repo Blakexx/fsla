@@ -35,3 +35,10 @@ Mirrors `csrc/fsla/src/common/atoms/copy.cuh`, a concern of the baseline operati
   16-byte quantum moved synchronously, the same width as every staged copy, so one bank analysis covers a buffer
   whether its rows were staged or computed. `copy_shared_to_global_16b` composes the two into one coalesced 128-bit
   store.
+
+- <a id="stage-box"></a>`stage_box_2d`, `stage_box_3d`: the tensor copy in (`cp.async.bulk.tensor`, sm_90), one thread's
+  issue a box of the tensor a `__grid_constant__` map describes, its bytes completing an `mbarrier` whose arrival stated
+  them (`mbar_expect_bytes`, [`barrier.md`](barrier.md#expect-bytes)). MEASURED ([`tma_box`](../../../lab/tma_box.md)):
+  a 48 KB stage of 128-byte lines, 128-byte swizzled, 966 cycles a CTA (50.9 bytes a cycle an SM) where one warp's
+  `cp.async` takes 5,664 and the same box of 16-byte lines 5,360 -- so a box's lines are 128 bytes (the swizzled form a
+  swizzled `wgmma` descriptor reads), never 16.

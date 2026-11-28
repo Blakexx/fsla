@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "common/atoms/barrier.cuh"
+#include "common/atoms/copy.cuh"
 #include "common/atoms/tensor.cuh"
 #include "common/atoms/warp.cuh"
 #include "common/hardware.cuh"
@@ -453,19 +454,13 @@ __device__ __forceinline__ void bulk_load(uint32_t dst, const void* src, uint32_
 //: A TENSOR COPY IN (sm_90): the box at (`c0`, `c1`) of the 2-d tensor `map` describes, into shared memory at
 //: `dst`, its bytes completing the barrier `bar`; `map` a kernel's `__grid_constant__` argument
 __device__ __forceinline__ void tensor_load_2d(uint32_t dst, const void* map, int c0, int c1, uint32_t bar) {
-  asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];"
-               :
-               : "r"(dst), "l"(map), "r"(c0), "r"(c1), "r"(bar)
-               : "memory");
+  ::denseref::ops::stage_box_2d(dst, map, c0, c1, bar);
 }
 
 //: A 3-D TENSOR COPY IN (sm_90): the box at (`c0`, `c1`, `c2`) of the 3-d tensor `map` describes, into shared memory at
 //: `dst`, its bytes completing the barrier `bar`
 __device__ __forceinline__ void tensor_load_3d(uint32_t dst, const void* map, int c0, int c1, int c2, uint32_t bar) {
-  asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%2, %3, %4}], [%5];"
-               :
-               : "r"(dst), "l"(map), "r"(c0), "r"(c1), "r"(c2), "r"(bar)
-               : "memory");
+  ::denseref::ops::stage_box_3d(dst, map, c0, c1, c2, bar);
 }
 
 //: the same MULTICAST: one copy landed at `dst` in every CTA of the cluster that `mask` names (a bit a rank), its
@@ -481,10 +476,7 @@ __device__ __forceinline__ void tensor_cast_2d(uint32_t dst, const void* map, in
 
 //: an arrival that also states the bytes a bulk copy will complete the phase with
 __device__ __forceinline__ void mbar_expect(uint32_t bar, uint32_t bytes) {
-  asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.expect_tx.shared::cta.b64 st, [%0], %1;\n}"
-               :
-               : "r"(bar), "r"(bytes)
-               : "memory");
+  ::denseref::ops::mbar_expect_bytes(bar, bytes);
 }
 
 //: A BULK REDUCTION OUT (sm_90): `bytes` of shared memory at `src` ADDED into global `dst`, fp32 by fp32,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 CP_ASYNC = "cp.async, a warp, 16 bytes a lane: a 48 KB stage"
 BOX128 = "a tensor copy, 128-byte lines swizzled: a 48 KB stage"
@@ -17,7 +17,7 @@ BOX16 = "a tensor copy, 16-byte lines (the unswizzled bricks): a 48 KB stage"
 #: each run's predictions, in the order they ran
 RUNS = (
     (
-        PENDING,
+        "20261128T034956Z-802475-98afad64",
         "2026-11-28",
         "a stage is the CTA's own x tile (16 KB of distinct lines, stream_rate's 30.8 bytes a cycle an SM: 532 cycles) and "
         "the 128 KB of weights every CTA reads (55.2 at that footprint: 594); the two paths adding give 1,126 cycles a "
