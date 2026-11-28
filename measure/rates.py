@@ -26,6 +26,11 @@ CONFIG = ROOT / "measure" / "rates.json"
 #: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
 #: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
 PIPE_RATES = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
+#: the streams' rates a card may state, in bytes a cycle an SM (`bytes_a_cycle`, not `cycles`): HBM's read, write and copy,
+#: which the producer's output floors read (`docs/lab/stream_rate.md`)
+STREAM_RATES = ("stream.hbm_read", "stream.hbm_write", "stream.hbm_copy")
+#: an entry's figure: cycles an operation, or a stream's bytes a cycle an SM
+UNITS = ("cycles", "bytes_a_cycle")
 SOURCES = ("measured", "documented", "announced")
 #: a measured rate may differ from its record's median by its own rounding and no more
 TOLERANCE = 0.002
@@ -54,18 +59,20 @@ def load() -> dict:
 
 @dataclass(frozen=True)
 class Rate:
+    #: the figure, in `unit` (cycles an operation, or bytes a cycle an SM)
     cycles: float
     kind: str
     where: str
     row: str
     on: str
+    unit: str = "cycles"
 
 
 def _flatten(rates: dict, prefix: str = "") -> dict[str, dict]:
     out = {}
     for key, value in rates.items():
         name = f"{prefix}{key}"
-        if "cycles" in value:
+        if any(u in value for u in UNITS):
             out[name] = value
         else:
             out.update(_flatten(value, f"{name}."))
@@ -74,7 +81,8 @@ def _flatten(rates: dict, prefix: str = "") -> dict[str, dict]:
 
 def _rate(entry: dict, on: str) -> Rate:
     kind = next(k for k in SOURCES if k in entry)
-    return Rate(float(entry["cycles"]), kind, entry[kind], entry.get("row", ""), entry.get("on", on))
+    unit = next(u for u in UNITS if u in entry)
+    return Rate(float(entry[unit]), kind, entry[kind], entry.get("row", ""), entry.get("on", on), unit)
 
 
 def resolve(arch: str | None = None, product: str | None = None, cfg: dict | None = None) -> dict[str, Rate]:
@@ -122,7 +130,7 @@ def check(cfg: dict | None = None) -> list[str]:
     cfg = cfg or load()
     findings = []
     kinds = cfg["schema"]["mma"]
-    known = {*PIPE_RATES, *(f"mma.{k}" for k in kinds)}
+    known = {*PIPE_RATES, *STREAM_RATES, *(f"mma.{k}" for k in kinds)}
     built = registry.built()
     for arch in cfg["arch"]:
         if arch not in built:
@@ -174,7 +182,7 @@ def main() -> int:
         print(p or a)
         for field, r in rates.items():
             source = r.where + (f" / {r.row}" if r.row else "") + (f" (on {r.on})" if r.on else "")
-            print(f"  {field:28s} {r.cycles:8.3f}  {r.kind:10s} {source}")
+            print(f"  {field:28s} {r.cycles:8.3f} {r.unit:13s} {r.kind:10s} {source}")
     return 0
 
 

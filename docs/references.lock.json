@@ -2155,6 +2155,7 @@
   {"doc": "docs/lab/step_swizzle.md", "pinned_at": "df3971d17633", "reviewed": true, "sha256": "", "target": "docs/lab/step_queue.md"},
   {"doc": "docs/lab/step_swizzle.md", "pinned_at": "df3971d17633", "reviewed": true, "sha256": "", "target": "docs/lab/value_fetch.md"},
   {"doc": "docs/lab/step_swizzle.md", "pinned_at": "df3971d17633", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/step_swizzle.cu"},
+  {"doc": "docs/lab/stream_rate.md", "pinned_at": "0e306546dfd6", "reviewed": true, "sha256": "", "target": "data:records/fsla/measure/lab/stream_rate.run/20261127T232424Z-209524-19f37764/output.json"},
   {"doc": "docs/lab/stream_rate.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "", "target": "docs/internals/tools/lab.md"},
   {"doc": "docs/lab/stream_rate.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "", "target": "measure/lab/experiments/stream_rate.cu"},
   {"doc": "docs/lab/stream_rate.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "", "target": "measure/rates.json"},
