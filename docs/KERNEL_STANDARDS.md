@@ -402,9 +402,9 @@ ever compared. From here the floor is a GATE, per component, before composition:
 - The COMPOSED kernel carries a phase ledger (a debug build's per-warp `clock64` per phase) and is
   compared to the sum of its parts; the difference is the composition cost and is reported as such.
 - The per-component instruction count of the shipped binary is attributed by `tools/region_ledger.py`
-  (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json` (no kernel has one yet: owed); a
-  component over budget is red, the same as a spill; the tool runs by hand over a profiler CSV, and no budget file
-  exists yet (OWED: every kernel's budget is an owed entry). Every kernel has its budget file, or an owed or exempt
+  (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json` (the producer's, `tools/budgets/produce.json`, is the first); a
+  component over budget is red, the same as a spill; the tool runs by hand over a profiler CSV (OWED: every other
+  kernel's budget is an owed entry). Every kernel has its budget file, or an owed or exempt
   entry in `tools/coverage.json` saying why not (§25).
 - SKELETON FIRST (Blake, 2026-09-09): the kernel is composed from STUB components before any is
   implemented -- each stub has the real signature, the real shared-memory tenants and edges, and does
@@ -573,6 +573,17 @@ that reproduces the measured timelines of the forms already run (§23 addendum 2
 point is not validation). A floor or a prediction is quoted from that model, never from a unit's rate measured alone:
 a per-unit bound says what no form can beat, not what a form reaches. Until a family has its timeline, work on its
 composition stops at the instrument (§32.2: a miss stops).
+
+THE MECHANISM (Blake, 2026-11-28, "The stepped rule gets its mechanism"): the TIMELINE is warpline's trace -- each
+warp's stamps through the kernel's tracer, recorded by `Bench::trace` and read with `lab trace` and warpline's `path`,
+`window` and `rates` ([`lab.md#trace`](internals/tools/lab.md#trace)); the MODEL's first part is warpline's floor
+(`warpline.floor`, the kernel's declared work at the card's rates, [`floor.md`](internals/tools/floor.md)), the
+predictive model on top of it built later as its own thing. `tools/lab.py` refuses to record a row of a COMPOSED
+kernel -- an experiment that compiles a library header whose kernel has a `tools/budgets/<k>.json`, or that defines
+more than one role -- that holds no traced row (`untraced`, held by `tests/unit/test_lab_stepped.py`), and every
+library kernel has its `tools/coverage.json` entry, owing `floor` where it has no gate, from its first lab row; a family
+whose CTA the library holds and whose launch is still the lab's (the producer, as the carry) has its entry with the library's
+launch, and until then the lab kernel carries the floor's work (`measure/floors/`).
 
 ## <a id="s23"></a>§23 — THE DEV ENVIRONMENT IS ONE SYSTEM (law, 2026-09-12, from Blake's "one unified dev config ... everything reads that one file", "consolidate everything into one dev env init script, and also ensure docker stays maintained")
 A tree that measures itself is only as reproducible as the machine it runs on. Before this law, 26 environment variables,
@@ -992,7 +1003,7 @@ gated, and an instrument's missing target is a red.
    kernel until the price or the model that was wrong is named and corrected (§29.13) -- §22's abandonment rule
    applied to a phase.
 3. REGISTERS ARE BUDGETED PER PHASE: the budget's `registers` line states each component's peak live registers, under
-   the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` (run by hand; no budget file exists yet) reds a component past
+   the allocation of the warps a scheduler the design wants; `tools/life_ranges.py --budget` (run by hand; the producer's budget file is the first it reads) reds a component past
    its line or without one. §29.2's hoisting stops at the line: a value whose hoisting would pass it is re-derived at
    its use (`ops::opaque`, docs/internals/common/atoms/warp.md#opaque), a few instructions there instead of a register held
    across the window. A spill is never the signal (§20 reds it); the line is. A RE-DERIVATION IS A PRICED LINE ITEM
@@ -1027,7 +1038,7 @@ gated, and an instrument's missing target is a red.
    shorten warps that all do the same work, since their critical path is unchanged.
 ENFORCED: item 5 by the SASS gate's declarations (`bazel/gate_declarations.py`: a declaration, an arm or a source kernel that names
 no function of the build is refused, inside every build) and `tools/lint/coverage.py`
-(a pointer to nothing). Item 3's tool exists and runs by hand, and no budget file exists for it to read; item 4's step
+(a pointer to nothing). Item 3's tool exists and runs by hand over the one budget file there is (`tools/budgets/produce.json`); item 4's step
 cover and item 2's phase ledger do not exist yet (OWED, `docs/rules.json`): an under-line step does not fail the
 build.
 

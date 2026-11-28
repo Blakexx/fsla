@@ -1,0 +1,8 @@
+{"format": "warpline-rates/1", "device": "NVIDIA H100 80GB HBM3", "sms": 132, "clock_ghz": 1.852,
+ "about": "the rented H100 SXM's stream rates, from fsla's lab experiment stream_rate (run 20261128T014429Z-424977-ce56362c, docs/lab/stream_rate.md; measure/rates.json's stream rows), each row's clock its GB/s over its bytes a cycle an SM: not warpline's probes, whose table on this card is owed",
+ "rows": [
+  {"stream": "hbm.read", "rate": 12.953, "sms": 132, "clock_ghz": 1.852, "probe": "stream_rate: HBM read, a CTA its own slice of a 1 GiB table (3,166.9 GB/s)"},
+  {"stream": "hbm.write", "rate": 13.214, "sms": 132, "clock_ghz": 1.8175, "probe": "stream_rate: HBM write, a CTA its own slice of a 1 GiB table (3,170.2 GB/s)"},
+  {"stream": "hbm", "rate": 12.748, "sms": 132, "clock_ghz": 1.7049, "probe": "stream_rate: HBM copy, a CTA its own slice of 512 MB into 512 MB (2,868.8 GB/s)"},
+  {"stream": "l2.own", "rate": 30.81, "sms": 132, "clock_ghz": 1.7996, "probe": "stream_rate: L2 read past L1, a CTA its own 128 KB slice 64 times (7,318.7 GB/s)"},
+  {"stream": "l2.shared", "rate": 42.58, "footprint": 4194304, "sms": 132, "clock_ghz": 1.7994, "probe": "stream_rate: L2 read past L1, every CTA one 4 MB table 4 times (10,113.4 GB/s)"}]}

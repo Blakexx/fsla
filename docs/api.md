@@ -213,8 +213,18 @@ RouteFactors.from_levels(topology, read, write)          # the framework's epilo
 UNIT-MAX -- u8 with the row's largest digit at 255, at every level, dense or sparse (CONSTITUTION R17, R23); a zero
 digit is an exact zero, with no floor under it; an all-zero row is a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (a block's `data` and `scale`; `read` and `write` one
-block per level, `[B, T, H, width]` read and `[B, T, H_w, width]` write, starting on and stepping by 32 bytes: the
-row alignment law, `docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
+block per level over its heads, `H` read and `H_w` write).
+<a id="tile-major"></a>THE ROWS ARE PUBLIC IN THEIR TILE-MAJOR LAYOUT (the owner, 2026-11-28, Q5): a level-side's `data` is u8
+`[B, H, ceil(T / 64), ceil(width / 16), 64, 16]` (`H_w` on the write side) -- a (sequence, head) STREAM's 64-token
+TILES one after another, each tile its 16-digit BLOCKS one after another, each block its 64 tokens' 16 bytes, a token a
+line: digit `d` of token `t` of head `h` of sequence `b` at `((((b H + h) ceil(T / 64) + t / 64) ceil(width / 16) + d / 16)
+64 + t % 64) 16 + d % 16`. PADDING: a stream's last tile is whole, its tokens past `T` zero rows; a row's digits past
+`width` zero to its last block; both are exact zeros a reader multiplies (a padded token is a dead token, a padded digit
+a dead digit). Why this order: a CTA reads a (sequence, head)'s level a tile at a time, so batch and head are outermost and
+a tile is one contiguous run (the intra stages a tile's level as one copy so, against 16 strided ones token-major:
+[`intra_window`](lab/intra_window.md)); a block is the 16 bytes a token's integer step reads; and the producer's warpgroup
+writes one tile, a contiguous run of `ceil(width / 16)` KB, with no word or line shared with another CTA
+([`produce.md`](internals/produce/produce.md#plan)). The scale stays token-major, fp32 `[B, T, H]`. Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the words the masks are prepared into). The bundle carries NO liveness: which
 digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
 NOT BUILT: a level's public form is its TILE-MAJOR layout, the layout its readers load cheapest -- a tile of 64 tokens,

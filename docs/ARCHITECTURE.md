@@ -239,7 +239,7 @@ The compiled key is the family's own:
 | carry | not built on this line: no arm is declared | the box's per-level extents, the depth, the widths |
 | decode | `DV × D × decay` (`csrc/fsla/src/decode/arms.bzl`) | the `(k, m)` lattice, the widths, the operand storage types |
 | intra | the depth, one or two levels | each level's width in 16-digit granules |
-| producer (design, not built) | none: one instantiation each | every width, kind and offset, from the plan or the layout |
+| producer (skeleton, `produce/produce.cuh`) | the lo plane (written exactly when a gradient is on, the owner's 2026-11-27 ruling) and the CTAs an SM (the ring's depth from the card's budget) | every width, kind, job and offset, from the plan |
 | mask-preparation pass | none: the build tag alone, one arm a card; the group is no compiled key | each level-side's group, switched on the device from its density byte (`uniform_switch` over the eight prepared group sizes), and its place, from the layout |
 | entmax solves, each kernel its own family | the padded width class (its lane width and items a thread), alpha (not the softmax kernels), the two operand dtypes (`csrc/fsla/src/entmax/arms.bzl`) | the level table |
 
@@ -274,8 +274,9 @@ survives.
 
 ONE launch from a stretch of tokens to the bundle: every routing level's projection, its exact entmax or softmax
 solve and its unit-max rows, the write gain, and the values, compiled from the layer's declared `Routing` so every
-width, kind and offset is a runtime field and the family is one instantiation. No producer kernel is built on this
-line (its hopper form: section 9); the solves are their own kernels
+width, kind and offset is a runtime field and the family is one instantiation a (lo plane, CTAs an SM) pair. Its
+SKELETON is built (`csrc/fsla/src/produce/produce.cuh`, [`internals/produce/produce.md`](internals/produce/produce.md);
+its hopper form: section 9), every component a stub; the solves are their own kernels
 ([`internals/entmax/entmax.md`](internals/entmax/entmax.md)), and the torch composition behind the same call is the
 fp64 reference and the path a gradient takes (`fsla/ops/produce.py`).
 
@@ -381,11 +382,12 @@ card; a kernel's schedule is designed, and written into its own page, before it 
 | operand staging from DRAM | contiguous rows by TMA box loads into rings, landed on `mbarrier`s, descriptors built at runtime; a carry's scattered entries, each its own request, by warps' own loads and stores (KERNEL_STANDARDS §33) | the same for contiguous rows; scattered rows not measured on a blackwell card |
 | runtime addressing | uniform-datapath registers from the prologue, pairing with runtime descriptors | the same |
 | the state's image | where the two sides' carves differ: the fold's fp32 state stored once a window as bf16 tiles in shared memory, one operand of the readout's step by descriptor, the other its readers' coefficients expanded to a tile in shared memory, the readers on the step's columns ([`carry_window`](lab/carry_window.md)); where they are equal, the same image laid along a sparse digit's dense digits (R17) | the image read from tensor memory; the coefficients expanded into shared memory as `tcgen05`'s operand, ESTIMATED from the PTX specification until that family's first lab; no blackwell card measured |
-| the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token at a coarse state-carried bound, as the plan states (R17). `red.global` a token: a carry's rows are not contiguous | the same |
+| the output's sum | fp32 inside a CTA; across CTAs fp32 or one f16 line a CTA a token, the device choosing a call at a time (R17): the f16 line scaled by a power of two from the per-channel bound `max|S_entry, ch| + growth[ch]`, `max|S|` carried with the state and kept by each CTA's per-channel atomic max at write-back, `growth` the producer's `[B, H_w, d_v]` input. `red.global` a token: a carry's rows are not contiguous | the same |
 | shared memory under pressure | a continuum, never a refusal short of the degenerate floor: the buffers' depths give way first (the panel's two to one, the pool's two slots to one), and only when no depth is left is the box shrunk, whose image and pools scale with its leaves; the card's shared-memory size is read where the kernel is entered (R8), never by a planner on the host. A shrunk box leaves fold registers unused: accepted, it is the failure case and no part of the `wgmma` family is short of shared memory (a CTA may take 227 KB of a multiprocessor's 228). The image is never ringed: it is a snapshot of the state at the window's top, which the fold's steps then mutate | the same order; the image is tensor memory's |
 | the box grain | one CTA per multiprocessor, a carve of 512 leaves a CTA: two fold warpgroups holding half each and one readout warpgroup over both halves' images, whether the two sides' layouts differ or are equal (R20); no cluster -- its sum, its state transfer and its multicast each measured as a loss ([`cluster_sum`](lab/cluster_sum.md), [`state_move`](lab/state_move.md), [`value_cast`](lab/value_cast.md)) | one CTA per multiprocessor; its boxes a CTA and its roles are NOT STATED: no blackwell carry is designed and no blackwell card measured (owed with that family's first lab) |
 | the mask-preparation pass | global loads and stores a thread a (window, group), a warp shuffle across the lanes of a group of 32 digits or more; no shared memory, no tensor core (measured: [`lab/mask_prepare_time.md`](lab/mask_prepare_time.md)) | NOT STATED: no blackwell card is measured |
 | decode's walk and combine | per-lane-group gathers, a work queue of visits, global atomics into a head's sums | the same |
+| the producer | one launch a call: a CTA a sequence's 128-token tile and a write head, two math warpgroups of `wgmma` m64nNk16 over a TMA-fed FULL/EMPTY ring of `mbarrier`s (its depth from the card's budget), a loader warp, the job table a `__grid_constant__` plan, tickets joining the density and the growth ([`internals/produce/produce.md`](internals/produce/produce.md); its lab rows MEASURED) | NOT STATED: `tcgen05` steps into tensor memory, the ring by TMA as on hopper; its form is designed when blackwell is built |
 | the closed world | the declared targets and the per-build gates, device stamp | the same |
 
 ---

@@ -13,7 +13,8 @@ kernel:
 - `#s27` a step is one block; `#s28` no phase idles the binding stream.
 - `#s29` every instruction budgeted by class before code; `#s30` shared memory conflict-free by construction.
 - `#first-run` new device code runs first under a kill timeout; `#r22` degrade smoothly, independent units.
-- `#stepped` a composed kernel is read by its TIMELINE, measured and modelled; a floor or prediction comes from the
+- `#stepped` a composed kernel is read by its TIMELINE, measured and modelled: trace it with warpline (stamps through its
+  tracer, `Bench::trace`, `lab trace`; `lab.py` refuses an untraced composed row) and model it from `warpline.floor`; a floor or prediction comes from the
   model that reproduces measured timelines, never from a unit's rate alone. `#s32` item 2: PREDICT, THEN MEASURE, AND A
   MISS STOPS -- a missed prediction stops work on the kernel until the wrong price or model is named and corrected.
   `#s23` addendum 2: a model reproduces the probe's rows before it reads the kernel; one point is not validation.

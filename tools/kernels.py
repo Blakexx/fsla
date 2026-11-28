@@ -26,8 +26,9 @@ ROOT = Path(__file__).absolute().parents[1]
 SRC = ROOT / "csrc" / "fsla" / "src"
 
 _BLANK = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"', re.S)
-_GLOBAL = re.compile(
-    r"__global__\s+(?:__launch_bounds__\s*\((?:[^()]|\([^()]*\))*\)\s*)?void\s+(\w+)\s*\(")
+#: a kernel's launch bounds, which CUDA admits on either side of its `void`
+_BOUNDS = r"(?:__launch_bounds__\s*\((?:[^()]|\([^()]*\))*\)\s*)?"
+_GLOBAL = re.compile(r"__global__\s+" + _BOUNDS + r"void\s+" + _BOUNDS + r"(\w+)\s*\(")
 _TEMPLATE_TAIL = re.compile(r"template\s*<[^;{}]*>\s*$")
 
 

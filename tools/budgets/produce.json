@@ -1,5 +1,5 @@
 {
-  "about": "THE PRODUCER'S FUSED FORWARD (csrc/fsla/src/produce/produce.cuh), its SKELETON's budget, stated before its code (KERNEL_STANDARDS s19, s29): each component's warp instructions a CTA (a 128-token tile of one write head), its peak live registers, and each phase's cycles a CTA, at the design's cell. A component that lands replaces its stub's line, with its own basis. Docs: docs/internals/produce/produce.md#budget",
+  "about": "THE PRODUCER'S FUSED FORWARD (csrc/fsla/src/produce/produce.cuh), its SKELETON's budget (KERNEL_STANDARDS s19, s29): each component's warp instructions a CTA (a sequence's 128-token tile and a write head) at the cell, each line its trips times its trip's SASS price read from the built kernel (the lab's skeleton launch of the CTA at one CTA an SM, the innermost produce.cuh frame of each instruction), by opcode class in the price's own mix; its peak live registers; each phase's cycles a CTA. A component that lands replaces its stub's line with its own. Docs: docs/internals/produce/produce.md#budget",
   "unit": "warp instructions a CTA",
   "components": {
     "glue": "produce_cta",
@@ -7,29 +7,102 @@
     "math_role": "math_role",
     "epilogue": "epilogue",
     "store_level": "store_level",
+    "store_values": "store_values",
     "zero_runs": "zero_runs",
-    "density_ticket": "density_ticket"
+    "tickets": "tickets"
   },
   "cells": {
-    "nl64k-alt-h4": {
-      "glue": 1350,
-      "load_role": 2000,
-      "math_role": 2400,
-      "epilogue": 800,
-      "store_level": 1280,
-      "zero_runs": 10050,
-      "density_ticket": 40
+    "layer-alt-entmax1.5-256x256-T65536-h4": {
+      "zero_runs": 16000,
+      "store_level": 741,
+      "store_values": 120,
+      "epilogue": 600,
+      "load_role": 480,
+      "math_role": 5120,
+      "tickets": 150,
+      "glue": 2001
+    }
+  },
+  "classes": {
+    "layer-alt-entmax1.5-256x256-T65536-h4": {
+      "zero_runs": {
+        "integer": 11236,
+        "control": 3310,
+        "store": 569,
+        "convert": 379,
+        "uniform": 253,
+        "float": 211,
+        "const": 42
+      },
+      "store_level": {
+        "integer": 545,
+        "const": 126,
+        "control": 49,
+        "uniform": 21
+      },
+      "store_values": {
+        "integer": 60,
+        "control": 50,
+        "atomic": 10
+      },
+      "epilogue": {
+        "integer": 250,
+        "control": 200,
+        "const": 125,
+        "uniform": 25
+      },
+      "load_role": {
+        "integer": 233,
+        "uniform": 102,
+        "control": 87,
+        "special": 29,
+        "barrier": 29
+      },
+      "math_role": {
+        "integer": 4069,
+        "control": 411,
+        "uniform": 366,
+        "const": 137,
+        "barrier": 91,
+        "special": 46
+      },
+      "tickets": {
+        "integer": 87,
+        "control": 21,
+        "barrier": 11,
+        "uniform": 10,
+        "const": 9,
+        "atomic": 4,
+        "store": 3,
+        "float": 2,
+        "convert": 1,
+        "special": 1,
+        "shared": 1
+      },
+      "glue": {
+        "integer": 1402,
+        "nop": 134,
+        "uniform": 125,
+        "barrier": 98,
+        "control": 80,
+        "convert": 54,
+        "special": 45,
+        "const": 27,
+        "float": 27,
+        "shared": 9
+      }
     }
   },
   "basis": {
-    "cell": "B 1, T 65,536, H_w 4, G 1, hidden 256 (4 K-steps), widths 256 and 256, d_v 64, every level-side entmax 1.5 and untied: 5 jobs a write head (two write levels, two read levels, the values), 20 ring stages a CTA, no lo plane",
-    "glue": "9 warps x ~150: the shares, the barriers' init, two CTA barriers, the counters' clear",
-    "load_role": "20 stages x ~15 (an EMPTY wait from the fourth on, a FULL arrival) = 300, and the EMPTY waits' polls behind the epilogues, priced at most ~1,700: the polled wait's trips are owed to the first ledger",
-    "math_role": "8 warps x 20 stages x ~10 (a FULL wait, the warp's sync, lane 0's EMPTY arrival) = 1,600, and 8 x 5 jobs x 20 the job loop = 800",
-    "epilogue": "8 warps x 5 jobs x ~20 (the job's kind, its heads)",
-    "store_level": "8 warps x 4 level jobs x ~40 (a level-side's addresses, its mask's words)",
-    "zero_runs": "a warp, a level job: rows 64 tokens x 256 bytes in 16-byte chunks, 8 a thread x ~25 + 12; scales and mask words one chunk a thread, 2 x 37; = 286; four level jobs and the values (4 chunks a thread, 112): 1,256 a warp, x 8 warps",
-    "density_ticket": "one thread: 4 counts' adds, two fences, the ticket"
+    "cell": "B 1, T 65,536, H_w 4, G 1, hidden 256 (4 K-steps), widths 256 and 256, d_v 64; write (entmax 1.5, softmax), read (softmax, entmax 1.5) untied: 5 jobs a write head, 20 ring stages a CTA, two masked level rows, no lo plane",
+    "zero_runs": "a trip (a chunk of 16 bytes a thread) is ~46 instructions in the SASS: the loop's control 7, the chunk's run and offset 29 (the runtime division by `chunks`, 259 instructions over the 9 inlined sites), its address 7, the alignment test 2.5, the store 1. A warp, a level job: the row tile's 16 KB, 8 trips (368); the scales, one word-path trip for half the warps (~28); a masked row's 2 KB of words, one trip (46). Four level jobs (two masked) and the values (4 trips, 184): ~2,000 a warp, x 8 warps",
+    "store_level": "~23 a call a warp (its 91 instructions over its 4 inlined sites: the stream, tile and word addresses), 4 calls x 8 warps",
+    "store_values": "the growth's part: a channel a thread, 64 of 128 (~12), and its address, x 8 warps",
+    "epilogue": "~15 a job a warp (the job's kind, its tied bits), 5 jobs x 8 warps",
+    "load_role": "a stage ~24 (the index 3, the EMPTY wait's try_wait trip 11 from the fourth on, the FULL arrival 6, the loop 4), 20 stages, one warp; the polled wait's further trips (its YIELD loop) are the trace's to count",
+    "math_role": "a K-step ~27 a warp (the FULL wait's trip 11, the warp's sync 2, lane 0's arrival 1, the loop and the slot 13), 20 x 8 warps = 4,320; the job loop's ~20 a job a warp (its 69 instructions of share and bound), 5 x 8 = 800",
+    "tickets": "one thread: the masked rows' counts (2 adds), three fences, the two tickets; the growth's copy by one CTA in 512 and the density by the last: ~150",
+    "glue": "~220 a warp (the item's three divisions, 63 instructions; the shares; the barriers' init; two CTA barriers), x 9 warps"
   },
   "registers": {
     "glue": 40,
@@ -37,14 +110,15 @@
     "math_role": 40,
     "epilogue": 40,
     "store_level": 40,
+    "store_values": 32,
     "zero_runs": 32,
-    "density_ticket": 32
+    "tickets": 32
   },
   "phase_cycles": {
-    "nl64k-alt-h4": {
+    "layer-alt-entmax1.5-256x256-T65536-h4": {
       "math_role": 2000,
-      "epilogue": 12800
+      "epilogue": 11900
     }
   },
-  "phase_basis": "a CTA's cycles: its 20 ring stages' two edges at ~100 cycles each; its outputs, 128 tokens x 1,296 bytes (rows 1,024, scales 16, mask words 128, values 128) = 165,888 bytes at HBM's write rate an SM (3,170 GB/s, stream_rate: 12.96 bytes a cycle an SM at 132 SMs) = 12,800"
+  "phase_basis": "a CTA's cycles: its 20 ring stages' two edges at ~100 cycles each (a hypothesis the traced rows price); its outputs, 157.7 KB (the cell's 323.0 MB over its 2,048 CTAs) at HBM's write rate an SM (measure/rates.json's hbm_write, 13.21 bytes a cycle an SM) = 11,900"
 }

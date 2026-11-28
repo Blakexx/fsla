@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 
 def _floor(hidden: int, loader: str = "") -> str:
@@ -54,7 +54,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T054809Z-812849-2c3bf2e7",
         "2026-11-28",
         "the second run's jobs at hidden 256 and 512 (5,591 and 10,191 cycles, x and the weights both from L2) fit a job "
         "= K-steps x 1,150 + 991: a K-step's 48 KB through L2 at 42.7 bytes a cycle an SM, stream_rate's shared-table "

@@ -244,6 +244,11 @@ then carries the written exception in their place (`counters_exception`: the hos
 run. An experiment with budgeted kernels, whose gate reads executed counts, is not recorded under
 the exception.
 
+<a id="composed"></a>A COMPOSED kernel's rows are read by its timeline (KERNEL_STANDARDS [#stepped](../../KERNEL_STANDARDS.md#stepped)): an experiment
+that compiles a library header whose kernel has a `tools/budgets/<k>.json`, or one defining more than one role (`<name>_role(`
+functions), is not recorded unless it holds a traced row (`untraced`, `tests/unit/test_lab_stepped.py`); the refusal names the
+header and the fix, a traced twin through the kernel's tracer and `Bench::trace`.
+
 An experiment that reads data -- a cell's routing, say -- has a `<name>.inputs.py` beside it whose `write(directory)`
 writes the files and returns their names. `run` and `ncu` call it first (in the scratch space), pass the binary
 `--inputs <directory>`, and the record carries each file's digest under `inputs`.

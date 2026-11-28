@@ -902,6 +902,38 @@ def unverified(name: str, device: dict, results: list[dict]) -> list[str]:
     return bad
 
 
+#: the library's sources and the kernels' budget files (KERNEL_STANDARDS #stepped)
+LIBRARY = ROOT / "csrc" / "fsla" / "src"
+BUDGETS = ROOT / "tools" / "budgets"
+_INCLUDE = re.compile(r'^\s*#include\s+"([^"]+\.cuh)"', re.M)
+_ROLE = re.compile(r"\b\w+_role\s*\(")
+
+
+def composed(source: str) -> list[str]:
+    """KERNEL_STANDARDS #stepped: the library headers an experiment's source compiles that make its kernel COMPOSED -- a
+    header whose kernel has a budget file (`tools/budgets/<stem>.json`) or that defines more than one role (`<name>_role(`
+    functions), with why."""
+    out = []
+    for inc in _INCLUDE.findall(source):
+        header = LIBRARY / inc
+        if not header.is_file():
+            continue
+        stem = header.stem
+        if (BUDGETS / f"{stem}.json").is_file():
+            out.append(f"{inc} (its budget tools/budgets/{stem}.json)")
+        elif len(set(_ROLE.findall(header.read_text()))) > 1:
+            out.append(f"{inc} (its roles)")
+    return out
+
+
+def untraced(name: str, source: str, device: dict) -> list[str]:
+    """KERNEL_STANDARDS #stepped: a composed kernel's rows are read by its timeline, so an experiment of one records
+    nothing unless it holds traced rows (`Bench::trace`) -- the reasons it is composed where it holds none."""
+    if device.get("_traces"):
+        return []
+    return composed(source)
+
+
 def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -> None:
     width = max(len(r["name"]) for r in results)
     print(f"{name} on {device.get('name')} ({arch}), {reps} repetitions -- median [min, max]")
@@ -992,6 +1024,13 @@ def measure(name: str, arch: str, binary: Path, table: dict, opts, *, toolkit: s
     wrong = unverified(name, device, results)
     if wrong:
         print(f"lab: {name}'s outputs are not verified, not recorded:", *wrong, sep="\n  ")
+        return 1
+    why = untraced(name, (EXPERIMENTS / f"{name}.cu").read_text(), device)
+    if why:
+        print(f"lab: {name} measures a COMPOSED kernel with no traced row, not recorded (KERNEL_STANDARDS #stepped):",
+              *why, sep="\n  ")
+        print("  fix: stamp the kernel's phases through its tracer (warpline's stamps, `lab::Trace`) and record a traced "
+              "twin of its rows with `Bench::trace` (docs/internals/tools/lab.md#trace); the timeline names where its time goes")
         return 1
     #: warpline's `check` on each traced row's record, where warpline's library is: a record with findings is not recorded
     if device.get("_traces") and _dev_config().warpline_python() is None:

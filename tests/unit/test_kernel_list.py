@@ -23,11 +23,16 @@ __global__ __launch_bounds__(BoxPlan<D, DV>::kThreads, plan_ctas(D, DV)) void bo
 
 template <typename T> struct Holder {};
 __global__ __launch_bounds__(256) void after_a_struct(float* y) {}
+
+template <int CTAS>
+__global__ void __launch_bounds__(288, CTAS)
+    bounds_after_void(const Params p) {}
 '''
 
 
 def test_the_parser_reads_every_definition_and_nothing_in_comments_or_strings():
-    assert kernels.parse(TEXT) == [("plain", 4, False), ("bounded", 7, True), ("after_a_struct", 11, False)]
+    assert kernels.parse(TEXT) == [("plain", 4, False), ("bounded", 7, True), ("after_a_struct", 11, False),
+                                   ("bounds_after_void", 14, True)]
 
 
 def test_the_symbol_name_is_the_identifier_before_the_argument_list():

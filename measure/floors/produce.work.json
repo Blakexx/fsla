@@ -1,0 +1,50 @@
+{
+ "format": "warpline-work/1",
+ "kernel": "skeleton<",
+ "about": "THE PRODUCER'S FUSED FORWARD at its skeleton (csrc/fsla/src/produce/produce.cuh, docs/internals/produce/produce.md#floor): its outputs at inference, written by the two math warpgroups' epilogues -- a token a write head: its two level rows of each of its G + 1 = 2 rows, 2 x 2 x 256 bytes tile-major; 4 scales of 4 bytes; the two masked level rows' words, 2 x 256 / 8 bytes; the values, hidden / H channels of 2 bytes -- and the growth, hidden fp32 a call. The projection's and the solve's work land with their components",
+ "parameters": [
+  "tokens",
+  "H",
+  "hidden"
+ ],
+ "phases": [
+  {
+   "role": "math 0",
+   "phase": "phase.window",
+   "work": {}
+  },
+  {
+   "role": "math 1",
+   "phase": "phase.window",
+   "work": {}
+  },
+  {
+   "role": "math 0",
+   "phase": "phase.epilogue",
+   "work": {
+    "hbm": {
+     "write": "(tokens * H * (1024 + 16 + 64) + tokens * hidden * 2 + hidden * 4) / 2"
+    }
+   }
+  },
+  {
+   "role": "math 1",
+   "phase": "phase.epilogue",
+   "work": {
+    "hbm": {
+     "write": "(tokens * H * (1024 + 16 + 64) + tokens * hidden * 2 + hidden * 4) / 2"
+    }
+   }
+  }
+ ],
+ "overlap": [
+  [
+   "math 0/phase.epilogue",
+   "math 1/phase.epilogue"
+  ]
+ ],
+ "serial": {
+  "math 0/phase.window": "the skeleton's K-steps are the ring's two edges alone: the projection's MMAs, which the stores will run beside, land with their component",
+  "math 1/phase.window": "the skeleton's K-steps are the ring's two edges alone: the projection's MMAs, which the stores will run beside, land with their component"
+ }
+}
