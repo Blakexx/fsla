@@ -847,7 +847,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     const uint8_t* const from = reinterpret_cast<const uint8_t*>(values)
                                 + (static_cast<long long>(key) * expanded_windows<ROLES> + w % expanded_windows<ROLES>) * kExpandedWindow
                                 + (slot * kSlotLists + g) * kExpandedList;
-    if (g == 0) lab::mbar_expect(landed, kSlotLists * kExpandedList);
+    if (g == 0) ::denseref::ops::mbar_expect_bytes(landed, kSlotLists * kExpandedList);
     if constexpr ((ROLES & kShare) != 0) {
       //: a warp's first two lanes, lists `2 warp` and the next: `from` is the thread's own list's
       const int list = 2 * (g >> 5) + (g & 31);
@@ -874,7 +874,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       const uint32_t columns = ROLES & kOwn ? gridDim.x * 2 : kColumns;
       const uint8_t* const stream = reinterpret_cast<const uint8_t*>(values) + static_cast<long long>(columns) * kCallWindows * 16
                                     + (static_cast<long long>(source % columns) * kCallWindows + w % kCallWindows) * kPackedRoom;
-      lab::mbar_expect(landed, plan[2 * slot + 1]);
+      ::denseref::ops::mbar_expect_bytes(landed, plan[2 * slot + 1]);
       lab::bulk_load(base + at * kPoolBytes, stream + static_cast<long long>(plan[2 * slot]) * 16, plan[2 * slot + 1], landed);
     }
   };
@@ -895,7 +895,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
     if ((threadIdx.x & (kGroup - 1)) == 0) {
       const int box_of = threadIdx.x >> 7;
       const uint32_t landed = base + kBarsAt + kPoolLanded + 8 * (2 * box_of + 1);
-      lab::mbar_expect(landed, kOneBytes);
+      ::denseref::ops::mbar_expect_bytes(landed, kOneBytes);
       lab::bulk_load(base + kOneAt + box_of * kOneBytes, reinterpret_cast<const uint4*>(values) + one_line(w), kOneBytes, landed);
     }
   };
@@ -904,7 +904,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       const int at = 2 * (threadIdx.x >> 7) + 1;
       const uint32_t landed = base + kBarsAt + kPoolLanded + 8 * at;
       constexpr uint32_t kBytes = (ROLES & kThrough ? kTokValues : kTokLines) * 16;
-      lab::mbar_expect(landed, kBytes);
+      ::denseref::ops::mbar_expect_bytes(landed, kBytes);
       lab::bulk_load(base + at * kPoolBytes, view_of(w, slot), kBytes, landed);
     }
   };
@@ -1560,7 +1560,7 @@ __device__ __forceinline__ void produce_packed(uint8_t* smem, uint32_t base, lon
     const uint32_t bytes = static_cast<uint32_t>(packed_lines(static_cast<int>(n))) * 16u;
     const uint32_t all = __reduce_add_sync(0xffffffffu, bytes);
     const uint32_t landed = slot_bar<ROLES>(bars, 2, box, q);
-    if (lane == 0) lab::mbar_expect(landed, all);
+    if (lane == 0) ::denseref::ops::mbar_expect_bytes(landed, all);
     if (n) lab::bulk_load(base + 2 * box * kPoolBytes + (q * kT + lane) * kTile, stream + static_cast<long long>(first) * 16, bytes, landed);
   };
   //: the window ahead's: its slots' count, a lane its step's record, a lane its slot's header
@@ -1772,7 +1772,7 @@ __device__ __forceinline__ void produce_role(uint8_t* smem, uint32_t base, long 
         //: THE SLOT'S VALUES, 8 lists' tiles, a bulk copy each from the column's expanded window: a lane a list
         const uint32_t landed = bars + kPoolLanded + 8 * (2 * box + slot);
         constexpr int kBytes = kRaw ? kExpandedList : kValueTile;
-        if (lane == 0) lab::mbar_expect(landed, kSlotLists * kBytes);
+        if (lane == 0) ::denseref::ops::mbar_expect_bytes(landed, kSlotLists * kBytes);
         const uint8_t* const from = reinterpret_cast<const uint8_t*>(values)
                                     + (static_cast<long long>(key) * expanded_windows<ROLES> + w % expanded_windows<ROLES>) * kExpandedWindow
                                     + (slot * kSlotLists + lane) * kExpandedList;
@@ -1901,7 +1901,7 @@ __device__ __forceinline__ void read_mirror(uint8_t* smem, uint32_t base, long l
   const auto issue_pass = [&](int p) {
     if (tid == 0) {
       const uint32_t landed = bars + kCoefLanded;
-      lab::mbar_expect(landed, kCoefPass);
+      ::denseref::ops::mbar_expect_bytes(landed, kCoefPass);
       lab::bulk_load(base + kCoefAt, reinterpret_cast<const uint8_t*>(dense)
                                             + (static_cast<long long>(blockIdx.x) * kReadPasses + p % kReadPasses) * kCoefPass,
                      kCoefPass, landed);

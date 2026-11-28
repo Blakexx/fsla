@@ -88,7 +88,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
   __syncthreads();
   //: a bulk form's collector states the round's bytes before any mate can send them
   if constexpr (kBulk<FORM>) {
-    if (collects && tid == 0) lab::mbar_expect(full, kCtas * kShare);
+    if (collects && tid == 0) ::denseref::ops::mbar_expect_bytes(full, kCtas * kShare);
   }
   //: every CTA of the cluster has its panel and barriers before any reaches into another's
   lab::cluster_sync();
@@ -167,7 +167,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1) sum(long long* times, float* out, 
         lab::cluster_fence();
         __syncthreads();
         if (tid == 0) {
-          if constexpr (kBulk<FORM>) lab::mbar_expect(full, kCtas * kShare);
+          if constexpr (kBulk<FORM>) ::denseref::ops::mbar_expect_bytes(full, kCtas * kShare);
 #pragma unroll
           for (int s = 0; s < kCtas; ++s) lab::cluster_arrive(dones[s]);
         }

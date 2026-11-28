@@ -98,7 +98,7 @@ __global__ void __launch_bounds__(kSourceThreads + 32 * DRAINS, 1)
       if constexpr (FORM & kLoads) {
         if (tid == 0) {
           if (c >= 2) lab::mbar_wait(landed + 8 * (c & 1), ((c >> 1) - 1) & 1);
-          lab::mbar_expect(landed + 8 * (c & 1), kLoadBytes);
+          ::denseref::ops::mbar_expect_bytes(landed + 8 * (c & 1), kLoadBytes);
           lab::bulk_load(base + kLoadAt + (c & 1) * kLoadBytes, table + (c % 128) * (kLoadBytes / 4), kLoadBytes,
                          landed + 8 * (c & 1));
         }

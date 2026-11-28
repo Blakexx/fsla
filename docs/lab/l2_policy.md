@@ -12,7 +12,12 @@ PREDICTION, run 20261128T014645Z-403597-16c6d19e (written 2026-11-27, before it 
 - 16 MB: the plain trip over the hinted: 0.90-1.10 times.
 - 40 MB: the plain trip over the hinted: 1.30-2.00 times.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00def8gx4f4d34esq, driver 580.196.07; 2026-11-28, the experiment at
+PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's trips, a kernel now a table size (the profiler's hit rate then each table's): the 16 MB plain trip 1.31x the hinted and the 40 MB 1.10x, repeating within 5%):
+
+- 16 MB: the plain trip over the hinted: 1.24-1.38 times.
+- 40 MB: the plain trip over the hinted: 1.05-1.16 times.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
 00123881, run 20261128T014645Z-403597-16c6d19e; 7 repetitions, the 4 checked variants exact; the median, the widest
 spread of a row 1.4%; the clock as the card left it):
 

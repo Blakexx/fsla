@@ -42,7 +42,7 @@ __device__ __forceinline__ Bars bars_of(uint32_t base, int tile) {
 //: A TILE'S BYTES, issued: the one arrival that states them, then the copy into the tile's slot of the bytes' ring.
 //: ISSUE EDGE: the slot's last reader is this warp's tile `kRawSlots` back, expanded and synchronized iterations ago
 __device__ __forceinline__ void fetch(uint32_t base, const uint8_t* src, int tile) {
-  lab::mbar_expect(bars_of(base, tile).raw, kRawBytes);
+  ::denseref::ops::mbar_expect_bytes(bars_of(base, tile).raw, kRawBytes);
   lab::bulk_load(base + kRaw + (tile % kRawSlots) * kRawBytes, src + (tile % kSrcTiles) * kRawBytes, kRawBytes,
                  bars_of(base, tile).raw);
 }

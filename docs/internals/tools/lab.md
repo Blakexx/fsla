@@ -345,9 +345,9 @@ full grid's record; any other's count is the warps that arrive at it), and the v
   before an asynchronous reader of their stores (`bulk_fence`: a bulk copy out, another warp's wgmma), `bulk_commit`,
   `bulk_wait<N>`, beside `red_add_f32` (one value by its thread), `red_add_u32` and `red_add_u64` (an integer) and
   `red_add_f16x2` (a pair of f16, each half its own sum, from `pack_half2`); `red_add_f16x2_v4` (four such pairs a lane in one vector add, 16 bytes); the plain bulk copy out, `bulk_store`; the tensor copies in,
-  `tensor_load_2d` (and `tensor_load_3d`, a 3-d box) and its multicast `tensor_cast_2d` (one copy landed in every CTA of a cluster a mask names); the bulk copy
+  the multicast tensor copy `tensor_cast_2d` (a CTA's own tensor copy is the production atom `stage_box_2d`/`stage_box_3d`, `common/atoms/copy.cuh`) (one copy landed in every CTA of a cluster a mask names); the bulk copy
   in, `bulk_load`, under a barrier whose
-  arrival states its bytes (`mbar_expect`); and a warpgroup's registers a thread,
+  arrival states its bytes (the production atom `mbar_expect_bytes`); and a warpgroup's registers a thread,
   `regs_down<N>` and `regs_up<N>` (`setmaxnreg`). The lab's step checks read `HGMMA` and the integer `IGMMA` as they read `HMMA`
   and `IMMA`; a wgmma kernel states `Bench::exempt`, a budgeted one being refused until the hopper counters' model
   names its per-MMA divisor.

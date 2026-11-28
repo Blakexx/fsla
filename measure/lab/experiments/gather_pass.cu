@@ -122,7 +122,7 @@ __global__ void __launch_bounds__(THREADS, 1)
     if (next.steps) {
       ++values_n;
       if (tid == 0) {
-        lab::mbar_expect(bars + kValues, kWindow * kValueBytes);
+        ::denseref::ops::mbar_expect_bytes(bars + kValues, kWindow * kValueBytes);
 #pragma unroll
         for (int t = 0; t < kTiles; ++t)
           lab::bulk_load(base + kValAt + t * (kTile * kValueBytes), wvals + t * (kTile * kValueBytes / 16),
@@ -140,11 +140,11 @@ __global__ void __launch_bounds__(THREADS, 1)
         }
         if (next.steps) {
           const uint32_t slot = (list_n + 1) & 1u;
-          lab::mbar_expect(bars + kList + 8 * slot, next.steps * 32);
+          ::denseref::ops::mbar_expect_bytes(bars + kList + 8 * slot, next.steps * 32);
           lab::bulk_load(base + kListAt + slot * kUnit * 32, wlists + next.step * 2, next.steps * 32, bars + kList + 8 * slot);
           if (next.block != cur.block) {
             const uint32_t level = (sparse_n + 1) & 1u;
-            lab::mbar_expect(bars + kSparse + 8 * level, kTiles * kBlockBytes);
+            ::denseref::ops::mbar_expect_bytes(bars + kSparse + 8 * level, kTiles * kBlockBytes);
 #pragma unroll
             for (int t = 0; t < kTiles; ++t)
               lab::bulk_load(base + kSparseAt + level * kLevelBytes + t * kBlockBytes,
@@ -279,11 +279,11 @@ __global__ void __launch_bounds__(THREADS, 1)
         }
         if (next.steps) {
           const uint32_t slot = (list_n + 1) & 1u;
-          lab::mbar_expect(bars + kList + 8 * slot, next.steps * 32);
+          ::denseref::ops::mbar_expect_bytes(bars + kList + 8 * slot, next.steps * 32);
           lab::bulk_load(base + kListAt + slot * kUnit<D> * 32, wlists + next.step * 2, next.steps * 32, bars + kList + 8 * slot);
           if (next.block != cur.block) {
             const uint32_t level = (source_n + 1) & 1u;
-            lab::mbar_expect(bars + kSource + 8 * level, kTiles * kBlockBytes);
+            ::denseref::ops::mbar_expect_bytes(bars + kSource + 8 * level, kTiles * kBlockBytes);
 #pragma unroll
             for (int t = 0; t < kTiles; ++t)
               lab::bulk_load(base + kSrcAt + level * kLevelBytes + t * kBlockBytes,
@@ -386,7 +386,7 @@ __global__ void __launch_bounds__(THREADS, 1)
     //: a sparse block's mask and rows, to level `g % 2`, on its barrier
     const auto load_block = [&](int g) {
       const uint32_t level = static_cast<uint32_t>(g) & 1u;
-      lab::mbar_expect(bars + kLevel + 8 * level, kMaskBytes + kTiles * kBlockBytes);
+      ::denseref::ops::mbar_expect_bytes(bars + kLevel + 8 * level, kMaskBytes + kTiles * kBlockBytes);
       lab::bulk_load(base + kMaskAt + level * kMaskBytes, wmasks + g * (16 * 32), kMaskBytes, bars + kLevel + 8 * level);
 #pragma unroll
       for (int t = 0; t < kTiles; ++t)
@@ -394,7 +394,7 @@ __global__ void __launch_bounds__(THREADS, 1)
                        wrows + t * (kTileBytes / 16) + g * (kBlockBytes / 16), kBlockBytes, bars + kLevel + 8 * level);
     };
     if (tid == 0) {
-      lab::mbar_expect(bars + kValues, kWindow * kValueBytes);
+      ::denseref::ops::mbar_expect_bytes(bars + kValues, kWindow * kValueBytes);
 #pragma unroll
       for (int t = 0; t < kTiles; ++t)
         lab::bulk_load(base + kValAt + t * (kTile * kValueBytes), wvals + t * (kTile * kValueBytes / 16),
@@ -561,7 +561,7 @@ __global__ void __launch_bounds__(THREADS, 1)
     //: a sparse block's mask and rows, and a dense block's rows, each to its buffer in turn on that buffer's barrier
     const auto load_block = [&](int g) {
       const uint32_t level = static_cast<uint32_t>(g) & 1u;
-      lab::mbar_expect(bars + kLevel + 8 * level, kMaskBytes + kTiles * kBlockBytes);
+      ::denseref::ops::mbar_expect_bytes(bars + kLevel + 8 * level, kMaskBytes + kTiles * kBlockBytes);
       lab::bulk_load(base + kMaskAt + level * kMaskBytes, wmasks + g * (16 * 32), kMaskBytes, bars + kLevel + 8 * level);
 #pragma unroll
       for (int t = 0; t < kTiles; ++t)
@@ -570,7 +570,7 @@ __global__ void __launch_bounds__(THREADS, 1)
     };
     const auto load_dense = [&](int db) {
       const uint32_t side = static_cast<uint32_t>(db) & 1u;
-      lab::mbar_expect(bars + kDense + 8 * side, kTiles * kBlockBytes);
+      ::denseref::ops::mbar_expect_bytes(bars + kDense + 8 * side, kTiles * kBlockBytes);
 #pragma unroll
       for (int t = 0; t < kTiles; ++t)
         lab::bulk_load(base + kDenseAt + side * kLevelBytes + t * kBlockBytes,

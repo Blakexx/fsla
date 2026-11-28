@@ -69,10 +69,10 @@ __global__ void __cluster_dims__(C, 1, 1) __launch_bounds__(kThreads, 1)
     //: it -- its own copy at once, or the cluster's once every CTA has arrived at rank 0's barrier
     __syncthreads();
     if (tid == 0) {
-      lab::mbar_expect(bar, kTileBytes);
+      ::denseref::ops::mbar_expect_bytes(bar, kTileBytes);
       const int row = tile_of(COLD, cluster, c) * kTokens;
       if constexpr (FORM == kEach) {
-        lab::tensor_load_2d(base + slot * kTileBytes, &map, 0, row, bar);
+        ::denseref::ops::stage_box_2d(base + slot * kTileBytes, &map, 0, row, bar);
       } else {
         lab::cluster_arrive(freed + 8 * slot);
         if (rank == 0) {

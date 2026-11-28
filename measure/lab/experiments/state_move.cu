@@ -62,7 +62,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1)
   __syncthreads();
   //: a receiver states its round's bytes before any mate can send them
   if constexpr (FORM == kMates) {
-    if (tid == 0) lab::mbar_expect(full, kBytes);
+    if (tid == 0) ::denseref::ops::mbar_expect_bytes(full, kBytes);
   }
   lab::cluster_sync();
   //: THE MATES' ADDRESSES, mapped once: the image and barrier of the CTA this thread sends to, every CTA's `done`
@@ -95,7 +95,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1)
       __syncthreads();
       //: the image is read: the next round's bytes stated, then every mate released into it
       if (tid == 0) {
-        lab::mbar_expect(full, kBytes);
+        ::denseref::ops::mbar_expect_bytes(full, kBytes);
 #pragma unroll
         for (int c = 0; c < kCtas; ++c) lab::cluster_arrive(dones[c]);
       }
@@ -111,7 +111,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1)
     }
     if constexpr (FORM == kOutIn || FORM == kIn) {
       if (tid == 0) {
-        lab::mbar_expect(full, kBytes);
+        ::denseref::ops::mbar_expect_bytes(full, kBytes);
         lab::bulk_load(base, mine, kBytes, full);
       }
       lab::mbar_wait(full, r & 1);
@@ -119,7 +119,7 @@ __global__ void __cluster_dims__(kCtas, 1, 1)
     }
     if constexpr (kRowed<FORM>) {
       //: THE ROWS: request `j` lands at row `j` of the image
-      if (tid == 0) lab::mbar_expect(full, kRows * kRowBytes);
+      if (tid == 0) ::denseref::ops::mbar_expect_bytes(full, kRows * kRowBytes);
       if constexpr (FORM == kRowsSpread) __syncthreads();
 #pragma unroll 1
       for (int j = tid; j < (FORM == kRowsOne ? (tid == 0 ? kRows : 0) : (tid < kRows ? tid + 1 : 0)); ++j) {

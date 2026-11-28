@@ -92,7 +92,7 @@ __global__ void __launch_bounds__(kThreads, 1)
   //: window `w`'s values into the buffer of its parity, the warpgroup's first thread's one copy
   const auto issue = [&](int w) {
     if (in == 0) {
-      lab::mbar_expect(bars + 8 * (w & 1), kLand<FORM>);
+      ::denseref::ops::mbar_expect_bytes(bars + 8 * (w & 1), kLand<FORM>);
       lab::bulk_load(base + (2 * box + (w & 1)) * kLand<FORM>, mine + static_cast<size_t>(w % kRing) * kPacketBytes,
                      kLand<FORM>, bars + 8 * (w & 1));
     }

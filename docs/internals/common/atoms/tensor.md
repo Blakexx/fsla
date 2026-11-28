@@ -39,3 +39,11 @@ added with that design, selected at the atom as R8 asks.
   thread, 24 to 256 in eights; a raise waits for registers another warpgroup of the CTA released. Honoured only in a
   kernel whose `__launch_bounds__` give the count at entry, each role's whole body in its own branch
   ([`../../../lab/reg_trade.md`](../../../lab/reg_trade.md)).
+
+- <a id="k-rows"></a>`step_operand_k128(a)`: A K-MAJOR OPERAND THROUGH THE 128-BYTE SWIZZLE, the form a tensor copy of
+  128-byte lines swizzled ([`copy.md`](copy.md#stage-box)) lands: each row (an A's M, a B's N) its 64 K values in 128
+  bytes, 8 rows an atom of 1,024 bytes (the descriptor's stride, 64 lines), the K offset unused under the swizzle (1),
+  layout type 1 at bit 62; a step's K slice is the atom's address plus 32 bytes a k16 step. It is what lets the projection's operands be staged by one thread's tensor copy
+  ([`projection_tile`](../../../lab/projection_tile.md)) where one warp's `cp.async` binds at ~9 bytes a cycle an SM
+  ([`tma_box`](../../../lab/tma_box.md)). BLACKWELL (sm_100): `tcgen05`'s shared-memory descriptor takes the same
+  swizzle in its own fields; owed with blackwell's first schedule, not built.

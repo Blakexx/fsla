@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import Claim, write_banded
+from _banded import PENDING, Claim, write_banded
 
 
-def _floor(hidden: int) -> str:
-    return f"hidden {hidden}, a job 128 tokens x 256 columns, three stages: against the tensor floor"
+def _floor(hidden: int, loader: str = "") -> str:
+    return f"hidden {hidden}, a job 128 tokens x 256 columns, three stages{loader}: against the tensor floor"
+
+
+TENSOR = ", the tensor copy"
 
 
 #: each run's predictions, in the order they ran
@@ -31,6 +34,22 @@ RUNS = (
             Claim("hidden 256: a job over its tensor floor", lambda R: R[_floor(256)], 1.18, 1.36, "times"),
             Claim("hidden 512: a job over its tensor floor", lambda R: R[_floor(512)], 1.08, 1.28, "times"),
             Claim("hidden 2,048: a job over its tensor floor", lambda R: R[_floor(2048)], 1.18, 1.36, "times"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the first run's 5.3x at every hidden was the one loader warp's cp.async (~9 bytes a cycle an SM, lg_throttle); "
+        "tma_box's 128-byte swizzled tensor copy staged the same 48 KB in 966 cycles (50.9 bytes a cycle an SM), under the "
+        "tensor floor's 1,024; so a K-step is the floor's 1,024 plus what the ring fails to hide (~0-100) at hidden 256 "
+        "and 512, and at 2,048 x's 16 KB from HBM (12.95 bytes a cycle an SM: 1,265) binds; a job its K-steps plus ~900 "
+        "(the ring's first fill's share, its end's wait, fold and clear); the cp.async form repeats within 5%",
+        (
+            Claim("hidden 256: the cp.async job over its floor", lambda R: R[_floor(256)], 5.0, 5.6, "times"),
+            Claim("hidden 256: the tensor-copy job over its floor", lambda R: R[_floor(256, TENSOR)], 1.12, 1.40, "times"),
+            Claim("hidden 512: the tensor-copy job over its floor", lambda R: R[_floor(512, TENSOR)], 1.05, 1.30, "times"),
+            Claim("hidden 2,048: the tensor-copy job over its floor", lambda R: R[_floor(2048, TENSOR)], 1.15, 1.40,
+                  "times"),
         ),
     ),
 )

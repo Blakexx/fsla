@@ -443,7 +443,7 @@ __device__ __forceinline__ void regs_up() {
 }
 
 //: A BULK COPY IN (sm_90): `bytes` of global memory at `src` into shared memory at `dst`, asynchronous; the bytes
-//: complete the barrier `bar`'s phase once its one arrival has stated them (`mbar_expect`). Multiples of 16 bytes
+//: complete the barrier `bar`'s phase once its one arrival has stated them (`mbar_expect_bytes`). Multiples of 16 bytes
 __device__ __forceinline__ void bulk_load(uint32_t dst, const void* src, uint32_t bytes, uint32_t bar) {
   asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
                :
@@ -451,17 +451,7 @@ __device__ __forceinline__ void bulk_load(uint32_t dst, const void* src, uint32_
                : "memory");
 }
 
-//: A TENSOR COPY IN (sm_90): the box at (`c0`, `c1`) of the 2-d tensor `map` describes, into shared memory at
-//: `dst`, its bytes completing the barrier `bar`; `map` a kernel's `__grid_constant__` argument
-__device__ __forceinline__ void tensor_load_2d(uint32_t dst, const void* map, int c0, int c1, uint32_t bar) {
-  ::denseref::ops::stage_box_2d(dst, map, c0, c1, bar);
-}
 
-//: A 3-D TENSOR COPY IN (sm_90): the box at (`c0`, `c1`, `c2`) of the 3-d tensor `map` describes, into shared memory at
-//: `dst`, its bytes completing the barrier `bar`
-__device__ __forceinline__ void tensor_load_3d(uint32_t dst, const void* map, int c0, int c1, int c2, uint32_t bar) {
-  ::denseref::ops::stage_box_3d(dst, map, c0, c1, c2, bar);
-}
 
 //: the same MULTICAST: one copy landed at `dst` in every CTA of the cluster that `mask` names (a bit a rank), its
 //: bytes completing each one's own barrier at `bar`
@@ -474,10 +464,6 @@ __device__ __forceinline__ void tensor_cast_2d(uint32_t dst, const void* map, in
                : "memory");
 }
 
-//: an arrival that also states the bytes a bulk copy will complete the phase with
-__device__ __forceinline__ void mbar_expect(uint32_t bar, uint32_t bytes) {
-  ::denseref::ops::mbar_expect_bytes(bar, bytes);
-}
 
 //: A BULK REDUCTION OUT (sm_90): `bytes` of shared memory at `src` ADDED into global `dst`, fp32 by fp32,
 //: asynchronous, in this thread's bulk group; both addresses and the size multiples of 16 bytes
@@ -566,7 +552,7 @@ __device__ __forceinline__ void cluster_add_f32(uint32_t a, float v) {
 }
 
 //: A BULK COPY INTO A CLUSTER-MATE'S SHARED MEMORY: `bytes` of this CTA's shared memory at `src` to the mate's at
-//: `dst`, asynchronous; the bytes complete the MATE'S barrier `bar` (its arrival states them: `mbar_expect`).
+//: `dst`, asynchronous; the bytes complete the MATE'S barrier `bar` (its arrival states them: `mbar_expect_bytes`).
 //: Multiples of 16 bytes
 __device__ __forceinline__ void cluster_bulk_copy(uint32_t dst, uint32_t src, uint32_t bytes, uint32_t bar) {
   asm volatile("cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
