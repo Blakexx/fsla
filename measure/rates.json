@@ -46,6 +46,26 @@
             "cycles": 4,
             "documented": "H100 whitepaper: 989 dense FP16/BF16 tensor TFLOPS at fp32 accumulate, 1979 dense INT8 TOPS, 132 SMs at 1830 MHz -- 1024 flops a clock a scheduler at 16 bits, 2048 at 8"
           }
+        },
+        "stream": {
+          "hbm_read": {
+            "bytes_a_cycle": 12.996,
+            "measured": "stream_rate",
+            "row": "HBM read, a CTA its own slice of a 1 GiB table: a CTA",
+            "on": "h10080gbhbm3"
+          },
+          "hbm_write": {
+            "bytes_a_cycle": 13.22,
+            "measured": "stream_rate",
+            "row": "HBM write, a CTA its own slice of a 1 GiB table: a CTA",
+            "on": "h10080gbhbm3"
+          },
+          "hbm_copy": {
+            "bytes_a_cycle": 12.671,
+            "measured": "stream_rate",
+            "row": "HBM copy, a CTA its own slice of 512 MB into 512 MB: a CTA",
+            "on": "h10080gbhbm3"
+          }
         }
       }
     }

@@ -1,13 +1,13 @@
-// measure/lab/experiments/stream_rate.cu -- QUESTION: what does the H100 stream, a CTA an SM, from HBM and from L2:
-// the read rate, the write rate and a copy's, in bytes a cycle an SM and in GB/s the device? The producer's floors
-// (its outputs to HBM, its weights from L2) are priced on these and no lab row recorded either. METHOD: a CTA an SM of
-// 512 threads; a lane moves 16 bytes an instruction, so an instruction is a UNIT of 8 KB a CTA. READ: a ring of 16
-// units in flight a thread in two halves at their own registers, each word folded into a chain a lane (`3 s + w`),
-// nothing stored. WRITE: 16 stores a trip of a word formed from its index. COPY: the read's ring, each unit stored
-// where it was read (another table). The source: HBM, each CTA its own slice of a 1 GiB table once (the copy 512 MB
-// into 512 MB); L2 DISTINCT, each CTA its own 128 KB slice of a 16.5 MB table 64 times; L2 SHARED, every CTA the
-// whole of one 4 MB table 4 times from its own offset. Every chain, every written word and every copied word is
-// checked exactly on a short launch.
+// measure/lab/experiments/stream_rate.cu -- QUESTION: what does the H100 stream, a CTA an SM, from HBM and from L2: the
+// read rate, the write rate and a copy's, in bytes a cycle an SM and in GB/s the device? The producer's floors (its
+// outputs to HBM, its weights from L2) are priced on these and no lab row recorded either. METHOD: a CTA an SM of 512
+// threads; a lane moves 16 bytes an instruction, so an instruction is a UNIT of 8 KB a CTA. READ: a ring of 16 units in
+// flight a thread in two halves at their own registers, each word folded into a chain a lane (`3 s + w`), nothing
+// stored. WRITE: 16 stores a trip of a word formed from its index. COPY: the read's ring, each unit stored where it was
+// read (another table). The source: HBM, each CTA its own slice of a 1 GiB table once (the copy 512 MB into 512 MB); L2
+// DISTINCT, each CTA its own 128 KB slice of a 16.5 MB table 64 times; L2 SHARED, every CTA the whole of one 4 MB table
+// 4 times from its own offset; the two L2 walks again PAST L1 (`ld.global.cg`, L2 only). Every chain, every written
+// word and every copied word is checked exactly on a short launch.
 // TIMELINE: a thread's trip is the ring's two halves, each at its own registers: a half's units folded (or stored),
 // then that half's loads for the trip after. Live: the ring's 64 words and the chain.
 // see docs/internals/tools/lab.md#stream-rate
@@ -18,7 +18,7 @@ namespace stream_rate {
 constexpr int kThreads = 512, kHalf = 8, kTrip = 2 * kHalf;
 //: a unit: one instruction of the CTA, 16 bytes a lane
 constexpr long long kUnitBytes = 16LL * kThreads;
-enum Mode : int { kRead = 0, kWrite, kCopy, kModes };
+enum Mode : int { kRead = 0, kWrite, kCopy, kReadL2, kModes };
 
 //: the table's word at 32-bit index `w`
 __host__ __device__ constexpr uint32_t word_of(long long w) {
@@ -63,7 +63,8 @@ __global__ void __launch_bounds__(kThreads, 1)
     uint4 held[2][kHalf];
     const auto load = [&](int h, long long trip) {
 #pragma unroll
-      for (int i = 0; i < kHalf; ++i) held[h][i] = src[at(trip * kTrip + h * kHalf + i)];
+      for (int i = 0; i < kHalf; ++i)
+        held[h][i] = MODE == kReadL2 ? __ldcg(src + at(trip * kTrip + h * kHalf + i)) : src[at(trip * kTrip + h * kHalf + i)];
     };
     load(0, 0);
     load(1, 0);
@@ -72,7 +73,7 @@ __global__ void __launch_bounds__(kThreads, 1)
     for (int t = 1; t <= trips; ++t) {
 #pragma unroll
       for (int h = 0; h < 2; ++h) {
-        if constexpr (MODE == kRead) {
+        if constexpr (MODE == kRead || MODE == kReadL2) {
 #pragma unroll
           for (int i = 0; i < kHalf; ++i) sum = sum * 3u + (held[h][i].x + held[h][i].y + held[h][i].z + held[h][i].w);
         } else {
@@ -106,7 +107,7 @@ void run(lab::Bench& b, const stream_rate::Row& row, const uint4* src, uint4* ds
   kernel<<<b.sms, kThreads>>>(b.times, src, dst, sums, row.walk, row.check_units);
   LAB_CHECK(cudaDeviceSynchronize());
   long long wrong = 0, checked = 0;
-  if (MODE == kRead) {
+  if (MODE == kRead || MODE == kReadL2) {
     std::vector<uint32_t> got(static_cast<size_t>(b.sms) * kThreads);
     LAB_CHECK(cudaMemcpy(got.data(), sums, got.size() * 4, cudaMemcpyDeviceToHost));
     for (int blk = 0; blk < b.sms; ++blk)
@@ -165,7 +166,7 @@ int main(int argc, char** argv) {
     //: the ring: the toolkit copies a loaded register at the trip's end (as `load_rate`'s ring), so one of a trip's 16
     //: loads is read in the trip that issued it: declared, the form being the stream's
     if (m != kWrite) b.expect(k, "LOAD_IN_TRIP", "<=", 2);
-    if (m != kRead) b.expect(k, "STG", ">=", kTrip);
+    if (m == kWrite || m == kCopy) b.expect(k, "STG", ">=", kTrip);
   }
   if (b.expect_only) return 0;
   //: the tables: 1 GiB each, a unit 8 KB, so 131,072 units
@@ -188,11 +189,17 @@ int main(int argc, char** argv) {
       {"L2 read, a CTA its own 128 KB slice 64 times", kRead, {16, 15, 4096}, 16 * 64, 32},
       //: L2: every CTA the whole of one 512-unit (4 MB) table 4 times, each from its own offset
       {"L2 read, every CTA one 4 MB table 4 times", kRead, {4, ~0LL, 512}, 512 * 4, 32},
+      //: THE SAME TWO WALKS PAST L1 (`ld.global.cg`: cached in L2 only, as the copies the producer stages by --
+      //: `cp.async.cg` and the tensor copy -- read it), so a CTA's own 128 KB slice cannot hit its SM's L1
+      {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times", kReadL2, {16, 15, 4096}, 16 * 64, 32},
+      {"L2 read past L1 (ld.global.cg), every CTA one 4 MB table 4 times", kReadL2, {4, ~0LL, 512}, 512 * 4, 32},
   };
   run<kRead>(b, rows[0], src, dst, sums);
   run<kWrite>(b, rows[1], src, dst, sums);
   run<kCopy>(b, rows[2], src, dst, sums);
   run<kRead>(b, rows[3], src, dst, sums);
   run<kRead>(b, rows[4], src, dst, sums);
+  run<kReadL2>(b, rows[5], src, dst, sums);
+  run<kReadL2>(b, rows[6], src, dst, sums);
   return 0;
 }
