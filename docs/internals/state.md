@@ -100,10 +100,10 @@ frozen `StateFormat`), and it is what every kernel derives its addressing from:
 RULE.** The hard rule: the carve gives every CTA at least 16 digits of the storage-innermost level, so a CTA's leaves
 are whole pages. Every level is at least 16 wide and every side's leaf group at least 16 leaves. The best effort: the
 levels are ordered by how many parties -- the write side and the `G` read heads -- read them dense, the fewest
-outermost and ties in the declared order, so the innermost level is the one the carve keeps wide anyway: the carve
-apportions its doublings by the fetches each saves, and a level read dense saves few, so a dense innermost level is
-rarely cut and the 16-digit floor rarely binds, and a
-token's live leaves lie in long contiguous runs. The order is recorded in the format. THE ORACLE AND `materialize()`
+outermost and ties in the declared order, so the innermost level is the one the carve keeps wide anyway: under R20 a
+doubling on a level saves a fetch for each side whose size there still exceeds its share, so a level many parties read
+dense draws the carve's doublings and the 16-digit floor on it rarely binds; and a token's live leaves lie in long
+contiguous runs. The order is recorded in the format. THE ORACLE AND `materialize()`
 REPORT LEAVES IN THE DECLARED LEVEL ORDER: the permutation the storage order applies is undone in those two places
 only, and nowhere else. NOT BUILT: the order today is the declared one.
 

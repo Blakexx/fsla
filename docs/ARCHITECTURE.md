@@ -97,7 +97,8 @@ owner index is a bit-field extract and never a division chain
 ([`decode/decode_lattice.md`](internals/decode/decode_lattice.md)).
 
 **Widths have a floor.** Every level is at least 16 wide (`B_l` a power of two ≥ 16), and every side's leaf group at
-least 16 leaves, so no narrow-level case exists in any kernel's addressing.
+least 16 leaves where its box holds as many (R10), a group raised after the carve and never past a share (R20), so no
+narrow-level case exists in any kernel's addressing.
 
 **Routing is per head, and its shapes are one family.** Every routing weight, kernel and reference carries the head
 axis (the user, 2026-06-24: "there is no form of FSLA without per-head routing -- the whole point is it's a per-head

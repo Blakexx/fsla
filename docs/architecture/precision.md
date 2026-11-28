@@ -42,7 +42,7 @@ chosen per card from the device's facts in its descriptor, by measurement, and s
 (the closed world), never by a run-time branch on a measured statistic. Both forms are exact, so the result is the same
 on every card: an integer 0 to 255 is exact in bf16, and a width-256 Gram's sums, under 2^24, are exact in fp32; an
 exactness lab row gates each card's form. The intra's Grams on hopper and B200 are integer u8 MMAs, at the full INT8
-rate. A card whose INT8 tensor rate is cut against its other MMAs has no form yet (no such card is measured): one
+rate. NOT MEASURED: no card's form is chosen by a measurement yet, and no exactness row exists. A card whose INT8 tensor rate is cut against its other MMAs has no form yet (no such card is measured): one
 is decided and measured when such a card is a target, and it widens on chip inside the intra's Gram step only -- the
 data model stays u8 in memory on every card.
 

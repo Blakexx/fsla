@@ -10,7 +10,7 @@ allocation, no address table and no residency: the state is the dense plane
 
 `MMA_K_QUANTUM = 16`. The ruling: **`BC` is a re-derivable COMPUTE tile; a page is a STORAGE atom.** `BC` varies with the
 carve and across rebuilds, and a layout keyed to a compute tile would be re-keyed by each such move; the page is 16 leaves in
-canonical leaf order, and every legal `BC` is a whole number of atoms by construction (`16 | BC`), so a box spans exactly
+the state's leaf order, over its level order ([`../state.md`](../state.md#level-order)), and every legal `BC` is a whole number of atoms by construction (`16 | BC`), so a box spans exactly
 `BC / 16` atoms. A page's leaf `n` is row `n & (MMA_K_QUANTUM - 1)` of page `n // MMA_K_QUANTUM`; the dense plane
 addresses page `a` of batch-head `bh` at `(bh * N / 16 + a) * page_bytes`.
 
