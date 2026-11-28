@@ -21,6 +21,7 @@ from _record import Record, card, read
 
 DEVICE, CTA = ": the device", ": a CTA"
 PENDING = "pending"
+SECOND = "20261128T013030Z-737802-5ab0223a"
 HBM_READ = "HBM read, a CTA its own slice of a 1 GiB table"
 HBM_WRITE = "HBM write, a CTA its own slice of a 1 GiB table"
 HBM_COPY = "HBM copy, a CTA its own slice of 512 MB into 512 MB"
@@ -28,6 +29,9 @@ OWN = "L2 read, a CTA its own 128 KB slice 64 times"
 SHARED = "L2 read, every CTA one 4 MB table 4 times"
 OWN_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times"
 SHARED_CG = "L2 read past L1 (ld.global.cg), every CTA one 4 MB table 4 times"
+HALF_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, 66 CTAs"
+SPREAD_CG = "L2 read past L1 (ld.global.cg), a CTA its own 128 KB interleaved over the table 64 times"
+SMALL_CG = "L2 read past L1 (ld.global.cg), every CTA one 128 KB slice 64 times"
 
 #: THE PREDICTIONS, each run's, in the order they ran: its run id (the sample's, or `PENDING`), the date they were
 #: written (before the run), their basis, and each walk's band -- the figure it bounds (`DEVICE` in GB/s, `CTA` in bytes
@@ -47,7 +51,7 @@ RUNS = (
         },
     ),
     (
-        PENDING,
+        SECOND,
         "2026-11-27",
         "the first run's two L2 bands missed on wrong prices: the ceiling came from A100's documented L2, where the H100 "
         "gave every SM reading one shared table 43.0 bytes a cycle; and a CTA's own 128 KB slice was taken to miss L1, "
@@ -65,11 +69,37 @@ RUNS = (
             SHARED_CG: (CTA, 40.0, 46.0),
         },
     ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the second run's own slice past L1 missed under its band (30.96 bytes a cycle an SM, 0.73 of the shared table's "
+        "42.38): its price took the far L2 partition to cost at most a fifth. Three walks separate the explanations. IF a "
+        "CTA's distinct lines are served from the one partition that holds them (half the SMs' far) while a table every "
+        "SM reads is served near from both, as predicted here: the own slice on 66 SMs reads as on 132 (a path an SM, "
+        "no aggregate cap), interleaving its units over the table moves nothing (placement by address is already spread), "
+        "and every CTA reading one shared 128 KB slice reads as fast as the shared 4 MB table (sharing is what lifts it). "
+        "An aggregate cap on distinct lines would lift the 66-SM walk instead; a placement effect, the interleaved one; "
+        "and the shared small slice under 34 would say sharing is not the cause. Every walk of the second run repeats "
+        "within 5% (HBM's within 3%)",
+        {
+            HBM_READ: (DEVICE, 3077.0, 3267.0),
+            HBM_WRITE: (DEVICE, 3094.0, 3286.0),
+            HBM_COPY: (DEVICE, 2770.0, 2942.0),
+            OWN: (CTA, 62.0, 68.5),
+            SHARED: (CTA, 41.4, 45.7),
+            OWN_CG: (CTA, 29.4, 32.5),
+            SHARED_CG: (CTA, 40.3, 44.5),
+            HALF_CG: (CTA, 28.0, 34.0),
+            SPREAD_CG: (CTA, 28.0, 34.0),
+            SMALL_CG: (CTA, 39.0, 46.0),
+        },
+    ),
 )
 
 
 def _band(which: str, lo: float, hi: float) -> str:
-    return f"{lo:,.0f}-{hi:,.0f} {'GB/s the device' if which == DEVICE else 'bytes a cycle an SM'}"
+    return f"{lo:,.1f}-{hi:,.1f} {'GB/s the device' if which == DEVICE else 'bytes a cycle an SM'}" if which == CTA else (
+        f"{lo:,.0f}-{hi:,.0f} GB/s the device")
 
 
 def write(root: pathlib.Path, data: pathlib.Path, instance: str) -> list[pathlib.Path]:
