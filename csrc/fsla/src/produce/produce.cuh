@@ -169,6 +169,25 @@ struct Share {
   int b, tile, t0, t1, w;
 };
 
+//: A CTA'S ITEM: sequence `b`'s 128-token tile `tile` of its `tiles` and write head `w`, tiles fastest -- see
+//: docs/internals/produce/produce.md#cta
+struct Item {
+  int b, tile, w, tiles;
+};
+
+//: CTA `item`'s item: the grid is 1-D, tiles fastest, then sequences, then write heads
+__device__ __forceinline__ Item item_of(const Plan& p, int item) {
+  const int tiles = (p.tokens + kTileTokens - 1) / kTileTokens, sequences = p.batch * tiles;
+  return Item{item % sequences / tiles, item % tiles, item / sequences, tiles};
+}
+
+//: a math thread `tid`'s warpgroup share of its CTA's item: the tile's 64 tokens of its warpgroup
+__device__ __forceinline__ Share share_of(const Plan& p, const Item& it, int tid) {
+  const int group = tid / kGroupThreads, t0 = it.tile * kTileTokens + group * kGroupTokens;
+  return Share{it.b, 2 * it.tile + group, min(t0, p.tokens), min(t0 + kGroupTokens, p.tokens),
+               it.w};
+}
+
 //: the bytes of one (sequence, write head)'s row tile of a level: its 16-digit blocks of 64 tokens' 16 bytes
 __device__ __forceinline__ long long tile_bytes(int width) {
   return static_cast<long long>((width + kBlockDigits - 1) / kBlockDigits) * kGroupTokens
@@ -322,9 +341,7 @@ __device__ __forceinline__ void produce_cta(const Plan& p, Tr& tr) {
   static_assert(kDepth >= 2, "the ring holds two stages on every card");
   tr.phase(kSiteEntry);
   const int tid = static_cast<int>(threadIdx.x);
-  const int tiles = (p.tokens + kTileTokens - 1) / kTileTokens;
-  const int item = static_cast<int>(blockIdx.x), sequences = p.batch * tiles;
-  const int b = item % sequences / tiles, tile = item % tiles, w = item / sequences;
+  const Item it = item_of(p, static_cast<int>(blockIdx.x));
   unsigned* const live = S::template get<Live>();
   const ops::SmemAddr full = ops::smem_addr(S::template get<Bars>()), empty = full + 8 * kMaxStages;
   tr.phase(kSiteSetup);
@@ -337,15 +354,13 @@ __device__ __forceinline__ void produce_cta(const Plan& p, Tr& tr) {
     }
   __syncthreads();
   if (tid < kMathThreads) {
-    const int group = tid / kGroupThreads, t0 = tile * kTileTokens + group * kGroupTokens;
-    const Share s{b, 2 * tile + group, min(t0, p.tokens), min(t0 + kGroupTokens, p.tokens), w};
-    math_role<kDepth, LO>(p, s, full, empty, tid % kGroupThreads, tr);
+    math_role<kDepth, LO>(p, share_of(p, it, tid), full, empty, tid % kGroupThreads, tr);
   } else {
     load_role<kDepth>(p, full, empty, tid & 31, tr);
   }
   tr.phase(kSiteTicket);
   __syncthreads();
-  if (tid == 0) tickets(p, live, b, w, tiles);
+  if (tid == 0) tickets(p, live, it.b, it.w, it.tiles);
   tr.phase(kSiteExit);
 }
 

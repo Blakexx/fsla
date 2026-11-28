@@ -9,10 +9,12 @@
 // write heads, hidden 96; 2 of 300, 3 write heads, hidden 64), and at the cell. ROWS at the cell
 // (`layer-alt-entmax1.5-256x256-T65536-h4`: B 1, T 65,536, H_w 4, G 1, hidden 256, d_v 64): the launch; the launch at
 // hidden 0 (no ring stage); the launch at two CTAs an SM (the ring two stages); each beside its twin with every warp's
-// phases stamped (two CTAs' timelines); and the launch with the lo plane.
+// phases stamped (two CTAs' timelines); the launch with the lo plane; and THE STORES ALONE (`stores_only`: the library's
+// epilogues and tickets over the same items, no ring and no reserved shared memory) at three CTAs an SM.
 // TIMELINE: no MMA and no staged bytes. The loader's trip a stage: its slot's EMPTY edge, a FULL arrival; a math warp's
 // trip a stage: the FULL edge, lane 0's EMPTY arrival; a job's end its epilogue's zero stores, 16 bytes a store where
-// whole; the CTA's end its tickets. Live: the ring's parities, a share's addresses.
+// whole; the CTA's end its tickets. The stores alone: a math warp's jobs' epilogues back to back, then the tickets.
+// Live: the ring's parities, a share's addresses.
 // see docs/internals/tools/lab.md#produce-skeleton
 #include <cuda_bf16.h>
 
@@ -62,16 +64,14 @@ __global__ void __launch_bounds__(pk::kThreads, CTAS) stores_only(const __grid_c
   const int tid = static_cast<int>(threadIdx.x);
   if (tid < pk::kMaxRows * pk::kMaxLevels) live[tid] = 0u;
   __syncthreads();
-  const int tiles = (p.tokens + pk::kTileTokens - 1) / pk::kTileTokens;
-  const int item = static_cast<int>(blockIdx.x), sequences = p.batch * tiles;
-  const int b = item % sequences / tiles, tile = item % tiles, w = item / sequences;
+  const pk::Item it = pk::item_of(p, static_cast<int>(blockIdx.x));
   if (tid < pk::kMathThreads) {
-    const int group = tid / pk::kGroupThreads, t0 = tile * pk::kTileTokens + group * pk::kGroupTokens;
-    const pk::Share s{b, 2 * tile + group, min(t0, p.tokens), min(t0 + pk::kGroupTokens, p.tokens), w};
+    const pk::Share s = pk::share_of(p, it, tid);
+#pragma unroll 1
     for (int j = 0; j < p.jobs; ++j) pk::epilogue<false>(p, p.job[j], s, tid % pk::kGroupThreads);
   }
   __syncthreads();
-  if (tid == 0) pk::tickets(p, live, b, w, tiles);
+  if (tid == 0) pk::tickets(p, live, it.b, it.w, it.tiles);
 }
 
 //: a read entry: tied to the write side's level, or its own activation

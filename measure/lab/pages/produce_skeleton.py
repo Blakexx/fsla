@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 CELL = "the empty pipeline at the cell"
 NO_STAGES = CELL + ", hidden 0"
@@ -95,7 +95,7 @@ RUNS = (
         ),
     ),
     (
-        PENDING,
+        "20261128T130545Z-524606-99b4f497",
         "2026-11-28",
         "four stores in flight and coalesced token runs moved every row ~17% (plain 170.1 us, hidden 0 163.8, two CTAs "
         "an SM 161.9, the lo plane 261.6) and missed every band: ncu on the traced launch -- DRAM 58% of its peak, lts "

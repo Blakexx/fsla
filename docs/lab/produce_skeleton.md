@@ -32,7 +32,7 @@ PREDICTION, run 20261128T121503Z-274366-44f4c87b (written 2026-11-28, before it 
 - the empty pipeline at the cell, two CTAs an SM: 102.00-128.00 us.
 - the empty pipeline at the cell, the lo plane: 188.00-225.00 us.
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: four stores in flight and coalesced token runs moved every row ~17% (plain 170.1 us, hidden 0 163.8, two CTAs an SM 161.9, the lo plane 261.6) and missed every band: ncu on the traced launch -- DRAM 58% of its peak, lts 55%, l1tex 25%, long scoreboard 4 a issue (9 at two CTAs an SM), warps active 11% -- still latency with ~9 warps an SM. The move from one store a trip to four (a row tile's 8 trips to 2) bought 17%, so a trip's latency is ~a third of a CTA's time and the rest is the stall a instruction (~7 a issue) of the rest of its stream. THIS FORM: eight stores in flight a thread, a share's row tile in one trip (2 -> 1): the trips' third shrinks by about half, ~6% of the launch; the rest stays. THE OCCUPANCY ROW tests the claim that what remains is the CTA's ~9 warps an SM: the stores alone (the epilogues and tickets, no ring, no reserved shared memory) at three CTAs an SM, ~27 warps (four would spill at 56 registers a thread): if occupancy is the gap they reach the floor's write rate, 102-122 us; at two CTAs an SM the launch closed only 5% (170.1 -> 161.9), so a row near 155-165 would refute it and name the SM's store path):
+PREDICTION, run 20261128T130545Z-524606-99b4f497 (written 2026-11-28, before it ran; its basis: four stores in flight and coalesced token runs moved every row ~17% (plain 170.1 us, hidden 0 163.8, two CTAs an SM 161.9, the lo plane 261.6) and missed every band: ncu on the traced launch -- DRAM 58% of its peak, lts 55%, l1tex 25%, long scoreboard 4 a issue (9 at two CTAs an SM), warps active 11% -- still latency with ~9 warps an SM. The move from one store a trip to four (a row tile's 8 trips to 2) bought 17%, so a trip's latency is ~a third of a CTA's time and the rest is the stall a instruction (~7 a issue) of the rest of its stream. THIS FORM: eight stores in flight a thread, a share's row tile in one trip (2 -> 1): the trips' third shrinks by about half, ~6% of the launch; the rest stays. THE OCCUPANCY ROW tests the claim that what remains is the CTA's ~9 warps an SM: the stores alone (the epilogues and tickets, no ring, no reserved shared memory) at three CTAs an SM, ~27 warps (four would spill at 56 registers a thread): if occupancy is the gap they reach the floor's write rate, 102-122 us; at two CTAs an SM the launch closed only 5% (170.1 -> 161.9), so a row near 155-165 would refute it and name the SM's store path):
 
 - the empty pipeline at the cell: 150.00-168.00 us.
 - the empty pipeline at the cell, hidden 0: 144.00-162.00 us.
@@ -40,25 +40,26 @@ PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: four 
 - the empty pipeline at the cell, the lo plane: 235.00-259.00 us.
 - the empty pipeline at the cell, the stores alone, three CTAs an SM: 102.00-122.00 us.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00es5ms8q3gybrxsf, driver 580.196.07; 2026-11-28, the experiment at
-7ef8a4d0, run 20261128T121503Z-274366-44f4c87b; 7 repetitions, the 4 checked variants exact; the median, the widest
-spread of a row 7.7%; the clock as the card left it):
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00yb89mnsdyae6g8j, driver 580.196.07; 2026-11-28, the experiment at
+f29be9c1, run 20261128T130545Z-524606-99b4f497; 7 repetitions, the 5 checked variants exact; the median, the widest
+spread of a row 8.4%; the clock as the card left it):
 
 | the figure | measured | the prediction | held |
 |---|---:|---|---|
-| the empty pipeline at the cell | 170.14 us | 104.00-130.00 us | MISSED |
-| the empty pipeline at the cell: over its floor | 1.67 times | 1.02-1.28 times | MISSED |
-| the empty pipeline at the cell, hidden 0 | 163.81 us | 102.00-128.00 us | MISSED |
-| the empty pipeline at the cell, two CTAs an SM | 161.92 us | 102.00-128.00 us | MISSED |
-| the empty pipeline at the cell, the lo plane | 261.60 us | 188.00-225.00 us | MISSED |
+| the empty pipeline at the cell | 165.06 us | 150.00-168.00 us | held |
+| the empty pipeline at the cell, hidden 0 | 170.88 us | 144.00-162.00 us | MISSED |
+| the empty pipeline at the cell, two CTAs an SM | 161.41 us | 143.00-161.00 us | MISSED |
+| the empty pipeline at the cell, the lo plane | 260.70 us | 235.00-259.00 us | MISSED |
+| the empty pipeline at the cell, the stores alone, three CTAs an SM | 161.38 us | 102.00-122.00 us | MISSED |
 
 The record's rows:
-- the empty pipeline at the cell: 170.14 microseconds a launch.
-- the empty pipeline at the cell, every warp's phases stamped: 181.70 microseconds a launch.
-- the empty pipeline at the cell, hidden 0: 163.81 microseconds a launch.
-- the empty pipeline at the cell, hidden 0, every warp's phases stamped: 167.10 microseconds a launch.
-- the empty pipeline at the cell, two CTAs an SM: 161.92 microseconds a launch.
-- the empty pipeline at the cell, two CTAs an SM, every warp's phases stamped: 178.18 microseconds a launch.
-- the empty pipeline at the cell, the lo plane: 261.60 microseconds a launch.
+- the empty pipeline at the cell: 165.06 microseconds a launch.
+- the empty pipeline at the cell, every warp's phases stamped: 179.17 microseconds a launch.
+- the empty pipeline at the cell, hidden 0: 170.88 microseconds a launch.
+- the empty pipeline at the cell, hidden 0, every warp's phases stamped: 170.34 microseconds a launch.
+- the empty pipeline at the cell, two CTAs an SM: 161.41 microseconds a launch.
+- the empty pipeline at the cell, two CTAs an SM, every warp's phases stamped: 178.21 microseconds a launch.
+- the empty pipeline at the cell, the lo plane: 260.70 microseconds a launch.
+- the empty pipeline at the cell, the stores alone, three CTAs an SM: 161.38 microseconds a launch.
 
-Record: `data:records/fsla/measure/lab/produce_skeleton.run/20261128T121503Z-274366-44f4c87b/output.json`.
+Record: `data:records/fsla/measure/lab/produce_skeleton.run/20261128T130545Z-524606-99b4f497/output.json`.

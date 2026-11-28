@@ -97,7 +97,7 @@ record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, data
 the newest sample of its record (`measure/lab/pages/_record.py`'s `read`, `lab_record`) and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
 a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's, the gather rate's, the gather group's,
-the token carry's, the gather's, the stamp probe's, the clock probe's, the stream rates' (`stream_rate`) and the producer's rows' (`newton_row`, `mask_pack`, `projection_tile`, `tma_box`, `l2_policy`, `dependent_launch`, `produce_skeleton`, through `measure/lab/pages/_banded.py`) pages have their modules; every other page's typed section stands as recorded and is not edited by
+the token carry's, the gather's, the stamp probe's, the clock probe's, the stream rates' (`stream_rate`) and the producer's rows' (`newton_row`, `mask_pack`, `projection_tile`, `tma_box`, `l2_policy`, `dependent_launch`, `produce_skeleton`, `write_pattern`, through `measure/lab/pages/_banded.py`) pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 `ledger <name> [--per <n>] [--top N]` divides every count by the launch's CTA-windows (`--per`) and shows the `N` source lines issuing the most
@@ -466,3 +466,4 @@ a source in `measure/lab/experiments/`. The anchors below are where the sources'
 - <a id="l2-policy"></a>[`l2_policy`](../../lab/l2_policy.md)
 - <a id="dependent-launch"></a>[`dependent_launch`](../../lab/dependent_launch.md)
 - <a id="produce-skeleton"></a>[`produce_skeleton`](../../lab/produce_skeleton.md)
+- <a id="write-pattern"></a>[`write_pattern`](../../lab/write_pattern.md)
