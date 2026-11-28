@@ -19,18 +19,24 @@ import re
 
 from _record import Record, card, read
 
+from fsla.ops.paging import page_layout
+
 #: a launch's grid: a CTA an SM of the record's card (the H100 SXM's 132)
 SMS = 132
 FORMS = ("REG", "BULK", "PIECES", "PRODUCER")
 PATTERNS = ("WRITE_ALL", "READ_ALL", "WRITE_ONE", "READ_ONE", "RECORD")
-#: the experiment's `Work<PAT, DV>::kPositions`, a CTA's positions a launch, by pattern
+#: A ROW'S DECLARED WORK, the experiment's own constants (measure/lab/experiments/decode_ring.cu, `Work<PAT, DV>` and
+#: `Geo<DV>`), stated here as that source states them: a CTA's positions a launch by pattern (`kPositions`), and a
+#: RECORD's stride by `d_v` (`kRecord`: the hi line, the exponents and the mass, padded to whole sectors)
 POSITIONS = (1024, 2048, 2048, 3072, 3072)
+RECORD = {64: 160, 32: 96}
 #: the rows' configurations, (d_v, G, stamped), and the forms each pattern runs in: REG holds its ALL patterns at G 1
 #: alone, RECORD runs in REG and PIECES
 CONFIGS = ((64, 1, 0), (64, 8, 0), (32, 8, 0), (64, 8, 1))
 #: the prediction's band: every row's DRAM bytes within this share of the bytes its pattern declares
 BAND = 0.10
-#: the grain the hold's reading names: a scattered miss moves 64-byte blocks
+#: the grain the scattered rows' reads are priced at: a miss moves 64-byte blocks (the page's section THE PREDICTION'S
+#: PRICE NAMED, from the counters record this page reads)
 BLOCK = 64
 
 
@@ -40,19 +46,14 @@ def forms(pat: int, g: int) -> tuple[int, ...]:
     return (1, 2, 3) if pat <= 1 and g != 1 else (0, 1, 2, 3)
 
 
-def page_bytes(dv: int) -> tuple[int, int]:
-    """A page's bytes and its tail (its exponents and masses) at `d_v`: `fsla::state_page::Blocks<DV>`."""
-    exp = 16 * dv * 3
-    mass = (exp + 16 * (dv // 32) + 15) & ~15
-    return mass + 64, mass + 64 - exp
-
-
 def declared(pat: int, dv: int) -> tuple[int, int, int]:
-    """A position's declared bytes read and written (its 32-byte sectors, `Work<PAT, DV>::kRead`) and its leaves."""
-    full, tail = page_bytes(dv)
+    """A position's declared bytes read and written and its leaves: the experiment's `Work<PAT, DV>::kRead` (its 32-byte
+    sectors) on the state's page (`fsla.ops.paging.page_layout`, its tail the exponents and masses), `Geo<DV>`'s atoms a
+    ONE position (a lane group's eight channels a lane)."""
+    page = page_layout(dv)
+    full, tail = page.bytes, page.bytes - page.exp
     atoms = 32 // (dv // 8)
-    record = 160 if dv == 64 else 96
-    rd = (full, 32 * dv + tail, atoms * (3 * dv + 64), atoms * (2 * dv + 64), atoms * record)[pat]
+    rd = (full, 32 * dv + tail, atoms * (3 * dv + 64), atoms * (2 * dv + 64), atoms * RECORD[dv])[pat]
     return rd, rd if pat in (0, 2) else 0, 16 if pat <= 1 else atoms
 
 
@@ -60,8 +61,7 @@ def blocks(pat: int, dv: int) -> int:
     """A scattered leaf's bytes read at the 64-byte block's grain: on the ruled page its hi line (and lo line where
     written), a block of exponents and one of masses; a record, the blocks a `kRecord`-byte stride's record spans."""
     if pat == 4:
-        record = 160 if dv == 64 else 96
-        return BLOCK * max(-(-(o + record) // BLOCK) - o // BLOCK for o in range(0, BLOCK, 32))
+        return BLOCK * max(-(-(o + RECORD[dv]) // BLOCK) - o // BLOCK for o in range(0, BLOCK, 32))
     lines = 2 * dv + (dv if pat == 2 else 0)
     return -(-lines // BLOCK) * BLOCK + 2 * BLOCK
 

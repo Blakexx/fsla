@@ -9,7 +9,9 @@
 // every leaf deposited, re-rounded and stored, then read), READ_ALL (an atom's sixteen leaves read only: its hi plane,
 // exponents and masses), WRITE_ONE and READ_ONE (one leaf an atom, scattered, written or read only), and RECORD (READ_ONE
 // on a page laid out with a leaf's exponents and mass beside its hi line, the layout a scattered read would want), at
-// G = 1 and 8 read heads a leaf's accumulators and d_v 64 and 32.
+// G = 1 and 8 read heads a leaf's accumulators and d_v 64 and 32. Two separating rows: WRITE_SECTORS (WRITE_ONE by REG
+// at d_v 64 with the leaf's exponents and mass stored by whole 32-byte sectors, the neighbours' bytes as loaded), and
+// the scattered patterns again with the L2's fetch granularity held to 32 bytes (`cudaLimitMaxL2FetchGranularity`).
 // METHOD: a CTA an SM of 512 threads, the plane 2^21 pages at d_v 64 (2^22 at 32: over 6.6 GB). A POSITION is one atom
 // (the ALL patterns) or one atom a lane group of d_v / 8 lanes (the ONE patterns); position `q` of CTA `b` is the
 // CTA's items `(b Q + q) L + k`, each item's atom a bijection of its index over the plane (an odd multiplier), so a
@@ -36,7 +38,10 @@ constexpr int kWarps = 16, kThreads = 32 * kWarps;
 //: the dynamic shared memory a CTA reserves on the H100 (227 KB), and what the walk's tables take of it
 constexpr uint32_t kSmem = 232448, kTables = 4096;
 enum Form { kReg, kBulk, kPieces, kProducer };
-enum Pattern { kWriteAll, kReadAll, kWriteOne, kReadOne, kRecord };
+enum Pattern { kWriteAll, kReadAll, kWriteOne, kReadOne, kRecord, kWriteSectors };
+//: a row's mode: untraced, every warp's timeline stamped, or untraced with the L2's fetch granularity held to 32 bytes
+//: (`cudaLimitMaxL2FetchGranularity`), each its own instantiation so the profiler's counters keep them apart
+enum Mode { kPlain, kStamped, kGrain32 };
 //: a phase's site in a warp's timeline: above every barrier's
 constexpr uint32_t kPhases = 0xc000u, kEntry = 0, kExit = 1, kCompute = 2, kLoad = 3;
 
@@ -55,7 +60,8 @@ template <int PAT, int DV>
 struct Work {
   using G = Geo<DV>;
   using Page = typename G::Page;
-  static constexpr bool kOne = PAT >= kWriteOne, kWrite = PAT == kWriteAll || PAT == kWriteOne;
+  //: WRITE_SECTORS is WRITE_ONE with its tail stored by whole 32-byte sectors (REG at `d_v` 64 alone)
+  static constexpr bool kOne = PAT >= kWriteOne, kWrite = PAT == kWriteAll || PAT == kWriteOne || PAT == kWriteSectors;
   static constexpr int kAtoms = kOne ? G::kGroups : 1, kTrips = kOne ? 1 : 16 / G::kGroups;
   //: a lane group's piece of a slot (a ONE pattern): its bytes, and its stride, 64 past a multiple of 128 so a
   //: quarter-warp's two 64-byte hi lines (d_v 32) and a half-warp's two lo lines (d_v 64) share no bank
@@ -69,12 +75,12 @@ struct Work {
   //: the bytes a position reads and writes: its sectors
   static constexpr long long kRead = PAT == kWriteAll ? Page::kBytes
                                      : PAT == kReadAll ? 32 * DV + kTail
-                                     : PAT == kWriteOne ? kAtoms * (3 * DV + 64)
+                                     : PAT == kWriteOne || PAT == kWriteSectors ? kAtoms * (3 * DV + 64)
                                      : PAT == kReadOne ? kAtoms * (2 * DV + 64)
                                                        : kAtoms * G::kRecord;
   static constexpr long long kWritten = kWrite ? kRead : 0;
   static constexpr int kPositions = PAT == kWriteAll ? 64 * kWarps : PAT == kReadAll ? 128 * kWarps
-                                    : PAT == kWriteOne ? 128 * kWarps : 192 * kWarps;
+                                    : PAT == kWriteOne || PAT == kWriteSectors ? 128 * kWarps : 192 * kWarps;
 };
 
 //: a ring's depth: the slots a ring warp's share of the shared memory holds, at most 8
@@ -127,6 +133,9 @@ struct Leaf {
   uint2 lo;
   int e;
   float mass;
+  //: WRITE_SECTORS: word `j` of the page's exponent sector and of the leaf's mass sector, as loaded
+  uint32_t exw;
+  float msw;
 };
 
 //: THE WALK'S ARGUMENTS: the clocks, the sums out, the timelines, the plane and its atoms' mask, the positions a CTA
@@ -172,7 +181,7 @@ __device__ __forceinline__ void read_leaf(const Leaf& s, const Tables<DV, G>& t,
 
 //: A LEAF WRITTEN, THEN READ: the deposit `S + aw [v, 1]` re-rounded to its group's exponent (four lanes a group), stored
 //: from registers into its page, then read by every head (update first, then read)
-template <int DV, int G>
+template <int DV, int G, bool SECTORS>
 __device__ __forceinline__ void write_leaf(const Leaf& s, uint8_t* hi, uint8_t* lo, uint8_t* ex, float* mass,
                                            const Tables<DV, G>& t, int row, int j, Acc<G>& acc) {
   namespace sp = fsla::state_page;
@@ -193,9 +202,24 @@ __device__ __forceinline__ void write_leaf(const Leaf& s, uint8_t* hi, uint8_t* 
   for (int c = 0; c < 8; ++c) m[c] = sp::mantissa(sv[c], en);
   *reinterpret_cast<uint4*>(hi) = sp::pack_hi8(m);
   *reinterpret_cast<uint2*>(lo) = sp::pack_lo8(m);
-  if ((j & 3) == 0) *reinterpret_cast<int8_t*>(ex) = static_cast<int8_t>(en);
   const float mnew = s.mass + aw;
-  if (j == 0) *mass = mnew;
+  if constexpr (SECTORS) {
+    //: THE TAIL BY WHOLE SECTORS (`d_v` 64): the page's 32 exponent bytes (16 leaves, two groups) and the leaf's 32-byte
+    //: sector of eight masses, lane `j` of the group storing word `j` of each, the leaf's own bytes replaced; a launch
+    //: writes one leaf an atom, so the words it rewrites are the plane's own
+    static_assert(DV == 64, "the page's exponents are one sector at d_v 64");
+    const int base = (threadIdx.x & 31) & ~7;
+    const uint32_t e0 = static_cast<uint8_t>(__shfl_sync(0xffffffffu, en, base));
+    const uint32_t e1 = static_cast<uint8_t>(__shfl_sync(0xffffffffu, en, base + 4));
+    const int at = 8 * ((2 * row) & 3);
+    const uint32_t mine = (e0 | (e1 << 8)) << at;
+    const uint32_t word = j == row / 2 ? (s.exw & ~(0xffffu << at)) | mine : s.exw;
+    reinterpret_cast<uint32_t*>(ex - 2 * row - (j >> 2))[j] = word;
+    reinterpret_cast<float*>(mass - (row & 7))[j] = j == (row & 7) ? mnew : s.msw;
+  } else {
+    if ((j & 3) == 0) *reinterpret_cast<int8_t*>(ex) = static_cast<int8_t>(en);
+    if (j == 0) *mass = mnew;
+  }
   const float scale = sp::pow2(en);
 #pragma unroll
   for (int g = 0; g < G; ++g) {
@@ -313,7 +337,7 @@ __device__ __forceinline__ void leaf_step(const Position<PAT, DV>& pos, const Ar
                                           int j, int row, const Leaf& s, Acc<G>& acc) {
   if constexpr (Work<PAT, DV>::kWrite) {
     const At<PAT, DV> g(a.plane, pos.atom(k, a.mask), row, j);
-    write_leaf<DV, G>(s, g.hi, g.lo, g.ex, reinterpret_cast<float*>(g.mass), t, row, j, acc);
+    write_leaf<DV, G, PAT == kWriteSectors>(s, g.hi, g.lo, g.ex, reinterpret_cast<float*>(g.mass), t, row, j, acc);
   } else {
     read_leaf<DV, G>(s, t, row, j == 0, acc);
   }
@@ -437,7 +461,7 @@ __global__ void __launch_bounds__(kThreads, 1) walk(Args a) {
   const uint32_t base = lab::smem(smem), rings = base + kTables;
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
   const int k = lane / Gm::kLanes, j = lane % Gm::kLanes;
-  lab::Trace<TRACE != 0> tr;
+  lab::Trace<TRACE == kStamped> tr;
   tr.bind(a.trace);
   tr.mark(warpline::kPhaseBegin, kPhases + kEntry);
   for (int i = tid; i < G * 16; i += kThreads) t.read[i / 16][i % 16] = read_w(i / 16, i % 16);
@@ -472,6 +496,10 @@ __global__ void __launch_bounds__(kThreads, 1) walk(Args a) {
         held[i].lo = W::kWrite ? *reinterpret_cast<const uint2*>(g.lo) : make_uint2(0u, 0u);
         held[i].e = *reinterpret_cast<const int8_t*>(g.ex);
         held[i].mass = *reinterpret_cast<const float*>(g.mass);
+        if constexpr (PAT == kWriteSectors) {
+          held[i].exw = reinterpret_cast<const uint32_t*>(g.ex - 2 * pos.row(i, k) - (j >> 2))[j];
+          held[i].msw = reinterpret_cast<const float*>(g.mass - 4 * (pos.row(i, k) & 7))[j];
+        }
       }
       tr.mark(warpline::kPhaseBegin, kPhases + kCompute);
       compute<PAT, DV, G, true>(pos, a, t, k, j, [&](int i, int) { return held[i]; }, acc);
@@ -519,9 +547,11 @@ __global__ void __launch_bounds__(kThreads, 1) walk(Args a) {
 #pragma unroll 1
       for (int q = 0; q < W::kPositions; ++q) {
         const int c = q % kConsumers, n = q / kConsumers;
-        tr.at(warpline::kWaitBegin, empty_of(c, n));
+        //: a slot's first fill waits on a fresh barrier's passed phase, which no arrival releases: only the waits after
+        //: a consumer's arrival (`n >= K`) are stamped
+        if (n >= K) tr.at(warpline::kWaitBegin, empty_of(c, n));
         lab::mbar_wait(empty_of(c, n), static_cast<uint32_t>(((n / K) & 1) ^ 1));
-        tr.at(warpline::kWaitEnd, empty_of(c, n));
+        if (n >= K) tr.at(warpline::kWaitEnd, empty_of(c, n));
         tr.at(warpline::kIssue, full_of(c, n));
         issue<PAT, DV, true>(position<PAT, DV>(q), a.mask, a.plane, slot(c, n), full_of(c, n), lane);
       }
@@ -649,7 +679,7 @@ void run(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, 
   static_assert(sizeof(Tables<DV, G>) + 2 * kRings * K * 8 <= kTables, "the tables and barriers fit their share");
   static const char* const kForms[] = {"REG, a position in registers", "BULK, a ring a warp by bulk copies",
                                        "PIECES, a ring a warp by 16-byte cp.async", "PRODUCER, one warp filling 15 rings"};
-  static const char* const kPatterns[] = {"WRITE_ALL", "READ_ALL", "WRITE_ONE", "READ_ONE", "RECORD"};
+  static const char* const kPatterns[] = {"WRITE_ALL", "READ_ALL", "WRITE_ONE", "READ_ONE", "RECORD", "WRITE_SECTORS"};
   const std::string name = std::string(kPatterns[PAT]) + ", d_v " + std::to_string(DV) + ", G " + std::to_string(G) + ": " +
                            kForms[FORM] + (FORM == kReg ? "" : " (" + std::to_string(K) + " slots)") + what;
   const uint32_t pages = DV == 64 ? (1u << 21) : (1u << 22);
@@ -723,7 +753,7 @@ void run(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, 
   b.record(name, "GB/s the device", rate);
   LAB_CHECK(cudaEventDestroy(e0));
   LAB_CHECK(cudaEventDestroy(e1));
-  if constexpr (TRACE != 0) {
+  if constexpr (TRACE == kStamped) {
     std::vector<std::string> roles;
     for (int w = 0; w < kWarps; ++w) roles.push_back(FORM == kProducer ? (w == 0 ? "producer" : "consumer") : "walker");
     std::vector<std::pair<uint32_t, std::string>> names = {{kPhases + kEntry, "entry"}, {kPhases + kExit, "exit"},
@@ -741,29 +771,34 @@ void run(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, 
   }
 }
 
-//: a configuration's rows: every pattern in every form, RECORD in the two forms that read a scattered leaf alike. REG
-//: holds a whole atom's pieces in registers, which beside G = 8 heads' accumulators the 128 registers of a thread do
-//: not hold (ptxas spills both ALL patterns at both widths: docs/lab/decode_ring.md), so REG walks them at G = 1 alone
+//: a configuration's rows: every pattern in every form, RECORD in the two forms that read a scattered leaf alike, and
+//: at `d_v` 64 WRITE_SECTORS by REG. REG holds a whole atom's pieces in registers, which beside G = 8 heads'
+//: accumulators the 128 registers of a thread do not hold (ptxas spills both ALL patterns at both widths:
+//: docs/lab/decode_ring.md), so REG walks them at G = 1 alone. Under the 32-byte fetch granularity (`kGrain32`) the
+//: scattered patterns alone, in REG and PIECES: the whole atoms read whole sectors at any granularity
 template <int DV, int G, int TRACE>
-void rows_of(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows) {
+void rows_of(lab::Bench& b, uint8_t* plane, float* sinks, unsigned long long* rows, const char* what) {
   using namespace decode_ring;
-  const char* const what = TRACE != 0 ? ", every warp's timeline stamped" : "";
-  if constexpr (G == 1) run<kReg, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kBulk, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kPieces, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kProducer, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  if constexpr (G == 1) run<kReg, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kBulk, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kPieces, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kProducer, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+  constexpr bool kAll = TRACE != kGrain32;
+  if constexpr (kAll) {
+    if constexpr (G == 1) run<kReg, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kBulk, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kPieces, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kProducer, kWriteAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    if constexpr (G == 1) run<kReg, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kBulk, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kPieces, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+    run<kProducer, kReadAll, DV, G, TRACE>(b, plane, sinks, rows, what);
+  }
   run<kReg, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kBulk, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kAll) run<kBulk, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kProducer, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kAll) run<kProducer, kWriteOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (DV == 64) run<kReg, kWriteSectors, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kReg, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kBulk, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kAll) run<kBulk, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
-  run<kProducer, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
+  if constexpr (kAll) run<kProducer, kReadOne, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kReg, kRecord, DV, G, TRACE>(b, plane, sinks, rows, what);
   run<kPieces, kRecord, DV, G, TRACE>(b, plane, sinks, rows, what);
 }
@@ -797,9 +832,18 @@ int main(int argc, char** argv) {
   const size_t trace_words = static_cast<size_t>(b.sms) * kWarps * lab::Trace<true>::kRow;
   LAB_CHECK(cudaMalloc(&rows, trace_words * 8));
   LAB_CHECK(cudaMemset(rows, 0, trace_words * 8));
-  rows_of<64, 1, 0>(b, plane, sinks, rows);
-  rows_of<64, 8, 0>(b, plane, sinks, rows);
-  rows_of<32, 8, 0>(b, plane, sinks, rows);
-  rows_of<64, 8, 1>(b, plane, sinks, rows);
+  rows_of<64, 1, kPlain>(b, plane, sinks, rows, "");
+  rows_of<64, 8, kPlain>(b, plane, sinks, rows, "");
+  rows_of<32, 8, kPlain>(b, plane, sinks, rows, "");
+  rows_of<64, 8, kStamped>(b, plane, sinks, rows, ", every warp's timeline stamped");
+  //: THE FETCH GRANULARITY: the device's own (the limit as the context starts), then 32 bytes for the grain rows, then
+  //: the device's own again
+  size_t grain = 0;
+  LAB_CHECK(cudaDeviceGetLimit(&grain, cudaLimitMaxL2FetchGranularity));
+  const std::string held = ", the L2's fetch granularity 32 bytes (the device's " + std::to_string(grain) + ")";
+  LAB_CHECK(cudaDeviceSetLimit(cudaLimitMaxL2FetchGranularity, 32));
+  rows_of<64, 1, kGrain32>(b, plane, sinks, rows, held.c_str());
+  rows_of<32, 8, kGrain32>(b, plane, sinks, rows, held.c_str());
+  LAB_CHECK(cudaDeviceSetLimit(cudaLimitMaxL2FetchGranularity, grain));
   return 0;
 }

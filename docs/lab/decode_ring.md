@@ -97,6 +97,21 @@ WHAT IT WILL DECIDE: the walk's form (a free choice, made by measurement); wheth
 would pay on a scattered read (the page's format is the owner's: the row is his evidence); and `L`, the price every
 decode prediction after it rests on.
 
+## The second run: the separating rows, predicted
+
+PREDICTION (written 2026-11-28, before the second run). The first run's timed rows were not stored: lab refused its
+stamped PRODUCER rows, whose producer stamped its first `K` waits on a fresh empty barrier, a phase no arrival releases
+(warpline's `wait_before_release`). The producer now stamps only the waits after a consumer's arrival (`n >= K`), and
+the checker finds nothing on the stamped rows. Every other row runs as it ran, with the bands above; the bands of the
+ONE patterns and RECORD rest on the 32-byte sector, which the sectors' record below refutes, and are re-based on the
+bytes measured there (a leaf's read bytes from the counters). Three questions the first run left, each a row:
+
+| row | the question | prediction | if it misses |
+|---|---|---|---|
+| the profiler's counters on every row: `smsp__inst_executed.sum`, `smsp__issue_active.sum`, `sm__cycles_elapsed.avg` and the issue stalls (`smsp__average_warps_issue_stalled_{long_scoreboard,short_scoreboard,mio_throttle,wait,math_pipe_throttle,not_selected}_per_issue_active.ratio`) | does the issue (P6) bind the rings at G = 8 (READ_ALL 0.70x and WRITE_ALL 0.81x of G = 1)? | the executed instructions a position are the compiled loop's (the static ledger, `-- ledger --static`) within 10%: READ_ALL by PIECES 229 at G 1 (the steady trip's 85 and four leaf trips of 36) and 564 at G 8 (84 and four of 120); WRITE_ALL by PIECES about 773 and 1,115 (117 and four of 164; 127 and four of 247). At G 8 the SM issues about 2.0 instructions a cycle on READ_ALL and 1.4 on WRITE_ALL, at most 0.70 of P6: the issue does not bind, and the leading stall is a leaf trip's shared loads (`short_scoreboard`) | over 0.90 of P6, or instructions 1.5x the compiled count: P6 binds, and my count of a trip is the wrong price |
+| WRITE_SECTORS, REG, `d_v` 64, G 1 and 8 | does a partial sector's store (a leaf's 2 exponent bytes and 4 mass bytes) cost a DRAM read at its write-back? | as WRITE_ONE by REG within 5% in bytes read (366 a leaf) and in rate: the tail's sectors are read by the leaf's own loads before its stores, so their merge reads nothing | its reads fall by 32 bytes a leaf or more and its rate rises 10% or more: a partial sector's write-back reads its sector, and the scattered write is priced by whole sectors |
+| the scattered patterns with the L2's fetch granularity held to 32 bytes, REG and PIECES, `d_v` 64 G 1 and `d_v` 32 G 8 | is the 64-byte grain the device's fetch granularity (`cudaLimitMaxL2FetchGranularity`, the run prints the device's own)? | the reads fall to the sectors: READ_ONE 192 to 216 bytes a leaf at `d_v` 64 (from 272; the odd atoms' hi lines start 32 bytes into a block, a 3,168-byte page), RECORD 160 (from 192); at `d_v` 32 READ_ONE 128 to 160, RECORD 96. PIECES' READ_ONE rises 1.15-1.30x in leaves a second, REG's less (one position in flight, latency binds) | the reads stand at the 64-byte grain: the grain is the L2's own, not a limit a step sets |
+
 MEASURED, THE SECTORS (sm_90a, Nebius preemptible VM bench-20261128-084912; 2026-11-28, the experiment at 3db2b445;
 `-- ncu --metric dram__bytes_read.sum --metric dram__bytes_write.sum`, each kernel's median over its launches in one
 repetition, a launch 132 CTAs). A row's DRAM bytes against the bytes its pattern declares (its 32-byte sectors); a
