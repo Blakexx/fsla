@@ -71,12 +71,12 @@ __device__ __forceinline__ void land(uint32_t at, bool whole, const CUtensorMap*
       if (whole && lane == kLevels)
         lab::bulk_load(at + kSlotValues, tiled.values + tile * (kValueBlocks * kBlock), kValueBlocks * kBlock, bar);
     } else {
-      if (whole && lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
+      if (whole && lane < kValueBlocks) ::denseref::ops::stage_box_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
     }
   } else {
     //: a lane a block: level `lane / 16`, digits `16 (lane % 16)` on; the values' 8 blocks a lane of the first 8
-    lab::tensor_load_2d(at + lane * kBlock, lane & 16 ? level1 : level0, 16 * (lane & 15), tokens, bar);
-    if (whole && lane < kValueBlocks) lab::tensor_load_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
+    ::denseref::ops::stage_box_2d(at + lane * kBlock, lane & 16 ? level1 : level0, 16 * (lane & 15), tokens, bar);
+    if (whole && lane < kValueBlocks) ::denseref::ops::stage_box_2d(at + kSlotValues + lane * kBlock, values, 8 * lane, tokens, bar);
   }
 }
 
@@ -91,7 +91,7 @@ __device__ __forceinline__ void load_role(uint32_t base, long long* times, const
   //: the CTA's span is its warps' earliest start to their latest stop: the loader's is inside the compute's
   lab::WarpSpan clock;
   clock.start();
-  if (lane == 0) lab::mbar_expect(bars + kReadersReady, kReadersLanded);
+  if (lane == 0) ::denseref::ops::mbar_expect_bytes(bars + kReadersReady, kReadersLanded);
   land<FORM>(base + kReadersAt, false, level0, level1, values, tiled, first + mine * kTile, bars + kReadersReady);
   const int trips = rounds * (mine + 1);
 #pragma unroll 1
@@ -99,7 +99,7 @@ __device__ __forceinline__ void load_role(uint32_t base, long long* times, const
     const uint32_t slot = n & 1, at = base + kSlotsAt + slot * kSlotBytes, ready = bars + kSlotReady + 8 * slot;
     const int tokens = first + (n % (mine + 1)) * kTile;
     if (n >= 2) lab::mbar_wait_suspended(bars + kSlotFreed + 8 * slot, ((n >> 1) - 1) & 1);
-    if (lane == 0) lab::mbar_expect(ready, kSlotLanded);
+    if (lane == 0) ::denseref::ops::mbar_expect_bytes(ready, kSlotLanded);
     land<FORM>(at, true, level0, level1, values, tiled, tokens, ready);
   }
   clock.stop(times);

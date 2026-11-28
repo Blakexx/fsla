@@ -7,7 +7,7 @@ Mirrors `csrc/fsla/src/common/atoms/copy.cuh`, a concern of the baseline operati
   issues, and staging loops are shaped from it. A group is every `stage_tile` since the last `stage_commit()`;
   `stage_wait<n>()` means all but the newest `n` groups have landed FOR THE ISSUING THREAD, and CTA-wide visibility
   needs a following `rendezvous()` -- a property of the contract that TMA/mbarrier satisfies the same way; the hopper
-  family's bulk (TMA) form, one descriptor issue a tile, is not written yet and will be its own body of this contract.
+  family's tensor copy (TMA), one thread's issue a box, is [`stage_box_2d`](#stage-box).
 
 - <a id="stage-tile-if"></a>`stage_tile_if`: the copy with its source predicated -- a dead quantum ZERO-FILLS its
   destination and reads nothing, so a partial tile is the same code as a full one and never reads past an operand's
@@ -41,4 +41,5 @@ Mirrors `csrc/fsla/src/common/atoms/copy.cuh`, a concern of the baseline operati
   them (`mbar_expect_bytes`, [`barrier.md`](barrier.md#expect-bytes)). MEASURED ([`tma_box`](../../../lab/tma_box.md)):
   a 48 KB stage of 128-byte lines, 128-byte swizzled, 966 cycles a CTA (50.9 bytes a cycle an SM) where one warp's
   `cp.async` takes 5,664 and the same box of 16-byte lines 5,360 -- so a box's lines are 128 bytes (the swizzled form a
-  swizzled `wgmma` descriptor reads), never 16.
+  swizzled `wgmma` descriptor reads), never 16. BLACKWELL (sm_100): the same instruction is the family's tensor copy; its
+  form there (the 2-CTA and multicast boxes beside `tcgen05`) is owed with blackwell's first schedule, not built.

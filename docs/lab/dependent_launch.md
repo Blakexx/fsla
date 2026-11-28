@@ -12,7 +12,13 @@ PREDICTION, run 20261128T014912Z-160980-6ad3db89 (written 2026-11-27, before it 
 - two plain launches: a pair: 8.00-14.00 us a pair.
 - saved a pair by the dependent launch: 1.00-3.50 us.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00def8gx4f4d34esq, driver 580.196.07; 2026-11-28, the experiment at
+PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's dependent pair (the trigger at the first's top) was 0.94 us slower than plain: the dependent's CTAs launched at once and shared the SMs and HBM with the first's writes; with the trigger after its writes they launch as the first's CTAs finish, so the pair keeps the launch's latency hidden (~0.3-1 us) and the prologue's overlap of the first's tail, without the contention; the other two forms repeat within 5%):
+
+- two plain launches: a pair: 7.90-8.70 us a pair.
+- the second launched dependent (griddepcontrol): a pair: 8.80-9.70 us a pair.
+- saved a pair by the trigger after the writes: 0.10-1.00 us.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
 00123881, run 20261128T014912Z-160980-6ad3db89; 7 repetitions, the 2 checked variants exact; the median, the widest
 spread of a row 0.8%; the clock as the card left it):
 

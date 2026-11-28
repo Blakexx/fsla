@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import Claim, write_banded
+from _banded import PENDING, Claim, write_banded
 
 PLAIN = "two plain launches: a pair"
 DEPENDENT = "the second launched dependent (griddepcontrol): a pair"
+AFTER = "the second launched dependent, the first's trigger after its writes: a pair"
 
 #: each run's predictions, in the order they ran
 RUNS = (
@@ -23,6 +24,19 @@ RUNS = (
         (
             Claim(PLAIN, lambda R: R[PLAIN], 8.0, 14.0, "us a pair"),
             Claim("saved a pair by the dependent launch", lambda R: R[PLAIN] - R[DEPENDENT], 1.0, 3.5, "us"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the first run's dependent pair (the trigger at the first's top) was 0.94 us slower than plain: the dependent's "
+        "CTAs launched at once and shared the SMs and HBM with the first's writes; with the trigger after its writes they "
+        "launch as the first's CTAs finish, so the pair keeps the launch's latency hidden (~0.3-1 us) and the prologue's "
+        "overlap of the first's tail, without the contention; the other two forms repeat within 5%",
+        (
+            Claim(PLAIN, lambda R: R[PLAIN], 7.9, 8.7, "us a pair"),
+            Claim(DEPENDENT, lambda R: R[DEPENDENT], 8.8, 9.7, "us a pair"),
+            Claim("saved a pair by the trigger after the writes", lambda R: R[PLAIN] - R[AFTER], 0.1, 1.0, "us"),
         ),
     ),
 )

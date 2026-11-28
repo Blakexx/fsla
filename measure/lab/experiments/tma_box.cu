@@ -54,13 +54,13 @@ __global__ void __launch_bounds__(kThreads, 1)
         lab::cp_async_bricks<kCols>(at + kXBytes, w + k, kHidden, lane);
         lab::mbar_arrive_when_landed(bar);
       } else if (lane == 0) {
-        lab::mbar_expect(bar, kStageBytes);
+        ::denseref::ops::mbar_expect_bytes(bar, kStageBytes);
         if constexpr (FORM == kBox128) {
-          lab::tensor_load_2d(at, &xmap, k, blockIdx.x * kTokens, bar);
-          lab::tensor_load_2d(at + kXBytes, &wmap, k, 0, bar);
+          ::denseref::ops::stage_box_2d(at, &xmap, k, blockIdx.x * kTokens, bar);
+          ::denseref::ops::stage_box_2d(at + kXBytes, &wmap, k, 0, bar);
         } else {
-          lab::tensor_load_3d(at, &xmap, 0, blockIdx.x * kTokens, k / 8, bar);
-          lab::tensor_load_3d(at + kXBytes, &wmap, 0, 0, k / 8, bar);
+          ::denseref::ops::stage_box_3d(at, &xmap, 0, blockIdx.x * kTokens, k / 8, bar);
+          ::denseref::ops::stage_box_3d(at + kXBytes, &wmap, 0, 0, k / 8, bar);
         }
       }
     }

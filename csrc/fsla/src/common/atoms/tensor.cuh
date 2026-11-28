@@ -30,6 +30,13 @@ __device__ __forceinline__ uint64_t step_operand_rows(SmemAddr a) {
   return step_operand(a, kHalf, kHalf) | kSwizzle128;
 }
 
+//: A K-MAJOR STEP OPERAND THROUGH THE 128-BYTE SWIZZLE, a row 128 bytes -- see docs/internals/common/atoms/tensor.md#k-rows
+__device__ __forceinline__ uint64_t step_operand_k128(SmemAddr a) {
+  constexpr uint32_t kAtomLines = 64;
+  constexpr uint64_t kSwizzle128 = uint64_t{1} << 62;
+  return step_operand(a, 1, kAtomLines) | kSwizzle128;
+}
+
 //: WHERE A ROW'S PIECE LIES under that swizzle: piece `piece` of the row at `row` -- see docs/internals/common/atoms/tensor.md#rows
 __device__ __forceinline__ SmemAddr step_row_piece(SmemAddr row, uint32_t piece) {
   //: FIXED by the swizzle: a row is 128 bytes of 8 pieces, and a piece's place is turned by the row's own three bits

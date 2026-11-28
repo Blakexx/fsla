@@ -394,7 +394,7 @@ __device__ __forceinline__ void fold_role(uint8_t* smem, uint32_t base, long lon
       const uint32_t landed = base + kBarsAt + kPoolLanded + 8 * box_of;
       const uint4* const from = reinterpret_cast<const uint4*>(values) + one_line(w);
       tr.at(warpline::kIssue, landed, kWaitPacket);
-      lab::mbar_expect(landed, kOneBytes + kValueBytes);
+      ::denseref::ops::mbar_expect_bytes(landed, kOneBytes + kValueBytes);
       lab::bulk_load(base + kOneAt + box_of * kOneBytes, from, kOneBytes, landed);
       lab::bulk_load(base + 2 * box_of * kPoolBytes, from + kOneValues, kValueBytes, landed);
     }

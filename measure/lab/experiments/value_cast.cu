@@ -51,13 +51,13 @@ __global__ void __cluster_dims__(kCtas, 1, 1) __launch_bounds__(kThreads, 1)
       lab::mbar_wait(bar, ((c >> 1) - 1) & 1);
       seen ^= smem[slot * kTileBytes + tid * 61] + c;
     }
-    if (tid == 0) lab::mbar_expect(bar, kTileBytes);
+    if (tid == 0) ::denseref::ops::mbar_expect_bytes(bar, kTileBytes);
     //: THE ISSUE EDGE: every reader of the slot, and every barrier's stated bytes, before the copy that overwrites
     //: it -- the CTA's own barrier for its own copy, the cluster's for a copy into every mate
     if constexpr (FORM == kEach) __syncthreads();
     if constexpr (FORM == kCast) lab::cluster_sync();
     if (tid == 0) {
-      if constexpr (FORM == kEach) lab::tensor_load_2d(base + slot * kTileBytes, &map, 0, tile_of(c) * kTokens, bar);
+      if constexpr (FORM == kEach) ::denseref::ops::stage_box_2d(base + slot * kTileBytes, &map, 0, tile_of(c) * kTokens, bar);
       if constexpr (FORM == kCast) {
         if (rank == 0)
           lab::tensor_cast_2d(base + slot * kTileBytes, &map, 0, tile_of(c) * kTokens, bar, (1u << kCtas) - 1);

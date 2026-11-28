@@ -1,13 +1,14 @@
-// measure/lab/experiments/l2_policy.cu -- QUESTION: the producer streams what it reads once (its `x` tile, its
-// outputs) beside what every CTA reuses (a write head's weights from L2). Does an L2 policy -- the stream's loads
-// `evict_first`, the table's `evict_last` (`createpolicy` and the loads' `L2::cache_hint`) -- keep the table and save
-// time, against plain loads? METHOD: a CTA an SM of 512 threads; a trip loads 8 units (8 KB a CTA each, 16 bytes a
-// lane) of a 1 GiB stream, each CTA its own slice once, and 8 units of a shared table every CTA walks from its own
-// offset, round and round; every word folded into a chain a lane, nothing stored. Tables of 16 MB and 40 MB (the L2
-// is 50 MB), with and without the hints. Time a trip; the table's hit rate is read by the lab's `ncu` (the L2's read
-// hits over the table's sectors: the stream's lines are read once). Every chain is checked exactly.
-// TIMELINE: a thread's trip is the ring's two halves at their own registers (the stream's 8 units, the table's 8):
-// a half folded, then its loads for the trip after. Live: the ring's 64 words, the chain, the two policies.
+// measure/lab/experiments/l2_policy.cu -- QUESTION: the producer streams what it reads once (its `x` tile, its outputs)
+// beside what every CTA reuses (a write head's weights from L2). Does an L2 policy -- the stream's loads `evict_first`,
+// the table's `evict_last` (`createpolicy` and the loads' `L2::cache_hint`) -- keep the table and save time, against
+// plain loads? METHOD: a CTA an SM of 512 threads; a trip loads 8 units (8 KB a CTA each, 16 bytes a lane) of a 1 GiB
+// stream, each CTA its own slice once, and 8 units of a shared table every CTA walks from its own offset, round and
+// round; every word folded into a chain a lane, nothing stored. Tables of 16 MB and 40 MB (the L2 is 50 MB), with and
+// without the hints, a kernel a table size (so the profiler reads each table's own hit rate). Time a trip; the table's
+// hit rate is read by the lab's `ncu` (the L2's read hits over the table's sectors: the stream's lines are read once).
+// Every chain is checked exactly.
+// TIMELINE: a thread's trip is the ring's two halves at their own registers (the stream's 8 units, the table's 8): a
+// half folded, then its loads for the trip after. Live: the ring's 64 words, the chain, the two policies.
 // see docs/internals/tools/lab.md#l2-policy
 #include "lab.cuh"
 
@@ -55,10 +56,11 @@ __host__ __device__ inline long long table_unit(int block, long long units, long
   return (block * 97 + n) % units;
 }
 
-template <int HINT>
+//: a kernel a table size (`MB`), so the profiler's read of each kernel is one table's
+template <int HINT, int MB>
 __global__ void __launch_bounds__(kThreads, 1)
-    kept(long long* times, const uint4* stream, const uint4* table, uint32_t* sums, long long per, long long units,
-         int trips) {
+    kept(long long* times, const uint4* stream, const uint4* table, uint32_t* sums, long long per, int trips) {
+  constexpr long long units = MB * (1LL << 20) / kUnitBytes;
   const int tid = threadIdx.x, block = blockIdx.x;
   const uint64_t first = evict_first(), last = evict_last();
   uint32_t sum = 0;
@@ -94,16 +96,17 @@ __global__ void __launch_bounds__(kThreads, 1)
 
 }  // namespace l2_policy
 
-template <int HINT>
-void run(lab::Bench& b, int table_mb, const uint4* stream, const uint4* table, uint32_t* sums) {
+template <int HINT, int MB>
+void run(lab::Bench& b, const uint4* stream, const uint4* table, uint32_t* sums) {
   using namespace l2_policy;
+  constexpr int table_mb = MB;
   const long long units = table_mb * (1LL << 20) / kUnitBytes, per = kStreamUnits / b.sms / kHalf * kHalf;
   const int trips = static_cast<int>(per / kHalf);
   const std::string name = std::to_string(table_mb) + " MB table beside a 1 GiB stream, "
                            + (HINT ? "the stream evict-first and the table evict-last" : "no hint");
-  const auto kernel = kept<HINT>;
+  const auto kernel = kept<HINT, MB>;
   constexpr int kCheck = 4;
-  kernel<<<b.sms, kThreads>>>(b.times, stream, table, sums, per, units, kCheck);
+  kernel<<<b.sms, kThreads>>>(b.times, stream, table, sums, per, kCheck);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> got(static_cast<size_t>(b.sms) * kThreads);
   LAB_CHECK(cudaMemcpy(got.data(), sums, got.size() * 4, cudaMemcpyDeviceToHost));
@@ -127,7 +130,7 @@ void run(lab::Bench& b, int table_mb, const uint4* stream, const uint4* table, u
   const lab::Samples cycles = b.variant(
       [&] {
         LAB_CHECK(cudaEventRecord(e0));
-        kernel<<<b.sms, kThreads>>>(b.times, stream, table, sums, per, units, trips);
+        kernel<<<b.sms, kThreads>>>(b.times, stream, table, sums, per, trips);
         LAB_CHECK(cudaEventRecord(e1));
       },
       [&] {
@@ -145,11 +148,11 @@ void run(lab::Bench& b, int table_mb, const uint4* stream, const uint4* table, u
 int main(int argc, char** argv) {
   using namespace l2_policy;
   lab::Bench b(argc, argv);
-  b.expect(lab::kernel("kept", {0}), "LDG", ">=", 2 * kHalf);
-  b.expect(lab::kernel("kept", {1}), "LDG", ">=", 2 * kHalf);
+  for (int hint : {0, 1})
+    for (int mb : {16, 40}) b.expect(lab::kernel("kept", {hint, mb}), "LDG", ">=", 2 * kHalf);
   //: the ring's last loaded register is read in its own trip, as `stream_rate`'s and `load_rate`'s
-  b.expect(lab::kernel("kept", {0}), "LOAD_IN_TRIP", "<=", 2);
-  b.expect(lab::kernel("kept", {1}), "LOAD_IN_TRIP", "<=", 2);
+  for (int hint : {0, 1})
+    for (int mb : {16, 40}) b.expect(lab::kernel("kept", {hint, mb}), "LOAD_IN_TRIP", "<=", 2);
   if (b.expect_only) return 0;
   //: the stream and the table are one pattern of words (a word its index's), the table the stream's first 40 MB
   uint4* stream = nullptr;
@@ -161,9 +164,11 @@ int main(int argc, char** argv) {
   uint4* table = nullptr;
   LAB_CHECK(cudaMalloc(&table, 40LL << 20));
   LAB_CHECK(cudaMemcpy(table, stream, 40LL << 20, cudaMemcpyDeviceToDevice));
-  for (int mb : {16, 40}) {
-    run<0>(b, mb, stream, table, sums);
-    run<1>(b, mb, stream, table, sums);
+  {
+    run<0, 16>(b, stream, table, sums);
+    run<1, 16>(b, stream, table, sums);
+    run<0, 40>(b, stream, table, sums);
+    run<1, 40>(b, stream, table, sums);
   }
   return 0;
 }

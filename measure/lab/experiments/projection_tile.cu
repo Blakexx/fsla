@@ -1,12 +1,13 @@
 // measure/lab/experiments/projection_tile.cu -- QUESTION: the producer's projection tile alone: what does a job cost a
 // CTA -- 128 tokens x 256 columns over the hidden axis, two math warpgroups of 64 tokens each issuing `wgmma`
-// m64n256k16 from shared memory, one loader warp staging a K-step (64 hidden) of `x` [128 x 64] and the job's weights
-// [256 x 64] by `cp.async` into a ring of three stages -- at hidden 256, 512 and 2,048, against its tensor floor (two
-// warpgroups' steps on one pipe, 128 cycles a step)? METHOD: a CTA an SM, each its own 128-token tile of `x`, every CTA
-// the same four jobs' weights (a write head's, from L2); a job is the K-loop and an epilogue that folds the
-// accumulators; the next job's K-loop re-stages its tile (a write head's jobs, each re-reading its tile). Operands are
-// small integers in bf16, so every sum is exact: the last job's accumulators of two CTAs are checked against the host's
-// products.
+// m64n256k16 from shared memory, a loader staging a K-step (64 hidden) of `x` [128 x 64] and the job's weights [256 x
+// 64] into a ring of three stages -- by one warp's `cp.async` into unswizzled bricks, or by one thread's two tensor
+// copies of 128-byte lines, 128-byte swizzled, the steps reading them by the swizzled K-major descriptor -- -- at
+// hidden 256, 512 and 2,048, against its tensor floor (two warpgroups' steps on one pipe, 128 cycles a step)? METHOD: a
+// CTA an SM, each its own 128-token tile of `x`, every CTA the same four jobs' weights (a write head's, from L2); a job
+// is the K-loop and an epilogue that folds the accumulators; the next job's K-loop re-stages its tile (a write head's
+// jobs, each re-reading its tile). Operands are small integers in bf16, so every sum is exact: the last job's
+// accumulators of two CTAs are checked against the host's products.
 // TIMELINE: the loader's trip is a stage: its slot's EMPTY edge, 96 copies a lane, the FULL edge (each lane's copies
 // landed). A warpgroup's trip is a stage: the FULL edge, the async-proxy fence, 4 steps, the commit, a wait leaving one
 // group in flight, then the previous stage's EMPTY edge; a job's end waits for all, releases, folds and clears. Live:
@@ -23,7 +24,12 @@ constexpr int kMath = 256, kThreads = kMath + 32;
 //: a stage: `x` [128 x 64] then the weights [256 x 64], each K-major in bricks of 8 lines of 16 bytes: a k16 slice of
 //: R rows is R * 32 bytes, its brick of 8 rows 256 bytes, the brick's K 8-15 128 bytes on
 constexpr int kXBytes = kTokens * kK * 2, kWBytes = kCols * kK * 2, kStageBytes = kXBytes + kWBytes;
-constexpr int kBarsAt = kStages * kStageBytes, kSmem = kBarsAt + 2 * kStages * 8;
+//: the ring starts on a 1,024-byte boundary (the 128-byte swizzle's atom), so its room carries one atom's slack
+constexpr int kBarsAt = kStages * kStageBytes, kSmem = kBarsAt + 2 * kStages * 8 + 1024;
+//: THE LOADER'S FORMS: one warp's `cp.async` into unswizzled bricks, or one thread's two tensor copies of 128-byte lines
+//: 128-byte swizzled (`stage_box_2d`), read by the swizzled K-major descriptor (`step_operand_k128`)
+enum Loader : int { kCpAsync = 0, kTensor, kLoaders };
+const char* kLoaderName[kLoaders] = {"one warp's cp.async", "the tensor copy"};
 
 //: m64n256k16, both operands shared memory and K-major: `d` += A [64 x 16] B [16 x 256]
 __device__ __forceinline__ void step(float (&d)[128], uint64_t a, uint64_t b) {
@@ -33,16 +39,18 @@ __device__ __forceinline__ void step(float (&d)[128], uint64_t a, uint64_t b) {
                : "l"(a), "l"(b), "r"(1));
 }
 
-template <int HIDDEN>
+template <int HIDDEN, int LOADER>
 __global__ void __launch_bounds__(kThreads, 1)
-    project(long long* times, const __nv_bfloat16* x, const __nv_bfloat16* w, float* out, int* sinks, int jobs) {
-  extern __shared__ __align__(128) uint8_t smem[];
+    project(const __grid_constant__ CUtensorMap xmap, const __grid_constant__ CUtensorMap wmap, long long* times,
+            const __nv_bfloat16* x, const __nv_bfloat16* w, float* out, int* sinks, int jobs) {
+  extern __shared__ __align__(1024) uint8_t raw[];
+  uint8_t* const smem = raw + ((1024 - (lab::smem(raw) & 1023)) & 1023);
   constexpr int kSteps = HIDDEN / kK;
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
   const uint32_t base = lab::smem(smem), full = base + kBarsAt, empty = full + 8 * kStages;
   if (tid == 0) {
     for (int s = 0; s < kStages; ++s) {
-      lab::mbar_init(full + 8 * s, 32);
+      lab::mbar_init(full + 8 * s, LOADER == kCpAsync ? 32 : 1);
       lab::mbar_init(empty + 8 * s, kMath);
     }
   }
@@ -57,10 +65,16 @@ __global__ void __launch_bounds__(kThreads, 1)
     for (int i = 0; i < total; ++i) {
       const int slot = i % kStages, job = i / kSteps, k = (i % kSteps) * kK;
       if (i >= kStages) lab::mbar_wait(empty + 8 * slot, ((i / kStages) - 1) & 1);
-      const uint32_t at = base + slot * kStageBytes;
-      lab::cp_async_bricks<kTokens>(at, tile + k, HIDDEN, lane);
-      lab::cp_async_bricks<kCols>(at + kXBytes, w + static_cast<long long>(job) * kCols * HIDDEN + k, HIDDEN, lane);
-      lab::mbar_arrive_when_landed(full + 8 * slot);
+      const uint32_t at = base + slot * kStageBytes, bar = full + 8 * slot;
+      if constexpr (LOADER == kCpAsync) {
+        lab::cp_async_bricks<kTokens>(at, tile + k, HIDDEN, lane);
+        lab::cp_async_bricks<kCols>(at + kXBytes, w + static_cast<long long>(job) * kCols * HIDDEN + k, HIDDEN, lane);
+        lab::mbar_arrive_when_landed(bar);
+      } else if (lane == 0) {
+        ::denseref::ops::mbar_expect_bytes(bar, kStageBytes);
+        ::denseref::ops::stage_box_2d(at, &xmap, k, blockIdx.x * kTokens, bar);
+        ::denseref::ops::stage_box_2d(at + kXBytes, &wmap, k, job * kCols, bar);
+      }
     }
   } else {
     //: A MATH WARPGROUP: its 64 tokens of the tile against every column of the job
@@ -73,13 +87,21 @@ __global__ void __launch_bounds__(kThreads, 1)
     const auto issue = [&](int i) {
       const int slot = i % kStages;
       lab::mbar_wait(full + 8 * slot, (i / kStages) & 1);
-      lab::bulk_fence();
+      //: the copies wrote through the generic proxy (cp.async) and the steps read through the async one; a tensor
+      //: copy writes through the async proxy, so it needs no fence
+      if constexpr (LOADER == kCpAsync) lab::bulk_fence();
       const uint32_t at = base + slot * kStageBytes;
       lab::wg_fence();
 #pragma unroll
-      for (int s = 0; s < 4; ++s)
-        step(d, lab::wg_desc(at + s * (kTokens * 32) + wg * 2048, 8, 16),
-             lab::wg_desc(at + kXBytes + s * (kCols * 32), 8, 16));
+      for (int s = 0; s < 4; ++s) {
+        if constexpr (LOADER == kCpAsync)
+          step(d, lab::wg_desc(at + s * (kTokens * 32) + wg * 2048, 8, 16),
+               lab::wg_desc(at + kXBytes + s * (kCols * 32), 8, 16));
+        else
+          //: a row is 128 bytes of 64 K values; a k16 step 32 bytes along it; the warpgroup's 64 rows 8 KB on
+          step(d, ::denseref::ops::step_operand_k128(at + wg * 64 * 128 + s * 32),
+               ::denseref::ops::step_operand_k128(at + kXBytes + s * 32));
+      }
       lab::wg_commit();
     };
 #pragma unroll 1
@@ -119,15 +141,31 @@ inline float w_of(long long c, int k) { return static_cast<float>((c * 5 + k * 1
 
 }  // namespace projection_tile
 
-template <int HIDDEN>
-void run(lab::Bench& b, const __nv_bfloat16* x, const __nv_bfloat16* w, float* out) {
+template <int HIDDEN, int LOADER>
+void run(lab::Bench& b, const __nv_bfloat16* x, const __nv_bfloat16* w, float* out, lab::TensorMapEncode encode) {
   using namespace projection_tile;
-  const auto kernel = project<HIDDEN>;
+  const auto kernel = project<HIDDEN, LOADER>;
+  //: THE TENSOR MAPS: `x` [rows x HIDDEN] and the jobs' weights [1,024 x HIDDEN], boxes of 64 values (128 bytes) by a
+  //: tile's 128 rows or a job's 256, 128-byte swizzled
+  CUtensorMap xmap, wmap;
+  const long long rows = static_cast<long long>(b.sms) * kTokens;
+  const auto map = [&](CUtensorMap& m, const void* p, long long outer, int box_outer) {
+    const cuuint64_t dims[2] = {HIDDEN, static_cast<cuuint64_t>(outer)}, strides[1] = {HIDDEN * 2};
+    const cuuint32_t box[2] = {kK, static_cast<cuuint32_t>(box_outer)}, steps[2] = {1, 1};
+    return encode(&m, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, const_cast<void*>(p), dims, strides, box, steps,
+                  CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+                  CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  };
+  if (map(xmap, x, rows, kTokens) != CUDA_SUCCESS || map(wmap, w, kJobs * kCols, kCols) != CUDA_SUCCESS) {
+    std::fprintf(stderr, "projection_tile: cuTensorMapEncodeTiled refused a map\n");
+    std::exit(2);
+  }
   LAB_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
-  const std::string name = "hidden " + std::to_string(HIDDEN) + ", a job 128 tokens x 256 columns, three stages";
+  const std::string name = "hidden " + std::to_string(HIDDEN) + ", a job 128 tokens x 256 columns, three stages"
+                           + (LOADER == kCpAsync ? "" : std::string(", ") + kLoaderName[LOADER]);
   //: THE CHECK: two CTAs, two jobs; the second job's accumulators against the host's products
   constexpr int kCheckCtas = 2, kCheckJobs = 2;
-  kernel<<<kCheckCtas, kThreads, kSmem>>>(b.times, x, w, out, b.sinks, kCheckJobs);
+  kernel<<<kCheckCtas, kThreads, kSmem>>>(xmap, wmap, b.times, x, w, out, b.sinks, kCheckJobs);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<float> got(static_cast<size_t>(kCheckCtas) * kMath * 128);
   LAB_CHECK(cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost));
@@ -146,7 +184,7 @@ void run(lab::Bench& b, const __nv_bfloat16* x, const __nv_bfloat16* w, float* o
     }
   b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(got.size()) + " accumulators differ");
   lab::Samples floor_share;
-  const lab::Samples cycles = b.variant([&] { kernel<<<b.sms, kThreads, kSmem>>>(b.times, x, w, out, b.sinks, kJobs); },
+  const lab::Samples cycles = b.variant([&] { kernel<<<b.sms, kThreads, kSmem>>>(xmap, wmap, b.times, x, w, out, b.sinks, kJobs); },
                                         [&] {
                                           const double job = b.span(kThreads >> 5) / kJobs;
                                           floor_share.v.push_back(job / (16.0 * HIDDEN));
@@ -159,8 +197,9 @@ void run(lab::Bench& b, const __nv_bfloat16* x, const __nv_bfloat16* w, float* o
 int main(int argc, char** argv) {
   using namespace projection_tile;
   lab::Bench b(argc, argv);
-  for (int h : {256, 512, 2048}) {
-    const std::string k = lab::kernel("project", {h});
+  for (int h : {256, 512, 2048})
+    for (int loader = 0; loader < kLoaders; ++loader) {
+    const std::string k = lab::kernel("project", {h, loader});
     //: a job's first stage is issued before its loop, the rest in it: two copies of a stage's 4 steps
     b.expect(k, "HGMMA", "==", 8);
     //: the barriers' polled waits (`mbar_wait`'s loop: the loader's EMPTY and the warpgroups' FULL edges) are loops in
@@ -168,7 +207,7 @@ int main(int argc, char** argv) {
     b.expect(k, "LOOP_CONVERGENCE", "<=", 6);
     //: the FULL edge's polled wait is a branch in the step trip, before its steps
     b.expect(k, "BSSY", ">=", 0);
-    b.expect(k, "LDGSTS", ">=", 96);
+    b.expect(k, loader == kCpAsync ? "LDGSTS" : "UTMALDG", ">=", loader == kCpAsync ? 96 : 2);
     b.exempt(k, "an isolation: the projection tile's ring and steps, its epilogue a fold");
   }
   if (b.expect_only) return 0;
@@ -188,11 +227,15 @@ int main(int argc, char** argv) {
     LAB_CHECK(cudaMemcpy(x, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(w, hw.data(), hw.size() * 2, cudaMemcpyHostToDevice));
   };
+  const auto encode = lab::tensor_map_encoder("projection_tile");
   upload(256);
-  run<256>(b, x, w, out);
+  run<256, kCpAsync>(b, x, w, out, encode);
+  run<256, kTensor>(b, x, w, out, encode);
   upload(512);
-  run<512>(b, x, w, out);
+  run<512, kCpAsync>(b, x, w, out, encode);
+  run<512, kTensor>(b, x, w, out, encode);
   upload(2048);
-  run<2048>(b, x, w, out);
+  run<2048, kCpAsync>(b, x, w, out, encode);
+  run<2048, kTensor>(b, x, w, out, encode);
   return 0;
 }

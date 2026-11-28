@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import Claim, write_banded
+from _banded import PENDING, Claim, write_banded
 
 
 def _trip(mb: int, hint: bool) -> str:
@@ -27,6 +27,18 @@ RUNS = (
             Claim("16 MB: the plain trip over the hinted", lambda R: R[_trip(16, False)] / R[_trip(16, True)], 0.90, 1.10,
                   "times"),
             Claim("40 MB: the plain trip over the hinted", lambda R: R[_trip(40, False)] / R[_trip(40, True)], 1.30, 2.00,
+                  "times"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the first run's trips, a kernel now a table size (the profiler's hit rate then each table's): the 16 MB plain "
+        "trip 1.31x the hinted and the 40 MB 1.10x, repeating within 5%",
+        (
+            Claim("16 MB: the plain trip over the hinted", lambda R: R[_trip(16, False)] / R[_trip(16, True)], 1.24, 1.38,
+                  "times"),
+            Claim("40 MB: the plain trip over the hinted", lambda R: R[_trip(40, False)] / R[_trip(40, True)], 1.05, 1.16,
                   "times"),
         ),
     ),

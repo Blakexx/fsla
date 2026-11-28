@@ -13,6 +13,13 @@ PREDICTION, run 20261128T034916Z-771677-038e8f02 (written 2026-11-28, before it 
 - hidden 512: a job over its tensor floor: 1.08-1.28 times.
 - hidden 2,048: a job over its tensor floor: 1.18-1.36 times.
 
+PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's 5.3x at every hidden was the one loader warp's cp.async (~9 bytes a cycle an SM, lg_throttle); tma_box's 128-byte swizzled tensor copy staged the same 48 KB in 966 cycles (50.9 bytes a cycle an SM), under the tensor floor's 1,024; so a K-step is the floor's 1,024 plus what the ring fails to hide (~0-100) at hidden 256 and 512, and at 2,048 x's 16 KB from HBM (12.95 bytes a cycle an SM: 1,265) binds; a job its K-steps plus ~900 (the ring's first fill's share, its end's wait, fold and clear); the cp.async form repeats within 5%):
+
+- hidden 256: the cp.async job over its floor: 5.00-5.60 times.
+- hidden 256: the tensor-copy job over its floor: 1.12-1.40 times.
+- hidden 512: the tensor-copy job over its floor: 1.05-1.30 times.
+- hidden 2,048: the tensor-copy job over its floor: 1.15-1.40 times.
+
 MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
 b7215a57, run 20261128T034916Z-771677-038e8f02; 7 repetitions, the 3 checked variants exact; the median, the widest
 spread of a row 1.4%; the clock as the card left it):
