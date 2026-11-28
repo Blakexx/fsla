@@ -85,9 +85,9 @@ def floors(row: Row, c: dict[str, float], sms: int, product: str | None, arch: s
 
     rates = rate_table.resolve(arch=arch, product=product)
     clock = c["sm__cycles_elapsed.avg.per_second"]
-    slots = sms * rates["schedulers"].cycles / rates["issue"].cycles
+    slots = sms * rates["schedulers"].value / rates["issue"].value
     out = {"issue": c["smsp__inst_executed.sum"] / slots / clock,
-           "shared": c["l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"] * rates["wavefront"].cycles / sms / clock,
+           "shared": c["l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"] * rates["wavefront"].value / sms / clock,
            "dram": c["dram__throughput.avg.pct_of_peak_sustained_elapsed"] / 100 * c["gpu__time_duration.sum"] * 1e-9}
     tensor = c["sm__inst_executed_pipe_tensor_op_hmma.sum"] + c["sm__inst_executed_pipe_tensor_op_imma.sum"]
     if c["sm__inst_executed_pipe_tensor_op_gmma.sum"]:
@@ -95,7 +95,7 @@ def floors(row: Row, c: dict[str, float], sms: int, product: str | None, arch: s
                          f"but `measure/rates.json` declares no rate for a wgmma on {arch}: its tensor floor is not "
                          "priced (owed: a lab measures it)")
     if row.mma is not None:
-        out["tensor"] = tensor * rates[f"mma.{row.mma}"].cycles / (sms * rates["schedulers"].cycles) / clock
+        out["tensor"] = tensor * rates[f"mma.{row.mma}"].value / (sms * rates["schedulers"].value) / clock
     elif tensor:
         raise SystemExit(f"overlap_gate: {row.kernel} issued {tensor:.0f} MMAs but its row declares no MMA kind")
     return out

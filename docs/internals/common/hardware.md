@@ -73,7 +73,7 @@ facts by the prefill launch function's matcher ([`window.md`](window.md)).
 
 ## Every rate has a source
 
-A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` with exactly one source:
+A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` -- or, a stream's, `{"bytes_a_cycle": ..., <source>}`, bytes a cycle an SM -- with exactly one source (`measure/rates.py` reads either as a `Rate`'s `value`, its `unit` the key):
 
 - `measured` -- a lab (its record's newest sample, `measure/data.py`'s `lab_record`), its result `row`, and the product it was measured
   `on` (a product's own overrides are measured on it). The check refuses a value off its record's median by more
@@ -83,7 +83,7 @@ A rate (`measure/rates.json`) is `{"cycles": ..., <source>}` with exactly one so
 
 The rates: `schedulers` (an SM), `issue` (an instruction a scheduler), `wavefront` (a shared-memory load
 wavefront an SM), `atomic` and `atomic_wavefront` (a shared atomic instruction's least and each of its
-wavefronts an SM), and `mma.<kind>` (an MMA a scheduler); the schema lists the MMA kinds. NVIDIA documents
+wavefronts an SM), and `mma.<kind>` (an MMA a scheduler); the schema lists the MMA kinds. A card may also state the optional family `stream.*`, in bytes a cycle an SM: `stream.hbm_read`, `stream.hbm_write` and `stream.hbm_copy` (HBM's read, write and a copy's read and write together, every SM streaming; sm_90a's measured by [`stream_rate`](../../lab/stream_rate.md) on the H100). NVIDIA documents
 issue, the shared-memory bank rate, peak tensor rates and the arithmetic pipes' throughputs; a shared atomic's cost,
 the shared pipe's and the global path's other prices are measured
 ([`smem_rates`](../../lab/smem_rates.md), [`drain`](../../lab/drain.md)); the instruction taxes and latencies the
@@ -108,7 +108,7 @@ No rate row states them. Where a row does state a rate, a count times it bounds 
 
 ### The SM's global path
 
-Measured with every SM busy, on the `ampere` branch; the table holds no rate for them:
+HBM's stream rates are the table's `stream.*` rows (above). Measured with every SM busy, on the `ampere` branch; the table holds no rate for these:
 `l2_line`, the cycles an SM's share of L2 takes to deliver a 128-byte line (`smem_rates`' `cp.async.cg` stream alone:
 ~18 bytes a cycle an SM), and `red_request`, a global atomic's line request (the [`drain`](../../lab/drain.md) lab's
 skipping form: ~5 cycles).

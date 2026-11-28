@@ -26,8 +26,8 @@ CONFIG = ROOT / "measure" / "rates.json"
 #: the rates a built architecture must resolve: its pipes' (the schedulers, the issue, a shared wavefront and the
 #: shared atomics), which the phase floors (`tools/overlap_gate.py`), the pipe model and the budgets' forms read
 PIPE_RATES = ("schedulers", "issue", "wavefront", "atomic", "atomic_wavefront")
-#: the streams' rates a card may state, in bytes a cycle an SM (`bytes_a_cycle`, not `cycles`): HBM's read, write and copy,
-#: which the producer's output floors read (`docs/lab/stream_rate.md`)
+#: the streams' rates a card may state, in bytes a cycle an SM (`bytes_a_cycle`, not `cycles`): HBM's read, write and copy
+#: (`docs/lab/stream_rate.md`); optional, and no tool but this check reads them yet
 STREAM_RATES = ("stream.hbm_read", "stream.hbm_write", "stream.hbm_copy")
 #: an entry's figure: cycles an operation, or a stream's bytes a cycle an SM
 UNITS = ("cycles", "bytes_a_cycle")
@@ -59,8 +59,8 @@ def load() -> dict:
 
 @dataclass(frozen=True)
 class Rate:
-    #: the figure, in `unit` (cycles an operation, or bytes a cycle an SM)
-    cycles: float
+    #: the figure, in `unit`: cycles an operation, or a stream's bytes a cycle an SM
+    value: float
     kind: str
     where: str
     row: str
@@ -119,8 +119,8 @@ def _source_findings(where: str, arch: str, rate: Rate) -> list[str]:
         findings.append(f"{where}: {cited} was recorded on `{data.get('device')}`, not `{rate.on}`")
     if rate.row not in medians:
         findings.append(f"{where}: {cited} has no result `{rate.row}`")
-    elif abs(rate.cycles - medians[rate.row]) > TOLERANCE * max(1.0, medians[rate.row]):
-        findings.append(f"{where}: {rate.cycles} in {CONFIG.name}, {medians[rate.row]:.4f} in {cited}")
+    elif abs(rate.value - medians[rate.row]) > TOLERANCE * max(1.0, medians[rate.row]):
+        findings.append(f"{where}: {rate.value} in {CONFIG.name}, {medians[rate.row]:.4f} in {cited}")
     return findings
 
 
@@ -182,7 +182,7 @@ def main() -> int:
         print(p or a)
         for field, r in rates.items():
             source = r.where + (f" / {r.row}" if r.row else "") + (f" (on {r.on})" if r.on else "")
-            print(f"  {field:28s} {r.cycles:8.3f} {r.unit:13s} {r.kind:10s} {source}")
+            print(f"  {field:28s} {r.value:8.3f} {r.unit:13s} {r.kind:10s} {source}")
     return 0
 
 
