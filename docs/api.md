@@ -214,7 +214,7 @@ UNIT-MAX -- u8 with the row's largest digit at 255, at every level, dense or spa
 digit is an exact zero, with no floor under it; an all-zero row is a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (a block's `data` and `scale`; `read` and `write` one
 block per level over its heads, `H` read and `H_w` write).
-<a id="tile-major"></a>THE ROWS ARE PUBLIC IN THEIR TILE-MAJOR LAYOUT (the owner, 2026-11-28, Q5): a level-side's `data` is u8
+<a id="tile-major"></a>THE ROWS ARE PUBLIC IN THEIR TILE-MAJOR LAYOUT (the owner's ruling of 2026-11-28 on a level's public form): a level-side's `data` is u8
 `[B, H, ceil(T / 64), ceil(width / 16), 64, 16]` (`H_w` on the write side) -- a (sequence, head) STREAM's 64-token
 TILES one after another, each tile its 16-digit BLOCKS one after another, each block its 64 tokens' 16 bytes, a token a
 line: digit `d` of token `t` of head `h` of sequence `b` at `((((b H + h) ceil(T / 64) + t / 64) ceil(width / 16) + d / 16)
@@ -227,9 +227,9 @@ writes one tile, a contiguous run of `ceil(width / 16)` KB, with no word or line
 ([`produce.md`](internals/produce/produce.md#plan)). The scale stays token-major, fp32 `[B, T, H]`. Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the words the masks are prepared into). The bundle carries NO liveness: which
 digits are live is the masks' (§2.6), supplied beside the rows and never derived from them or from the activations.
-NOT BUILT: a level's public form is its TILE-MAJOR layout, the layout its readers load cheapest -- a tile of 64 tokens,
-its 16-digit blocks one after another ([`ARCHITECTURE.md` §1](ARCHITECTURE.md#1-what-the-kernel-computes)); the public
-shape is stated here with the producer that writes it, and the rows above are token-major today.
+NOT BUILT: the bundle's reference path (`fsla/routing/quant.py`'s `aligned_rows`) still holds the rows `[B, T, H, width]`
+token-major; the tile-major form [above](#tile-major) is the producer's
+([`ARCHITECTURE.md` §1](ARCHITECTURE.md#1-what-the-kernel-computes)), and the bundle takes it with the producer's launch.
 <a id="grouped-queries"></a>
 GROUPED QUERIES: the read side is the `H` query heads' (`heads`), the write side the `H_w` write heads' (`write_heads`):
 its rows and scales (`[B, T, H_w]`), and with it the values, the decay dials and the state. `H_w` divides

@@ -154,6 +154,35 @@ struct Outputs {
   }
 };
 
+//: THE PLAN'S EXTENTS, as the kernel derives them from the plan alone, against what was allocated: a field the kernel
+//: reads and the host did not set (hold 7b's widths) refuses the run before any launch
+void refuse_unsized(const Outputs& o, bool lo) {
+  const pk::Plan& p = o.plan;
+  const size_t streams = static_cast<size_t>(p.batch) * p.write_heads, tiles = (p.tokens + 63) / 64;
+  const size_t words = (p.tokens + 31) / 32;
+  std::vector<size_t> want;
+  for (int l = 0; l < p.levels; ++l) {
+    const size_t tile = static_cast<size_t>((p.widths[l] + 15) / 16) * 1024;
+    for (int side = 0; side < pk::kSides; ++side) {
+      const size_t heads = side == pk::kWrite ? 1 : p.group;
+      want.push_back(heads * streams * tiles * tile);
+      want.push_back(heads * streams * p.tokens * 4);
+      if (lo) want.push_back(heads * streams * tiles * tile);
+    }
+    for (int row = p.group; row >= 0; --row)
+      if (p.masked[row][l] && (row == p.group || p.masks[row][l] != p.masks[p.group][l]))
+        want.push_back(streams * words * p.widths[l] * 4);
+  }
+  want.push_back(streams * p.tokens * p.d_v * 2);
+  want.push_back(streams * p.d_v * 4);
+  bool same = want.size() == o.planes.size();
+  for (size_t i = 0; same && i < want.size(); ++i) same = want[i] == o.planes[i].bytes && want[i] > 0;
+  if (!same) {
+    std::fprintf(stderr, "produce_skeleton: the plan's extents (the kernel's view) are not its outputs' allocations\n");
+    std::exit(2);
+  }
+}
+
 //: THE PLAN of a routing at a shape: one write head's job table and every output in its layout
 //: (docs/internals/produce/produce.md#plan)
 void plan_of(const Routing& r, const Shape& sh, bool lo, Outputs& o) {
@@ -171,6 +200,7 @@ void plan_of(const Routing& r, const Shape& sh, bool lo, Outputs& o) {
   const size_t row_tiles = (sh.tokens + 63) / 64, words = (sh.tokens + 31) / 32;
   int jobs = 0;
   for (int l = 0; l < levels; ++l) {
+    p.widths[l] = r.widths[l];
     const size_t width = r.widths[l], blocks = (width + 15) / 16;
     //: the level-sides' tensors, then each row's mask (the write side's, then each read head's): a tied head reads the write side's
     p.masked[group][l] = zeros(r.write[l]);
@@ -207,6 +237,7 @@ void plan_of(const Routing& r, const Shape& sh, bool lo, Outputs& o) {
   p.ticket = reinterpret_cast<uint32_t*>(o.zeroed(4));
   o.density = Outputs::make(static_cast<size_t>(group + 1) * levels);
   p.density = o.density.at;
+  refuse_unsized(o, lo);
 }
 
 //: the grid: a CTA a sequence's 128-token tile and a write head

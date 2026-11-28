@@ -20,10 +20,10 @@ query head `w G + g`); its masks are one a row (the owner's 2026-11-28 rulings):
 
 | output | layout | why |
 |---|---|---|
-| rows, a level-side | u8 `[B, H, ceil(T / 64), ceil(b_l / 16), 64, 16]` (`H_w` on the write side): TILE-MAJOR, a (sequence, head)'s 64-token tiles, each its 16-digit blocks, a block a token's 16 bytes a line, pads zero ([api.md](../../api.md#tile-major)) | the public form is the layout its readers load cheapest (Q5); a warpgroup's 64 tokens are one tile, one contiguous run |
+| rows, a level-side | u8 `[B, H, ceil(T / 64), ceil(b_l / 16), 64, 16]` (`H_w` on the write side): TILE-MAJOR, a (sequence, head)'s 64-token tiles, each its 16-digit blocks, a block a token's 16 bytes a line, pads zero ([api.md](../../api.md#tile-major)) | the public form is the layout its readers load cheapest (the owner's 2026-11-28 ruling on a level's public form); a warpgroup's 64 tokens are one tile, one contiguous run |
 | scales, a level-side | fp32 `[B, T, H]` | a row's fp32 max |
-| the lo plane, a level-side | u8, the rows' layout, written only with a gradient on (`produce_cta<..., LO>`) | the backward's residual: `lo = round(255 (r + 0.5))`, `p = (hi + lo / 255 - 0.5) max / 255` (Q6) |
-| masks, a masked (row, level) | i32 `[B, H_w, ceil(T / 32), b_l]`, token-packed | one per (head, level), the write side included (Q4); a tied read head reads the write side's |
+| the lo plane, a level-side | u8, the rows' layout, written only with a gradient on (`produce_cta<..., LO>`) | the backward's residual: `lo = round(255 (r + 0.5))`, `p = (hi + lo / 255 - 0.5) max / 255` (the owner's 2026-11-28 ruling on the lo byte) |
+| masks, a masked (row, level) | i32 `[B, H_w, ceil(T / 32), b_l]`, token-packed | one per (head, level), the write side included (the owner's 2026-11-28 ruling on masks); a tied read head reads the write side's |
 | values | bf16 `[B, T, H_w, d_v]`, token-major, raw | no scale a token (the 2026-11-28 values ruling); its readers take a token's values as one run |
 | growth | fp32 `[B, H_w, d_v]`: a channel's sum over the call's tokens of `|v| x` the token's largest write coefficient | the f16 output line's bound (the 2026-11-28 bound ruling) |
 | density | u8 `[G + 1, D]`, 255 where a row's level has no mask | the prefill's own input (api.md §2.6) |

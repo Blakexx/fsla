@@ -25,15 +25,16 @@ RUNS = (
     (
         PENDING,
         "2026-11-28",
-        "hold 6's unrecorded run (all-entmax shape, token-major rows) took 191.7 us against its 107.2 us write floor, and its "
-        "lo plane's 268.4 MB added 85.2 us, the write rate itself: the bytes were priced right and ~85 us a launch was not. "
-        "THE HYPOTHESIS, NOT A FINDING until these rows name the price: a CTA's non-store time (launch, setup, its 20 ring "
-        "stages' edges, the tickets, its exit) runs in series with its own writes at one CTA an SM, ~10K cycles a CTA over "
-        "15.5 waves. At this cell (floor 101.9 us, 323.0 MB) it gives the launch ~187 us; at hidden 0 the 20 stages' "
-        "edges go (~100 cycles each, ~17 us a launch); at two CTAs an SM one CTA's serial time runs under the other's "
-        "writes, back near the floor. The rival (the stub stores' instruction issue) would leave hidden 0 and two CTAs "
-        "an SM where the plain row is, its time inside the traced rows' epilogue phases; the traced twins' timelines "
-        "(lab trace: each role's phases, the path) say which. The lo plane adds its 268.4 MB at the write rate",
+        "warpline's floor at the cell is 101.9 us, its 323.0 MB at HBM's write rate (measure/floors/produce.work.json). "
+        "THE HYPOTHESIS, NOT A FINDING until these rows name the price: at one CTA an SM a CTA's non-store time (launch, "
+        "setup, its 20 ring stages' edges, the tickets, its exit) runs in series with its own writes, ~10K cycles a CTA "
+        "(the CTA's ~25K warp instructions of tools/budgets/produce.json at ~2.5 a cycle) over 2,048 CTAs on 132 SMs, "
+        "15.5 waves at ~1.8 GHz: ~85 us past the floor, ~187 us; at hidden 0 the 20 stages' edges go (~100 cycles each, "
+        "~17 us a launch); at two CTAs an SM one CTA's serial time runs under the other's writes, back near the floor. "
+        "The rival (the stub stores' instruction issue, their runtime division 29 of a trip's ~46 instructions) would "
+        "leave hidden 0 and two CTAs an SM where the plain row is, its time inside the traced rows' epilogue phases; the "
+        "traced twins' timelines (lab trace: each role's phases, the path) say which. The lo plane adds its 268.4 MB at "
+        "the write rate",
         (
             Claim(CELL, lambda R: R[CELL], 170.0, 205.0, "us"),
             Claim(CELL + ": over its floor", lambda R: R[CELL] / FLOOR_US, 1.67, 2.01, "times"),
