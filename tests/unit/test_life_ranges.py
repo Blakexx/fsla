@@ -1,5 +1,5 @@
 """The life-range report's registers (`tools/life_ranges.py`, docs/internals/tools/life_ranges.md#liveness): warpline's pressure over
-the life-range marks (`flow.pressure`), read through the seam (`tools/checked.py`): a value held across a shuffle's slow-path call
+the life-range marks (`flow.pressure`), read through the seam (`tools/checked.py`): a value held across a division's slow-path call
 counts before the call -- the shape nvdisasm's own count drops -- on a compiled probe.
 """
 from __future__ import annotations
