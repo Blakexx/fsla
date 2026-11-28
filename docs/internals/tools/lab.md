@@ -99,7 +99,7 @@ record: it imports `measure/lab/pages/<name>.py` and calls its `write(root, data
 the newest sample of its record (`measure/lab/pages/_record.py`'s `read`, `lab_record`) and rewrites the docs that quote it, and prints the files written; an
 experiment with no page module is an error. A page's measured section is GENERATED, never typed: a figure changes by
 a new record and a `page` run, and `LABEL` (the rented box's id; two comma-joined where a page's two records ran on two boxes) only words the card's line. OWED: only the carry's, the gather rate's, the gather group's,
-the token carry's, the gather's, the stamp probe's, the clock probe's and the stream rates' (`stream_rate`) pages have their modules; every other page's typed section stands as recorded and is not edited by
+the token carry's, the gather's, the stamp probe's, the clock probe's, the stream rates' (`stream_rate`) and the producer's rows' (`newton_row`, `mask_pack`, `projection_tile`, `tma_box`, `l2_policy`, `dependent_launch`, through `measure/lab/pages/_banded.py`) pages have their modules; every other page's typed section stands as recorded and is not edited by
 hand -- its module is written with its experiment's next record. A row a page names and its record lacks is refused
 by name: the generators' one lookup, `measure/lab/pages/_record.py`.
 `ledger <name> --packed <binary> --dump <csv> [--dump ...] --arch sm_90a --per <n>` reads a CARRIED ledger: the

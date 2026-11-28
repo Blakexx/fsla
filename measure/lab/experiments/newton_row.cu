@@ -30,6 +30,10 @@ namespace newton_row {
 
 constexpr int kWidth = 256, kBlockRows = 64, kValues = 128, kCap = 16;
 enum Kind : int { kRandom = 0, kNear, kCollapsed, kLarge, kKinds };
+//: THE STEP'S FORMS: each row's pass, sums and closed form in turn (SERIAL), or both rows' passes in one loop with
+//: every sum split into two chains, the six sums' shuffles issued together and both counts in one loop (INTERLEAVED)
+enum Form : int { kSerial = 0, kInterleaved, kForms };
+const char* kFormName[kForms] = {"each row in turn", "both rows interleaved"};
 const char* kKindName[kKinds] = {"random", "near the boundary", "a collapsed support", "five times the scale"};
 
 //: ACCUMULATED PAST `lo`: where `x > lo`, one more member, its value and its square -- the compare and three adds under
@@ -60,7 +64,7 @@ __device__ __forceinline__ float row_max(float v) {
 //: a thread's value `v` of its row `j`: accumulator `4 q + 2 j + i`, `v = 2 q + i`
 __device__ __forceinline__ int at(int j, int v) { return 4 * (v >> 1) + 2 * j + (v & 1); }
 
-template <int A15, int WG>
+template <int A15, int WG, int FORM>
 __global__ void __launch_bounds__(128 * WG, 1)
     solve(long long* times, const float* logits, float* taus, int* steps, uint8_t* support, int trips) {
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, g = lane >> 2, t = lane & 3;
@@ -96,6 +100,7 @@ __global__ void __launch_bounds__(128 * WG, 1)
 #pragma unroll 1
     for (int step = 0; step < kCap; ++step) {
       bool settled = true;
+      if constexpr (FORM == kSerial) {
 #pragma unroll
       for (int j = 0; j < 2; ++j) {
         //: the row's support past its bound, `{x > lo}`: its count, sum and sum of squares, one compare and three
@@ -123,6 +128,48 @@ __global__ void __launch_bounds__(128 * WG, 1)
         lo[j] = A15 ? lo[j] + __fdividef(Q - 2.0f * P * lo[j] + n * lo[j] * lo[j] - 4.0f, 2.0f * (P - n * lo[j]))
                     : tau[j];
       }
+      } else {
+        //: BOTH ROWS' SUMS IN ONE PASS, each sum two chains (even and odd values), so twelve chains interleave
+        float n[2][2] = {}, P[2][2] = {}, Q[2][2] = {};
+#pragma unroll
+        for (int v = 0; v < 64; ++v)
+#pragma unroll
+          for (int j = 0; j < 2; ++j) accumulate_past(d[at(j, v)], lo[j], n[j][v & 1], P[j][v & 1], Q[j][v & 1]);
+        //: the six sums' shuffles issued together: one round of six, then the other
+        float r[6], here[2];
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          here[j] = n[j][0] + n[j][1];
+          r[3 * j] = here[j];
+          r[3 * j + 1] = P[j][0] + P[j][1];
+          r[3 * j + 2] = Q[j][0] + Q[j][1];
+        }
+#pragma unroll
+        for (int k = 0; k < 6; ++k) r[k] += __shfl_xor_sync(0xffffffffu, r[k], 1);
+#pragma unroll
+        for (int k = 0; k < 6; ++k) r[k] += __shfl_xor_sync(0xffffffffu, r[k], 2);
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          const float nn = r[3 * j], PP = r[3 * j + 1], QQ = r[3 * j + 2];
+          tau[j] = A15 ? __fdividef(PP - ::denseref::ops::sqrt_approx(fmaxf(PP * PP - nn * (QQ - 4.0f), 0.0f)), nn)
+                       : __fdividef(PP - 1.0f, nn);
+        }
+        //: BOTH ROWS' SETTLED COUNTS IN ONE PASS, two chains a row
+        float past[2][2] = {};
+#pragma unroll
+        for (int v = 0; v < 64; ++v)
+#pragma unroll
+          for (int j = 0; j < 2; ++j) count_from(d[at(j, v)], tau[j], past[j][v & 1]);
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          const float nn = r[3 * j], PP = r[3 * j + 1], QQ = r[3 * j + 2];
+          const bool done = (tau[j] <= lo[j]) | (past[j][0] + past[j][1] == here[j]);
+          settled = settled & done;
+          first[j] = (first[j] == 0 && done) ? step + 1 : first[j];
+          lo[j] = A15 ? lo[j] + __fdividef(QQ - 2.0f * PP * lo[j] + nn * lo[j] * lo[j] - 4.0f, 2.0f * (PP - nn * lo[j]))
+                      : tau[j];
+        }
+      }
       const bool all = __all_sync(0xffffffffu, settled);
       if (all) break;
     }
@@ -130,6 +177,14 @@ __global__ void __launch_bounds__(128 * WG, 1)
 #pragma unroll
   for (int i = 0; i < kValues; ++i) lab::wg_hold(d[i]);
   clock.stop(times);
+  //: a row settles at the step every lane holding it settled: the most of its 4 lanes' (a lane's own test turns true
+  //: once its share holds no member below the closed form, and stays so)
+#pragma unroll
+  for (int j = 0; j < 2; ++j) {
+    const int a = first[j] == 0 ? kCap + 1 : first[j];
+    const int b = max(a, __shfl_xor_sync(0xffffffffu, a, 1));
+    first[j] = max(b, __shfl_xor_sync(0xffffffffu, b, 2));
+  }
   //: every row's threshold and steps (its quad's first lane), and every value's support: the level `relu(h (z - tau))`
   const float h = A15 ? 0.5f : 1.0f;
 #pragma unroll
@@ -137,7 +192,7 @@ __global__ void __launch_bounds__(128 * WG, 1)
     const long long row = row0 + 8 * j;
     if (t == 0) {
       taus[row] = tau[j];
-      steps[row] = first[j] == 0 ? kCap + 1 : first[j];
+      steps[row] = first[j];
     }
 #pragma unroll
     for (int v = 0; v < 64; ++v)
@@ -199,15 +254,16 @@ double oracle(const float* z, bool a15, std::vector<double>& x) {
 
 }  // namespace newton_row
 
-template <int A15, int WG>
+template <int A15, int WG, int FORM>
 void run(lab::Bench& b, int kind, float* logits, float* taus, int* steps, uint8_t* support) {
   using namespace newton_row;
   const long long blocks = static_cast<long long>(b.sms) * WG, rows = blocks * kBlockRows;
   const std::vector<float> z = fixture(kind, rows);
   LAB_CHECK(cudaMemcpy(logits, z.data(), z.size() * 4, cudaMemcpyHostToDevice));
   const std::string name = std::string("alpha ") + (A15 ? "1.5" : "2") + ", " + kKindName[kind] + ", "
-                           + std::to_string(WG) + (WG == 1 ? " warpgroup" : " warpgroups") + " a CTA";
-  const auto kernel = solve<A15, WG>;
+                           + std::to_string(WG) + (WG == 1 ? " warpgroup" : " warpgroups") + " a CTA"
+                           + (FORM == kSerial ? "" : std::string(", ") + kFormName[FORM]);
+  const auto kernel = solve<A15, WG, FORM>;
   kernel<<<b.sms, 128 * WG>>>(b.times, logits, taus, steps, support, 1);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<float> tau(rows);
@@ -218,16 +274,24 @@ void run(lab::Bench& b, int kind, float* logits, float* taus, int* steps, uint8_
   LAB_CHECK(cudaMemcpy(sup.data(), support, sup.size(), cudaMemcpyDeviceToHost));
   //: THE CHECK: every row's support against the fp64 oracle's; the threshold's distance from it; the steps
   std::vector<double> x(kWidth);
-  long long differ = 0, capped = 0, row_steps = 0, most = 0, warp_steps = 0, warps = rows / 16;
+  //: THE CLAUSE (fp32's resolution): a row whose support differs from the oracle's passes only where every logit they
+  //: disagree on lies within 2 units of fp32's last place, at the threshold, of the fp64 threshold -- no fp32 solve
+  //: places a logit nearer its threshold than that (the sorted closed form in fp32 differs on such rows too)
+  long long differ = 0, beyond = 0, capped = 0, row_steps = 0, most = 0, warp_steps = 0, block_steps = 0,
+            warps = rows / 16;
   double worst = 0, nearest = 1e30;
   for (long long r = 0; r < rows; ++r) {
     const double t64 = oracle(z.data() + r * kWidth, A15, x);
-    bool same = true;
+    bool same = true, resolvable = false;
+    const double ulp = std::nextafter(static_cast<float>(std::fabs(t64)), INFINITY) - static_cast<float>(std::fabs(t64));
     for (int c = 0; c < kWidth; ++c) {
-      same = same && (sup[r * kWidth + c] != 0) == (x[c] > t64);
+      const bool agree = (sup[r * kWidth + c] != 0) == (x[c] > t64);
+      same = same && agree;
+      resolvable = resolvable || (!agree && std::fabs(x[c] - t64) > 2.0 * ulp);
       nearest = std::min(nearest, std::fabs(x[c] - t64));
     }
     differ += !same;
+    beyond += resolvable;
     worst = std::max(worst, std::fabs(tau[r] - t64));
     capped += st[r] > kCap;
     row_steps += st[r];
@@ -238,12 +302,17 @@ void run(lab::Bench& b, int kind, float* logits, float* taus, int* steps, uint8_
     for (int r = 0; r < 16; ++r) m = std::max(m, st[w * 16 + r]);
     warp_steps += m;
   }
+  for (long long blk = 0; blk < rows / kBlockRows; ++blk) {
+    int m = 0;
+    for (int r = 0; r < kBlockRows; ++r) m = std::max(m, st[blk * kBlockRows + r]);
+    block_steps += m;
+  }
   char detail[256];
   std::snprintf(detail, sizeof detail,
-                "%lld of %lld rows' supports differ from the fp64 oracle's; %lld capped; the threshold within %.2e of "
-                "fp64; the nearest logit to an fp64 threshold %.2e from it",
-                differ, rows, capped, worst, nearest);
-  b.check(name, differ == 0 && capped == 0, detail);
+                "%lld of %lld rows' supports differ from the fp64 oracle's, %lld beyond fp32's resolution of the "
+                "threshold; %lld capped; the threshold within %.2e of fp64; the nearest logit to an fp64 threshold %.2e",
+                differ, rows, beyond, capped, worst, nearest);
+  b.check(name, beyond == 0 && capped == 0, detail);
   constexpr int kTrips = 64;
   const lab::Samples cycles = b.variant([&] { kernel<<<b.sms, 128 * WG>>>(b.times, logits, taus, steps, support, kTrips); },
                                         [&] { return b.span(4 * WG) / kTrips / WG; });
@@ -252,14 +321,19 @@ void run(lab::Bench& b, int kind, float* logits, float* taus, int* steps, uint8_
   b.record(name + ": steps a row, the most", "steps", lab::Samples{{static_cast<double>(most)}});
   b.record(name + ": steps a warp (its 16 rows' vote), the mean", "steps",
            lab::Samples{{static_cast<double>(warp_steps) / warps}});
+  b.record(name + ": steps a block (its 4 warps' most), the mean", "steps",
+           lab::Samples{{static_cast<double>(block_steps) / (rows / kBlockRows)}});
+  b.record(name + ": supports that differ within fp32's resolution", "rows",
+           lab::Samples{{static_cast<double>(differ - beyond)}});
 }
 
 int main(int argc, char** argv) {
   using namespace newton_row;
   lab::Bench b(argc, argv);
   for (int a15 = 0; a15 < 2; ++a15)
-    for (int wg : {1, 2}) {
-      const std::string k = lab::kernel("solve", {a15, wg});
+    for (int wg : {1, 2})
+      for (int form = 0; form < kForms; ++form) {
+      const std::string k = lab::kernel("solve", {a15, wg, form});
       b.expect(k, "SHFL", ">=", 8);
       b.expect(k, "VOTE", ">=", 1);
     }
@@ -273,10 +347,14 @@ int main(int argc, char** argv) {
   LAB_CHECK(cudaMalloc(&steps, rows * 4));
   LAB_CHECK(cudaMalloc(&support, rows * kWidth));
   for (int kind = 0; kind < kKinds; ++kind) {
-    run<1, 1>(b, kind, logits, taus, steps, support);
-    run<1, 2>(b, kind, logits, taus, steps, support);
-    run<0, 1>(b, kind, logits, taus, steps, support);
-    run<0, 2>(b, kind, logits, taus, steps, support);
+    run<1, 1, kSerial>(b, kind, logits, taus, steps, support);
+    run<1, 2, kSerial>(b, kind, logits, taus, steps, support);
+    run<0, 1, kSerial>(b, kind, logits, taus, steps, support);
+    run<0, 2, kSerial>(b, kind, logits, taus, steps, support);
+    run<1, 1, kInterleaved>(b, kind, logits, taus, steps, support);
+    run<1, 2, kInterleaved>(b, kind, logits, taus, steps, support);
+    run<0, 1, kInterleaved>(b, kind, logits, taus, steps, support);
+    run<0, 2, kInterleaved>(b, kind, logits, taus, steps, support);
   }
   return 0;
 }

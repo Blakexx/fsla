@@ -86,6 +86,15 @@ interleaved_timing(
     entries = [":" + entry_name("entmax_solve", "layer-alt-entmax1.5-64x64-T2048")],
 )
 
+#: THE SORTED SOLVE AT 256 COLUMNS (the producer's Newton form's reference, `docs/lab/newton_row.md`): the production
+#: solve on the 65,536-token, four-head cell whose levels are 256 wide, entmax 1.5 and softmax on each side
+interleaved_timing(
+    name = "session_entmax_256",
+    claim = "unlocked",
+    clock = ":clock",
+    entries = [":" + entry_name("entmax_solve", "layer-alt-entmax1.5-256x256-T65536-h4")],
+)
+
 #: EVERY ENTRY ALONE: the caching allocator's peak over its calls and what it holds outside it
 measure_memory(
     name = "memory",

@@ -22,6 +22,7 @@ from _record import Record, card, read
 DEVICE, CTA = ": the device", ": a CTA"
 PENDING = "pending"
 SECOND = "20261128T013030Z-737802-5ab0223a"
+THIRD = "20261128T014429Z-424977-ce56362c"
 HBM_READ = "HBM read, a CTA its own slice of a 1 GiB table"
 HBM_WRITE = "HBM write, a CTA its own slice of a 1 GiB table"
 HBM_COPY = "HBM copy, a CTA its own slice of 512 MB into 512 MB"
@@ -70,7 +71,7 @@ RUNS = (
         },
     ),
     (
-        PENDING,
+        THIRD,
         "2026-11-28",
         "the second run's own slice past L1 missed under its band (30.95 bytes a cycle an SM, 0.73 of the shared table's "
         "42.38): its price took the far L2 partition to cost at most a fifth. Three walks separate the explanations. IF a "

@@ -7,7 +7,8 @@
 // ballot); each of its 8 columns' 16 token bits are the ballots' every fourth bit, gathered by three shift-and-mask
 // rounds; a warp's 16-bit halves go to shared memory as one 16-byte store a lane, a named barrier joins the warp pair
 // of a 32-token half, and each thread of the pair writes 4 words (16 bytes) of the half's 256 words to global memory.
-// Every word is checked against the host's bits; densities 10%, 50%, 100%.
+// Every word is checked against the host's bits; densities 10%, 50%, 100%. The halves in one buffer (two barriers a
+// trip) or two by the trip's parity (one barrier a trip).
 // TIMELINE: no load in the clock. A trip: 128 compares and ballots with their keeps, the gathers, the halves' store,
 // the pair's barrier, the words' load and store. Live: the 128 values, the four kept ballots, 8 halves.
 // see docs/internals/tools/lab.md#mask-pack
@@ -27,9 +28,13 @@ __device__ __forceinline__ uint32_t gather4(uint32_t b, int t) {
   return (v | (v >> 12)) & 0xffu;
 }
 
+//: THE HALVES' BUFFERS: ONE (two barriers a trip: one before the words are read, one before the next trip overwrites
+//: them) or TWO, a trip's parity choosing (one barrier: a buffer is written again two trips on, past the next trip's
+//: barrier, which every reader of it reached)
+template <int BUFFERS>
 __global__ void __launch_bounds__(kThreads, 1)
     pack(long long* times, const float* digits, uint32_t* words, float threshold, int trips) {
-  __shared__ __align__(16) uint16_t halves[4][kWidth];
+  __shared__ __align__(16) uint16_t buffers[BUFFERS][4][kWidth];
   const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, g = lane >> 2, t = lane & 3;
   const long long row0 = static_cast<long long>(blockIdx.x) * 64 + 16 * warp + g;
   float d[kValues];
@@ -49,6 +54,7 @@ __global__ void __launch_bounds__(kThreads, 1)
 #pragma unroll 1
   for (int trip = 0; trip < trips; ++trip) {
     const float above = __uint_as_float(lab::held(__float_as_uint(threshold)));
+    uint16_t(&halves)[4][kWidth] = buffers[BUFFERS == 1 ? 0 : (trip & 1)];
     //: THE BALLOTS: lane `q` keeps the four of its column group
     uint32_t kept[4] = {0u, 0u, 0u, 0u};
 #pragma unroll
@@ -74,13 +80,14 @@ __global__ void __launch_bounds__(kThreads, 1)
     const uint2 hi = *reinterpret_cast<const uint2*>(&halves[2 * pair + 1][c0]);
     *reinterpret_cast<uint4*>(out + c0) = make_uint4(__byte_perm(lo.x, hi.x, 0x5410), __byte_perm(lo.x, hi.x, 0x7632),
                                                      __byte_perm(lo.y, hi.y, 0x5410), __byte_perm(lo.y, hi.y, 0x7632));
-    lab::bar_sync(1 + pair, 64);
+    if constexpr (BUFFERS == 1) lab::bar_sync(1 + pair, 64);
   }
   clock.stop(times);
 }
 
 }  // namespace mask_pack
 
+template <int BUFFERS>
 void run(lab::Bench& b, int percent, float* digits, uint32_t* words) {
   using namespace mask_pack;
   const long long rows = static_cast<long long>(b.sms) * 64;
@@ -94,8 +101,9 @@ void run(lab::Bench& b, int percent, float* digits, uint32_t* words) {
     v = live ? 0.51f + static_cast<float>((s >> 8) % 25450) / 100.0f : static_cast<float>((s >> 8) % 51) / 100.0f;
   }
   LAB_CHECK(cudaMemcpy(digits, host.data(), host.size() * 4, cudaMemcpyHostToDevice));
-  const std::string name = "256 columns, " + std::to_string(percent) + "% of digits nonzero";
-  pack<<<b.sms, kThreads>>>(b.times, digits, words, 0.5f, 1);
+  const std::string name = "256 columns, " + std::to_string(percent) + "% of digits nonzero"
+                           + (BUFFERS == 1 ? "" : ", the halves double-buffered");
+  pack<BUFFERS><<<b.sms, kThreads>>>(b.times, digits, words, 0.5f, 1);
   LAB_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> got(static_cast<size_t>(b.sms) * 2 * kWidth);
   LAB_CHECK(cudaMemcpy(got.data(), words, got.size() * 4, cudaMemcpyDeviceToHost));
@@ -108,7 +116,7 @@ void run(lab::Bench& b, int percent, float* digits, uint32_t* words) {
     }
   b.check(name, wrong == 0, std::to_string(wrong) + " of " + std::to_string(got.size()) + " mask words differ");
   constexpr int kTrips = 256;
-  const lab::Samples cycles = b.variant([&] { pack<<<b.sms, kThreads>>>(b.times, digits, words, 0.5f, kTrips); },
+  const lab::Samples cycles = b.variant([&] { pack<BUFFERS><<<b.sms, kThreads>>>(b.times, digits, words, 0.5f, kTrips); },
                                         [&] { return b.span(kThreads >> 5) / kTrips; });
   b.record(name + ": a 64-token block", "cycles a block", cycles);
 }
@@ -116,12 +124,14 @@ void run(lab::Bench& b, int percent, float* digits, uint32_t* words) {
 int main(int argc, char** argv) {
   using namespace mask_pack;
   lab::Bench b(argc, argv);
-  b.expect("mask_pack::pack\\(", "VOTE", ">=", 128);
+  b.expect(lab::kernel("pack", {1}), "VOTE", ">=", 128);
+  b.expect(lab::kernel("pack", {2}), "VOTE", ">=", 128);
   if (b.expect_only) return 0;
   float* digits = nullptr;
   uint32_t* words = nullptr;
   LAB_CHECK(cudaMalloc(&digits, static_cast<size_t>(b.sms) * 64 * kWidth * 4));
   LAB_CHECK(cudaMalloc(&words, static_cast<size_t>(b.sms) * 2 * kWidth * 4));
-  for (int percent : {10, 50, 100}) run(b, percent, digits, words);
+  for (int percent : {10, 50, 100}) run<1>(b, percent, digits, words);
+  for (int percent : {10, 50, 100}) run<2>(b, percent, digits, words);
   return 0;
 }

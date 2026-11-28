@@ -7,4 +7,35 @@ The producer writes a level-side's mask as 32-token words, a bit the u8 digit is
 
 THE FORM. A warpgroup holds its block's quantized values in that layout, loaded before the clock; a digit is nonzero where its value rounds above 0. A ballot a register index (8 tokens x 4 columns); lane q keeps its column group's four ballots; each of its 8 columns' 16 token bits are every fourth bit of two ballots, gathered by three shift-and-mask rounds; a warp's halves go to shared memory as one 16-byte store a lane; a named barrier joins the warp pair of a 32-token half; each thread writes 16 bytes of the half's 256 words. Every word is checked; densities 10%, 50%, 100%.
 
-PREDICTION (written 2026-11-27, before the first run). A warp's 16 tokens x 256 columns: 128 compares, 128 ballots, ~160 keeps, 8 columns x 2 gathers x 8, ~20 more: ~560 instructions; a 64-token block, one warpgroup: 500-900 cycles, flat in density. Against the solve: 10-15% of [`newton_row`](newton_row.md)'s alpha 1.5 random block (560 instructions against a solve of 4K-6K cycles).
+PREDICTION, run 20261128T014617Z-889657-f2c62487 (written 2026-11-27, before it ran; its basis: a warp's 16 tokens x 256 columns at ~560 instructions (128 compares, 128 ballots, ~160 keeps, 8 columns x 2 gathers x 8, ~20 for the halves' store, the barrier and the words) at one a clock, a warpgroup's 4 warps on 4 schedulers; no branch on the data, so flat in density):
+
+- 256 columns, 10% of digits nonzero: a 64-token block: 500.00-900.00 cycles a block.
+- 256 columns, 50% of digits nonzero: a 64-token block: 500.00-900.00 cycles a block.
+- 256 columns, 100% of digits nonzero: a 64-token block: 500.00-900.00 cycles a block.
+- the densest block over the sparsest: 0.97-1.03 times.
+
+PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's 1,130 cycles a block are 500 instructions a warp at 0.44 a clock (the SASS: 352 of the ballots and their keeps, 120 of the gathers): latency, not count, so no form with fewer instructions is in the SASS; what it shows removable is the trip's second barrier (the halves double-buffered, a buffer the trip's parity's), one rendezvous of the pair's 64 threads, ~40-150 cycles):
+
+- 256 columns, 10% of digits nonzero: a 64-token block: 1,074.00-1,187.00 cycles a block.
+- 256 columns, 50% of digits nonzero: a 64-token block: 1,074.00-1,187.00 cycles a block.
+- 256 columns, 100% of digits nonzero: a 64-token block: 1,074.00-1,187.00 cycles a block.
+- the double-buffered block over the one-buffer, 50%: 0.85-0.97 times.
+- the double-buffered densest over its sparsest: 0.97-1.03 times.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00def8gx4f4d34esq, driver 580.196.07; 2026-11-28, the experiment at
+00123881, run 20261128T014617Z-889657-f2c62487; 7 repetitions, the 3 checked variants exact; the median, the widest
+spread of a row 0.2%; the clock as the card left it):
+
+| the figure | measured | the prediction | held |
+|---|---:|---|---|
+| 256 columns, 10% of digits nonzero: a 64-token block | 1,130.32 cycles a block | 500.00-900.00 cycles a block | MISSED |
+| 256 columns, 50% of digits nonzero: a 64-token block | 1,130.31 cycles a block | 500.00-900.00 cycles a block | MISSED |
+| 256 columns, 100% of digits nonzero: a 64-token block | 1,130.76 cycles a block | 500.00-900.00 cycles a block | MISSED |
+| the densest block over the sparsest | 1.00 times | 0.97-1.03 times | held |
+
+The record's rows:
+- 256 columns, 10% of digits nonzero: a 64-token block: 1,130.32 cycles a block.
+- 256 columns, 50% of digits nonzero: a 64-token block: 1,130.31 cycles a block.
+- 256 columns, 100% of digits nonzero: a 64-token block: 1,130.76 cycles a block.
+
+Record: `data:records/fsla/measure/lab/mask_pack.run/20261128T014617Z-889657-f2c62487/output.json`.
