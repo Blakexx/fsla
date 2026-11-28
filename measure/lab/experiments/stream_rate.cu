@@ -25,11 +25,12 @@ __host__ __device__ constexpr uint32_t word_of(long long w) {
   return static_cast<uint32_t>(w) * 2654435761u + 1u;
 }
 
-//: A CTA'S WALK: its unit `n` is the table's unit `(start + (n & span)) & (wrap - 1)`, `start` the CTA's own
+//: A CTA'S WALK: its unit `n` is the table's unit `(start + (n & span) * stride) & (wrap - 1)`, `start` the CTA's own
+//: (`stride` 1 a contiguous slice; wider, the slice's units interleaved with the other CTAs')
 struct Walk {
-  long long start_stride, span, wrap;
+  long long start_stride, span, wrap, stride = 1;
   __host__ __device__ long long unit(int block, long long n) const {
-    return (block * start_stride + (n & span)) & (wrap - 1);
+    return (block * start_stride + (n & span) * stride) & (wrap - 1);
   }
 };
 
@@ -94,6 +95,8 @@ struct Row {
   int mode;
   Walk walk;
   int units, check_units;
+  //: the CTAs it launches, one an SM (0: every SM)
+  int ctas = 0;
 };
 
 }  // namespace stream_rate
@@ -102,15 +105,16 @@ template <int MODE>
 void run(lab::Bench& b, const stream_rate::Row& row, const uint4* src, uint4* dst, uint32_t* sums) {
   using namespace stream_rate;
   const auto kernel = stream<MODE>;
+  const int grid = row.ctas > 0 ? row.ctas : b.sms;
   //: THE CHECK: a short launch, every chain, written word or copied word against the host
   LAB_CHECK(cudaMemset(dst, 0, static_cast<size_t>(row.walk.wrap) * kUnitBytes));
-  kernel<<<b.sms, kThreads>>>(b.times, src, dst, sums, row.walk, row.check_units);
+  kernel<<<grid, kThreads>>>(b.times, src, dst, sums, row.walk, row.check_units);
   LAB_CHECK(cudaDeviceSynchronize());
   long long wrong = 0, checked = 0;
   if (MODE == kRead || MODE == kReadL2) {
-    std::vector<uint32_t> got(static_cast<size_t>(b.sms) * kThreads);
+    std::vector<uint32_t> got(static_cast<size_t>(grid) * kThreads);
     LAB_CHECK(cudaMemcpy(got.data(), sums, got.size() * 4, cudaMemcpyDeviceToHost));
-    for (int blk = 0; blk < b.sms; ++blk)
+    for (int blk = 0; blk < grid; ++blk)
       for (int tid = 0; tid < kThreads; ++tid) {
         uint32_t want = 0;
         for (long long n = 0; n < row.check_units; ++n) {
@@ -122,7 +126,7 @@ void run(lab::Bench& b, const stream_rate::Row& row, const uint4* src, uint4* ds
       }
   } else {
     //: every unit a CTA wrote: the word of its index (a write) or the source's word, which is the same (a copy)
-    for (int blk = 0; blk < b.sms; ++blk)
+    for (int blk = 0; blk < grid; ++blk)
       for (long long n = 0; n < row.check_units; ++n) {
         std::vector<uint32_t> got(kThreads * 4);
         LAB_CHECK(cudaMemcpy(got.data(), dst + row.walk.unit(blk, n) * kThreads, kUnitBytes, cudaMemcpyDeviceToHost));
@@ -142,14 +146,14 @@ void run(lab::Bench& b, const stream_rate::Row& row, const uint4* src, uint4* ds
   const lab::Samples device = b.variant(
       [&] {
         LAB_CHECK(cudaEventRecord(e0));
-        kernel<<<b.sms, kThreads>>>(b.times, src, dst, sums, row.walk, row.units);
+        kernel<<<grid, kThreads>>>(b.times, src, dst, sums, row.walk, row.units);
         LAB_CHECK(cudaEventRecord(e1));
       },
       [&] {
         float ms = 0;
         LAB_CHECK(cudaEventElapsedTime(&ms, e0, e1));
-        per_sm.v.push_back(moved / b.span(kThreads >> 5));
-        return moved * b.sms / (ms * 1.0e6);
+        per_sm.v.push_back(moved / b.span(kThreads >> 5, grid));
+        return moved * grid / (ms * 1.0e6);
       });
   b.record(std::string(row.name) + ": the device", "GB/s", device);
   b.record(std::string(row.name) + ": a CTA", "bytes a cycle an SM", per_sm);
@@ -193,6 +197,14 @@ int main(int argc, char** argv) {
       //: `cp.async.cg` and the tensor copy -- read it), so a CTA's own 128 KB slice cannot hit its SM's L1
       {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times", kReadL2, {16, 15, 4096}, 16 * 64, 32},
       {"L2 read past L1 (ld.global.cg), every CTA one 4 MB table 4 times", kReadL2, {4, ~0LL, 512}, 512 * 4, 32},
+      //: WHY A CTA'S OWN SLICE PAST L1 READS SLOWER THAN A SHARED TABLE: the own slice on half the SMs (an aggregate
+      //: cap on distinct lines would lift it; a path an SM would not); its 16 units interleaved over the table (an
+      //: address placement would move it); and every CTA one shared 128 KB slice (sharing alone would lift it)
+      {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB slice 64 times, 66 CTAs", kReadL2, {16, 15, 4096}, 16 * 64,
+       32, 66},
+      {"L2 read past L1 (ld.global.cg), a CTA its own 128 KB interleaved over the table 64 times", kReadL2,
+       {1, 15, 4096, 256}, 16 * 64, 32},
+      {"L2 read past L1 (ld.global.cg), every CTA one 128 KB slice 64 times", kReadL2, {0, 15, 4096}, 16 * 64, 32},
   };
   run<kRead>(b, rows[0], src, dst, sums);
   run<kWrite>(b, rows[1], src, dst, sums);
@@ -201,5 +213,8 @@ int main(int argc, char** argv) {
   run<kRead>(b, rows[4], src, dst, sums);
   run<kReadL2>(b, rows[5], src, dst, sums);
   run<kReadL2>(b, rows[6], src, dst, sums);
+  run<kReadL2>(b, rows[7], src, dst, sums);
+  run<kReadL2>(b, rows[8], src, dst, sums);
+  run<kReadL2>(b, rows[9], src, dst, sums);
   return 0;
 }
