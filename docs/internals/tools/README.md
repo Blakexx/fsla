@@ -23,7 +23,7 @@ is its target's ([`measurement.md`](../../measurement.md#instruments)).
 | [`toolchains.py`](toolchains.md) | each toolchain as a named record of the assembler a fatbin is built under | `ratify.py`, `dev.py`, the graph's flags and record (`bazel/flags.py`, `bazel/record.py`) | — |
 | [`wheels.py`](wheels.md) | the graph's library of a clean commit, packaged as the pure-Python wheel and the binary plugin | a person, at a release (`bazel run //:wheels`) | the wheels |
 | `no_source_build.py` | `pyproject.toml`'s build backend, which refuses a source install by name | pip | — |
-| `host_abi.py` | the host toolchain and the library's ABI: the pinned GCC's version and sysroot, and every symbol version `_C.abi3.so` needs, under torch's and Ubuntu 22.04's floors | the graph's `//tests:host_abi` | — |
+| `host_abi.py` | the host toolchain and the library's ABI: the pinned GCC's version and sysroot, and every symbol version `_C.abi3.so` needs, under the floors of torch's manylinux_2_28 build (glibc 2.28) | the graph's `//tests:host_abi` | — |
 | `supported.py` | the README's support summary and docs/support.md's contract tables, generated from the contract (`hardware/`) — a REPORT, not a claim | the graph's `//:readme_generated` and `//:support_generated`; a person, after an arm change | the two blocks |
 | [`kernels.py`](kernels.md) | THE KERNEL LIST: every device unit the build compiles and every kernel the source defines, derived from the tree | `ratify.py`, every kernel gate | — |
 | `git-hooks/pre-commit` | THE COMMIT GATE: `bazel test //:gate` on the commit as git will write it ([`build-graph.md`](../../build-graph.md#checks)) | git, every commit | — |
