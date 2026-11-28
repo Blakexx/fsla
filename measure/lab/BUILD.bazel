@@ -38,6 +38,7 @@ _DEPS = {
     "l2_policy": ["//csrc/fsla:headers"],
     "mask_prepare_time": ["//csrc/fsla:headers"],
     "newton_row": ["//csrc/fsla:headers"],
+    "produce_skeleton": ["//csrc/fsla:headers"],
 }
 
 [lab_experiment(
