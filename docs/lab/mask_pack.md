@@ -14,7 +14,7 @@ PREDICTION, run 20261128T014617Z-889657-f2c62487 (written 2026-11-27, before it 
 - 256 columns, 100% of digits nonzero: a 64-token block: 500.00-900.00 cycles a block.
 - the densest block over the sparsest: 0.97-1.03 times.
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run's 1,130 cycles a block are 500 instructions a warp at 0.44 a clock (the SASS: 352 of the ballots and their keeps, 120 of the gathers): latency, not count, so no form with fewer instructions is in the SASS; what it shows removable is the trip's second barrier (the halves double-buffered, a buffer the trip's parity's), one rendezvous of the pair's 64 threads, ~40-150 cycles):
+PREDICTION, run 20261128T034805Z-927513-666b225e (written 2026-11-28, before it ran; its basis: the first run's 1,130 cycles a block are 500 instructions a warp at 0.44 a clock (the SASS: 352 of the ballots and their keeps, 120 of the gathers): latency, not count, so no form with fewer instructions is in the SASS; what it shows removable is the trip's second barrier (the halves double-buffered, a buffer the trip's parity's), one rendezvous of the pair's 64 threads, ~40-150 cycles):
 
 - 256 columns, 10% of digits nonzero: a 64-token block: 1,074.00-1,187.00 cycles a block.
 - 256 columns, 50% of digits nonzero: a 64-token block: 1,074.00-1,187.00 cycles a block.
@@ -22,20 +22,24 @@ PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the f
 - the double-buffered block over the one-buffer, 50%: 0.85-0.97 times.
 - the double-buffered densest over its sparsest: 0.97-1.03 times.
 
-MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00def8gx4f4d34esq, driver 580.196.07; 2026-11-28, the experiment at
-00123881, run 20261128T014617Z-889657-f2c62487; 7 repetitions, the 3 checked variants exact; the median, the widest
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00fyq0107h186k284, driver 580.196.07; 2026-11-28, the experiment at
+b7215a57, run 20261128T034805Z-927513-666b225e; 7 repetitions, the 6 checked variants exact; the median, the widest
 spread of a row 0.2%; the clock as the card left it):
 
 | the figure | measured | the prediction | held |
 |---|---:|---|---|
-| 256 columns, 10% of digits nonzero: a 64-token block | 1,130.32 cycles a block | 500.00-900.00 cycles a block | MISSED |
-| 256 columns, 50% of digits nonzero: a 64-token block | 1,130.31 cycles a block | 500.00-900.00 cycles a block | MISSED |
-| 256 columns, 100% of digits nonzero: a 64-token block | 1,130.76 cycles a block | 500.00-900.00 cycles a block | MISSED |
-| the densest block over the sparsest | 1.00 times | 0.97-1.03 times | held |
+| 256 columns, 10% of digits nonzero: a 64-token block | 1,130.50 cycles a block | 1,074.00-1,187.00 cycles a block | held |
+| 256 columns, 50% of digits nonzero: a 64-token block | 1,130.30 cycles a block | 1,074.00-1,187.00 cycles a block | held |
+| 256 columns, 100% of digits nonzero: a 64-token block | 1,130.67 cycles a block | 1,074.00-1,187.00 cycles a block | held |
+| the double-buffered block over the one-buffer, 50% | 0.97 times | 0.85-0.97 times | held |
+| the double-buffered densest over its sparsest | 1.00 times | 0.97-1.03 times | held |
 
 The record's rows:
-- 256 columns, 10% of digits nonzero: a 64-token block: 1,130.32 cycles a block.
-- 256 columns, 50% of digits nonzero: a 64-token block: 1,130.31 cycles a block.
-- 256 columns, 100% of digits nonzero: a 64-token block: 1,130.76 cycles a block.
+- 256 columns, 10% of digits nonzero: a 64-token block: 1,130.50 cycles a block.
+- 256 columns, 50% of digits nonzero: a 64-token block: 1,130.30 cycles a block.
+- 256 columns, 100% of digits nonzero: a 64-token block: 1,130.67 cycles a block.
+- 256 columns, 10% of digits nonzero, the halves double-buffered: a 64-token block: 1,094.30 cycles a block.
+- 256 columns, 50% of digits nonzero, the halves double-buffered: a 64-token block: 1,095.15 cycles a block.
+- 256 columns, 100% of digits nonzero, the halves double-buffered: a 64-token block: 1,094.30 cycles a block.
 
-Record: `data:records/fsla/measure/lab/mask_pack.run/20261128T014617Z-889657-f2c62487/output.json`.
+Record: `data:records/fsla/measure/lab/mask_pack.run/20261128T034805Z-927513-666b225e/output.json`.

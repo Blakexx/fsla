@@ -127,5 +127,26 @@ __device__ __forceinline__ void copy_shared_to_global_16b(void* dst, const void*
   store_vec16(dst, load_vec16(src));
 }
 
+//: THE TENSOR COPY IN (`cp.async.bulk.tensor`, sm_90): the box at the coordinates of the 2-d (or 3-d) tensor `map`
+//: describes, into shared memory at `dst`, its bytes completing the barrier `bar` (stated by `mbar_expect_bytes`);
+//: `map` a kernel's `__grid_constant__` tensor map, one thread issues it -- see docs/internals/common/atoms/copy.md#stage-box
+__device__ __forceinline__ void stage_box_2d(SmemAddr dst, const void* map, int c0, int c1,
+                                             SmemAddr bar) {
+  asm volatile(
+      "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes"
+      " [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
+      "l"(map), "r"(c0), "r"(c1), "r"(bar)
+      : "memory");
+}
+
+__device__ __forceinline__ void stage_box_3d(SmemAddr dst, const void* map, int c0, int c1, int c2,
+                                             SmemAddr bar) {
+  asm volatile(
+      "cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes"
+      " [%0], [%1, {%2, %3, %4}], [%5];" ::"r"(dst),
+      "l"(map), "r"(c0), "r"(c1), "r"(c2), "r"(bar)
+      : "memory");
+}
+
 }  // namespace ops
 }  // namespace denseref

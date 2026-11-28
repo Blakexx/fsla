@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from _banded import PENDING, Claim, write_banded
+from _banded import Claim, write_banded
 
 UNIT = "cycles a block"
 BLOCK = "256 columns, {}% of digits nonzero: a 64-token block"
@@ -27,7 +27,7 @@ RUNS = (
                  "times"),),
     ),
     (
-        PENDING,
+        "20261128T034805Z-927513-666b225e",
         "2026-11-28",
         "the first run's 1,130 cycles a block are 500 instructions a warp at 0.44 a clock (the SASS: 352 of the ballots and "
         "their keeps, 120 of the gathers): latency, not count, so no form with fewer instructions is in the SASS; what it "
