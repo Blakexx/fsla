@@ -175,15 +175,42 @@ A CTA loads its boxes from the state's plane at entry and stores what it wrote a
 
 ## The scales, the den and the output's line
 
-- THE SCALES. A row's bytes are multiplied by the row's fp32 scale where its coefficient is formed, a value by its
-  token's; every sum leaves the reader's own factor out ([`fsla/ops/prefill.py`](../../fsla/ops/prefill.py)). No lab
-  ran on scaled operands: it is built with the kernel and checked against the oracle.
+- THE SCALES. A row's bytes are multiplied by the row's fp32 scale where its coefficient is formed, on both sides: a
+  read row is a simplex's ([`api.md`](../api.md#simplex)), so a reader's weights sum to one up to the digits' rounding
+  and its readout is a weighted average of state entries. The values are raw bf16, `v_proj`'s output as it is, with no
+  scale ([`api.md`](../api.md#values)). No lab ran on scaled operands: it is built with the kernel and checked against
+  the oracle.
 - THE DEN is the same recurrence on ones: the fold's mass by steps whose A is the coefficient tile, a brick more of
   each image tile, a column more of the readout's step, a word more of a panel row and an add more of the drain.
   MEASURED in the digit form at 5 to 6% of a window ([`lab/carry_window.md`](../lab/carry_window.md)); not in the
   packet form.
-- THE OUTPUT'S LINE across CTAs is fp32 or one f16 line a token scaled by a power of two from a coarse bound, as the
-  plan states (R17).
+- <a id="output-line"></a>THE OUTPUT'S LINE across CTAs is fp32, or one f16 line a CTA a token scaled by a power of
+  two from a coarse bound (R17), and THE CHOICE IS MADE ON THE DEVICE, A CALL AT A TIME. Every CTA computes the same
+  piece count `K_max = prod_l B_l / min(g_l, e_l)` from its carve and the call's live digits -- `B_l` a level's width,
+  `g_l` its group and `e_l` the carve's extent on it -- and takes f16 where `K_max` is at most about 150 and fp32 above:
+  the switch point is where the f16 running sum's rounding leaves the bf16 class. The carve writes the choice where
+  the finish reads it. The host allocates the transient output-sum buffer at fp32 size, so the launch and a graph
+  capture depend on no device value; an f16 call writes and reads half of it, so the choice costs memory, never
+  traffic, and a sparse call keeps the f16 line a static worst-case carve would force to fp32.
+- THE BOUND IS PER CHANNEL: `max|S_entry, ch| + growth[ch]`. The state carries `max|S|` a (batch, head, channel),
+  kept by each CTA's per-channel atomic max at write-back. `growth[ch]` is the sum over the segment's tokens of
+  `|v[t, ch]|` times the token's largest write coefficient (its gain times its write rows' scales' product): the
+  producer emits it a segment, an fp32 `[B, H_w, d_v]` input beside the masks and the densities. The bound holds
+  because a read row is a simplex's, so a readout never leaves the state entries' range. NOT MEASURED: the bound's
+  error on any cell. NOT BUILT: the producer's growth, the state's `max|S|`, the choice.
+- THE FINISH. `num` and `den` are summed in fp32 or on the f16 line, and a finish step divides and writes the op's
+  `y` once, in bf16 ([`api.md`](../api.md#output)). It is likely a tiny kernel of its own; a last-arriver finisher in
+  the carry's CTAs is the other form, a free axis. NOT BUILT.
+
+## Target
+
+<a id="target"></a>THE CARRY'S TARGET IS THIS DESIGN'S HARDWARE FLOOR WITH EVERY UNIT PERFECTLY OVERLAPPED, approached
+as closely as the build can (Blake, 2026-11-15: "we want to hit the floor of the current design's hardware when
+perfectly overlapped, as close as possible"). The floor is the binding unit's time a CTA window for the work this
+design issues -- the shared-memory pipe, the issue slots, the output's adds, the tensor pipe -- read from the model
+that reproduces the kernel's measured timeline ([`KERNEL_STANDARDS.md`](../KERNEL_STANDARDS.md#stepped)), no phase
+idling the binding unit ([section 28](../KERNEL_STANDARDS.md#s28)). Going
+under it by changing the design is not the climb's aim: the climb removes what keeps the units from overlapping.
 
 ## The order of the build
 

@@ -20,11 +20,9 @@ y, _ = layer(hidden_states)                     # stateless: (y, None)
 or, without the layer, from levels you computed yourself -- the format's own utilities build the bundles:
 
 ```python
-from fsla.routing.quant import VALUES
-
 factors = fsla.RouteFactors.from_levels(fsla.Topology.opaque(widths), read_levels, write_levels)
 masks, density = fsla.masks_and_density(factors)          # the masks the rows' nonzero digits make, and their density
-y, _ = fsla.prefill(factors, fsla.ScaledBlock.quantize(v, VALUES), masks, density)
+y, _ = fsla.prefill(factors, v, masks, density)            # v: the bf16 values, [B, T, H_w, d_v]
 ```
 
 ---
@@ -32,18 +30,20 @@ y, _ = fsla.prefill(factors, fsla.ScaledBlock.quantize(v, VALUES), masks, densit
 ## 1. The op
 
 ```python
-prefill(routes: RouteFactors, values: ScaledBlock, masks: Masks, density: Tensor, *,
+prefill(routes: RouteFactors, values: Tensor, masks: Masks, density: Tensor, *,
         state=None, decay: LeafMassDecay | None = None) -> (y, state)
-decode_step_gated(routes: RouteFactors, values: ScaledBlock, masks: Masks, state, *,
+decode_step_gated(routes: RouteFactors, values: Tensor, masks: Masks, state, *,
                   decay: LeafMassDecay | None = None) -> (y, state)
 ```
 
-`routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
-internal format, a scaled block in the `VALUES` form, `ScaledBlock.quantize(v, VALUES)` over a `[B, T, H_w, d_v]` projection (§2.2, §4.1).
+`routes` is the `(q, k)` pair after the feature map. `values` is the value stream, the `[B, T, H_w, d_v]` projection in
+bf16 as `v_proj` writes it: no scale and no normalization ([§2.2](#values)).
 `masks` is the data beside the rows, like attention's mask (§2.6): decode's op computes with `r * m`, and the prefill's masks are the caller's
-guarantee about the rows. `density` is the prefill's own input (§2.6): a `torch.uint8` `[2, D]` tensor, how full each level is (255 is every digit live), which chooses how the work
+guarantee about the rows. `density` is the prefill's own input (§2.6): a `torch.uint8` `[1 + G, D]` tensor, how full each level is for
+each read head and the write side (255 is every digit live), which chooses how the work
 is laid out; decode takes none ("decode doesn't need it, once again it has its own design", the owner, 2026-11-24).
-`decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is `[B, T, H, d_v]`.
+`decay` is the recurrence dial (§3): decode has its arm, the prefill refuses it; leave it `None` for a prefill. `y` is
+`[B, T, H, d_v]` in bf16 ([§4.1](#output)).
 
 The owner's ruling (2026-11-23): "is it better to just have a decode and prefill producer, have each internal call handle its descriptor stuff
 and not be exposed to the user, and have the public contract carry all inputs, workpsace is something we build inside just to pass around?" --
@@ -61,17 +61,23 @@ none. The state is its own argument, in and out. None of these changes the mathe
 <a id="batch-heads"></a>A decode step serves B times H from 1 to 536870911 (`2^29 - 1`: within what the step's work queue of `3 B H + 2` int32
 counters indexes); the step's descriptor states it as the `batch_heads` fact and a step outside it is refused when the descriptor is made.
 
-`state` is `None` (a stateless call, returning `(y, None)`) or a `fsla.dense_state()` object,
+`state` is `None` (a stateless call, returning `(y, None)`) or a state object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
 is no second flag, because a stateless call runs a kernel variant with no state I/O
 compiled into it at all. Read the carried state with
 `state.materialize() -> [B, H, N, d_v + 1]`, where `N = prod(widths)` is the leaf
-capacity; that is a bridge for the oracle and for a test, never a measured path. See
-[`docs/internals/state.md`](internals/state.md).
+capacity, its leaves in the declared level order whatever order the state stores them in; that is a bridge for the
+oracle and for a test, never a measured path. See [`docs/internals/state.md`](internals/state.md).
 
-`fsla.FSLAState` is the state INTERFACE and `fsla.dense_state()` builds its one implementation, the dense state: one plane of the stored page
-format, the whole leaf space resident, taking no argument. A paged state is future work and will be built by its own constructor, taking the parameters
-its storage needs (see [`internals/state.md`](internals/state.md#interface)).
+<a id="the-state"></a>`fsla.FSLAState` is the state INTERFACE and `fsla.dense_state(...)` builds its one implementation, the dense state: one
+plane of the stored page format, the whole leaf space resident. A STATE IS CONSTRUCTED FROM THE `fsla.Routing` AND THE
+CALL'S SHAPE -- the batch, the write heads, the value width -- and its device: its format is fixed at construction and
+never changes, and its plane is allocated and zeroed there. A layer or op whose routing or shape differs from the
+state's refuses it, naming the field. The plane's contents advance in place each call; only the format is immutable.
+`layer.new_state(batch, device)` is the layer's convenience, the state of its own routing, write heads and value width
+(§4). A paged state is future work and will be built by its own constructor, taking the parameters its storage needs
+(see [`internals/state.md`](internals/state.md#interface)). NOT BUILT: `fsla/_state.py` still builds an unbound state
+that binds its format at its first call.
 
 There is no plan object. There is no configuration argument and no statistics argument: those are not model facts -- they are
 how the op RUNS. The descriptor and the workspace are internal to each call: it builds them from its operands through the producer's cached
@@ -122,7 +128,7 @@ planner's too, made once a call for the layer that supplies each segment to the 
 hardware facts. Inside, one launch bundle per kernel family (`DecodeLaunch`, `PrefillLaunch`) carries three named parts -- the
 `descriptor`, the `operands` (the data, masks included) and the `workspace` -- built by a call's launch step and never public. The `Descriptor`
 and the workspace's builder (`fsla.ops.prefill`'s private builder) belong to the library's own code and tests, and are not on the top level. The
-state's storage is the state's own, chosen by the constructor (`fsla.dense_state()`), never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
+state's storage is the state's own, chosen by the constructor (`fsla.dense_state(...)`), never a fact of the call. A conformance family drives the envelope's own rule (`fsla.engine.rules.envelope`) directly and declares the refusal
 clause it expects, and the descriptor of a call answers the same question before it.
 
 **The envelope is narrow, and that is stated rather than softened.** Shapes outside the
@@ -160,8 +166,8 @@ are stated apart.
 
 | | what it accepts | what it does with the rest |
 |---|---|---|
-| **the API** (this page: `prefill`, `FSLA`, `fsla.dense_state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` with zero columns to a width its kernel takes (the decode: the next shipped `DV`; the prefill's carry: a whole number of 64-channel slices) |
-| **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a value width its kernel takes (the decode: a shipped `DV`; the carry: 64-channel slices), `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads and never masks |
+| **the API** (this page: `prefill`, `FSLA`, `fsla.dense_state(...)`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` with zero columns to the state's stored width `DV`, `d_v` rounded up to the format's 32-channel group, one width for the prefill and decode |
+| **the kernel** (`fsla.ops.carry`, `fsla.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, the stored width `DV` (a kernel whose tile is wider, as the prefill's 64 channels on the MMA's M axis, pads in registers or shared memory at load and stores back only the stored channels), `N` a multiple of 16, the internal format's rows and values (§2.1, §4.1) | **refuses**, by name — it never pads its operands in memory and never masks |
 
 **The seam is the only translator.** A padded digit gets amplitude *exactly* zero
 (`-inf` before the entmax or softmax solve), so it is never live, never read, never
@@ -178,11 +184,13 @@ with unpadded shapes and assert the refusal
 signature is refused by nothing yet, though a kernel that could read one could pad: the lint that
 would refuse it is owed ([`CONSTITUTION.md` R13](CONSTITUTION.md#r13)).
 
-**What the descriptor fixes.** A state binds its format at its first call — `D`, the
-per-level `B_l`, the canonical leaf order, the page rectangle, `DV`, and the stored form
-(`fsla._state.STATE_DTYPE`, [`internals/common/state_page.md`](internals/common/state_page.md)) — and every later call
+**What the descriptor fixes.** A state's format is fixed when it is constructed ([§1](#the-state)) — `D`, the
+per-level `B_l`, the leaf order, the page rectangle, `DV`, and the stored form
+(`fsla._state.STATE_DTYPE`, [`internals/common/state_page.md`](internals/common/state_page.md)) — and every call
 is *checked* against it rather than assumed
-to fit. A call that disagrees is refused at the seam, naming the field, instead of
+to fit. `DV`, the stored value width, is `d_v` rounded up to the format's 32-channel group and no further: a kernel
+whose tile is wider pads at load and stores back only the stored channels, so one state serves the prefill and decode
+alike ([`internals/state.md`](internals/state.md#format)). A call that disagrees is refused at the seam, naming the field, instead of
 addressing somebody else's bytes inside a kernel. Re-laying out a state is an explicit
 op, never a side effect of a call. See
 [`internals/state.md`](internals/state.md#format).
@@ -266,15 +274,18 @@ tensors, which `RouteFactors.tensors()` enumerates for autograd.
 ### 2.2 The scaled block, and the gain
 
 A level is numbers in a representation, not a distribution (ruled 2026-11-07,
-[`CONSTITUTION.md` R23](CONSTITUTION.md#r23)). `q` (read), `k` (write) and `v` are each a
+[`CONSTITUTION.md` R23](CONSTITUTION.md#r23)). `q` (read) and `k` (write) are each a
 SCALED BLOCK: unit-max rows in a FORM that states its storage type and its signedness -- u8
-nonnegative at 255 (a routing level, dense or sparse, a zero a zero), bf16 signed in `[-1, 1]` (the values) --
-with the row's max as its fp32 scale. ONE type holds every such block, `fsla.ScaledBlock(data, scale, form, source=None)`
-(`fsla/routing/quant.py`): a routing level-side's rows (form `ROWS`) and a token's values (form `VALUES`) alike, `[B, T, H, width]` rows and
-`[B, T, H]` scales, checked for structure (dtype, shapes, device, the alignment law where the form states it) and never for values. The forms
-are `fsla.routing.quant`'s `Form` (`ROWS`, `VALUES`), quantizing into and dequantizing out of each written once on it
+nonnegative at 255 (a routing level, dense or sparse, a zero a zero) -- with the row's max as its fp32 scale. <a id="values"></a>THE
+VALUES `v` ARE RAW BF16, `v_proj`'s output as it is: no scale a token and no unit-max normalization, the precision
+class FlashAttention's values have (the owner, 2026-11-28: "everyone uses bf16 right. lets just be simple and use raw
+bf16"). ONE type holds every scaled block, `fsla.ScaledBlock(data, scale, form, source=None)`
+(`fsla/routing/quant.py`): a routing level-side's rows (form `ROWS`), `[B, T, H, width]` rows and
+`[B, T, H]` scales, checked for structure (dtype, shapes, device, the alignment law where the form states it) and never for values. The form
+is `fsla.routing.quant`'s `Form`, quantizing into and dequantizing out of it written once on it
 (`ScaledBlock.quantize(x, form)`, `ScaledBlock.dequantized()`), and the factory refuses an entry its form does not
-hold -- a negative or non-finite routing level, a non-finite value -- with one host read a call. A side's shared scale is the product of its levels'
+hold -- a negative or non-finite routing level -- with one host read a call. NOT BUILT: the values' `VALUES` form
+and `fsla.ScaledBlock.quantize(v, VALUES)` still stand in `fsla/routing/quant.py`. A side's shared scale is the product of its levels'
 scales, STORED FACTORED: each level's scale is written by the producer job that quantizes that
 level and multiplied by the reader as it loads them, so no job waits on another. The op every
 consumer computes, and the fp64 oracle with them:
@@ -283,16 +294,19 @@ consumer computes, and the fp64 oracle with them:
     S_t(s)  = S_{t-1}(s) + W(t, s) v(t)      den_t(s) likewise with v = 1
     y(t)    = sum_s R(t, s) S_t(s) / (sum_s R(t, s) den_t(s) + eps)
 
-No level is required to sum to 1, on either side, and no flag says whether one does. A
-producer's magnitude is its own: ours, the write gain `softplus(gain logit + bias)`, is folded
+A READ ROW IS A SIMPLEX'S: FSLA is normalized attention only, so a read row's true values sum to one and a readout is a
+weighted average of state entries ([§2.3](#simplex)). The write side carries no such rule: no write level is required to
+sum to 1. A producer's magnitude is its own: ours, the write gain `softplus(gain logit + bias)`, is folded
 into write level 0's scale (§2.1); a caller's own levels carry whatever magnitude they have into
 their scales, `RouteFactors.from_levels` quantizing each against its own max and nothing else.
 
 **The read scales are kept, for the floor.** A per-token read factor common to every leaf
-cancels in the ratio everywhere but the floor, so the read scales' product `r` is read only
-there: the prefill readout is `num' / (den' + eps / r)` (`fsla/ops/prefill.py`'s `readout`),
+cancels in the ratio everywhere but the floor, so the reference reads the read scales' product `r`
+only there: its readout is `num' / (den' + eps / r)` (`fsla/ops/prefill.py`'s `readout`),
 which is the formula above exactly, and it is what makes `eps` mean the same thing on every
-routing. `READOUT_EPS` is a DEFINITION constant (`fsla/ops/constants.py`). Decode computes the
+routing. A kernel applies each read row's fp32 scale where it expands the row instead
+([`architecture/hopper-carry.md`](architecture/hopper-carry.md#the-scales-the-den-and-the-outputs-line)), so its
+`num` and `den` carry `r` and its readout is the same formula. `READOUT_EPS` is a DEFINITION constant (`fsla/ops/constants.py`). Decode computes the
 same `y`: neither normalizes a read level.
 
 **The decay computes its own shares** ([§3](#3-the-decay-source-slot)): its clock is each leaf's
@@ -320,11 +334,26 @@ RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data 
 write gain and the projection bias -- and the layer owns every weight it implies: the
 packed per-write-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
 call (`fsla.ops.produce.produce_prefill`, or `produce_decode` for the decode step) turns a stretch of tokens into the bundle -- the projection, the exact
-entmax/softmax solves, the write gain, the unit-max rows and the bf16 values -- and on CUDA with no gradient
+entmax/softmax solves, the write gain, the unit-max rows and the bf16 values -- and on CUDA
 that call is ONE LAUNCH of the fused producer kernel, the bundle's rows and scales views of the planes it writes --
-a kernel not built on this line, so the call raises `fsla.ops._ext.KernelNotBuilt` there
-([`open-work.md`](open-work.md)). The torch composition behind the same call is the reference: fp64, the host,
-and -- until the native backward -- the path a gradient takes. The CUDA entmax solve behind it takes bf16 logits (the projection's output) and writes the bf16 stored form; fp64 logits take the torch lowering, and CUDA logits of any other dtype are refused by name. Construction validates the whole declaration --
+a kernel not built on this line, so the no-grad call raises `fsla.ops._ext.KernelNotBuilt` there
+([`open-work.md`](open-work.md)). The torch composition behind the same call is the reference: fp64 and the host.
+
+<a id="training"></a>**ONE FORWARD SERVES INFERENCE AND TRAINING.** The fused producer kernel is the forward with or
+without a gradient. With a gradient on, the same launch also writes a LO PLANE beside the u8 rows -- one byte a digit,
+the rounding residual of the digit the readers take -- saved privately by the producer's autograd node, from which
+the backward rebuilds each level's value, at least bf16's precision above a 255th of the row's max; the writing of it is a compile-time variant of
+the kernel, on exactly when a gradient is needed. The public API and the op's u8 operands are the same either way:
+nothing reads the lo plane but the producer's backward. The memory a training step holds is the caller's to bound with
+torch's own checkpointing, so the forward is pure in its inputs and re-runs under `torch.utils.checkpoint` to the
+same result. THE BACKWARD IS SEVERAL LAUNCHES, each with its own partition: the solve's backward, then the `dx` and
+`dW` GEMMs -- `dx` sums over every head's columns and `dW` over every token, so the two want opposite partitions; the
+one-launch rule below binds the forward. NOT BUILT: the fused forward, the lo plane and the backward kernels; until the
+fused forward lands, the composition's CUDA entmax solve stands under the call, taking bf16 logits (the projection's
+output) and writing the bf16 stored form -- fp64 logits take the torch lowering, and CUDA logits of any other dtype are
+refused by name -- and it and the composition's CUDA training path are deleted with the fused forward's landing.
+
+Construction validates the whole declaration --
 widths in range, a buildable topology, a gain layout -- so a model the declaration cannot state fails on the line that built it (the one declaration it accepts and the solve refuses is named below).
 
 <a id="the-routing"></a>**The routing is declared ONCE: one topology, flat activations, `G` read heads** (the owner, 2026-11-27: "its
@@ -341,13 +370,18 @@ Routing(topology=(64, 64), write=(entmax(1.5), softmax()),
 
 `tied()` is a POSITIONAL MARKER, not an activation: the read head's level IS the write side's routing on that level -- the same rows,
 one solve, no read columns of its own -- and any rule asking about the cell reads the write activation (a tied softmax level is legal and
-dense on both sides). Each read head's activations and listed levels may differ; every read head has the write side's topology (a
-per-side or per-head structure is not declared).
+dense on both sides). <a id="tied-copies"></a>IN THE FORMAT A TIED LEVEL IS A MATERIALIZED COPY: every read head has its own rows and
+scale on every level, the write job's epilogue storing the same rows and scale to each tied head's planes, so a consumer reads each head's
+own rows natively and nothing downstream knows a level was tied. Each read head's activations and listed levels may differ; every read head
+has the write side's topology (a per-side or per-head structure is not declared).
 
-**Every activation is nonnegative** (the registry's `nonnegative` column, `fsla/routing/activations.py`): the v1 routing is nonnegative and
-its readout normalized, and a row that is not is refused at the declaration. Construction refuses, naming the reason: an activation with no
-registry row, one whose row is not nonnegative, one the producer does not solve, a read tuple whose length is not the topology's depth, and a
-width below 2. A level whose untied read entry and write side both make exact zeros is allowed: two solves, two supports, and nothing makes them overlap, where a tied entry is one solve and one support. One accepted declaration is refused later, at the solve: a level SEVERAL read heads tie has no gradient built, so a call on the kernels that requires one is refused by name ([`internals/entmax/factor.md`](internals/entmax/factor.md#read-heads)); its forward without a gradient runs.
+**Every activation is nonnegative** (the registry's `nonnegative` column, `fsla/routing/activations.py`): the v1 routing is nonnegative, and a
+row that is not is refused at the declaration. <a id="simplex"></a>**FSLA IS NORMALIZED ATTENTION ONLY** (the owner, 2026-11-28: "we are
+locked into only normalized form"): every activation declares whether it is a SIMPLEX -- its row's true values sum to one -- in its registry
+row beside whether it makes exact zeros, and the read side refuses a non-simplex activation by name, so a read row sums to one and a readout
+is a weighted average of state entries. A write level may be non-simplex. Construction refuses, naming the reason: an activation with no
+registry row, one whose row is not nonnegative, a read entry whose activation is not a simplex, one the producer does not solve, a read tuple
+whose length is not the topology's depth, and a width below 2. NOT BUILT: the registry's simplex column and the read side's refusal. A level whose untied read entry and write side both make exact zeros is allowed: two solves, two supports, and nothing makes them overlap, where a tied entry is one solve and one support. One accepted declaration is refused later, at the solve: a level SEVERAL read heads tie has no gradient built, so a call on the kernels that requires one is refused by name ([`internals/entmax/factor.md`](internals/entmax/factor.md#read-heads)); its forward without a gradient runs.
 The layer refuses a read count that is neither its `G` nor one, naming both (`Routing.layout`).
 
 Depth, leaf count `N`, the packed router width and the per-level logit offsets are all DERIVED from the declaration
@@ -356,9 +390,10 @@ can disagree with it. `route_W` is `[H_w, hidden, columns]`, a write head's slic
 of its read heads' untied levels' columns (head 0's, then head 1's, ...), then the gain's span: every column is consumed and the projection is
 one GEMM over the whole parameter, a side's logits column spans of its output.
 
-**Every level, every head and the values are one launch by design** -- a model pays one launch for the whole
-topology, whatever its levels' operators, alphas and widths. That kernel is not built on this line: the no-grad
-CUDA call raises `fsla.ops._ext.KernelNotBuilt`, and the torch composition behind the same call serves fp64, the host and a gradient.
+<a id="one-launch"></a>**Every level, every head and the values are one launch by design** -- a model pays one launch for the whole
+topology, whatever its levels' operators, alphas and widths. The one launch is the FORWARD's, with or without a gradient; the backward is
+several ([above](#training)). That kernel is not built on this line: the no-grad CUDA call raises `fsla.ops._ext.KernelNotBuilt`, and
+the torch composition behind the same call serves fp64, the host and, until the fused forward lands, a gradient.
 
 <a id="projection-weight"></a>**The projection reads a laid-out copy of `route_W` when no gradient flows.** The GEMM's
 operands are bf16 and the kernel reads each column's hidden run contiguous (`hidden_contiguous`), so an inference
@@ -384,8 +419,8 @@ number lives.
 RULED 2026-09-26, and 2026-09-29: there is no duck-typed producer, and the layer takes no callable feature map. A
 new kind of production is added to the framework -- its activation to the closed registry, its solve to the
 producer, its reference and its oracle -- and what it returns is the internal format. A caller of the ops with its
-own levels builds the bundles through the format's own utilities (`RouteFactors.from_levels`,
-`ScaledBlock.quantize(v, VALUES)`), which are the same epilogue the producer applies; nothing else constructs a bundle the op
+own levels builds the bundles through the format's own utilities (`RouteFactors.from_levels`), which are the same epilogue the
+producer applies, and hands its bf16 values as they are; nothing else constructs a bundle the op
 admits: the format's fields are required, checked structurally, and a bundle assembled from bare floating levels is
 refused by name. Correctness is still producer-blind -- liveness is the supplied masks, never derived from the rows, and nothing about a producer's identity reaches a kernel -- but the FORMAT is ours, because it is what every
 kernel reads and what the oracle gates against.
@@ -404,8 +439,10 @@ is a choice a level's author is making, so it is stated here rather than buried.
 
 ### 2.6 The masks are data, in each consumer's native layout
 
-A mask is a bit per side, per level, per digit, per token (ruled 2026-11-13) and it
-is an operand BESIDE the rows, like attention's mask (ruled 2026-11-22). The masks are validated for shape, dtype and device, never for
+A mask is a bit per digit per token, ONE MASK A (HEAD, LEVEL), THE WRITE SIDE INCLUDED: the write head's mask on each
+level and each read head's own (the owner, 2026-11-28: "one mask per (head, level) including write"). No mask is
+shared across read heads and the write side's is never duplicated for them. A mask is an operand BESIDE the rows, like
+attention's mask (ruled 2026-11-22). The masks are validated for shape, dtype and device, never for
 their values. What a bit says depends on the consumer.
 
 **DECODE computes with `r * m`**, the product under the mask: a bit under a nonzero row drops that digit's term, a bit over a
@@ -420,7 +457,8 @@ bits (which groups they skip, how they lay the work out) is an implementation de
 the masks are a suggestion the kernels may take. The oracle keeps computing rows times bits; for masks that keep the guarantee that is the rows alone.
 
 ```python
-fsla.Masks(consumer, read, write)   # one int32 tensor a level a side (prefill: or None, dense); consumer = "prefill" | "decode"
+fsla.Masks(consumer, read, write)   # write: one int32 tensor a level; read: one such tuple a read head, G of them
+                                    # (prefill: an entry may be None, dense); consumer = "prefill" | "decode"
 ```
 
 The producer emits them in the layout of the consumer it is made for (`produce_prefill` the prefill's, `produce_decode` the decode step's), so no
@@ -428,27 +466,29 @@ conversion stands between the producer and the op, and each op documents the lay
 
 | consumer | a level's mask | bit |
 |---|---|---|
-| `"prefill"` (`prefill`, `FSLA.forward`) | int32 `[B, H, ceil(T / 32), width_l]` (`H_w` on the write side), TOKEN-packed: the entmax kernels' `support_words` as they are | bit `t % 32` of word `t // 32` = token `t` live at that digit; the solve's stream axis is `B * H` with `H` inner, so its `[B * H, ...]` words are this shape as a view |
+| `"prefill"` (`prefill`, `FSLA.forward`) | int32 `[B, H_w, ceil(T / 32), width_l]` a (head, level), TOKEN-packed | bit `t % 32` of word `t // 32` = token `t` live at that digit |
 | `"decode"` (`decode_step_gated`) | int32 `[B, H, ceil(width_l / 32)]`, DIGIT-packed, one token | bit `d % 32` of word `d // 32` = digit `d` live |
 
 Bits past `T` (prefill) or past `width_l` (decode) are zero. **THE DENSE FLAG IS THE DENSITY BYTE 255** (CONSTITUTION R9): a level-side whose byte is 255 is computed with every digit live and its mask is never
 read, so in the prefill layout its entry in the bundle may be ABSENT (`None`). An absent entry's byte is 255: that is its supplier's duty, as a mask's
 guarantee is, and the call does not check it (it validates no value of the masks or the density, and reads nothing back to the host). The library's
 producer and helpers leave a level-side's mask absent, and state its byte 255, exactly where its declared activation cannot make exact zeros (softmax
-today; on the read side, no read head's, a tied entry reading the write side's; `fsla.routing.types.activation_walks`), from the declaration and never from the data (the owner, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks").
-A read level some of whose heads can make zeros has its ONE mask over every query head, a dense head's bits its own rows', and its density byte counts every
-query head: the masks and the density are one a side and level today, the read side's over all `H` query heads; a level-side that
+today; on the read side, the head's own entry's, a tied entry reading the write side's; `fsla.routing.types.activation_walks`), from the declaration and never from the data (the owner, 2026-11-24: "like if it's declared no zeroes, we just don't make the masks").
+Each read head's level is its own: one head's level may be absent and 255 while another's on the same level holds a mask, and each has its own
+density byte; a (head, level) that
 can make zeros (entmax, and an opaque level) always gets its mask, however dense its data turns out, and where its count rounds to 255 it is computed
 densely too, which is exact (the owner: "It's fine if we mark something as dense when it's possible it's like 99.99 due to rounding or whatever ... the non zero flag is also data, and in this case there is no mask to disagree with"). The kernels are not built. The oracle multiplies nothing for an absent entry. DECODE is unchanged: its masks are
 made for every level-side, an all-live one where the activation has no exact zeros, and a decode bundle with an absent entry is refused by name. The rows, scales and values need no conversion: the producer already emits them as the consumers read them
-(u8 `[B, T, H, width_l]` rows and fp32 `[B, T, H]` scales, bf16 `[B, T, H_w, d_v]` values with their fp32 scale).
+(u8 `[B, T, H, width_l]` rows and fp32 `[B, T, H]` scales, raw bf16 `[B, T, H_w, d_v]` values).
 
 **The density is the prefill's own input, beside the masks** (the owner, 2026-11-24: "I almost think weights should be outside the masks? They
 need not be coupled, and are independent variables really. Someone may want to give crazy weights as some experiment. No reason we need to stop
 them" -- "It's also more clear what the contract is if the weights are their own variable vs hidden in the masks"; the name: "just density is fine
-initially"). It is one `torch.uint8` tensor `[2, D]` on the rows' device: row 0 the read side, row 1 the write side, an entry a level. A byte `b` means the
+initially"). <a id="density"></a>It is one `torch.uint8` tensor `[1 + G, D]` on the rows' device, a row a head and an entry a level, as the
+masks are one a (head, level): rows `0 .. G - 1` read head `g`, row `G` the write side -- at `G = 1`, row 0 the read side and row 1 the write
+side. A byte `b` means the
 share `b / 255` of the level's (token, digit) pairs that are live: 255 is every digit live on every token and 0 is none (the owner, 2026-11-24: "Why can't
-s byte just express 255/255?" -- "Ok to switch to 255"). The call checks its type, shape (`[2, D]` for the bundle's depth), uint8 dtype (a float
+s byte just express 255/255?" -- "Ok to switch to 255"). The call checks its type, shape (`[1 + G, D]` for the bundle's read heads and depth), uint8 dtype (a float
 tensor is refused, by name) and device, and NOTHING about its values: every byte is a valid density, so there is no value to refuse. It is carried with the call's other inputs to where the prefill's kernels will read it. Today
 the GPU prefill is refused by name as not built and the reference path does not use it: as a fact of the contract, the density changes no defined
 result. It chooses how the work is laid out, and it changes no result while the masks keep their guarantee.
@@ -462,15 +502,19 @@ masks, density = fsla.masks_and_density(routes)     # from the rows: a digit is 
 density = fsla.density_of_masks(routes, masks)      # the density of PREFILL masks a caller already has
 ```
 
-`masks_and_density` returns the PREFILL-layout `Masks` and the `[2, D]` uint8 density; `density_of_masks` returns the same density of the set bits, over all
-`(token, digit)` pairs of each level (over the batch and the side's heads). It takes the bundle rather than a token count: the bundle carries the
+`masks_and_density` returns the PREFILL-layout `Masks` and the `[1 + G, D]` uint8 density; `density_of_masks` returns the same density of the set bits, over all
+`(token, digit)` pairs of each (head, level) (over the batch and the write heads). It takes the bundle rather than a token count: the bundle carries the
 token count and the shapes the masks are checked against, so a count that disagrees with the masks cannot be handed over. The helpers round
 to the nearest byte, a half up, in integer arithmetic (the library's rule): with `live` the set bits and `total` the level's (token, digit) pairs over
 the batch and the side's heads, `b = (2 * 255 * live + total) // (2 * total)`, no float entering. A level all live gives exactly 255 and a level all
 dead exactly 0. The prefill's kernels, which are not built, will read a byte `b` as the integer `b + 1` in 256ths of the level (so every byte is a valid
 density, and the kernels need no clamp, no rounding and no NaN case): the carve clamps an integer outside 1..256 into the range
 ([`internals/common/plan/cta_carve.md`](internals/common/plan/cta_carve.md)). The producer's `produce_prefill` returns the density beside its masks, from `density_of_masks` after the
-solve, and the layer hands it to `prefill`. A prefill level-side whose activation cannot make exact zeros has no mask (its entry is absent, dense) and the byte 255, which the
+solve, and the layer hands it to `prefill`. <a id="mask-bit"></a>THE PRODUCER'S MASK BIT SAYS THE U8 DIGIT IS NONZERO: it ballots the
+quantized digit in the same epilogue that writes it, so a 0 is written exactly where the digit the op reads is 0 and the density counts the
+work there really is; the solve's support, a looser superset, is not the mask. A 1 over a zero stays legal, as every mask's is (wasted work,
+never a wrong answer), and the backward reads no bit. NOT BUILT: the per-(head, level) masks and the `[1 + G, D]` density -- the helpers
+and `fsla.Masks` still hold one read mask a level over every query head, and a `[2, D]` density. A prefill level-side whose activation cannot make exact zeros has no mask (its entry is absent, dense) and the byte 255, which the
 helpers write from the declaration without reading any data; `density_of_masks` gives 255 for an absent entry and counts the set bits of a present one. A level-side that can make zeros always has its mask, and the decode's masks are always made, for every activation.
 
 ## 3. The decay-source slot
@@ -510,7 +554,7 @@ rest on that property.
 ```python
 FSLA(routing, *, hidden_size, num_heads, group=1, d_v=64, decay=None, layer_idx=None, segments=SegmentPolicy(max_tokens=65_536))
 
-y, continuation = layer(hidden_states, continuation=LayerContinuation(state=fsla.dense_state()))
+y, continuation = layer(hidden_states, continuation=LayerContinuation(state=layer.new_state(B, device)))
 y, continuation = layer(next_tokens, continuation=continuation)
 y, _ = layer(hidden_states)                            # stateless -> (y, LayerContinuation(state=None))
 ```
@@ -548,26 +592,27 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 ### 4.1 The projections and the value format
 
 `v_proj` and `o_proj` run as bf16 GEMMs (their weights read through the inference copy when no
-gradient flows, §2.3), and the projection
-is written to the value format at the layer: `ScaledBlock.quantize(v, VALUES)` (`fsla/routing/quant.py`, §2.2)
-holds each token's values `v` in bf16 against its largest channel (at 1); that magnitude is
-the token's fp32 `scale`. The op takes the block, not the tensor. The plane and the scale are
-what the kernels read; `ScaledBlock.dequantized()` is
-the fp32 view a consumer still computing on floating values takes at its seam, with the
-projection's gradient stepped straight through when the projection requires one. The arm is
-UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
-non-CUDA forward refuses at `prefill` and no call off CUDA ever observes a projected
-value. Round-tripping
-it through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
+gradient flows, §2.3), and `v_proj`'s bf16 output IS THE VALUE OPERAND, as it is ([§2.2](#values)): no scale a token, no
+unit-max normalization and no pass between the projection and the op. The values' precision is bf16's, the class
+FlashAttention's values have. Round-tripping
+them through the module dtype was MEASURED to cost two elementwise casts per call — a `v`
 downcast and a `y` upcast, ~12-13% of a small cell's op time — which is why the layer
 narrows once, at the projection, rather than at the op boundary. The GEMMs use cuBLAS's
 fp32 compute type (the accumulate-in-fp32 ruling); the global
 reduced-precision-reduction knob is deliberately left alone, so this is the same
 environment the FlashAttention comparison arm runs in.
 
-`o_proj` rounds the op's fp32 `y` to its bf16 operand, the one rounding on the output side.
+<a id="output"></a>THE OP RETURNS `y` IN BF16, as FlashAttention and torch's SDPA do: `num` and `den` are summed in fp32 (inside a CTA
+always; across CTAs fp32 or the f16 line, [`architecture/hopper-carry.md`](architecture/hopper-carry.md#output-line)), and a
+FINISH step divides and writes the bf16 `y` once -- likely a tiny kernel of its own. `o_proj`'s bf16 GEMM reads `y`
+directly, with no cast pass: the output store's one bf16 rounding, about 0.16% a token, is the one rounding on the
+output side and inside the family's accepted class ([`architecture/precision.md`](architecture/precision.md#quality)).
+NOT BUILT: the finish; the op's reference and the layer return `y` in fp32 today (`fsla/layer.py`).
 
 ### 4.2 Segments: the layer bounds its own working set
+
+<a id="decode-segments"></a>THE SEGMENT POLICY BOUNDS THE PREFILL. Decode runs every head of the call in one launch and takes no
+segmentation: its working memory beyond the resident state is a row a query head and a queue, so splitting heads would only add launches.
 
 The op runs one segment and knows nothing of segmentation: SEGMENTATION IS THE LAYER'S CONCERN (the owner, 2026-11-26, on whether
 the constitution's R24 needed amending for it: "the prefill op is not aware segmentation, it still computes everything for its kernel in its one launch
@@ -600,8 +645,8 @@ fsla.segment_plan(length, policy, batch=B, heads=H) # the plan: its head blocks,
   them: `route_W`, `route_bias`, `gain_bias`, and `v_W`'s `d_v` rows a head) over that stretch of tokens, runs `prefill` on it and writes the
   output's block, so the projections are bounded along with the op, which an op-level split cannot do once the whole call's bundle exists. Blocks
   are independent; within a block the token steps run in order, carrying that block's state. STATELESS: a block that spans steps carries a fresh
-  state of its own, and nothing is handed back. STATEFUL: where there is more than one block, the caller's state is bound to the whole call first
-  (where it carries nothing, a zeroed plane, with no whole-call produce) and each block runs on a VIEW of its rows of the plane
+  state of its own, and nothing is handed back. STATEFUL: where there is more than one block, the caller's state already covers the whole call
+  (constructed for its batch and write heads, its plane zeroed there: [§1](#the-state)) and each block runs on a VIEW of its rows of the plane
   ([`internals/state.md#view`](internals/state.md#view)), so its update lands in the caller's plane in place.
 - **A sequence of any length is served, and the caller pads nothing.** One no longer than the token maximum is ONE step, a partial window
   included (the kernels run a partial last window). The last step of a longer one holds what is left.
