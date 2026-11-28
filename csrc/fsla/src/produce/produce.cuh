@@ -112,28 +112,38 @@ enum Site : int { kSiteEntry = 0, kSiteSetup, kSiteWindow, kSiteEpilogue, kSiteT
 //: a ring barrier's number, as its tracer names it: a stage's FULL `slot`, its EMPTY `kMaxStages + slot`
 constexpr int kEmptyId = kMaxStages;
 
-//: ZEROS OVER `runs` RUNS of `bytes`, `stride` apart, by a warpgroup -- see docs/internals/produce/produce.md#stores
-__device__ __forceinline__ void zero_runs(uint8_t* at, int runs, int bytes, long long stride,
-                                          int mine) {
-  if (stride == bytes) {
-    bytes *= runs;
-    runs = 1;
-  }
-  const int chunks = (bytes + 15) >> 4, n = runs * chunks;
+//: A CONTIGUOUS RUN'S ZEROS by a warpgroup (`mine` its thread): `bytes` and the start a multiple of 4; words to a 16-byte
+//: boundary, 16 bytes a store, then the tail's words -- no division -- see docs/internals/produce/produce.md#stores
+__device__ __forceinline__ void zero_run(uint8_t* at, int bytes, int mine) {
+  const uintptr_t off = reinterpret_cast<uintptr_t>(at) & 15u;
+  const int lead = min(bytes, static_cast<int>((16u - off) & 15u));
+  if (mine < (lead >> 2)) reinterpret_cast<uint32_t*>(at)[mine] = 0u;
+  uint8_t* const body = at + lead;
+  const int chunks = (bytes - lead) >> 4;
 #pragma unroll 1
-  for (int i = mine; i < n; i += kGroupThreads) {
-    const int r = i / chunks, c = i - r * chunks, left = min(16, bytes - (c << 4));
-    uint8_t* const p = at + r * stride + (c << 4);
-    const uintptr_t a = reinterpret_cast<uintptr_t>(p);
-    if (left == 16 && (a & 15u) == 0u) {
-      *reinterpret_cast<uint4*>(p) = make_uint4(0u, 0u, 0u, 0u);
-    } else if ((left & 3) == 0 && (a & 3u) == 0u) {
+  for (int c = mine; c < chunks; c += kGroupThreads)
+    reinterpret_cast<uint4*>(body)[c] = make_uint4(0u, 0u, 0u, 0u);
+  const int tail = (bytes - lead - (chunks << 4)) >> 2;
+  if (mine < tail) reinterpret_cast<uint32_t*>(body + (chunks << 4))[mine] = 0u;
+}
+
+//: A SHARE'S TOKENS' ZEROS by a warpgroup: `tokens` (at most a row tile's 64) runs of `bytes`, `stride` apart, each a
+//: multiple of 4: two threads a token, 16 bytes a store where the runs allow it, else a word -- no division -- see
+//: docs/internals/produce/produce.md#stores
+__device__ __forceinline__ void zero_tokens(uint8_t* at, int tokens, int bytes, long long stride,
+                                            int mine) {
+  const int token = mine & (kGroupTokens - 1), half = mine >> 6;
+  if (token >= tokens) return;
+  uint8_t* const run = at + token * stride;
+  const long long where = static_cast<long long>(reinterpret_cast<uintptr_t>(at));
+  const bool wide = ((bytes | stride | where) & 15) == 0;
+  if (wide) {
 #pragma unroll 1
-      for (int k = 0; k < left; k += 4) *reinterpret_cast<uint32_t*>(p + k) = 0u;
-    } else {
+    for (int c = half; c < (bytes >> 4); c += 2)
+      reinterpret_cast<uint4*>(run)[c] = make_uint4(0u, 0u, 0u, 0u);
+  } else {
 #pragma unroll 1
-      for (int k = 0; k < left; ++k) p[k] = 0;
-    }
+    for (int w = half; w < (bytes >> 2); w += 2) reinterpret_cast<uint32_t*>(run)[w] = 0u;
   }
 }
 
@@ -160,17 +170,16 @@ __device__ __forceinline__ void store_level(const Plan& p, const Share& s, int r
   const long long stream = static_cast<long long>(s.b) * p.write_heads + s.w;
   const long long at =
       ((static_cast<long long>(s.b) * heads + head) * tiles + s.tile) * tile_bytes(width);
-  zero_runs(p.rows[side][level] + at, 1, static_cast<int>(tile_bytes(width)), 0, mine);
-  if constexpr (LO)
-    zero_runs(p.lo[side][level] + at, 1, static_cast<int>(tile_bytes(width)), 0, mine);
+  zero_run(p.rows[side][level] + at, static_cast<int>(tile_bytes(width)), mine);
+  if constexpr (LO) zero_run(p.lo[side][level] + at, static_cast<int>(tile_bytes(width)), mine);
   const long long first = (static_cast<long long>(s.b) * p.tokens + s.t0) * heads + head;
-  zero_runs(reinterpret_cast<uint8_t*>(p.scales[side][level] + first), s.t1 - s.t0, 4, heads * 4ll,
-            mine);
+  zero_tokens(reinterpret_cast<uint8_t*>(p.scales[side][level] + first), s.t1 - s.t0, 4,
+              heads * 4ll, mine);
   if (own_mask && p.masked[row][level]) {
     const int words = (p.tokens + kWordTokens - 1) / kWordTokens, w0 = s.t0 / kWordTokens;
     const int w1 = (s.t1 + kWordTokens - 1) / kWordTokens;
     uint32_t* const m = p.masks[row][level] + (stream * words + w0) * width;
-    zero_runs(reinterpret_cast<uint8_t*>(m), 1, (w1 - w0) * width * 4, 0, mine);
+    zero_run(reinterpret_cast<uint8_t*>(m), (w1 - w0) * width * 4, mine);
   }
 }
 
@@ -178,8 +187,8 @@ __device__ __forceinline__ void store_level(const Plan& p, const Share& s, int r
 //: docs/internals/produce/produce.md#values
 __device__ __forceinline__ void store_values(const Plan& p, const Share& s, int mine) {
   const long long first = (static_cast<long long>(s.b) * p.tokens + s.t0) * p.write_heads + s.w;
-  zero_runs(reinterpret_cast<uint8_t*>(p.values + first * p.d_v), s.t1 - s.t0, p.d_v * 2,
-            static_cast<long long>(p.write_heads) * p.d_v * 2, mine);
+  zero_tokens(reinterpret_cast<uint8_t*>(p.values + first * p.d_v), s.t1 - s.t0, p.d_v * 2,
+              static_cast<long long>(p.write_heads) * p.d_v * 2, mine);
   float* const sums = p.growth_sums + (static_cast<long long>(s.b) * p.write_heads + s.w) * p.d_v;
 #pragma unroll 1
   for (int ch = mine; ch < p.d_v; ch += kGroupThreads) atomicAdd(sums + ch, 0.0f);

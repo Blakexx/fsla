@@ -155,7 +155,7 @@ struct Outputs {
 };
 
 //: THE PLAN'S EXTENTS, as the kernel derives them from the plan alone, against what was allocated: a field the kernel
-//: reads and the host did not set (hold 7b's widths) refuses the run before any launch
+//: reads and the host did not set refuses the run before any launch
 void refuse_unsized(const Outputs& o, bool lo) {
   const pk::Plan& p = o.plan;
   const size_t streams = static_cast<size_t>(p.batch) * p.write_heads, tiles = (p.tokens + 63) / 64;

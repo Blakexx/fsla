@@ -7,7 +7,7 @@ Does the library's producer skeleton ([`produce.md`](../internals/produce/produc
 
 THE FORM. The rows launch the library's CTA (`produce_cta`; the library holds the CTA and the lab its launch until the op launches it; a CTA an SM, the ring four stages, or two CTAs an SM and two stages); each traced twin launches the same CTA through warpline's stamps -- every phase (entry, setup, a job's window and epilogue, the tickets, exit) and each ring barrier's wait and arrival -- and records two CTAs' timelines (`lab trace produce_skeleton`). THE CHECK, every row: every output (the tile-major rows, scales, masks a (row, level), values, growth, density) and a guard of 256 bytes past each filled with a sentinel; the launch, twice, so the tickets and their sums must leave themselves zero; then every output byte zero, every guard byte the sentinel, each density byte 0 where its level row is masked and 255 where not -- over the five routings of `tests/integration/test_production_levels.py` (`tied`, `mixed_per_level`, `dense_only`, `both_sparse`, `grouped`) at alpha 1.5 and 2, at two shapes (3 sequences of 40 tokens, 2 write heads, hidden 96, 16 value channels; 2 of 300, 3 write heads, hidden 64, 24 channels: a tile past a sequence's end, a ragged mask word, a K tail), and at the cell. THE ROWS, at the cell `layer-alt-entmax1.5-256x256-T65536-h4` (B 1, T 65,536, H_w 4, G 1, hidden 256, widths 256 and 256, d_v 64): the launch; at hidden 0 (no ring stage); at two CTAs an SM; with the lo plane. The floor is warpline's over the kernel's declared work ([`produce.md#floor`](../internals/produce/produce.md#floor)).
 
-PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: warpline's floor at the cell is 101.9 us, its 323.0 MB at HBM's write rate (measure/floors/produce.work.json). THE HYPOTHESIS, NOT A FINDING until these rows name the price: at one CTA an SM a CTA's non-store time (launch, setup, its 20 ring stages' edges, the tickets, its exit) runs in series with its own writes, ~10K cycles a CTA (the CTA's ~25K warp instructions of tools/budgets/produce.json at ~2.5 a cycle) over 2,048 CTAs on 132 SMs, 15.5 waves at ~1.8 GHz: ~85 us past the floor, ~187 us; at hidden 0 the 20 stages' edges go (~100 cycles each, ~17 us a launch); at two CTAs an SM one CTA's serial time runs under the other's writes, back near the floor. The rival (the stub stores' instruction issue, their runtime division 29 of a trip's ~46 instructions) would leave hidden 0 and two CTAs an SM where the plain row is, its time inside the traced rows' epilogue phases; the traced twins' timelines (lab trace: each role's phases, the path) say which. The lo plane adds its 268.4 MB at the write rate):
+PREDICTION, run 20261128T081918Z-081208-723dc457 (written 2026-11-28, before it ran; its basis: warpline's floor at the cell is 101.9 us, its 323.0 MB at HBM's write rate (measure/floors/produce.work.json). THE HYPOTHESIS, NOT A FINDING until these rows name the price: at one CTA an SM a CTA's non-store time (launch, setup, its 20 ring stages' edges, the tickets, its exit) runs in series with its own writes, ~10K cycles a CTA (the CTA's ~25K warp instructions of tools/budgets/produce.json at ~2.5 a cycle) over 2,048 CTAs on 132 SMs, 15.5 waves at ~1.8 GHz: ~85 us past the floor, ~187 us; at hidden 0 the 20 stages' edges go (~100 cycles each, ~17 us a launch); at two CTAs an SM one CTA's serial time runs under the other's writes, back near the floor. The rival (the stub stores' instruction issue, their runtime division 29 of a trip's ~46 instructions) would leave hidden 0 and two CTAs an SM where the plain row is, its time inside the traced rows' epilogue phases; the traced twins' timelines (lab trace: each role's phases, the path) say which. The lo plane adds its 268.4 MB at the write rate):
 
 - the empty pipeline at the cell: 170.00-205.00 us.
 - the empty pipeline at the cell: over its floor: 1.67-2.01 times.
@@ -15,3 +15,35 @@ PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: warpl
 - the empty pipeline at the cell, two CTAs an SM: 104.00-128.00 us.
 - the empty pipeline at the cell, the lo plane: 255.00-292.00 us.
 - the empty pipeline at the cell, the lo plane: over its floor: 1.37-1.57 times.
+
+PREDICTION, the run to come (written 2026-11-28, before it ran; its basis: the first run held at one CTA an SM (202.8 us, 1.99x the floor), at hidden 0 (186.2) and with the lo plane (267.1, 1.43x) and MISSED at two CTAs an SM (164.0 against 104-128): its traced twins name why. A lone CTA's 25-27K cycles are five job windows of ~4,550: the ring's empty edges ~1,350 (a K-step's round trip, the loader waiting on the release, the math warps on the arrival) and the EPILOGUE's stores ~2,900, 64% of the CTA, at ~11 bytes a cycle an SM; with no ring (hidden 0) a CTA still takes ~24K cycles and the launch writes at 1,736 GB/s, 55% of HBM's write rate; at two CTAs an SM each CTA takes ~40K, twice a lone one. So the price was not a serial non-store latency (the hypothesis, refuted as the main price) but the stub stores' instruction stream on the SM: ~46 instructions a 16-byte chunk, 29 of them the runtime division's dependent chain, with 8 math warps to hide it. THE STORE COMPONENT has no division (power-of-two-shaped runs: a row tile in a thread's 128-chunk stride, a share's 64 tokens two threads each): ~6 instructions a 16-byte store, ~14.2K warp instructions a CTA against ~25K (tools/budgets/produce.json). Its stores then run at the SM's write path, so a launch lies between the floor (101.9 us, every SM's writes overlapping the others' ring edges) and each CTA's serial sum (its five ring windows' ~6.75K cycles plus its 157.7 KB at HBM's write share, 13.2 bytes a cycle an SM: ~11.9K, and ~2K of setup and tickets: ~20.7K over 15.5 waves at 1.97 GHz, 163 us); at hidden 0 the sum is ~13.9K a CTA, 110 us; at two CTAs an SM one CTA's ring runs under the other's stores; the lo plane adds its 268.4 MB at the write rate):
+
+- the empty pipeline at the cell: 110.00-165.00 us.
+- the empty pipeline at the cell: over its floor: 1.08-1.62 times.
+- the empty pipeline at the cell, hidden 0: 100.00-120.00 us.
+- the empty pipeline at the cell, two CTAs an SM: 100.00-125.00 us.
+- the empty pipeline at the cell, the lo plane: 190.00-250.00 us.
+
+MEASURED (NVIDIA H100 80GB HBM3, Nebius preemptible VM e00jpe20y6yvh2ca84, driver 580.196.07; 2026-11-28, the experiment at
+d84abd3d, run 20261128T081918Z-081208-723dc457; 7 repetitions, the 4 checked variants exact; the median, the widest
+spread of a row 5.4%; the clock as the card left it):
+
+| the figure | measured | the prediction | held |
+|---|---:|---|---|
+| the empty pipeline at the cell | 202.78 us | 170.00-205.00 us | held |
+| the empty pipeline at the cell: over its floor | 1.99 times | 1.67-2.01 times | held |
+| the empty pipeline at the cell, hidden 0 | 186.21 us | 152.00-190.00 us | held |
+| the empty pipeline at the cell, two CTAs an SM | 164.00 us | 104.00-128.00 us | MISSED |
+| the empty pipeline at the cell, the lo plane | 267.07 us | 255.00-292.00 us | held |
+| the empty pipeline at the cell, the lo plane: over its floor | 1.43 times | 1.37-1.57 times | held |
+
+The record's rows:
+- the empty pipeline at the cell: 202.78 microseconds a launch.
+- the empty pipeline at the cell, every warp's phases stamped: 231.39 microseconds a launch.
+- the empty pipeline at the cell, hidden 0: 186.21 microseconds a launch.
+- the empty pipeline at the cell, hidden 0, every warp's phases stamped: 187.42 microseconds a launch.
+- the empty pipeline at the cell, two CTAs an SM: 164.00 microseconds a launch.
+- the empty pipeline at the cell, two CTAs an SM, every warp's phases stamped: 178.82 microseconds a launch.
+- the empty pipeline at the cell, the lo plane: 267.07 microseconds a launch.
+
+Record: `data:records/fsla/measure/lab/produce_skeleton.run/20261128T081918Z-081208-723dc457/output.json`.

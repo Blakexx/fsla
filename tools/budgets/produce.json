@@ -1,5 +1,5 @@
 {
-  "about": "THE PRODUCER'S FUSED FORWARD (csrc/fsla/src/produce/produce.cuh), its SKELETON's budget (KERNEL_STANDARDS s19, s29): each component's warp instructions a CTA (a sequence's 128-token tile and a write head) at the cell, each line its trips times its trip's SASS price read from the built kernel (the lab's skeleton launch of the CTA at one CTA an SM, the innermost produce.cuh frame of each instruction), by opcode class in the price's own mix; its peak live registers; each phase's cycles a CTA. A component that lands replaces its stub's line with its own. Docs: docs/internals/produce/produce.md#budget",
+  "about": "THE PRODUCER'S FUSED FORWARD (csrc/fsla/src/produce/produce.cuh), its SKELETON's budget, its store component landed (KERNEL_STANDARDS s19, s29): each component's warp instructions a CTA (a sequence's 128-token tile and a write head) at the cell, each line its trips times its trip's SASS price read from the built kernel (the lab's skeleton launch of the CTA at one CTA an SM, the innermost produce.cuh frame of each instruction), by opcode class in the price's own mix; its peak live registers; each phase's cycles a CTA. A component that lands replaces its stub's line with its own. Docs: docs/internals/produce/produce.md#budget",
   "unit": "warp instructions a CTA",
   "components": {
     "glue": "produce_cta",
@@ -8,37 +8,30 @@
     "epilogue": "epilogue",
     "store_level": "store_level",
     "store_values": "store_values",
-    "zero_runs": "zero_runs",
-    "tickets": "tickets"
+    "tickets": "tickets",
+    "zero_run": "zero_run",
+    "zero_tokens": "zero_tokens"
   },
   "cells": {
     "layer-alt-entmax1.5-256x256-T65536-h4": {
-      "zero_runs": 16000,
-      "store_level": 741,
+      "store_level": 960,
       "store_values": 120,
       "epilogue": 600,
       "load_role": 480,
       "math_role": 5120,
       "tickets": 150,
-      "glue": 2001
+      "glue": 2001,
+      "zero_run": 4030,
+      "zero_tokens": 760
     }
   },
   "classes": {
     "layer-alt-entmax1.5-256x256-T65536-h4": {
-      "zero_runs": {
-        "integer": 11236,
-        "control": 3310,
-        "store": 569,
-        "convert": 379,
-        "uniform": 253,
-        "float": 211,
-        "const": 42
-      },
       "store_level": {
-        "integer": 545,
-        "const": 126,
-        "control": 49,
-        "uniform": 21
+        "integer": 784,
+        "const": 125,
+        "control": 29,
+        "uniform": 22
       },
       "store_values": {
         "integer": 60,
@@ -90,19 +83,32 @@
         "const": 27,
         "float": 27,
         "shared": 9
+      },
+      "zero_run": {
+        "integer": 3267,
+        "control": 450,
+        "store": 272,
+        "const": 20
+      },
+      "zero_tokens": {
+        "integer": 480,
+        "control": 210,
+        "store": 64,
+        "const": 20
       }
     }
   },
   "basis": {
     "cell": "B 1, T 65,536, H_w 4, G 1, hidden 256 (4 K-steps), widths 256 and 256, d_v 64; write (entmax 1.5, softmax), read (softmax, entmax 1.5) untied: 5 jobs a write head, 20 ring stages a CTA, two masked level rows, no lo plane",
-    "zero_runs": "a trip (a chunk of 16 bytes a thread) is ~46 instructions in the SASS: the loop's control 7, the chunk's run and offset 29 (the runtime division by `chunks`, 259 instructions over the 9 inlined sites), its address 7, the alignment test 2.5, the store 1. A warp, a level job: the row tile's 16 KB, 8 trips (368); the scales, one word-path trip for half the warps (~28); a masked row's 2 KB of words, one trip (46). Four level jobs (two masked) and the values (4 trips, 184): ~2,000 a warp, x 8 warps",
-    "store_level": "~23 a call a warp (its 91 instructions over its 4 inlined sites: the stream, tile and word addresses), 4 calls x 8 warps",
+    "store_level": "~30 a call a warp (its 116 instructions: the stream, tile, scale and word addresses), 4 calls x 8 warps",
     "store_values": "the growth's part: a channel a thread, 64 of 128 (~12), and its address, x 8 warps",
     "epilogue": "~15 a job a warp (the job's kind, its tied bits), 5 jobs x 8 warps",
     "load_role": "a stage ~24 (the index 3, the EMPTY wait's try_wait trip 11 from the fourth on, the FULL arrival 6, the loop 4), 20 stages, one warp; the polled wait's further trips (its YIELD loop) are the trace's to count",
     "math_role": "a K-step ~27 a warp (the FULL wait's trip 11, the warp's sync 2, lane 0's arrival 1, the loop and the slot 13), 20 x 8 warps = 4,320; the job loop's ~20 a job a warp (its 69 instructions of share and bound), 5 x 8 = 800",
     "tickets": "one thread: the masked rows' counts (2 adds), three fences, the two tickets; the growth's copy by one CTA in 512 and the density by the last: ~150",
-    "glue": "~220 a warp (the item's three divisions, 63 instructions; the shares; the barriers' init; two CTA barriers), x 9 warps"
+    "glue": "~220 a warp (the item's three divisions, 63 instructions; the shares; the barriers' init; two CTA barriers), x 9 warps",
+    "zero_run": "the store component's contiguous runs, NO DIVISION: a row tile (16 KB at the cell) in 16-byte stores a thread a 128-chunk stride, words to a 16-byte boundary and after the last chunk. A trip ~6 (the store, the address, the bound's compare and branch, the step), a call ~50 of setup and lead and tail words (its 206 instructions over 5 inlined sites). A warp: four level jobs' row tiles, 8 trips each, 4 x 98 = 392; two masked rows' 2 KB of words, one trip each, 2 x 56 = 112; x 8 warps = 4,030",
+    "zero_tokens": "the store component's token runs, NO DIVISION: two threads a token (the share's 64 tokens are a power of two: token = thread & 63, half = thread >> 6), 16-byte stores where the runs are 16-byte runs, else words. A warp: four level-sides' scales, one word each, 4 x 15; the values' 128 bytes a token, 4 trips of a 16-byte store, 35; = 95, x 8 warps = 760"
   },
   "registers": {
     "glue": 40,
@@ -111,8 +117,9 @@
     "epilogue": 40,
     "store_level": 40,
     "store_values": 32,
-    "zero_runs": 32,
-    "tickets": 32
+    "tickets": 32,
+    "zero_run": 32,
+    "zero_tokens": 32
   },
   "phase_cycles": {
     "layer-alt-entmax1.5-256x256-T65536-h4": {

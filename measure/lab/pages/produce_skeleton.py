@@ -23,7 +23,7 @@ LO_FLOOR_US = 186.55
 #: each run's predictions, in the order they ran
 RUNS = (
     (
-        PENDING,
+        "20261128T081918Z-081208-723dc457",
         "2026-11-28",
         "warpline's floor at the cell is 101.9 us, its 323.0 MB at HBM's write rate (measure/floors/produce.work.json). "
         "THE HYPOTHESIS, NOT A FINDING until these rows name the price: at one CTA an SM a CTA's non-store time (launch, "
@@ -42,6 +42,33 @@ RUNS = (
             Claim(TWO, lambda R: R[TWO], 104.0, 128.0, "us"),
             Claim(LO, lambda R: R[LO], 255.0, 292.0, "us"),
             Claim(LO + ": over its floor", lambda R: R[LO] / LO_FLOOR_US, 1.37, 1.57, "times"),
+        ),
+    ),
+    (
+        PENDING,
+        "2026-11-28",
+        "the first run held at one CTA an SM (202.8 us, 1.99x the floor), at hidden 0 (186.2) and with the lo plane (267.1, "
+        "1.43x) and MISSED at two CTAs an SM (164.0 against 104-128): its traced twins name why. A lone CTA's 25-27K "
+        "cycles are five job windows of ~4,550: the ring's empty edges ~1,350 (a K-step's round trip, the loader waiting "
+        "on the release, the math warps on the arrival) and the EPILOGUE's stores ~2,900, 64% of the CTA, at ~11 bytes a "
+        "cycle an SM; with no ring (hidden 0) a CTA still takes ~24K cycles and the launch writes at 1,736 GB/s, 55% of "
+        "HBM's write rate; at two CTAs an SM each CTA takes ~40K, twice a lone one. So the price was not a serial "
+        "non-store latency (the hypothesis, refuted as the main price) but the stub stores' instruction stream on the "
+        "SM: ~46 instructions a 16-byte chunk, 29 of them the runtime division's dependent chain, with 8 math warps to "
+        "hide it. THE STORE COMPONENT has no division (power-of-two-shaped runs: a row tile in a thread's 128-chunk "
+        "stride, a share's 64 tokens two threads each): ~6 instructions a 16-byte store, ~14.2K warp instructions a CTA "
+        "against ~25K (tools/budgets/produce.json). Its stores then run at the SM's write path, so a launch lies between "
+        "the floor (101.9 us, every SM's writes overlapping the others' ring edges) and each CTA's serial sum (its five "
+        "ring windows' ~6.75K cycles plus its 157.7 KB at HBM's write share, 13.2 bytes a cycle an SM: ~11.9K, and ~2K "
+        "of setup and tickets: ~20.7K over 15.5 waves at 1.97 GHz, 163 us); at hidden 0 the sum is ~13.9K a CTA, 110 "
+        "us; at two CTAs an SM one CTA's ring runs under the other's stores; the lo plane adds its 268.4 MB at the write "
+        "rate",
+        (
+            Claim(CELL, lambda R: R[CELL], 110.0, 165.0, "us"),
+            Claim(CELL + ": over its floor", lambda R: R[CELL] / FLOOR_US, 1.08, 1.62, "times"),
+            Claim(NO_STAGES, lambda R: R[NO_STAGES], 100.0, 120.0, "us"),
+            Claim(TWO, lambda R: R[TWO], 100.0, 125.0, "us"),
+            Claim(LO, lambda R: R[LO], 190.0, 250.0, "us"),
         ),
     ),
 )

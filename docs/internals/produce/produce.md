@@ -66,8 +66,12 @@ skeleton stages no bytes. <a id="math"></a>A math warpgroup passes each K-step's
 
 A write job writes its write row and copies the rows (never the mask) to each tied read head; a read job writes its read
 head's row; the value job writes the values and adds the growth's part. <a id="format"></a>`store_level` is the format's
-and mask's place, <a id="values"></a>`store_values` the values', and <a id="stores"></a>`zero_runs` the stubs' one
-store, 16 bytes a store where a chunk is whole.
+and mask's place, <a id="values"></a>`store_values` the values', and <a id="stores"></a>The stores are the STORE COMPONENT, priced
+with no runtime division (the skeleton's first stub divided a chunk's index by the run's chunks, 29 of the ~46
+instructions a 16-byte store, and its traced rows named that stream the CTA's binding cost): `zero_run` zeroes a
+contiguous run -- a row tile, a lo tile, a share's mask words -- in 16-byte stores a thread a 128-chunk stride, words to a
+16-byte boundary and after the last chunk; `zero_tokens` zeroes a share's token runs -- scales, values -- two threads a
+token (a share's 64 tokens: token = thread & 63, half = thread >> 6), 16 bytes a store where the runs allow, else words.
 
 <a id="density"></a>
 ## The tickets
