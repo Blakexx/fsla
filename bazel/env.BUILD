@@ -19,6 +19,17 @@ filegroup(
     srcs = ["site-packages/torch/lib/libc10.so", "site-packages/torch/lib/libtorch_cpu.so"],
 )
 
+#: the libraries torch's own need beside them (libtorch_cpu's NEEDED: the OpenMP runtime its wheel carries, and CUPTI and
+#: the CUDA runtime from the CUDA wheel), which an executable linked against torch's libraries resolves at its link
+filegroup(
+    name = "torch_runtime_libraries",
+    srcs = [
+        "site-packages/nvidia/cu13/lib/libcudart.so.13",
+        "site-packages/nvidia/cu13/lib/libcupti.so.13",
+        "site-packages/torch/lib/libgomp.so.1",
+    ],
+)
+
 cc_library(
     name = "python_headers",
     hdrs = glob(["python_include/**"]),

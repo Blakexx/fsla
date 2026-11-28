@@ -72,7 +72,7 @@ def clang_command(argv: list[str], arch: str, cuda_root: str) -> dict:
         i += 1
     if source is None:
         raise SystemExit(f"unit_lints: the compile names no source (`-c`): {' '.join(argv[:4])} ...")
-    #: the compile's C++ toolchain, the root of its driver's repository (`<root>/xbin/gcc`): nvcc's host compiler, or the
+    #: the compile's C++ toolchain, the root of its driver's repository (`<root>/bin/gcc`): nvcc's host compiler, or the
     #: C++ compile's own driver
     nvcc = argv[0].endswith("nvcc")
     driver = argv[argv.index("-ccbin") + 1] if nvcc else argv[0]
@@ -88,13 +88,15 @@ def clang_command(argv: list[str], arch: str, cuda_root: str) -> dict:
 
 
 def toolchain_flags(root: str) -> list[str]:
-    """clang's C and C++ libraries the compile's: the pinned GCC's installation (its libstdc++) and its sysroot (its C
-    library) under the toolchain's `root`, never the machine's, which clang would otherwise search for."""
-    installs = sorted(p for p in Path(root, "lib", "gcc").glob("*/*") if (p / "include").is_dir())
+    """clang's C and C++ libraries the compile's: the pinned toolset's GCC installation (its libstdc++) and the root it
+    is unpacked in, the sysroot (its C library), under the toolchain's `root` (fsla-devtools' `host_toolchain`), never the
+    machine's, which clang would otherwise search for."""
+    installs = sorted(p for p in Path(root, "root").glob("opt/rh/*/root/usr/lib/gcc/*/*") if (p / "include").is_dir())
     if len(installs) != 1:
-        raise SystemExit(f"unit_lints: {root} holds {len(installs)} GCC installations (lib/gcc/<triple>/<version>), "
-                         "not one: the compile's toolchain is the pinned GCC")
-    return [f"--gcc-install-dir={installs[0]}", f"--sysroot={root}/sysroot"]
+        raise SystemExit(f"unit_lints: {root} holds {len(installs)} GCC installations "
+                         "(root/opt/rh/<toolset>/root/usr/lib/gcc/<triple>/<version>), not one: the compile's toolchain "
+                         "is the pinned toolset")
+    return [f"--gcc-install-dir={installs[0]}", f"--sysroot={root}/root"]
 
 
 def _verdict(lint: str, command: dict, package: str, output: str, returncode: int) -> dict:

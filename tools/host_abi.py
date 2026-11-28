@@ -1,16 +1,18 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """THE HOST TOOLCHAIN AND THE LIBRARY'S ABI, read through the graph (`//tests:host_abi`): the one C++ toolchain is the
-pinned GCC with its own sysroot (MODULE.bazel's `gcc_toolchain`), and the extension it links loads wherever torch does.
+pinned toolset on its own sysroot (MODULE.bazel's `host_toolchain`: PyTorch's manylinux_2_28 builder's gcc-toolset on
+AlmaLinux 8), and the extension it links loads wherever torch does.
 
 The probe (`tests/unit/fixtures/host_toolchain_probe.cpp`, compiled by that toolchain) prints the compiler's version
 and the C and C++ libraries its headers are; the pinned binutils' `readelf --version-info` lists every symbol version `_C.abi3.so`
-needs, by the library it needs it from. The check holds the compiler to the pin's release, the C++ ABI to torch's
-(the new `std::string`), and each needed version to its floor: glibc to torch's own (`manylinux_2_28`) and libstdc++
-to the runtime Ubuntu 22.04 carries (GCC 12's, `GLIBCXX_3.4.30`, `CXXABI_1.3.13`) -- above a floor the library would
-fail to load on the desk or in the devbox image. Docs: docs/build-graph.md#environment.
+needs, by the library it needs it from. The check holds the compiler to the pin's release, the sysroot's C library to
+the pin's (glibc 2.28), the C++ ABI to torch's (the new `std::string`), and each needed version to its floor: glibc and
+libstdc++ to torch's own (`manylinux_2_28`: glibc 2.28 and the system libstdc++ of GCC 8, `GLIBCXX_3.4.25`,
+`CXXABI_1.3.11`, which the toolset's libstdc++ links, the newer symbols static) -- above a floor the library would fail
+to load where torch loads. Docs: docs/build-graph.md#environment.
 
-    host_abi.py --probe BIN --readelf BIN --library FILES... --compiler 12.5.0 --floor GLIBC_2.28 --floor GLIBCXX_3.4.30 ...
+    host_abi.py --probe BIN --readelf BIN --library FILES... --compiler 13.3.1 --glibc 2.28 --floor GLIBC_2.28 ...
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ def main() -> int:
     ap.add_argument("--readelf", required=True, help="the pinned binutils' readelf")
     ap.add_argument("--library", nargs="+", required=True, help="`//:library`'s files, the linked extension among them")
     ap.add_argument("--compiler", required=True, help="the pinned GCC release")
+    ap.add_argument("--glibc", required=True, help="the pinned sysroot's C library release")
     ap.add_argument("--floor", action="append", default=[], help="FAMILY_VERSION: the highest version the library may need")
     a = ap.parse_args()
     facts = dict(line.split(" ", 1) for line in subprocess.run([a.probe], capture_output=True, text=True,
@@ -51,6 +54,8 @@ def main() -> int:
     red = []
     if facts["compiler"].split(" ", 1)[0] != a.compiler:
         red.append(f"the compiler is {facts['compiler']!r}, not the pinned GCC {a.compiler}")
+    if facts["glibc"] != a.glibc:
+        red.append(f"the sysroot's C library is glibc {facts['glibc']}, not the pinned {a.glibc}")
     if facts["cxx11_abi"] != "1":
         red.append("the C++ library's ABI is the old std::string: torch's extensions take the new one")
     so = [f for f in a.library if f.endswith("/_C.abi3.so")]

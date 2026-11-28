@@ -11,34 +11,13 @@ bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "rules_distroless", version = "0.9.4")
 bazel_dep(name = "tar.bzl", version = "0.7.0")
 
-#: THE HOST C++ TOOLCHAIN (docs/build-graph.md#environment): GCC 12.5.0, its binutils and its own sysroot (glibc 2.26,
-#: below the 2.28 torch's wheels are built to; libstdc++ up to GLIBCXX_3.4.30, which Ubuntu 22.04's runtime carries), one
-#: release by its digest, registered as the C++ toolchain every rules_cc action takes and handed to every CUDA compile as
-#: nvcc's host compiler (`-ccbin`, bazel/cuda.bzl) -- the machine's compiler is never detected (.bazelrc). Inside the CUDA
-#: toolkit's supported host compilers (GCC 6.x-16.x for 13.5); `//tests:host_abi` reads what it built
-bazel_dep(name = "gcc_toolchain", version = "0.13.0")
-
-gcc_toolchains = use_extension("@gcc_toolchain//toolchain:module_extensions.bzl", "gcc_toolchains")
-gcc_toolchains.toolchain(
-    name = "gcc_toolchain_x86_64",
-    enable_fortran = False,
-    #: the C++ runtime every link takes, as the auto-configured toolchain linked it: the pinned libstdc++, by its soname
-    extra_ldflags = ["-lstdc++"],
-    gcc_version = "12.5.0",
-    gcc_versions = '{"12.5.0": {"x86_64": {"url": "https://github.com/f0rmiga/gcc-builds/releases/download/18082025/gcc-toolchain-12.5.0-x86_64.tar.xz", "sha256": "51076e175839b434bb2dc0006c0096916df585e8c44666d35b0e3ce821d535db"}}}',
-    target_arch = "x86_64",
-)
-use_repo(gcc_toolchains, "gcc_toolchain_x86_64")
-
-register_toolchains("@gcc_toolchain_x86_64//:all")
-
 #: THE GRAPH'S SHARED MACHINERY, fsla-devtools' module: its environment extension and generic rules, at the public
 #: commit this tree is tested with -- the one pin of fsla-devtools (tools/bootstrap.py reads it for a machine with no
 #: checkout). A machine with the checkout builds against it instead: the front door overrides this pin with it.
 bazel_dep(name = "fsla_devtools", version = "0.1.0")
 git_override(
     module_name = "fsla_devtools",
-    commit = "63d778ca50a7ba96cfe280ffd5209323bffd0941",
+    commit = "6781f2a752a4a95ce7566fd2b05942e0c27ffcb1",
     remote = "https://github.com/Blakexx/fsla-devtools.git",
 )
 
@@ -48,7 +27,7 @@ git_override(
 bazel_dep(name = "warpline", version = "0.1.0")
 git_override(
     module_name = "warpline",
-    commit = "f219fd8212a2d31340c645da0ab8ef3fd087e800",
+    commit = "bbcb4c5bf36787a9ebd88d2b2beb6dcf5ff88ecc",
     remote = "https://github.com/Blakexx/warpline.git",
 )
 
@@ -116,7 +95,25 @@ environment.cells(
 )
 #: the doc references' tool (fsla-devtools' `fsla_devtools.docrefs`), which `//:docrefs` runs
 environment.docrefs(name = "docrefs")
-use_repo(environment, "clang_tidy", "cuda_tools", "docrefs", "fsla_cells", "fsla_data", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
+
+#: THE HOST C++ TOOLCHAIN (docs/build-graph.md#environment): PyTorch's own -- the gcc-toolset of its CUDA 13 manylinux_2_28
+#: builder (GCC 13) on that builder's AlmaLinux 8 sysroot (glibc 2.28, the floor torch's wheels are built to; its
+#: libstdc++ links the system's GCC 8 libstdc++.so.6 and the newer symbols statically), the RPMs by digest
+#: (fsla-devtools' `pins/host_toolchain_pin.json`), unpacked on rules_python's interpreter, registered as the C++ toolchain every
+#: rules_cc action takes and handed to every CUDA compile as nvcc's host compiler (`-ccbin`, bazel/cuda.bzl) -- the
+#: machine's compiler is never detected (.bazelrc). Inside the CUDA toolkit's supported host compilers (GCC 6.x-16.x for
+#: 13.5); `//tests:host_abi` reads what it built
+environment.host_toolchain(
+    name = "host_toolchain",
+    pin = "@fsla_devtools//pins:host_toolchain_pin.json",
+    python = "@python_3_14_host//:python",
+)
+use_repo(environment, "clang_tidy", "cuda_tools", "docrefs", "fsla_cells", "fsla_data", "host_toolchain", "host_gpu", "mold", "fsla_env", "fsla_tree", "uv")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+use_repo(python, "python_3_14_host")
+
+register_toolchains("@host_toolchain//:toolchain")
 
 #: THE DEVBOX IMAGE (docs/setup.md#the-devbox-image): a thin wrapper around the bootstrap. Its base carries what a host
 #: supplies itself before the graph -- Ubuntu 22.04 with git, gcc, python3 and curl -- a Docker Official Image by digest

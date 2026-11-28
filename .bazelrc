@@ -16,7 +16,7 @@ build --workspace_status_command=bazel/status.sh
 # the C++ toolchain is resolved for the one target platform
 build --platforms=//bazel:linux_x86_64
 
-# THE MACHINE'S C++ COMPILER IS NEVER DETECTED: the one C++ toolchain is the pinned GCC (MODULE.bazel's `gcc_toolchain`);
+# THE MACHINE'S C++ COMPILER IS NEVER DETECTED: the one C++ toolchain is the pinned toolset (MODULE.bazel's `host_toolchain`);
 # rules_cc's auto-configured toolchain, which would find the machine's gcc, is off, so nothing can fall back to it
 common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 

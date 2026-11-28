@@ -474,7 +474,7 @@
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/ast_grep_gate.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/lint_standards.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "baaf145938bc", "reviewed": true, "sha256": "", "target": "tools/lint/portable_claude.py"},
-  {"doc": "docs/build-graph.md", "pinned_at": "0830b397f767", "reviewed": true, "sha256": "5490d2c610c55259", "target": "tools/lint/unit_lints.py::toolchain_flags"},
+  {"doc": "docs/build-graph.md", "pinned_at": "fadae92149c5", "reviewed": true, "sha256": "6e5754ab609e88f5", "target": "tools/lint/unit_lints.py::toolchain_flags"},
   {"doc": "docs/build-graph.md", "pinned_at": "6649fa06b870", "reviewed": true, "sha256": "", "target": "tools/no_source_build.py"},
   {"doc": "docs/build-graph.md", "pinned_at": "e794486e985f", "reviewed": true, "sha256": "f10df2473f57fa48", "target": "tools/toolchains.py::rule1"},
   {"doc": "docs/build.md", "pinned_at": "990647f58ef3", "reviewed": true, "sha256": "", "target": ".github/workflows/lint.yml"},

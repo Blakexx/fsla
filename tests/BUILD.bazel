@@ -126,12 +126,9 @@ arm_rows(
     srcs = [
         "unit/fixtures/arm_switch_probe.cpp",
         "@fsla_env//:torch_libraries",
+        "@fsla_env//:torch_runtime_libraries",
     ],
     copts = ["-std=c++17", "-O0"],
-    #: torch's libraries are built to glibc 2.28 and need its symbols (`fcntl64@GLIBC_2.28`), and their own libraries
-    #: (libgomp, CUPTI) beside them: the loader resolves those in the machine's C library and torch's own directory when
-    #: the probe runs, never the pinned toolchain's sysroot (glibc 2.26) at the link, which checks only the probe's own
-    linkopts = ["-Wl,--allow-shlib-undefined"],
     deps = [
         ":arm_switch_%s_header" % variant,
         "//csrc/fsla:headers",
@@ -140,8 +137,9 @@ arm_rows(
 ) for variant in ["built", "empty"]]
 
 #: THE HOST TOOLCHAIN AND THE LIBRARY'S ABI (tools/host_abi.py, docs/build-graph.md#environment): the probe the one C++
-#: toolchain compiled names the pinned GCC and its sysroot's C library, and the pinned binutils' readelf reads every symbol
-#: version `_C.abi3.so` needs, each held to its floor: glibc to torch's (manylinux_2_28), libstdc++ to Ubuntu 22.04's runtime
+#: toolchain compiled names the pinned toolset's GCC and its sysroot's C library, and the pinned binutils' readelf reads
+#: every symbol version `_C.abi3.so` needs, each held to its floor: glibc and libstdc++ to torch's (manylinux_2_28: glibc
+#: 2.28, the system libstdc++ of GCC 8, which the toolset's links)
 filegroup(
     name = "library_files",
     srcs = ["//:library"],
@@ -159,22 +157,25 @@ tool_test(
         "--probe",
         "$(rootpath :host_toolchain_probe)",
         "--readelf",
-        "$(rootpath @gcc_toolchain_x86_64//:readelf)",
+        "$(rootpath @host_toolchain//:readelf)",
         "--library",
         "$(rootpaths :library_files)",
         "--compiler",
-        "12.5.0",
+        "13.3.1",
+        "--glibc",
+        "2.28",
         "--floor",
         "GLIBC_2.28",
         "--floor",
-        "GLIBCXX_3.4.30",
+        "GLIBCXX_3.4.25",
         "--floor",
-        "CXXABI_1.3.13",
+        "CXXABI_1.3.11",
     ],
     data = [
         ":host_toolchain_probe",
         ":library_files",
-        "@gcc_toolchain_x86_64//:readelf",
+        "@host_toolchain//:binaries",
+        "@host_toolchain//:readelf",
     ],
     tool = "//tools:host_abi.py",
 )
